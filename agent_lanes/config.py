@@ -27,6 +27,8 @@ class Lane:
     max_resumes: int = 2
     heartbeat_seconds: float = 240
     remote: str = "origin"
+    # -p mode denies any Bash not pre-approved; acceptEdits only covers file edits.
+    allowed_tools: tuple[str, ...] = ()
 
     @property
     def role_path(self) -> Path:
@@ -36,7 +38,12 @@ class Lane:
 def load_lanes(path: Path | None = None) -> dict[str, Lane]:
     data = yaml.safe_load((path or ROOT / "lanes.yaml").read_text(encoding="utf-8"))
     defaults = data.get("defaults", {})
-    return {name: Lane(name=name, **{**defaults, **cfg}) for name, cfg in data["lanes"].items()}
+    lanes = {}
+    for name, cfg in data["lanes"].items():
+        merged = {**defaults, **cfg}
+        merged["allowed_tools"] = tuple(merged.get("allowed_tools") or ())
+        lanes[name] = Lane(name=name, **merged)
+    return lanes
 
 
 def load_env(path: Path | None = None) -> dict[str, str]:

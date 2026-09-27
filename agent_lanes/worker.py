@@ -48,6 +48,7 @@ def base_args(lane: Lane, session_flag: list[str]) -> list[str]:
         "claude", "-p", *session_flag,
         "--settings", str(render_settings()),
         "--permission-mode", "acceptEdits",
+        *(["--allowedTools", *lane.allowed_tools] if lane.allowed_tools else []),
         "--append-system-prompt-file", str(lane.role_path),
         "--json-schema", SCHEMA_PATH.read_text(encoding="utf-8"),
         "--max-budget-usd", str(lane.max_budget_usd),

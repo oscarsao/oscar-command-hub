@@ -10,6 +10,19 @@ defaults:
   claim_ttl_seconds: 7200
   worktree_root: C:/Users/oscar/dev/_lanes
   remote: origin
+  # En -p, acceptEdits solo aprueba ediciones; el resto de Bash se deniega salvo lo listado aquí.
+  # Los pushes siguen pasando por contract/guard.py (solo lane/*).
+  allowed_tools:
+    - "Bash(git status:*)"
+    - "Bash(git diff:*)"
+    - "Bash(git log:*)"
+    - "Bash(git show:*)"
+    - "Bash(git branch:*)"
+    - "Bash(git rev-parse:*)"
+    - "Bash(git add:*)"
+    - "Bash(git commit:*)"
+    - "Bash(git push:*)"
+    - "Bash(py -3.12 -m pytest:*)"
 
 lanes:
   claude-oscarhq:
