@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import logging
 import subprocess
+
+from . import proc as _proc
 import time
 import uuid
 from pathlib import Path
@@ -67,7 +69,7 @@ def review_args(review_lane: Lane, session_flag: list[str]) -> list[str]:
 
 
 class ClaudeReviewer:
-    def __init__(self, runner=subprocess.run):
+    def __init__(self, runner=_proc.run):
         self._run = runner
 
     def _env(self, review_lane: Lane, task: dict) -> dict:

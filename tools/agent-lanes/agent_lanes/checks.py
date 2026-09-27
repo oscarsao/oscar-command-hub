@@ -12,13 +12,15 @@ from __future__ import annotations
 
 import os
 import subprocess
+
+from . import proc as _proc
 import sys
 
 TIMEOUT = 600
 
 
 def _git(*args: str) -> subprocess.CompletedProcess:
-    return subprocess.run(["git", *args], capture_output=True, text=True, encoding="utf-8", errors="replace",
+    return _proc.run(["git", *args], capture_output=True, text=True, encoding="utf-8", errors="replace",
                           timeout=TIMEOUT)
 
 
@@ -32,7 +34,7 @@ def run_from_base(base: str, script: str, args: list[str]) -> tuple[int, str]:
     try:
         with open(trusted, "w", encoding="utf-8", newline="") as fh:
             fh.write(src.stdout)
-        cp = subprocess.run([sys.executable, trusted, *args], capture_output=True, text=True, encoding="utf-8",
+        cp = _proc.run([sys.executable, trusted, *args], capture_output=True, text=True, encoding="utf-8",
                             errors="replace", timeout=TIMEOUT)
         return cp.returncode, (cp.stdout + cp.stderr).strip()[-1500:]
     finally:

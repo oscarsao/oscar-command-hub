@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import json
 import subprocess
+
+from . import proc as _proc
 from pathlib import Path
 
 HERMES_EXE = Path.home() / "AppData/Local/hermes/bin/hermes.exe"
@@ -32,7 +34,7 @@ class HermesError(RuntimeError):
 
 
 class HermesCLI:
-    def __init__(self, board: str, exe: Path = HERMES_EXE, runner=subprocess.run, author: str = "agent-lanes"):
+    def __init__(self, board: str, exe: Path = HERMES_EXE, runner=_proc.run, author: str = "agent-lanes"):
         self.board = board
         self.exe = str(exe)
         self._run = runner

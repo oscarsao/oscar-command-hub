@@ -4,6 +4,8 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+
+from . import proc as _proc
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -108,7 +110,7 @@ def run_claude(runner, args: list[str], prompt: str, cwd: str, timeout: float, e
 
 
 class ClaudeWorker:
-    def __init__(self, runner=subprocess.run):
+    def __init__(self, runner=_proc.run):
         self._run = runner
 
     def _exec(self, args: list[str], prompt: str, cwd: str, timeout: float, lane: Lane, task_id: str) -> WorkerOutcome:

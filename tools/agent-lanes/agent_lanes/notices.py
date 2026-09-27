@@ -12,6 +12,8 @@ import logging
 import os
 import re
 import subprocess
+
+from . import proc as _proc
 import threading
 from pathlib import Path
 from urllib.parse import quote, urlsplit
@@ -113,7 +115,7 @@ def card_url(base_url: str | None, board: str, task_id: str) -> str | None:
 class LinkBuilder:
     """Enlaces de una tarea: rama en GitHub (remote del repo del carril, cacheado) y tarjeta del kanban."""
 
-    def __init__(self, kanban_base_url: str | None = None, runner=subprocess.run):
+    def __init__(self, kanban_base_url: str | None = None, runner=_proc.run):
         self.kanban_base_url = kanban_base_url
         self._run = runner
         self._remotes: dict[tuple[str, str], str | None] = {}

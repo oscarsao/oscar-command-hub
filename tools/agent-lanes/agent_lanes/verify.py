@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import subprocess
+
+from . import proc as _proc
 from dataclasses import dataclass, field
 
 from .config import ROOT, Lane
@@ -20,12 +22,12 @@ def render_test_cmd(lane: Lane) -> str:
     return lane.test_cmd.replace("{AGENT_LANES_DIR}", ROOT.as_posix()).replace("{BASE}", lane.base_ref)
 
 
-def _git(cwd: str, *args: str, runner=subprocess.run) -> subprocess.CompletedProcess:
+def _git(cwd: str, *args: str, runner=_proc.run) -> subprocess.CompletedProcess:
     return runner(["git", "-C", cwd, *args], capture_output=True, text=True, encoding="utf-8",
                   errors="replace", timeout=120)
 
 
-def verify(lane: Lane, task_id: str, cwd: str, result: dict, runner=subprocess.run) -> VerifyResult:
+def verify(lane: Lane, task_id: str, cwd: str, result: dict, runner=_proc.run) -> VerifyResult:
     branch = f"lane/{task_id}"
     reasons: list[str] = []
     claimed = (result.get("head_sha") or "").strip().lower()

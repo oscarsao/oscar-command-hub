@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import logging
 import subprocess
+
+from . import proc as _proc
 from pathlib import Path
 
 from .config import Lane
@@ -15,7 +17,7 @@ class GitError(RuntimeError):
 
 
 class GitOps:
-    def __init__(self, runner=subprocess.run):
+    def __init__(self, runner=_proc.run):
         self._run = runner
 
     def _git(self, repo: str, *args: str) -> subprocess.CompletedProcess:
