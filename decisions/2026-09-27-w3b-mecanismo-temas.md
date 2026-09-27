@@ -122,6 +122,24 @@ El primero es un dry-run: todo debe salir `OK`.
 - Alternativa: restaurar `config.yaml.bak-20260927-w3b`. Se pierde cualquier cambio posterior del config.
 - Skill y SOUL: restaurar sus `.bak-20260927-w3b`.
 
+## Anexo: incidente t_ecde279e y regla dura sobre el assignee
+**Qué pasó (27-09, 16:52-17:12):**
+- Hermes creó `t_ecde279e` (MigraTeam, Legal Brain consular) en el board `default` con `assignee: "default"`, que es un **perfil de Hermes**.
+- El dispatcher del gateway la ejecutó con un worker de Hermes, y el auto-decomposer la partió en 12 subtareas.
+- De esas, 7 se ejecutaron: unos 2 $ y ningún cambio de código. Otras 2 se autobloquearon.
+
+**Qué se ha añadido a la skill y a `SOUL.md`:**
+- El `assignee` solo puede ser `claude-oscarhq`, `claude-migrateam`, `claude-scraper`, `claude-nextjobs` u `oscar`.
+- Nunca un perfil de Hermes: ni `default`, ni `pildora-feedback`, ni ninguno de `hermes profile list`.
+- Nada de `triage` ni de descomposición automática.
+- Las consultas o diseños sin código se resuelven en la conversación, o se crea la tarjeta con assignee `oscar`.
+
+**Qué no se ha tocado:** el script de esta carpeta **no toca** las claves del dispatcher ni del auto-decompose. Eso lo prepara otro agente de revisión de config, para no colisionar.
+
+**Temas nuevos:**
+- Marketing: Recursos = thread `54`.
+- Gestión: Finanzas ya está creado, pero su `thread_id` aún no se conoce.
+
 ## Pendiente / fuera de alcance
 - **Andrea no puede activar a Hermes** ni mencionándolo: `TELEGRAM_ALLOWED_USERS` solo incluye a Oscar. Si se quiere, lo decide Oscar (cambio en `.env`, pendiente de su `user_id`).
 - **Bot de roles:** que en Gestión t5 solo responda si se le menciona. Es W4 (repo oscar-hq).
