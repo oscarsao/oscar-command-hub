@@ -35,7 +35,11 @@ sc.exe failure cloudflared reset= 86400 actions= restart/5000/restart/5000/resta
 Start-Service cloudflared
 
 Write-Host '== 4/5 Tarea programada del panel (al iniciar sesión, sin ventana) =='
-$action  = New-ScheduledTaskAction -Execute $pyw -Argument '-m hermes_cli.main dashboard --no-open --skip-build' -WorkingDirectory (Join-Path $hermes 'hermes-agent')
+# pythonw.exe no sirve: el dashboard escribe en stdout al arrancar y muere sin consola.
+# Mismo patrón que Hermes_Gateway.vbs: python.exe con ventana oculta vía wscript.
+$vbs     = Join-Path $hermes 'gateway-service\Hermes_Dashboard.vbs'
+if (-not (Test-Path $vbs)) { throw "Falta $vbs (lanzador del dashboard)" }
+$action  = New-ScheduledTaskAction -Execute 'wscript.exe' -Argument "//B //Nologo `"$vbs`""
 $trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
 $set     = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit ([TimeSpan]::Zero)
 Register-ScheduledTask -TaskName 'Hermes Dashboard' -Action $action -Trigger $trigger -Settings $set -User $env:USERNAME -Force | Out-Null
