@@ -1,8 +1,11 @@
 {
+  "permissions": {
+    "deny": ["mcp__*"]
+  },
   "hooks": {
     "PreToolUse": [
       {
-        "matcher": "Bash|Edit|Write|MultiEdit|NotebookEdit",
+        "matcher": "Bash|Edit|Write|MultiEdit|NotebookEdit|mcp__.*",
         "hooks": [
           {
             "type": "command",

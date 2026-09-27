@@ -1,3 +1,5 @@
+> Archivado 2026-09-27: Sesión Maestra sustituida por carriles; ver decisions/2026-09-27-arquitectura-carriles.md
+
 # ORDENES_MAESTRO.md — coordinacion en vivo del sistema multi-agente
 
 > Mantenido por la SESION MAESTRA (unico punto de contacto con Hermes/Oscar).

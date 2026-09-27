@@ -1,3 +1,5 @@
+> Archivado 2026-09-27: Sesión Maestra sustituida por carriles; ver decisions/2026-09-27-arquitectura-carriles.md
+
 # Auditoría solicitada: sesión de orquestación multi-agente (24-25 sept 2026)
 
 ## Contexto para quien audite esto

@@ -83,3 +83,20 @@ def test_telegram_error_never_contains_token(monkeypatch):
 
 def test_telegram_disabled_without_token():
     telegram.TelegramNotifier(None, None)("no-op")
+
+
+def test_worker_runs_without_any_mcp_server():
+    from agent_lanes.worker import base_args
+
+    args = base_args(LANE, ["--session-id", "x"])
+    assert "--strict-mcp-config" in args
+    cfg = json.loads(args[args.index("--mcp-config") + 1])
+    assert cfg == {"mcpServers": {}}
+
+
+def test_worker_settings_deny_mcp_and_hook_covers_mcp():
+    from agent_lanes.worker import SETTINGS_TEMPLATE
+
+    s = json.loads(SETTINGS_TEMPLATE.read_text(encoding="utf-8"))
+    assert "mcp__*" in s["permissions"]["deny"]
+    assert "mcp__" in s["hooks"]["PreToolUse"][0]["matcher"]

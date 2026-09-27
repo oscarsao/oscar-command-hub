@@ -92,6 +92,8 @@ def check(payload: dict, env: dict | None = None) -> str | None:
     env = os.environ if env is None else env
     tool = payload.get("tool_name", "")
     ti = payload.get("tool_input") or {}
+    if tool.startswith("mcp__"):
+        return f"herramienta MCP {tool} prohibida para workers (los workers corren sin MCP)"
     if tool == "Bash":
         return check_bash(ti.get("command", ""), env.get("DATABASE_URL"))
     if tool in WRITE_TOOLS:

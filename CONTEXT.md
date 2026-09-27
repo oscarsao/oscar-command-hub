@@ -1,7 +1,7 @@
 # CONTEXT.md — Mapa maestro de Oscar
 
 > Fuente compartida. Cualquier agente que conecte empieza aquí. Actualizado manualmente.
-> Versión de referencia: 2026-09-24. Antes de confiar en este doc en una sesión vieja, verifica
+> Versión de referencia: 2026-09-27. Antes de confiar en este doc en una sesión vieja, verifica
 > la fecha contra los repos reales si hay drift.
 
 ## Identidad
@@ -44,17 +44,34 @@
 
 ## Convenciones técnicas (resumen; los repos tienen su AGENTS/CLAUDE.md con el detalle)
 - Windows + Git Bash: usar `git -C "<ruta>"`.
-- Node no está en PATH: usar rutas absolutas `nvm/v24.5.0/node`.
-- Alembic: único propietario de migraciones = Integrador; verificar `version_num` en Supabase
-  antes de push; nunca borrar migraciones.
+- Node: en PATH desde la reinstalación del 22-09 (`C:\Program Files\nodejs`).
+- Alembic: un único propietario de migraciones por release (Integrador, salvo que el AGENTS.md del repo
+  lo fije por claim); verificar `version_num` en Supabase antes de push; nunca borrar migraciones ni
+  hacer UPDATE/stamp de `alembic_version` sin plan, backup y OK de Oscar.
 - Deploy Vercel/Railway: confirmar con Oscar. Railway para oscar-hq.
 - Al desplegar: revisar "propagaciones potenciales" y resolver de raíz errores recurrentes.
 
-## Cómo se conectan los agentes
-- 1 sesión Claude = 1 rol + 1 worktree/rama. Máx 3 workstreams de código.
-- Sesiones de Claude se comunican por **cross-session / named pipes**.
-- Hermes = asistente integral (este hub). Decisiones finales → Oscar.
-- Codex: presente (auth `~/.codex`), binario no en PATH global; **priorizar Claude Max** por ahora.
+## Cómo se conectan los agentes (sistema de carriles, 2026-09-27)
+Detalle: `decisions/2026-09-27-arquitectura-carriles.md` y `decisions/2026-09-27-telegram-grupos-temas.md`.
+- **Hermes = Coordinador.** Recibe los mensajes (DM y grupos), crea tarjetas, pregunta y avisa. **No implementa**:
+  en Telegram no tiene terminal ni ejecución de código.
+- **Carriles:** `tools/agent-lanes` (runner) toma las tarjetas `ready` del kanban de Hermes asignadas a un carril
+  (p. ej. `claude-oscarhq`). Por cada una: worktree + rama `lane/<id>`, `claude -p` con hooks de seguridad,
+  verificación mecánica y paso a `review`. Los workers corren con `AGENT_LANES_TASK` (MODO WORKER del
+  `~/.claude/CLAUDE.md`) y solo pueden hacer push de su rama.
+- 1 sesión interactiva = 1 rol + 1 worktree/rama. Máximo 3 workstreams de código.
+- **La Sesión Maestra y `ORDENES_MAESTRO.md` están retirados** (en `archive/`).
+- **Codex: EN PAUSA** (decisión del 27-09). El carril `codex-*` queda sin implementar.
+- **Modelos:** Sonnet por defecto; Opus solo para diseño/arquitectura y en los subagentes fijados.
+
+## Fuentes de verdad
+| Qué | Dónde |
+|---|---|
+| Ejecución de agentes (código y tareas delegables) | Kanban de Hermes (boards oscarhq, migrateam, default, personal) |
+| Negocio, colaboradores (Andrea), decisiones que dependen de Oscar | Kanban de Píldora (app.pildoradigital.com) |
+| Personal | ClickUp |
+| Conocimiento: contexto, decisiones, referencias | Este hub |
+| Reglas de agentes | `~/.claude/CLAUDE.md` (manda); excepciones en el AGENTS.md de cada repo |
 
 ## Backlog de decisiones abiertas para Oscar (para no trancar)
 1. Unificar consolas de signal en una sola herramienta → elegir cuál queda.

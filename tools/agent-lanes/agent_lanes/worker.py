@@ -47,6 +47,9 @@ def base_args(lane: Lane, session_flag: list[str]) -> list[str]:
     return [
         "claude", "-p", *session_flag,
         "--settings", str(render_settings()),
+        # No MCP at all: user settings allow e.g. Supabase execute_sql/apply_migration, which the Bash guard
+        # cannot see. strict + empty config ignores every other MCP source.
+        "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}',
         "--permission-mode", "acceptEdits",
         *(["--allowedTools", *lane.allowed_tools] if lane.allowed_tools else []),
         "--append-system-prompt-file", str(lane.role_path),

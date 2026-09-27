@@ -14,8 +14,16 @@ tener el mapa de proyectos, empresas, decisiones y situaciones de Oscar.
    - `references/` — convenciones, runbooks, credenciales de acceso NO sensibles.
 3. **Nunca** pongas secrets/API keys aquí. Secrets van en los `.env` de cada proyecto o en
    el vault.
-4. Antes de codear en un proyecto real, lee el `CONTEXT.md` de *ese* proyecto (en su repo) y
-   respeta las reglas de bash/railway/alembic de `~/.claude/CLAUDE.md` y `AGENTS.md` global.
+4. Antes de codear en un proyecto real, lee el AGENTS.md/CLAUDE.md de *ese* repo. **Las reglas mandan
+   desde `~/.claude/CLAUDE.md`**; los archivos del workspace (`C:\Users\oscar\CLAUDE.md`/`AGENTS.md`)
+   son solo un mapa y no añaden permisos.
+
+## Fuentes de verdad y carriles (2026-09-27)
+
+- **Ejecución:** kanban de Hermes. **Negocio:** kanban de Píldora. **Personal:** ClickUp. **Conocimiento:** este hub.
+- El trabajo delegable va en tarjetas del kanban de Hermes con un carril asignado; lo ejecuta
+  `tools/agent-lanes` (worktree + rama `lane/<id>` + verificación + review). Hermes coordina, no implementa.
+- Detalle: `decisions/2026-09-27-arquitectura-carriles.md`. La Sesión Maestra está archivada en `archive/`.
 
 ## Convención de flujo (adaptada del CLAUDE.md de Claude)
 

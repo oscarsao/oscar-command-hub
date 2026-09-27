@@ -77,3 +77,9 @@ def test_process_exit_codes():
     assert run({"tool_name": "Bash", "tool_input": {"command": "ls"}}).returncode == 0
     bad = subprocess.run([sys.executable, str(GUARD)], input="not json", capture_output=True, text=True)
     assert bad.returncode == 2
+
+
+@pytest.mark.parametrize("tool", ["mcp__claude_ai_Supabase__execute_sql", "mcp__claude_ai_Supabase__apply_migration",
+                                  "mcp__anything__x"])
+def test_mcp_tools_blocked(tool):
+    assert guard.check({"tool_name": tool, "tool_input": {"query": "select 1"}})
