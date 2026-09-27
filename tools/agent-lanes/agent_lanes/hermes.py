@@ -81,7 +81,8 @@ class HermesCLI:
         return self._call("reassign", task_id, profile, "--reason", reason).returncode == 0
 
     def block(self, task_id: str, kind: str, reason: str) -> bool:
-        return self._call("block", task_id, "--kind", kind, reason).returncode == 0
+        # --kind must precede the positionals: hermes rejects `block <id> --kind k <reason>`.
+        return self._call("block", "--kind", kind, task_id, reason).returncode == 0
 
     def request_review(self, task_id: str, summary: str, metadata: dict) -> tuple[bool, str]:
         cp = self._call("request-review", task_id, "--summary", summary, "--metadata", json.dumps(metadata))

@@ -113,7 +113,8 @@ class ReviewRunner:
         return {tid: job() for tid, job in self.jobs()}
 
     def _block(self, h, task: dict, kind: str, reason: str) -> str:
-        h.block(task["id"], kind, reason[:1500])
+        if not h.block(task["id"], kind, reason[:1500]):
+            log.error("no se pudo bloquear %s (%s) en el kanban", task["id"], kind)
         self.notify(f"⛔ {task['id']} bloqueada en review ({kind}): {reason[:300]}", task)
         return f"blocked:{kind}"
 

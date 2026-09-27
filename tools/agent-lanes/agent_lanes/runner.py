@@ -126,7 +126,8 @@ class LaneRunner:
         return {tid: job() for tid, job in self.jobs()}
 
     def _block(self, tid: str, kind: str, reason: str, task: dict | None = None) -> str:
-        self.hermes.block(tid, kind, reason[:1500])
+        if not self.hermes.block(tid, kind, reason[:1500]):
+            log.error("no se pudo bloquear %s (%s) en el kanban: la tarea sigue en running", tid, kind)
         self.notify(f"⛔ {tid} bloqueada ({kind}): {reason[:300]}", task or self._active.get(tid))
         return f"blocked:{kind}"
 
