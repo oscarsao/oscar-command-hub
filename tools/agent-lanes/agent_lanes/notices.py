@@ -138,8 +138,9 @@ class LinkBuilder:
             if url:
                 links.append(("rama", url))
         card = card_url(self.kanban_base_url, lane.board, task_id)
+        # La tarjeta (panel del kanban) va primero: es el enlace que Oscar usa a diario; la rama es para revisar código.
         if card:
-            links.append(("tarjeta", card))
+            links.insert(0, ("tarjeta", card))
         return links
 
 
