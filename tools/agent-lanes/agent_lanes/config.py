@@ -35,6 +35,7 @@ class Lane:
     kind: str = "implement"           # implement | review
     reviews: tuple[str, ...] = ()     # review lane: implementer lanes it reviews
     max_review_rounds: int = 2        # review lane: change requests before escalating to Oscar
+    telegram: tuple[str, str] | None = None  # (chat, thread) de los avisos del carril; ver lanes.yaml
 
     @property
     def claim_ttl_seconds(self) -> int:
@@ -66,8 +67,23 @@ def load_lanes(path: Path | None = None) -> dict[str, Lane]:
         merged = {**defaults, **cfg}
         for f in TUPLE_FIELDS:
             merged[f] = tuple(merged.get(f) or ())
+        merged["telegram"] = _chat_thread(merged.get("telegram"))
         lanes[name] = Lane(name=name, **merged)
     return lanes
+
+
+def _chat_thread(cfg: dict | None, any_thread: str = "0") -> tuple[str, str] | None:
+    """{chat, thread} de YAML (ints) -> (str, str), mismo formato que telegram_target()."""
+    if not cfg:
+        return None
+    thread = cfg.get("thread")
+    return str(cfg["chat"]), any_thread if thread is None else str(thread)
+
+
+def load_telegram_settings(path: Path | None = None) -> dict:
+    """Top-level `telegram:` block. generic_origins: orígenes sin marca; thread omitido = cualquier hilo ("*")."""
+    cfg = _load(path).get("telegram") or {}
+    return {"generic_origins": {_chat_thread(o, "*") for o in cfg.get("generic_origins") or ()}}
 
 
 def load_runner_settings(path: Path | None = None) -> dict:

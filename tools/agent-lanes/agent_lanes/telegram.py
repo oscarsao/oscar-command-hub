@@ -16,9 +16,23 @@ def telegram_target(body: str | None) -> tuple[str, str] | None:
     return (m.group(1), m.group(2)) if m else None
 
 
+def resolve_target(origin: tuple[str, str] | None, lane_target: tuple[str, str] | None, *,
+                   allowed_chats: set[str], generic_origins: set[tuple[str, str]]) -> tuple[str, str] | None:
+    """Destino de un aviso. None = el default del .env.
+
+    1. Origen-Telegram del cuerpo, si su chat está permitido y no es un origen genérico (DM de Oscar, Gestión t5).
+    2. Destino del carril (lanes.yaml, config de confianza: no pasa por la allowlist).
+    3. Default del .env.
+    """
+    if origin and origin[0] in allowed_chats and not (
+            (origin[0], "*") in generic_origins or tuple(origin) in generic_origins):
+        return tuple(origin)
+    return tuple(lane_target) if lane_target else None
+
+
 class TelegramNotifier:
     def __init__(self, token: str | None, chat_id: str | None, thread_id: str | None = None, timeout: int = 15,
-                 allowed_chats: set[str] | None = None):
+                 allowed_chats: set[str] | None = None, generic_origins: set[tuple[str, str]] | None = None):
         self._token = token
         self.chat_id = chat_id
         self.thread_id = thread_id
@@ -26,17 +40,19 @@ class TelegramNotifier:
         # Origen-Telegram comes from the task body: only chats listed here (plus the default) may be targeted,
         # so a task text cannot redirect review summaries to an arbitrary chat where the bot is present.
         self.allowed_chats = {str(c) for c in (allowed_chats or ())} | ({str(chat_id)} if chat_id else set())
+        self.generic_origins = set(generic_origins or ())
 
     @property
     def enabled(self) -> bool:
         return bool(self._token and self.chat_id)
 
-    def __call__(self, text: str, target: tuple[str, str] | None = None) -> None:
-        """Send to `target` (chat, thread) when the task has an Origen-Telegram line, else to the .env default."""
+    def __call__(self, text: str, target: tuple[str, str] | None = None,
+                 lane_target: tuple[str, str] | None = None) -> None:
+        """`target` = Origen-Telegram of the task, `lane_target` = lane destination; see resolve_target()."""
         if not self._token:
             return
-        if target and target[0] not in self.allowed_chats:
-            target = None
+        target = resolve_target(target, lane_target, allowed_chats=self.allowed_chats,
+                                generic_origins=self.generic_origins)
         chat_id, thread_id = target if target else (self.chat_id, self.thread_id)
         if not chat_id:
             return

@@ -447,3 +447,103 @@ def test_telegram_origin_outside_allowlist_falls_back_to_default(monkeypatch):
     n("b", ("-999", "3"))  # not allowed -> default destination
     assert sent[0]["chat_id"] == "-100200"
     assert (sent[1]["chat_id"], sent[1]["message_thread_id"]) == ("-1", 5)
+
+
+# --- Destino Telegram por carril (27-09): origen de marca > destino del carril > .env ------------
+
+GESTION = "-1003530490339"
+GENERIC = {("6744452215", "*"), (GESTION, "5")}
+ALLOWED = {GESTION, "6744452215", "-100200"}
+
+
+@pytest.mark.parametrize("origin,fallback,expected", [
+    ((GESTION, "230"), (GESTION, "231"), (GESTION, "230")),      # origen de marca permitido gana al carril
+    (("-100200", "7"), None, ("-100200", "7")),                  # sin destino de carril: comportamiento previo
+    (("6744452215", "0"), (GESTION, "230"), (GESTION, "230")),   # DM de Oscar -> tema de la marca
+    (("6744452215", "12"), (GESTION, "230"), (GESTION, "230")),  # DM en cualquier hilo
+    ((GESTION, "5"), (GESTION, "231"), (GESTION, "231")),        # Gestión · General -> tema de la marca
+    (None, (GESTION, "5"), (GESTION, "5")),                      # sin origen -> carril
+    (("-999", "3"), (GESTION, "230"), (GESTION, "230")),         # origen no permitido -> carril
+    (("-999", "3"), None, None),                                 # ... y sin carril -> .env
+    (("6744452215", "0"), None, None),                           # genérico sin carril -> .env
+    (None, None, None),
+])
+def test_resolve_target_priority(origin, fallback, expected):
+    from agent_lanes.telegram import resolve_target
+    assert resolve_target(origin, fallback, allowed_chats=ALLOWED, generic_origins=GENERIC) == expected
+
+
+def _capture(monkeypatch):
+    from agent_lanes import telegram
+    sent = []
+
+    class Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self):
+            return b'{"ok": true}'
+
+    monkeypatch.setattr(telegram.urllib.request, "urlopen", lambda req, timeout: (sent.append(json.loads(req.data)), Resp())[1])
+    return telegram, sent
+
+
+def test_notifier_routes_dm_origin_to_lane_thread(monkeypatch):
+    telegram, sent = _capture(monkeypatch)
+    n = telegram.TelegramNotifier("tok", GESTION, "5", allowed_chats={"6744452215"}, generic_origins=GENERIC)
+    n("a", ("6744452215", "0"), (GESTION, "230"))
+    n("b", None, None)
+    n("c", (GESTION, "231"), (GESTION, "230"))
+    assert (sent[0]["chat_id"], sent[0]["message_thread_id"]) == (GESTION, 230)
+    assert (sent[1]["chat_id"], sent[1]["message_thread_id"]) == (GESTION, 5)
+    assert (sent[2]["chat_id"], sent[2]["message_thread_id"]) == (GESTION, 231)
+
+
+def test_notifier_lane_destination_is_trusted_even_if_not_allowlisted(monkeypatch):
+    telegram, sent = _capture(monkeypatch)
+    n = telegram.TelegramNotifier("tok", "-1", "5", allowed_chats=set(), generic_origins=GENERIC)
+    n("a", None, ("-555", "9"))
+    assert (sent[0]["chat_id"], sent[0]["message_thread_id"]) == ("-555", 9)
+
+
+def test_lane_runner_passes_lane_destination():
+    lane = Lane(name="claude-oscarhq", board="oscarhq", repo="C:/x", base="master", telegram=(GESTION, "231"))
+    h = FakeHermes(tasks=[{"id": "t_1", "title": "T", "body": "B"}])
+    n = FakeNotifier()
+    LaneRunner(lane, hermes=h, git=FakeGit(), worker=FakeWorker([ok_outcome()]), verifier=FakeVerifier(),
+               notify=n).run_once()
+    assert n.fallbacks == [(GESTION, "231"), (GESTION, "231")]
+
+
+def test_review_uses_destination_of_reviewed_lane():
+    lane = Lane(name="claude-migrateam", board="migrateam", repo="C:/x", base="master", telegram=(GESTION, "230"))
+    h = ReviewHermes([{"id": "t_1", "title": "T", "body": "Origen-Telegram: chat=6744452215 thread=0",
+                       "assignee": "claude-migrateam", "status": "review"}], meta=META)
+    n = FakeNotifier()
+    review = Lane(name="review", kind="review", reviews=("claude-migrateam",), role="roles/revisor.md",
+                  telegram=(GESTION, "5"))
+    ReviewRunner(review, {"claude-migrateam": lane}, hermes_for=lambda b: h, git=FakeReviewGit(),
+                 reviewer=FakeReviewer([verdict("approve")]), verifier=FakeVerifier(), notify=n).run_once()
+    assert n.targets == [("6744452215", "0")] and n.fallbacks == [(GESTION, "230")]
+
+
+def test_load_lanes_and_telegram_settings(tmp_path):
+    from agent_lanes.config import load_lanes, load_telegram_settings
+    p = tmp_path / "lanes.yaml"
+    p.write_text(
+        "telegram:\n  generic_origins:\n    - {chat: 6744452215}\n    - {chat: -1003530490339, thread: 5}\n"
+        "lanes:\n  a:\n    telegram: {chat: -1003530490339, thread: 230}\n  b: {}\n", encoding="utf-8")
+    lanes = load_lanes(p)
+    assert lanes["a"].telegram == (GESTION, "230") and lanes["b"].telegram is None
+    assert load_telegram_settings(p)["generic_origins"] == {("6744452215", "*"), (GESTION, "5")}
+
+
+def test_real_lanes_yaml_destinations():
+    from agent_lanes.config import load_lanes
+    lanes = load_lanes()
+    assert lanes["claude-migrateam"].telegram == (GESTION, "230")
+    assert lanes["claude-oscarhq"].telegram == lanes["claude-scraper"].telegram == (GESTION, "231")
+    assert lanes["claude-nextjobs"].telegram == (GESTION, "5")

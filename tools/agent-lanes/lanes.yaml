@@ -9,6 +9,19 @@ runner:
   max_workers: 1
   interval_seconds: 60
 
+# Avisos a Telegram. Destino de cada aviso de una tarea, por prioridad:
+#   1. La línea `Origen-Telegram: chat=<id> thread=<id>` del cuerpo, si el chat está en TELEGRAM_ALLOWED_CHATS (.env)
+#      y NO es un origen genérico (generic_origins, abajo): la tarea vuelve al tema donde se pidió.
+#   2. El destino del carril (`telegram:` de cada carril): el tema de operaciones de su marca. Así las tareas creadas
+#      desde el DM de Oscar, desde Gestión · General o sin origen aterrizan en el tema de su marca. El carril review
+#      usa el destino del carril que revisa. Es config de confianza: no pasa por la allowlist.
+#   3. TELEGRAM_CHAT_ID / TELEGRAM_THREAD_ID del .env (Gestión t5).
+# Grupo Gestión -1003530490339: t5 Operaciones · General, t230 Operaciones · MigraTeam, t231 Operaciones · Píldora.
+telegram:
+  generic_origins:
+    - {chat: 6744452215}              # DM de Oscar (cualquier hilo)
+    - {chat: -1003530490339, thread: 5}  # Gestión · Operaciones General
+
 defaults:
   max_resumes: 2
   heartbeat_seconds: 240
@@ -41,6 +54,7 @@ defaults:
 
 lanes:
   claude-oscarhq:
+    telegram: {chat: -1003530490339, thread: 231}
     board: oscarhq
     repo: C:/Users/oscar/dev/oscar-hq
     base: master
@@ -48,6 +62,7 @@ lanes:
     test_cmd: py -3.12 "{AGENT_LANES_DIR}/agent_lanes/checks.py" {BASE}
 
   claude-migrateam:
+    telegram: {chat: -1003530490339, thread: 230}
     board: migrateam
     repo: C:/Users/oscar/dev/migrateam
     base: master
@@ -60,6 +75,7 @@ lanes:
       - backend/alembic/versions/
 
   claude-scraper:
+    telegram: {chat: -1003530490339, thread: 231}
     board: oscarhq
     repo: C:/Users/oscar/dev/Scraper
     # Rama de trabajo activa (no main), confirmada con git el 27-09: origin/cambio/multiverse-benchmark-harness.
@@ -67,6 +83,7 @@ lanes:
     test_cmd: py -3.12 "{AGENT_LANES_DIR}/agent_lanes/checks.py" {BASE}
 
   claude-nextjobs:
+    telegram: {chat: -1003530490339, thread: 5}
     board: default
     repo: C:/Users/oscar/nextjobs/autoapply_v5
     base: master

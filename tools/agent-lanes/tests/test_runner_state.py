@@ -106,10 +106,12 @@ class FakeNotifier:
     def __init__(self):
         self.msgs = []
         self.targets = []
+        self.fallbacks = []
 
-    def __call__(self, text, target=None):
+    def __call__(self, text, target=None, lane_target=None):
         self.msgs.append(text)
         self.targets.append(target)
+        self.fallbacks.append(lane_target)
 
 
 def ok_outcome(structured=None):

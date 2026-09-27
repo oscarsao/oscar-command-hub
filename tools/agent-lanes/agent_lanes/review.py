@@ -95,7 +95,10 @@ class ReviewRunner:
 
     def notify(self, text: str, task: dict) -> None:
         try:
-            self._notify(f"[{self.lane.name}] {text}", telegram_target(task.get("body")))
+            # Reviewed lane's destination (brand topic), else the review lane's own, else the .env default.
+            reviewed = self.lanes.get(task.get("assignee"))
+            lane_target = (reviewed.telegram if reviewed else None) or self.lane.telegram
+            self._notify(f"[{self.lane.name}] {text}", telegram_target(task.get("body")), lane_target)
         except Exception as exc:
             log.warning("aviso a Telegram falló: %s", exc)
 

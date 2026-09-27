@@ -81,10 +81,10 @@ class LaneRunner:
         self._active: dict[str, dict] = {}  # tid -> task being processed (for notice routing)
 
     def notify(self, text: str, task: dict | None = None) -> None:
-        # Origen-Telegram line in the body routes the notice back to that topic (contract with W3b).
+        # Origen-Telegram routes the notice back to that topic (contract with W3b); lane.telegram is the fallback.
         target = telegram_target((task or {}).get("body"))
         try:
-            self._notify(f"[{self.lane.name}] {text}", target)
+            self._notify(f"[{self.lane.name}] {text}", target, self.lane.telegram)
         except Exception as exc:
             log.warning("aviso a Telegram falló: %s", exc)
 
