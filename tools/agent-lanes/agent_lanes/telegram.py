@@ -30,6 +30,14 @@ def resolve_target(origin: tuple[str, str] | None, lane_target: tuple[str, str] 
     return tuple(lane_target) if lane_target else None
 
 
+class TelegramAPIError(RuntimeError):
+    """Telegram respondió con error; `description` es el texto de la API (nunca contiene el token)."""
+
+    def __init__(self, message: str, description: str = ""):
+        super().__init__(message)
+        self.description = description
+
+
 class TelegramNotifier:
     def __init__(self, token: str | None, chat_id: str | None, thread_id: str | None = None, timeout: int = 15,
                  allowed_chats: set[str] | None = None, generic_origins: set[tuple[str, str]] | None = None):
@@ -46,33 +54,78 @@ class TelegramNotifier:
     def enabled(self) -> bool:
         return bool(self._token and self.chat_id)
 
-    def __call__(self, text: str, target: tuple[str, str] | None = None,
-                 lane_target: tuple[str, str] | None = None) -> None:
-        """`target` = Origen-Telegram of the task, `lane_target` = lane destination; see resolve_target()."""
-        if not self._token:
-            return
-        target = resolve_target(target, lane_target, allowed_chats=self.allowed_chats,
-                                generic_origins=self.generic_origins)
-        chat_id, thread_id = target if target else (self.chat_id, self.thread_id)
-        if not chat_id:
-            return
-        payload = {"chat_id": chat_id, "text": text[:4000], "disable_web_page_preview": True}
-        if thread_id and int(thread_id) != 0:
-            payload["message_thread_id"] = int(thread_id)
+    def _api(self, method: str, payload: dict) -> dict:
+        """Llama a la Bot API y devuelve `result`. Los errores nunca incluyen la URL (lleva el token)."""
         req = urllib.request.Request(
-            f"https://api.telegram.org/bot{self._token}/sendMessage",
+            f"https://api.telegram.org/bot{self._token}/{method}",
             data=json.dumps(payload).encode(), headers={"Content-Type": "application/json"},
         )
         try:
             with urllib.request.urlopen(req, timeout=self.timeout) as resp:
                 body = json.loads(resp.read() or b"{}")
-            if not body.get("ok"):
-                raise RuntimeError(f"telegram rechazó el mensaje: {body.get('description', '?')}")
         except urllib.error.HTTPError as exc:
-            # HTTPError's str() contains the URL (and therefore the token): report only the code.
-            raise RuntimeError(f"telegram HTTP {exc.code}") from None
+            # HTTPError's str() contains the URL (and therefore the token): report only code + description.
+            try:
+                desc = str(json.loads(exc.read() or b"{}").get("description", ""))[:200]
+            except Exception:
+                desc = ""
+            raise TelegramAPIError(f"telegram HTTP {exc.code}" + (f": {desc}" if desc else ""), desc) from None
         except urllib.error.URLError as exc:
             raise RuntimeError(f"telegram no alcanzable ({type(exc.reason).__name__})") from None
+        if not body.get("ok"):
+            desc = str(body.get("description", "?"))[:200]
+            raise TelegramAPIError(f"telegram rechazó el mensaje: {desc}", desc)
+        return body.get("result") or {}
+
+    def send(self, text: str, target: tuple[str, str] | None = None, lane_target: tuple[str, str] | None = None,
+             *, silent: bool = False, html: bool = True) -> dict | None:
+        """Envía y devuelve {chat_id, thread_id, message_id} (None si Telegram está desactivado).
+
+        `target` = Origen-Telegram of the task, `lane_target` = lane destination; see resolve_target()."""
+        if not self._token:
+            return None
+        target = resolve_target(target, lane_target, allowed_chats=self.allowed_chats,
+                                generic_origins=self.generic_origins)
+        chat_id, thread_id = target if target else (self.chat_id, self.thread_id)
+        if not chat_id:
+            return None
+        payload = {"chat_id": chat_id, "text": text[:4000], "disable_web_page_preview": True}
+        if html:
+            payload["parse_mode"] = "HTML"
+        if silent:
+            payload["disable_notification"] = True
+        if thread_id and int(thread_id) != 0:
+            payload["message_thread_id"] = int(thread_id)
+        result = self._api("sendMessage", payload)
+        return {"chat_id": str(chat_id), "thread_id": str(thread_id or "0"), "message_id": result.get("message_id")}
+
+    def edit(self, chat_id: str, message_id, text: str, *, html: bool = True) -> bool:
+        """True si el mensaje queda con ese texto. False si ya no se puede editar (borrado, >48 h...)."""
+        if not self._token or not message_id:
+            return False
+        payload = {"chat_id": chat_id, "message_id": int(message_id), "text": text[:4000],
+                   "disable_web_page_preview": True}
+        if html:
+            payload["parse_mode"] = "HTML"
+        try:
+            self._api("editMessageText", payload)
+        except TelegramAPIError as exc:
+            return "not modified" in exc.description.lower()  # mismo texto: no es un fallo (evita duplicados)
+        return True
+
+    def delete(self, chat_id: str, message_id) -> bool:
+        if not self._token or not message_id:
+            return False
+        try:
+            self._api("deleteMessage", {"chat_id": chat_id, "message_id": int(message_id)})
+        except TelegramAPIError:
+            return False
+        return True
+
+    def __call__(self, text: str, target: tuple[str, str] | None = None,
+                 lane_target: tuple[str, str] | None = None) -> None:
+        """Compat: envío de texto plano."""
+        self.send(text, target, lane_target, html=False)
 
     def __repr__(self) -> str:  # never expose the token
         return f"TelegramNotifier(chat_id={self.chat_id!r}, thread_id={self.thread_id!r}, token=***)"

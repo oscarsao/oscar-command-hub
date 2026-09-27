@@ -11,11 +11,14 @@ from pathlib import Path
 from typing import Callable
 
 from .config import ROOT, Lane
+from .notices import (MessageStore, TaskNotices, files_label, money, questions_block, render,
+                      status_line, test_label)
 from .telegram import telegram_target
 
 log = logging.getLogger("agent_lanes")
 
 STATE_DIR = ROOT / ".state" / "tasks"
+MESSAGES_DIR = ROOT / ".state" / "messages"  # message_id de Telegram por tarea (persiste entre carriles y reinicios)
 
 
 def pid_alive(pid: int) -> bool:
@@ -67,26 +70,42 @@ class Heartbeat:
 class LaneRunner:
     def __init__(self, lane: Lane, *, hermes, git, worker, verifier, notify: Callable[[str], None],
                  clock: Callable[[], float] = time.monotonic, state_dir: Path = STATE_DIR,
-                 pid_alive: Callable[[int], bool] = pid_alive, exclude: set[str] | None = None):
+                 pid_alive: Callable[[int], bool] = pid_alive, exclude: set[str] | None = None,
+                 messages: MessageStore | None = None, links: Callable | None = None):
         self.lane = lane
         self.hermes = hermes
         self.git = git
         self.worker = worker
         self.verifier = verifier
-        self._notify = notify
+        self._notices = TaskNotices(notify, messages)
+        self._links = links
         self.clock = clock
         self.state_dir = Path(state_dir)
         self.pid_alive = pid_alive
         self.exclude = set(exclude or ())
         self._active: dict[str, dict] = {}  # tid -> task being processed (for notice routing)
 
-    def notify(self, text: str, task: dict | None = None) -> None:
+    def notify(self, state: str, tid: str, task: dict | None, status: str, *, alert: bool = False,
+               bullets: list[str] | None = None, branch_link: bool = True) -> None:
+        """Estado de la tarea en su único mensaje. `status` es texto público: nunca rutas, stderr ni trazas."""
+        task = task or {}
         # Origen-Telegram routes the notice back to that topic (contract with W3b); lane.telegram is the fallback.
-        target = telegram_target((task or {}).get("body"))
+        target = telegram_target(task.get("body"))
         try:
-            self._notify(f"[{self.lane.name}] {text}", target, self.lane.telegram)
+            links = self._links(self.lane, tid, branch=branch_link) if self._links else []
+            text = render(state, tid, task.get("title"), self.lane.name, status, links, bullets)
+            self._notices.publish(tid, text, target, self.lane.telegram, alert=alert)
         except Exception as exc:
             log.warning("aviso a Telegram falló: %s", exc)
+
+    def _drop_hermes_subs(self, tid: str) -> None:
+        """Hermes suscribe el hilo de origen al crear la tarea desde Telegram; su notificador duplicaría los avisos."""
+        try:
+            dropped = self.hermes.drop_telegram_subs(tid)
+            if dropped:
+                log.info("%s: quitadas suscripciones de Hermes %s (avisa el runner)", tid, dropped)
+        except Exception as exc:  # best effort: never blocks the claim
+            log.warning("%s: no se pudieron quitar las suscripciones de Hermes: %s", tid, exc)
 
     def _state_path(self, tid: str) -> Path:
         return self.state_dir / f"{tid}.json"
@@ -111,7 +130,8 @@ class LaneRunner:
                 continue
             session = state.get("session_id")
             self._block(tid, "transient", "runner reiniciado: la tarea quedó en running sin proceso vivo"
-                        + (f" (session_id={session}; se puede retomar con --resume)" if session else ""))
+                        + (f" (session_id={session}; se puede retomar con --resume)" if session else ""),
+                        task, public="runner reiniciado con la tarea en curso")
             path.unlink(missing_ok=True)
             orphans.append(tid)
         return orphans
@@ -125,10 +145,18 @@ class LaneRunner:
         """One pass, sequential. Returns {task_id: outcome}."""
         return {tid: job() for tid, job in self.jobs()}
 
-    def _block(self, tid: str, kind: str, reason: str, task: dict | None = None) -> str:
+    def _block(self, tid: str, kind: str, reason: str, task: dict | None = None, *, public: str,
+               questions: list[str] | None = None) -> str:
+        """`reason` (detalle técnico) va a la tarjeta y al log; a Telegram solo `public` (+ preguntas si needs_input)."""
+        log.warning("%s bloqueada (%s): %s", tid, kind, reason)
         if not self.hermes.block(tid, kind, reason[:1500]):
             log.error("no se pudo bloquear %s (%s) en el kanban: la tarea sigue en running", tid, kind)
-        self.notify(f"⛔ {tid} bloqueada ({kind}): {reason[:300]}", task or self._active.get(tid))
+        task = task or self._active.get(tid)
+        if kind == "needs_input":
+            self.notify("needs_input", tid, task, status_line(public, "responde en este hilo o a Hermes"),
+                        alert=True, bullets=questions_block(questions))
+        else:
+            self.notify("blocked", tid, task, status_line("bloqueada", public, "detalle en la tarjeta"), alert=True)
         return f"blocked:{kind}"
 
     def process(self, task: dict) -> str:
@@ -137,6 +165,7 @@ class LaneRunner:
         if not self.hermes.claim(tid, lane.claim_ttl_seconds):
             log.info("%s: claim perdido (otro runner o ya no está ready)", tid)
             return "claim_lost"
+        self._drop_hermes_subs(tid)
         deadline = self.clock() + lane.max_runtime_seconds
         session_id = str(uuid.uuid4())
         state_path = self._state_path(tid)
@@ -153,13 +182,15 @@ class LaneRunner:
     def _work(self, task: dict, tid: str, session_id: str, deadline: float) -> str:
         lane = self.lane
         self.hermes.comment(tid, f"LANE claim por {lane.name} · session_id={session_id} · rama lane/{tid}")
-        self.notify(f"▶️ empieza {tid}: {task.get('title', '')[:120]}", task)
 
         with Heartbeat(lambda: self.hermes.heartbeat(tid), lane.heartbeat_seconds):
             try:
                 feedback = self.hermes.review_feedback(tid)  # non-empty when the review lane reopened it
                 if feedback:
                     task = {**task, "review_feedback": feedback}
+                self.notify("running", tid, task,
+                            status_line("en curso", f"aplicando cambios de revisión (ronda {len(feedback)})"
+                                        if feedback else None), branch_link=bool(feedback))
                 cwd = self.git.prepare_worktree(lane, tid)
                 outcome = self.worker.run(lane, task, cwd, session_id, timeout=max(60.0, deadline - self.clock()))
                 resumes = 0
@@ -168,22 +199,27 @@ class LaneRunner:
                     log.info("%s: resume %d tras %s", tid, resumes, outcome.subtype)
                     outcome = self.worker.resume(lane, cwd, session_id, timeout=max(60.0, deadline - self.clock()), task_id=tid)
             except Exception as exc:
-                return self._block(tid, "transient", f"error del runner: {exc}")
+                return self._block(tid, "transient", f"error del runner: {exc}", task, public="error del runner")
 
             if not outcome.ok:
                 why = "max_runtime alcanzado" if deadline - self.clock() <= 60 else f"tras {resumes} resume(s)"
                 return self._block(tid, "transient",
-                                   f"el worker no terminó ({why}): {outcome.raw_error} (session_id={session_id})")
+                                   f"el worker no terminó ({why}): {outcome.raw_error} (session_id={session_id})", task,
+                                   public="el worker no terminó (tiempo o presupuesto agotado)")
             result = outcome.structured
             if result["status"] == "needs_input":
                 questions = "\n".join(f"- {q}" for q in result.get("questions") or []) or result.get("summary", "")
-                return self._block(tid, "needs_input", f"El worker necesita decisión:\n{questions}")
+                return self._block(tid, "needs_input", f"El worker necesita decisión:\n{questions}", task,
+                                   public="necesita tu decisión",
+                                   questions=result.get("questions") or [result.get("summary", "")])
             if result["status"] != "done":
-                return self._block(tid, "transient", f"worker status={result['status']}: {result.get('summary', '')}")
+                return self._block(tid, "transient", f"worker status={result['status']}: {result.get('summary', '')}",
+                                   task, public="el worker no pudo completarla")
 
             check = self.verifier(lane, tid, cwd, result)
             if not check.ok:
-                return self._block(tid, "transient", "verificación mecánica fallida: " + "; ".join(check.reasons))
+                return self._block(tid, "transient", "verificación mecánica fallida: " + "; ".join(check.reasons),
+                                   task, public="verificación mecánica fallida")
 
             metadata = {
                 "lane": lane.name, "session_id": session_id, "worktree": cwd, "resumes": resumes,
@@ -193,7 +229,10 @@ class LaneRunner:
             }
             ok, err = self.hermes.request_review(tid, result.get("summary", "")[:1500], metadata)
             if not ok:
-                return self._block(tid, "transient", f"request-review rechazado: {err}")
-            self.notify(f"✅ {tid} en review · rama {result.get('branch')} @ {str(result.get('head_sha'))[:10]} · "
-                        f"test exit {check.test_exit}\n{result.get('summary', '')[:500]}", task)
+                return self._block(tid, "transient", f"request-review rechazado: {err}", task,
+                                   public="el kanban rechazó el paso a review")
+            # El resumen completo queda en la tarjeta (request-review); aquí solo la línea de estado.
+            self.notify("review", tid, task, status_line(
+                "en review", files_label(len(result.get("changed_files") or [])), test_label(check.test_exit),
+                money(outcome.cost_usd)))
             return "review"

@@ -17,7 +17,8 @@ from agent_lanes.config import ROOT, load_env, load_lanes, load_runner_settings,
 from agent_lanes.git_ops import GitOps
 from agent_lanes.hermes import HermesCLI
 from agent_lanes.review import ClaudeReviewer, ReviewRunner, sweep_done
-from agent_lanes.runner import LaneRunner
+from agent_lanes.notices import LinkBuilder, MessageStore
+from agent_lanes.runner import MESSAGES_DIR, LaneRunner
 from agent_lanes.service import Service, acquire_single_instance
 from agent_lanes.telegram import TelegramNotifier
 from agent_lanes.verify import verify
@@ -71,14 +72,19 @@ def main(argv: list[str] | None = None) -> int:
                               allowed_chats=allowed, generic_origins=load_telegram_settings()["generic_origins"])
     if not notify.enabled:
         log.warning("Telegram desactivado (faltan TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID en agent-lanes/.env)")
+    tg_settings = load_telegram_settings()
+    # Un solo almacén de message_id para todos los carriles: la tarea pasa del implementador a review y vuelve.
+    messages = MessageStore(MESSAGES_DIR)
+    links = LinkBuilder(env.get("KANBAN_BASE_URL") or tg_settings["kanban_base_url"])
     git = GitOps()
     impl = {n: l for n, l in selected.items() if l.kind == "implement"}
     runners: list = [LaneRunner(l, hermes=hermes_for(l.board), git=git, worker=ClaudeWorker(), verifier=verify,
-                                notify=notify, exclude=set(args.exclude)) for l in impl.values()]
+                                notify=notify, exclude=set(args.exclude), messages=messages, links=links)
+                     for l in impl.values()]
     for name, lane in selected.items():
         if lane.kind == "review":
             runners.append(ReviewRunner(lane, all_lanes, hermes_for=hermes_for, git=git, reviewer=ClaudeReviewer(),
-                                        verifier=verify, notify=notify))
+                                        verifier=verify, notify=notify, messages=messages, links=links))
     service = Service(runners, max_workers=args.max_workers or settings["max_workers"])
     interval = args.interval or settings["interval_seconds"]
     log.info("runner: carriles=%s max_workers=%s interval=%ss", list(selected), service.max_workers, interval)

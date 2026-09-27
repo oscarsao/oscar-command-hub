@@ -81,9 +81,11 @@ def _chat_thread(cfg: dict | None, any_thread: str = "0") -> tuple[str, str] | N
 
 
 def load_telegram_settings(path: Path | None = None) -> dict:
-    """Top-level `telegram:` block. generic_origins: orígenes sin marca; thread omitido = cualquier hilo ("*")."""
+    """Top-level `telegram:` block. generic_origins: orígenes sin marca; thread omitido = cualquier hilo ("*").
+    kanban_base_url: base del enlace a la tarjeta (KANBAN_BASE_URL del .env tiene prioridad); sin ella, no hay enlace."""
     cfg = _load(path).get("telegram") or {}
-    return {"generic_origins": {_chat_thread(o, "*") for o in cfg.get("generic_origins") or ()}}
+    return {"generic_origins": {_chat_thread(o, "*") for o in cfg.get("generic_origins") or ()},
+            "kanban_base_url": cfg.get("kanban_base_url") or None}
 
 
 def load_runner_settings(path: Path | None = None) -> dict:

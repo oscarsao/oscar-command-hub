@@ -45,7 +45,7 @@ def test_notifications_go_to_origin_thread_when_present():
     n = FakeNotifier()
     r = LaneRunner(LANE, hermes=h, git=FakeGit(), worker=FakeWorker([ok_outcome()]), verifier=FakeVerifier(), notify=n)
     assert r.run_once() == {"t_1": "review"}
-    assert n.targets == [("-100200", "7"), ("-100200", "7")]
+    assert n.targets == [("-100200", "7")] and len(n.edits) == 1  # one message, then edits
 
 
 def test_notifications_default_target_without_origin():
@@ -53,7 +53,7 @@ def test_notifications_default_target_without_origin():
     n = FakeNotifier()
     LaneRunner(LANE, hermes=r_h, git=FakeGit(), worker=FakeWorker([ok_outcome()]), verifier=FakeVerifier(),
                notify=n).run_once()
-    assert n.targets == [None, None]
+    assert n.targets == [None]
 
 
 def test_telegram_notifier_uses_target_over_default(monkeypatch):
@@ -515,7 +515,7 @@ def test_lane_runner_passes_lane_destination():
     n = FakeNotifier()
     LaneRunner(lane, hermes=h, git=FakeGit(), worker=FakeWorker([ok_outcome()]), verifier=FakeVerifier(),
                notify=n).run_once()
-    assert n.fallbacks == [(GESTION, "231"), (GESTION, "231")]
+    assert n.fallbacks == [(GESTION, "231")]
 
 
 def test_review_uses_destination_of_reviewed_lane():

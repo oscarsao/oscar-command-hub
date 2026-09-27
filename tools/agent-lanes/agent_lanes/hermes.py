@@ -20,6 +20,8 @@ CONTRACT = {
     "complete": ["--result", "--summary", "--metadata"],
     "reopen-review": ["--reason"],
     "reassign": ["profile"],
+    "notify-list": ["--json"],
+    "notify-unsubscribe": ["--platform", "--chat-id", "--thread-id"],
 }
 
 REVIEW_AUTHOR = "lane-review"  # author of the review lane's change requests (read back by the implementer)
@@ -87,6 +89,25 @@ class HermesCLI:
     def request_review(self, task_id: str, summary: str, metadata: dict) -> tuple[bool, str]:
         cp = self._call("request-review", task_id, "--summary", summary, "--metadata", json.dumps(metadata))
         return cp.returncode == 0, cp.stderr.strip()[:500]
+
+    def drop_telegram_subs(self, task_id: str) -> list[str]:
+        """Quita las suscripciones de Telegram que `kanban_create` puso al hilo de origen (auto_subscribe_on_create):
+        los avisos de una tarea de carril los da el runner, y el notificador de Hermes los duplicaba.
+        Devuelve los destinos quitados ("chat:thread")."""
+        cp = self._call("notify-list", task_id, "--json")
+        if cp.returncode != 0:
+            raise HermesError(f"notify-list {task_id} failed: {cp.stderr.strip()[:300]}")
+        dropped = []
+        for sub in json.loads(cp.stdout or "[]"):
+            if sub.get("task_id") != task_id or sub.get("platform") != "telegram":
+                continue
+            chat, thread = str(sub.get("chat_id") or ""), str(sub.get("thread_id") or "")
+            args = ["notify-unsubscribe", task_id, "--platform", "telegram", "--chat-id", chat]
+            if thread:  # sin --thread-id hermes busca thread_id "" (su normalización del hilo vacío)
+                args += ["--thread-id", thread]
+            if self._call(*args).returncode == 0:
+                dropped.append(f"{chat}:{thread}" if thread else chat)
+        return dropped
 
     def check_contract(self) -> list[str]:
         """Return a list of problems; empty means the CLI matches what the runner expects."""

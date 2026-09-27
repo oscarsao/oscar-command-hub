@@ -34,6 +34,10 @@ class FakeHermes:
         self.feedback: list[str] = []
         self._lock = threading.Lock()
 
+    def drop_telegram_subs(self, task_id):
+        self.calls.append(("drop_subs", task_id))
+        return []
+
     def review_feedback(self, task_id):
         return list(self.feedback)
 
@@ -103,15 +107,33 @@ class FakeVerifier:
 
 
 class FakeNotifier:
-    def __init__(self):
+    """send/edit/delete like TelegramNotifier. msgs/targets/fallbacks record NEW messages only."""
+
+    def __init__(self, edit_ok=True):
         self.msgs = []
         self.targets = []
         self.fallbacks = []
+        self.silent = []
+        self.edits = []
+        self.deleted = []
+        self.edit_ok = edit_ok
+        self._next_id = 100
 
-    def __call__(self, text, target=None, lane_target=None):
+    def send(self, text, target=None, lane_target=None, *, silent=False):
         self.msgs.append(text)
         self.targets.append(target)
         self.fallbacks.append(lane_target)
+        self.silent.append(silent)
+        self._next_id += 1
+        return {"chat_id": "-1", "thread_id": "5", "message_id": self._next_id}
+
+    def edit(self, chat_id, message_id, text):
+        self.edits.append((message_id, text))
+        return self.edit_ok
+
+    def delete(self, chat_id, message_id):
+        self.deleted.append(message_id)
+        return True
 
 
 def ok_outcome(structured=None):
@@ -138,7 +160,8 @@ def test_happy_path_goes_to_review_with_metadata():
     assert review[3]["head_sha"] == "a" * 40
     assert review[3]["session_id"]
     assert any("session_id=" in c[2] for c in h.calls if c[0] == "comment")
-    assert len(n.msgs) == 2  # start + review
+    assert len(n.msgs) == 1 and n.silent == [True]  # one silent message at start...
+    assert len(n.edits) == 1 and "🔍" in n.edits[0][1]  # ...edited in place when it goes to review
 
 
 def test_double_claim_second_runner_skips():

@@ -1,10 +1,13 @@
 """Worktree preparation: one worktree + branch lane/<task_id> per task, outside the repo."""
 from __future__ import annotations
 
+import logging
 import subprocess
 from pathlib import Path
 
 from .config import Lane
+
+log = logging.getLogger("agent_lanes")
 
 
 class GitError(RuntimeError):
@@ -58,23 +61,45 @@ class GitOps:
             self._git(lane.repo, "worktree", "add", str(path), "-b", branch, f"{lane.remote}/{branch}")
         return str(path)
 
+    def _out(self, *args: str, timeout: int = 120) -> str | None:
+        cp = self._run(list(args), capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
+        return cp.stdout if cp.returncode == 0 else None
+
+    def _remote_sha(self, lane: Lane, branch: str) -> str | None:
+        out = self._out("git", "-C", lane.repo, "ls-remote", lane.remote, f"refs/heads/{branch}")
+        parts = (out or "").split()
+        return parts[0] if parts else None
+
     def cleanup(self, lane: Lane, task_id: str) -> tuple[bool, str]:
-        """After done: `worktree remove` WITHOUT --force (a dirty worktree is kept and reported) and delete the
-        local branch only when the remote has exactly the same commit. The remote branch stays until the merge."""
+        """Solo para tareas en done. `worktree remove`; si falla por archivos sin commitear/sin seguimiento y el
+        HEAD del worktree es exactamente el commit de la rama remota (el trabajo está en el remoto), se registra en
+        el log lo que se descarta y se repite con --force. Nunca --force si el remoto no coincide o no se sabe.
+        La rama local se borra solo si el remoto tiene su mismo commit; la remota se conserva hasta el merge."""
         branch = f"lane/{task_id}"
         path = Path(lane.worktree_root) / f"lane-{task_id}"
         if path.exists():
             cp = self._run(["git", "-C", lane.repo, "worktree", "remove", str(path)], capture_output=True, text=True,
                            encoding="utf-8", errors="replace", timeout=300)
             if cp.returncode != 0:
-                return False, f"worktree no eliminado (¿cambios sin commitear?): {cp.stderr.strip()[:200]}"
+                head = (self._out("git", "-C", str(path), "rev-parse", "HEAD") or "").strip()
+                remote = self._remote_sha(lane, branch)
+                if not head or not remote or remote != head:
+                    return False, (f"worktree no eliminado: tiene cambios y la rama remota ({remote or 'ausente'}) "
+                                   f"no coincide con el HEAD local ({head[:10] or '?'}): no se fuerza. "
+                                   f"git: {cp.stderr.strip()[:200]}")
+                dirty = (self._out("git", "-C", str(path), "status", "--porcelain", "--untracked-files=all")
+                         or "").splitlines()
+                log.warning("%s: HEAD %s ya está en %s/%s; se descartan %d archivo(s) locales al limpiar: %s",
+                            task_id, head[:10], lane.remote, branch, len(dirty), dirty[:200])
+                cp = self._run(["git", "-C", lane.repo, "worktree", "remove", "--force", str(path)],
+                               capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300)
+                if cp.returncode != 0:
+                    return False, f"worktree no eliminado ni con --force: {cp.stderr.strip()[:200]}"
         if not self._branch_exists(lane.repo, branch):
             return True, "sin rama local"
-        local = self._run(["git", "-C", lane.repo, "rev-parse", f"refs/heads/{branch}"], capture_output=True,
-                          text=True, timeout=60).stdout.strip()
-        remote = self._run(["git", "-C", lane.repo, "ls-remote", lane.remote, f"refs/heads/{branch}"],
-                           capture_output=True, text=True, timeout=120).stdout.split()
-        if not remote or remote[0] != local:
+        local = (self._out("git", "-C", lane.repo, "rev-parse", f"refs/heads/{branch}", timeout=60) or "").strip()
+        remote = self._remote_sha(lane, branch)
+        if not remote or remote != local:
             return False, f"rama local {branch} conservada: no coincide con {lane.remote} (commits sin empujar)"
         # -D is safe here: the exact same commit is on the remote, which is kept until the merge.
         cp = self._run(["git", "-C", lane.repo, "branch", "-D", branch], capture_output=True, text=True, timeout=60)

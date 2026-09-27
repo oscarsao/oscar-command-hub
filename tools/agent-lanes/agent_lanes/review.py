@@ -14,6 +14,8 @@ from typing import Callable
 
 from .config import ROOT, Lane
 from .hermes import REVIEW_AUTHOR
+from .notices import (MessageStore, TaskNotices, files_label, money, questions_block, render, status_line,
+                      test_label)
 from .telegram import telegram_target
 from .worker import WorkerOutcome, render_settings, run_claude
 
@@ -83,22 +85,29 @@ class ClaudeReviewer:
 
 class ReviewRunner:
     def __init__(self, review_lane: Lane, lanes: dict[str, Lane], *, hermes_for: Callable[[str], object], git,
-                 reviewer, verifier, notify, clock: Callable[[], float] = time.monotonic):
+                 reviewer, verifier, notify, clock: Callable[[], float] = time.monotonic,
+                 messages: MessageStore | None = None, links: Callable | None = None):
         self.lane = review_lane
         self.lanes = {n: l for n, l in lanes.items() if n in review_lane.reviews}
         self.hermes_for = hermes_for
         self.git = git
         self.reviewer = reviewer
         self.verifier = verifier
-        self._notify = notify
+        self._notices = TaskNotices(notify, messages)
+        self._links = links
         self.clock = clock
 
-    def notify(self, text: str, task: dict) -> None:
+    def notify(self, state: str, task: dict, status: str, *, alert: bool = False,
+               bullets: list[str] | None = None) -> None:
+        """Edita el mensaje único de la tarea (o envía uno nuevo si `alert`). `status` es texto público."""
         try:
             # Reviewed lane's destination (brand topic), else the review lane's own, else the .env default.
             reviewed = self.lanes.get(task.get("assignee"))
             lane_target = (reviewed.telegram if reviewed else None) or self.lane.telegram
-            self._notify(f"[{self.lane.name}] {text}", telegram_target(task.get("body")), lane_target)
+            name = reviewed.name if reviewed else self.lane.name
+            links = self._links(reviewed, task["id"]) if (self._links and reviewed) else []
+            text = render(state, task["id"], task.get("title"), name, status, links, bullets)
+            self._notices.publish(task["id"], text, telegram_target(task.get("body")), lane_target, alert=alert)
         except Exception as exc:
             log.warning("aviso a Telegram falló: %s", exc)
 
@@ -112,10 +121,18 @@ class ReviewRunner:
     def run_once(self) -> dict[str, str]:
         return {tid: job() for tid, job in self.jobs()}
 
-    def _block(self, h, task: dict, kind: str, reason: str) -> str:
+    def _block(self, h, task: dict, kind: str, reason: str, *, public: str,
+               questions: list[str] | None = None) -> str:
+        """`reason` (detalle técnico) va a la tarjeta y al log; a Telegram solo `public` (+ preguntas si needs_input)."""
+        log.warning("%s bloqueada en review (%s): %s", task["id"], kind, reason)
         if not h.block(task["id"], kind, reason[:1500]):
             log.error("no se pudo bloquear %s (%s) en el kanban", task["id"], kind)
-        self.notify(f"⛔ {task['id']} bloqueada en review ({kind}): {reason[:300]}", task)
+        if kind == "needs_input":
+            self.notify("needs_input", task, status_line(public, "responde en este hilo o a Hermes"), alert=True,
+                        bullets=questions_block(questions))
+        else:
+            self.notify("blocked", task, status_line("bloqueada en review", public, "detalle en la tarjeta"),
+                        alert=True)
         return f"blocked:{kind}"
 
     def process(self, task: dict, lane: Lane, h) -> str:
@@ -125,11 +142,13 @@ class ReviewRunner:
             task = {**show.get("task", {}), **task}
             meta = implementation_metadata(show)
             if not meta:
-                return self._block(h, task, "transient", "review sin metadata de implementación (branch/head_sha)")
+                return self._block(h, task, "transient", "review sin metadata de implementación (branch/head_sha)",
+                                   public="falta la metadata de implementación")
             cwd = self.git.prepare_review_worktree(lane, tid)
             check = self.verifier(lane, tid, cwd, {"branch": meta["branch"], "head_sha": meta["head_sha"]})
             if not check.ok:
-                return self._block(h, task, "transient", "re-verificación mecánica fallida: " + "; ".join(check.reasons))
+                return self._block(h, task, "transient", "re-verificación mecánica fallida: " + "; ".join(check.reasons),
+                                   public="re-verificación mecánica fallida")
             deadline = self.clock() + self.lane.max_runtime_seconds
             session_id = str(uuid.uuid4())
             outcome = self.reviewer.run(self.lane, lane, task, meta, cwd, session_id, max(60.0, deadline - self.clock()))
@@ -138,9 +157,11 @@ class ReviewRunner:
                 resumes += 1
                 outcome = self.reviewer.resume(self.lane, lane, task, cwd, session_id, max(60.0, deadline - self.clock()))
         except Exception as exc:
-            return self._block(h, task, "transient", f"error del carril review: {exc}")
+            return self._block(h, task, "transient", f"error del carril review: {exc}",
+                               public="error del carril review")
         if not outcome.ok:
-            return self._block(h, task, "transient", f"el revisor no terminó: {outcome.raw_error} (session_id={session_id})")
+            return self._block(h, task, "transient", f"el revisor no terminó: {outcome.raw_error} (session_id={session_id})",
+                               public="el revisor no terminó (tiempo o presupuesto agotado)")
 
         verdict = outcome.structured
         if verdict["status"] == "approve":
@@ -149,11 +170,17 @@ class ReviewRunner:
                                            "cost_usd": outcome.cost_usd}}
             ok, err = h.complete(tid, f"Aprobada por revisión: {verdict.get('summary', '')}"[:1500], metadata)
             if not ok:
-                return self._block(h, task, "transient", f"complete rechazado: {err}")
+                return self._block(h, task, "transient", f"complete rechazado: {err}",
+                                   public="el kanban rechazó el cierre")
             cleaned, msg = self.git.cleanup(lane, tid)
-            self.notify(f"✔️ {tid} aprobada → done · rama remota {meta['branch']} conservada hasta el merge"
-                        f"{'' if cleaned else ' · limpieza local pendiente: ' + msg}\n{verdict.get('summary', '')[:400]}",
-                        task)
+            if not cleaned:  # detalle técnico solo al log y a la tarjeta
+                log.warning("%s: limpieza local pendiente: %s", tid, msg)
+                h.comment(tid, f"Limpieza local pendiente: {msg}"[:1500])
+            cost = sum(float(c or 0) for c in (meta.get("cost_usd"), outcome.cost_usd))
+            self.notify("done", task, status_line(
+                "review aprobada", files_label(len(meta.get("changed_files") or [])),
+                test_label(check.test_exit), money(cost), "lista para merge",
+                None if cleaned else "limpieza local pendiente"), alert=True)
             return "done"
 
         changes = verdict.get("required_changes") or [verdict.get("summary", "")]
@@ -167,15 +194,20 @@ class ReviewRunner:
         rnd = rounds_done + 1
         if rounds_done >= self.lane.max_review_rounds:
             return self._block(h, task, "needs_input",
-                               f"{rnd}ª petición de cambios: decide Oscar.\n" + "\n".join(f"- {c}" for c in changes))
+                               f"{rnd}ª petición de cambios: decide Oscar.\n" + "\n".join(f"- {c}" for c in changes),
+                               public=f"{rnd}ª petición de cambios: decides tú", questions=changes)
         if not pending:
             body = f"{CHANGES_PREFIX} (ronda {rnd}) pedidos por revisión:\n" + "\n".join(f"- {c}" for c in changes)
             if not h.comment(tid, body[:3000], author=REVIEW_AUTHOR):
-                return self._block(h, task, "transient", "no se pudo publicar el comentario de cambios; no se reabre")
+                return self._block(h, task, "transient", "no se pudo publicar el comentario de cambios; no se reabre",
+                                   public="no se pudo publicar el comentario de cambios")
         if not h.reopen_review(tid):
-            return self._block(h, task, "transient", "reopen-review rechazado (el comentario de cambios ya está publicado)")
-        self.notify(f"↩️ {tid} vuelve a {lane.name} con cambios (ronda {rnd}):\n"
-                    + "\n".join(f"- {c}" for c in changes)[:600], task)
+            return self._block(h, task, "transient", "reopen-review rechazado (el comentario de cambios ya está publicado)",
+                               public="el kanban rechazó la reapertura")
+        # Los cambios pedidos quedan como comentario en la tarjeta; aquí solo el recuento.
+        self.notify("changes", task, status_line(
+            f"cambios pedidos (ronda {rnd})", f"{len(changes)} cambio" + ("" if len(changes) == 1 else "s"),
+            "vuelve al carril"))
         return "changes"
 
 
