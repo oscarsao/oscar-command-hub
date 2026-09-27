@@ -38,7 +38,19 @@ def _tokens(segment: str) -> list[str]:
     return [_basename(t.strip("\"'")) for t in raw]
 
 
-def _check_git_push(tokens: list[str]) -> str | None:
+# Reviewer (AGENT_LANES_ROLE=revisor): only these read-only git commands, with no shell metacharacters, so a prompt
+# injected through the task body cannot chain writes (`git status && ...`, `git diff > f`, `$(...)`).
+REVIEWER_BASH = re.compile(r'^git(\s+--no-pager|\s+-C\s+("[^"]*"|\S+))*\s+(diff|log|show|status)(\s[^;&|<>`$\n\r]*)?$')
+
+
+def _check_reviewer_bash(command: str) -> str | None:
+    cmd = command.strip()
+    if not REVIEWER_BASH.match(cmd) or "--output" in cmd or "--ext-diff" in cmd:
+        return "el revisor es de solo lectura: solo `git diff|log|show|status` sin operadores de shell"
+    return None
+
+
+def _check_git_push(tokens: list[str], task: str | None = None) -> str | None:
     if "git" not in tokens or "push" not in tokens:
         return None
     args = tokens[tokens.index("push") + 1:]
@@ -57,17 +69,19 @@ def _check_git_push(tokens: list[str]) -> str | None:
         dst = dst.removeprefix("refs/heads/")
         if dst in ("master", "main") or not dst.startswith("lane/"):
             return f"push a '{dst}' prohibido: los workers solo empujan ramas lane/<task_id>"
+        if task and dst != f"lane/{task.lower()}":
+            return f"push a '{dst}' prohibido: esta tarea solo puede empujar lane/{task}"
     return None
 
 
-def check_bash(command: str, env_db_url: str | None) -> str | None:
+def check_bash(command: str, env_db_url: str | None, task: str | None = None) -> str | None:
     for segment in SEGMENT_SPLIT.split(command):
         seg = segment.strip()
         if not seg:
             continue
         tokens = _tokens(seg)
         low = [t.lower() for t in tokens]
-        reason = _check_git_push(low)
+        reason = _check_git_push(low, task)
         if reason:
             return reason
         if "gh" in low and "pr" in low and "merge" in low:
@@ -94,8 +108,13 @@ def check(payload: dict, env: dict | None = None) -> str | None:
     ti = payload.get("tool_input") or {}
     if tool.startswith("mcp__"):
         return f"herramienta MCP {tool} prohibida para workers (los workers corren sin MCP)"
+    reviewer = env.get("AGENT_LANES_ROLE") == "revisor"
     if tool == "Bash":
-        return check_bash(ti.get("command", ""), env.get("DATABASE_URL"))
+        if reviewer:
+            return _check_reviewer_bash(ti.get("command", ""))
+        return check_bash(ti.get("command", ""), env.get("DATABASE_URL"), env.get("AGENT_LANES_TASK"))
+    if tool in WRITE_TOOLS and reviewer:
+        return f"el revisor es de solo lectura: {tool} prohibido"
     if tool in WRITE_TOOLS:
         path = ti.get("file_path") or ti.get("notebook_path") or ""
         if WORKFLOWS.search(path):

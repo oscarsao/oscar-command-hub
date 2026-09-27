@@ -17,11 +17,15 @@ def telegram_target(body: str | None) -> tuple[str, str] | None:
 
 
 class TelegramNotifier:
-    def __init__(self, token: str | None, chat_id: str | None, thread_id: str | None = None, timeout: int = 15):
+    def __init__(self, token: str | None, chat_id: str | None, thread_id: str | None = None, timeout: int = 15,
+                 allowed_chats: set[str] | None = None):
         self._token = token
         self.chat_id = chat_id
         self.thread_id = thread_id
         self.timeout = timeout
+        # Origen-Telegram comes from the task body: only chats listed here (plus the default) may be targeted,
+        # so a task text cannot redirect review summaries to an arbitrary chat where the bot is present.
+        self.allowed_chats = {str(c) for c in (allowed_chats or ())} | ({str(chat_id)} if chat_id else set())
 
     @property
     def enabled(self) -> bool:
@@ -31,6 +35,8 @@ class TelegramNotifier:
         """Send to `target` (chat, thread) when the task has an Origen-Telegram line, else to the .env default."""
         if not self._token:
             return
+        if target and target[0] not in self.allowed_chats:
+            target = None
         chat_id, thread_id = target if target else (self.chat_id, self.thread_id)
         if not chat_id:
             return

@@ -53,7 +53,8 @@ lanes:
     base: master
     # AGENTS.md de MigraTeam: ownership por claims (.coordination/claims/, check_claims.py --diff falla si tocas
     # ficheros de otro dueño) y alembic/versions/ tiene un único propietario (integradora) => vetado aquí.
-    test_cmd: py -3.12 "{AGENT_LANES_DIR}/agent_lanes/checks.py" {BASE} && py -3.12 scripts/check_claims.py --diff {BASE}
+    # check_claims.py se ejecuta en su versión de {BASE}, nunca la copia del worker (sería ejecutar su código).
+    test_cmd: py -3.12 "{AGENT_LANES_DIR}/agent_lanes/checks.py" {BASE} --run-from-base scripts/check_claims.py --diff {BASE}
     forbidden_paths:
       - .github/workflows/
       - backend/alembic/versions/

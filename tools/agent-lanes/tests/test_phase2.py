@@ -76,7 +76,7 @@ def test_telegram_notifier_uses_target_over_default(monkeypatch):
         return Resp()
 
     monkeypatch.setattr(telegram.urllib.request, "urlopen", fake_urlopen)
-    n = telegram.TelegramNotifier("tok", "-1", "5")
+    n = telegram.TelegramNotifier("tok", "-1", "5", allowed_chats={"-100200"})
     n("a")
     n("b", ("-100200", "7"))
     n("c", ("-100200", "0"))
@@ -120,7 +120,8 @@ class ReviewHermes:
 
     def show(self, tid):
         runs = [{"outcome": "review_requested", "metadata": self.meta}, {"outcome": None, "metadata": {}}]
-        return {"task": next(t for t in self.tasks if t["id"] == tid), "comments": self.comments, "runs": runs}
+        return {"task": next(t for t in self.tasks if t["id"] == tid), "comments": self.comments, "runs": runs,
+                "events": getattr(self, "show_events", [])}
 
     def complete(self, tid, result, metadata):
         self.calls.append(("complete", tid, result, metadata))
@@ -128,6 +129,7 @@ class ReviewHermes:
 
     def comment(self, tid, text, author=None):
         self.calls.append(("comment", tid, text, author))
+        return True
 
     def reopen_review(self, tid):
         self.calls.append(("reopen", tid))
@@ -204,8 +206,8 @@ def test_review_request_changes_comments_and_reopens():
 
 
 def test_review_rounds_exhausted_escalates_to_needs_input():
-    prior = [{"author": REVIEW_AUTHOR, "body": "CAMBIOS (ronda 1): a"}, {"author": REVIEW_AUTHOR, "body": "CAMBIOS (ronda 2): b"}]
-    r, h, g, n, _ = make_review([verdict("request_changes", ["c"])], comments=prior)
+    r, h, g, n, _ = make_review([verdict("request_changes", ["c"])])
+    h.show_events = [{"kind": "review_reopened", "created_at": 1}, {"kind": "review_reopened", "created_at": 2}]
     assert r.run_once() == {"t_1": "blocked:needs_input"}
     assert "reopen" not in h.kinds()
 
@@ -345,3 +347,103 @@ def test_sweep_cleans_only_done_tasks_with_worktree(tmp_path):
     g = FakeReviewGit()
     assert sweep_done(lane, h, g) == ["t_done"]
     assert g.cleaned == ["t_done"]
+
+
+# --- fixes from code review of 87a83b4 -----------------------------------------------------------
+
+def test_forbidden_paths_short_circuit_before_test_cmd_and_ignore_renames():
+    lane = Lane(**{**LANE.__dict__, "forbidden_paths": ("backend/alembic/versions/",)})
+    g = GitRun("backend/alembic/versions/0001_x.py\n")
+    r = verify(lane, "t_1", "C:/wt", GOOD, runner=g)
+    assert not r.ok and g.shell_cmds == []  # worker-controlled test_cmd never runs on a vetoed diff
+
+
+def test_forbidden_diff_uses_no_renames():
+    seen = []
+
+    class Rec(GitRun):
+        def __call__(self, args, **kw):
+            if not isinstance(args, str) and args[3] == "diff":
+                seen.append(args)
+            return super().__call__(args, **kw)
+
+    lane = Lane(**{**LANE.__dict__, "forbidden_paths": ("x/",)})
+    verify(lane, "t_1", "C:/wt", GOOD, runner=Rec())
+    assert "--no-renames" in seen[0]
+
+
+class EventHermes(ReviewHermes):
+    def __init__(self, events, comments, comment_ok=True, reopen_ok=True):
+        super().__init__([{"id": "t_1", "title": "T", "body": "B", "assignee": "claude-oscarhq", "status": "review"}],
+                         comments=comments)
+        self.events = events
+        self.comment_ok = comment_ok
+        self.reopen_ok = reopen_ok
+
+    def show(self, tid):
+        d = super().show(tid)
+        d["events"] = self.events
+        return d
+
+    def comment(self, tid, text, author=None):
+        super().comment(tid, text, author)
+        return self.comment_ok
+
+    def reopen_review(self, tid):
+        self.calls.append(("reopen", tid))
+        return self.reopen_ok
+
+
+def review_with(h, outcomes):
+    return ReviewRunner(REVIEW, {"claude-oscarhq": LANE}, hermes_for=lambda b: h, git=FakeReviewGit(),
+                        reviewer=FakeReviewer(outcomes), verifier=FakeVerifier(), notify=FakeNotifier())
+
+
+def test_rounds_counted_from_reopen_events_not_comments():
+    ev = [{"kind": "review_requested", "created_at": 10}, {"kind": "review_reopened", "created_at": 20},
+          {"kind": "review_requested", "created_at": 30}, {"kind": "review_reopened", "created_at": 40},
+          {"kind": "review_requested", "created_at": 50}]
+    h = EventHermes(ev, comments=[])
+    assert review_with(h, [verdict("request_changes", ["x"])]).run_once() == {"t_1": "blocked:needs_input"}
+
+
+def test_pending_round_comment_is_not_reposted_when_only_reopen_failed_before():
+    ev = [{"kind": "review_requested", "created_at": 10}]
+    pending = [{"author": REVIEW_AUTHOR, "body": "CAMBIOS (ronda 1) pedidos por revisión:\n- x", "created_at": 15}]
+    h = EventHermes(ev, comments=pending)
+    assert review_with(h, [verdict("request_changes", ["x"])]).run_once() == {"t_1": "changes"}
+    assert "comment" not in h.kinds() and ("reopen", "t_1") in h.calls
+
+
+def test_comment_failure_blocks_without_reopen():
+    h = EventHermes([{"kind": "review_requested", "created_at": 10}], comments=[], comment_ok=False)
+    assert review_with(h, [verdict("request_changes", ["x"])]).run_once() == {"t_1": "blocked:transient"}
+    assert "reopen" not in h.kinds()
+
+
+def test_reopen_failure_blocks_transient():
+    h = EventHermes([{"kind": "review_requested", "created_at": 10}], comments=[], reopen_ok=False)
+    assert review_with(h, [verdict("request_changes", ["x"])]).run_once() == {"t_1": "blocked:transient"}
+
+
+def test_telegram_origin_outside_allowlist_falls_back_to_default(monkeypatch):
+    from agent_lanes import telegram
+
+    sent = []
+
+    class Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self):
+            return b'{"ok": true}'
+
+    monkeypatch.setattr(telegram.urllib.request, "urlopen", lambda req, timeout: (sent.append(json.loads(req.data)), Resp())[1])
+    n = telegram.TelegramNotifier("tok", "-1", "5", allowed_chats={"-100200"})
+    n("a", ("-100200", "7"))
+    n("b", ("-999", "3"))  # not allowed -> default destination
+    assert sent[0]["chat_id"] == "-100200"
+    assert (sent[1]["chat_id"], sent[1]["message_thread_id"]) == ("-1", 5)

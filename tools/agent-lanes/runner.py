@@ -66,7 +66,9 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     env = load_env()
-    notify = TelegramNotifier(env.get("TELEGRAM_BOT_TOKEN"), env.get("TELEGRAM_CHAT_ID"), env.get("TELEGRAM_THREAD_ID"))
+    allowed = {c.strip() for c in env.get("TELEGRAM_ALLOWED_CHATS", "").split(",") if c.strip()}
+    notify = TelegramNotifier(env.get("TELEGRAM_BOT_TOKEN"), env.get("TELEGRAM_CHAT_ID"), env.get("TELEGRAM_THREAD_ID"),
+                              allowed_chats=allowed)
     if not notify.enabled:
         log.warning("Telegram desactivado (faltan TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID en agent-lanes/.env)")
     git = GitOps()

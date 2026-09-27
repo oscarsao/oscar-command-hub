@@ -56,8 +56,8 @@ class HermesCLI:
         args = ["heartbeat", task_id] + (["--note", note] if note else [])
         return self._call(*args).returncode == 0
 
-    def comment(self, task_id: str, text: str, author: str | None = None) -> None:
-        self._call("comment", task_id, "--author", author or self.author, text)
+    def comment(self, task_id: str, text: str, author: str | None = None) -> bool:
+        return self._call("comment", task_id, "--author", author or self.author, text).returncode == 0
 
     def show(self, task_id: str) -> dict:
         cp = self._call("show", task_id, "--json")

@@ -153,16 +153,24 @@ class ReviewRunner:
             return "done"
 
         changes = verdict.get("required_changes") or [verdict.get("summary", "")]
-        prior = [c for c in (show.get("comments") or [])
-                 if c.get("author") == REVIEW_AUTHOR and c.get("body", "").startswith(CHANGES_PREFIX)]
-        if len(prior) >= self.lane.max_review_rounds:
+        # Rounds = review_reopened events (what the implementer actually got back), not comments: a comment whose
+        # reopen failed must not count, nor be posted twice.
+        events = show.get("events") or []
+        rounds_done = sum(1 for e in events if e.get("kind") == "review_reopened")
+        last_request = max((e.get("created_at") or 0 for e in events if e.get("kind") == "review_requested"), default=0)
+        pending = any(c.get("author") == REVIEW_AUTHOR and c.get("body", "").startswith(CHANGES_PREFIX)
+                      and (c.get("created_at") or 0) >= last_request for c in (show.get("comments") or []))
+        rnd = rounds_done + 1
+        if rounds_done >= self.lane.max_review_rounds:
             return self._block(h, task, "needs_input",
-                               f"{len(prior) + 1}ª petición de cambios: decide Oscar.\n" + "\n".join(f"- {c}" for c in changes))
-        body = f"{CHANGES_PREFIX} (ronda {len(prior) + 1}) pedidos por revisión:\n" + "\n".join(f"- {c}" for c in changes)
-        h.comment(tid, body[:3000], author=REVIEW_AUTHOR)
+                               f"{rnd}ª petición de cambios: decide Oscar.\n" + "\n".join(f"- {c}" for c in changes))
+        if not pending:
+            body = f"{CHANGES_PREFIX} (ronda {rnd}) pedidos por revisión:\n" + "\n".join(f"- {c}" for c in changes)
+            if not h.comment(tid, body[:3000], author=REVIEW_AUTHOR):
+                return self._block(h, task, "transient", "no se pudo publicar el comentario de cambios; no se reabre")
         if not h.reopen_review(tid):
-            return self._block(h, task, "transient", "reopen-review rechazado")
-        self.notify(f"↩️ {tid} vuelve a {lane.name} con cambios (ronda {len(prior) + 1}):\n"
+            return self._block(h, task, "transient", "reopen-review rechazado (el comentario de cambios ya está publicado)")
+        self.notify(f"↩️ {tid} vuelve a {lane.name} con cambios (ronda {rnd}):\n"
                     + "\n".join(f"- {c}" for c in changes)[:600], task)
         return "changes"
 

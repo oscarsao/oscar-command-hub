@@ -50,13 +50,16 @@ def verify(lane: Lane, task_id: str, cwd: str, result: dict, runner=subprocess.r
             reasons.append(f"HEAD local '{head[:12]}' != remoto '{remote_sha[:12]}' (cambios sin empujar)")
 
     if remote_sha and lane.forbidden_paths:
-        changed = _git(cwd, "diff", "--name-only", f"{lane.base_ref}...{remote_sha}", runner=runner).stdout.split()
+        # --no-renames: a pure `git mv` out of a vetoed dir would otherwise list only the new path.
+        changed = _git(cwd, "diff", "--no-renames", "--name-only", f"{lane.base_ref}...{remote_sha}",
+                       runner=runner).stdout.split()
         hits = [f for f in changed if any(f.replace("\\", "/").startswith(p) for p in lane.forbidden_paths)]
         if hits:
             reasons.append(f"toca rutas vetadas en este carril: {', '.join(hits[:10])}")
 
     test_exit = None
-    if not lane.test_cmd:
+    if reasons or not lane.test_cmd:
+        # Never run test_cmd (it executes code from the worktree) on a branch that already failed the checks.
         return VerifyResult(ok=not reasons, reasons=reasons, test_exit=None, remote_sha=remote_sha)
     try:
         t = runner(render_test_cmd(lane), shell=True, cwd=cwd, capture_output=True, text=True,
