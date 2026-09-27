@@ -1,6 +1,13 @@
 # Carriles de agent-lanes. Contrato: oscar-command-hub/decisions/2026-09-27-arquitectura-carriles.md §5
 # assignee del kanban de Hermes = nombre del carril. El dispatcher de Hermes ignora estos assignees
 # (no son perfiles), así que solo los consume este runner.
+# test_cmd: SOLO desde aquí, nunca del cuerpo de la tarea. Placeholders: {AGENT_LANES_DIR}, {BASE} (= remote/base).
+
+runner:
+  # Tope global de procesos claude vivos a la vez, sumando todos los carriles (review incluido).
+  # 1 por defecto: hubo un OOM el 27-09 con varias sesiones abiertas.
+  max_workers: 1
+  interval_seconds: 60
 
 defaults:
   max_resumes: 2
@@ -10,6 +17,12 @@ defaults:
   max_runtime_seconds: 7200
   worktree_root: C:/Users/oscar/dev/_lanes
   remote: origin
+  tool: claude
+  model: sonnet
+  effort: medium
+  max_budget_usd: 3.0
+  max_parallel: 1
+  role: roles/implementador.md
   # En -p, acceptEdits solo aprueba ediciones; el resto de Bash se deniega salvo lo listado aquí.
   # Los pushes siguen pasando por contract/guard.py (solo lane/*).
   allowed_tools:
@@ -23,18 +36,48 @@ defaults:
     - "Bash(git commit:*)"
     - "Bash(git push:*)"
     - "Bash(py -3.12 -m pytest:*)"
+  forbidden_paths:
+    - .github/workflows/
 
 lanes:
   claude-oscarhq:
     board: oscarhq
     repo: C:/Users/oscar/dev/oscar-hq
     base: master
-    tool: claude
+    # pytest de oscar-hq no es usable como gate hoy (test_api_health falla en master por entorno; tarjeta aparte).
+    test_cmd: py -3.12 "{AGENT_LANES_DIR}/agent_lanes/checks.py" {BASE}
+
+  claude-migrateam:
+    board: migrateam
+    repo: C:/Users/oscar/dev/migrateam
+    base: master
+    # AGENTS.md de MigraTeam: ownership por claims (.coordination/claims/, check_claims.py --diff falla si tocas
+    # ficheros de otro dueño) y alembic/versions/ tiene un único propietario (integradora) => vetado aquí.
+    test_cmd: py -3.12 "{AGENT_LANES_DIR}/agent_lanes/checks.py" {BASE} && py -3.12 scripts/check_claims.py --diff {BASE}
+    forbidden_paths:
+      - .github/workflows/
+      - backend/alembic/versions/
+
+  claude-scraper:
+    board: oscarhq
+    repo: C:/Users/oscar/dev/Scraper
+    # Rama de trabajo activa (no main), confirmada con git el 27-09: origin/cambio/multiverse-benchmark-harness.
+    base: cambio/multiverse-benchmark-harness
+    test_cmd: py -3.12 "{AGENT_LANES_DIR}/agent_lanes/checks.py" {BASE}
+
+  claude-nextjobs:
+    board: default
+    repo: C:/Users/oscar/nextjobs/autoapply_v5
+    base: master
+    # Sin suite de tests versionada: gate = diff --check + compilación de los .py cambiados.
+    test_cmd: py -3.12 "{AGENT_LANES_DIR}/agent_lanes/checks.py" {BASE}
+
+  review:
+    kind: review
+    reviews: [claude-oscarhq, claude-migrateam, claude-scraper, claude-nextjobs]
+    role: roles/revisor.md
     model: sonnet
     effort: medium
-    max_budget_usd: 3.0
-    max_parallel: 1
-    role: roles/implementador.md
-    # Gate mecánico que ejecuta el propio runner en el worktree. Solo viene de aquí, nunca del cuerpo
-    # de la tarea. (pytest de oscar-hq no es usable como gate hoy: test_api_health falla en master por entorno.)
-    test_cmd: git diff --check origin/master...HEAD
+    max_budget_usd: 1.5
+    max_runtime_seconds: 1800
+    max_review_rounds: 2

@@ -26,11 +26,11 @@ class WorkerOutcome:
     raw_error: str | None
 
 
-def render_settings() -> Path:
-    """worker-settings.json with the absolute agent-lanes path substituted (hook command needs it)."""
+def render_settings(template: Path = SETTINGS_TEMPLATE) -> Path:
+    """Settings template with the absolute agent-lanes path substituted (hook command needs it)."""
     STATE_DIR.mkdir(exist_ok=True)
-    text = SETTINGS_TEMPLATE.read_text(encoding="utf-8").replace("{AGENT_LANES_DIR}", ROOT.as_posix())
-    out = STATE_DIR / "worker-settings.rendered.json"
+    text = template.read_text(encoding="utf-8").replace("{AGENT_LANES_DIR}", ROOT.as_posix())
+    out = STATE_DIR / f"{template.stem}.rendered.json"
     out.write_text(text, encoding="utf-8")
     return out
 
@@ -41,7 +41,17 @@ def build_prompt(task: dict, lane: Lane) -> str:
         f"Estás en un worktree dedicado en la rama lane/{task['id']} creada desde {lane.remote}/{lane.base}.\n"
         f"Al terminar: commit, `git push -u {lane.remote} lane/{task['id']}` y devuelve el JSON del schema.\n\n"
         f"# {task.get('title', '')}\n\n{task.get('body') or ''}\n"
+        + _feedback_section(task.get("review_feedback"))
     )
+
+
+def _feedback_section(feedback: list[str] | None) -> str:
+    if not feedback:
+        return ""
+    items = "\n\n".join(feedback[-2:])
+    return ("\n## Cambios pedidos por la revisión (obligatorio atenderlos)\n"
+            "Esta tarea vuelve de review. Tu rama ya tiene el trabajo anterior: parte de ahí, aplica SOLO estos "
+            f"cambios, commit y push de la misma rama.\n\n{items}\n")
 
 
 def base_args(lane: Lane, session_flag: list[str]) -> list[str]:
@@ -83,22 +93,27 @@ def parse_result(stdout: str) -> WorkerOutcome:
                          None if ok else f"subtype={subtype} is_error={data.get('is_error')}")
 
 
+def run_claude(runner, args: list[str], prompt: str, cwd: str, timeout: float, env_extra: dict) -> WorkerOutcome:
+    # AGENT_LANES_TASK switches on the "MODO WORKER" section of ~/.claude/CLAUDE.md.
+    env = {**os.environ, **env_extra}
+    try:
+        cp = runner(args, input=prompt, cwd=cwd, env=env, capture_output=True, text=True,
+                    encoding="utf-8", errors="replace", timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return WorkerOutcome(False, "runner_timeout", None, None, f"claude superó {int(timeout)}s")
+    out = parse_result(cp.stdout)
+    if not out.ok and out.raw_error and cp.returncode != 0 and not cp.stdout.strip():
+        out.raw_error += f" rc={cp.returncode} stderr={cp.stderr.strip()[-300:]}"
+    return out
+
+
 class ClaudeWorker:
     def __init__(self, runner=subprocess.run):
         self._run = runner
 
     def _exec(self, args: list[str], prompt: str, cwd: str, timeout: float, lane: Lane, task_id: str) -> WorkerOutcome:
-        # AGENT_LANES_TASK switches on the "MODO WORKER" section of ~/.claude/CLAUDE.md.
-        env = {**os.environ, "AGENT_LANES_TASK": task_id, "AGENT_LANES_LANE": lane.name}
-        try:
-            cp = self._run(args, input=prompt, cwd=cwd, env=env, capture_output=True, text=True,
-                           encoding="utf-8", errors="replace", timeout=timeout)
-        except subprocess.TimeoutExpired:
-            return WorkerOutcome(False, "runner_timeout", None, None, f"claude superó {int(timeout)}s")
-        out = parse_result(cp.stdout)
-        if not out.ok and out.raw_error and cp.returncode != 0 and not cp.stdout.strip():
-            out.raw_error += f" rc={cp.returncode} stderr={cp.stderr.strip()[-300:]}"
-        return out
+        return run_claude(self._run, args, prompt, cwd, timeout,
+                          {"AGENT_LANES_TASK": task_id, "AGENT_LANES_LANE": lane.name})
 
     def run(self, lane: Lane, task: dict, cwd: str, session_id: str, timeout: float) -> WorkerOutcome:
         args = base_args(lane, ["--session-id", session_id, "--name", f"task-{task['id']}"])

@@ -17,7 +17,12 @@ CONTRACT = {
     "block": ["--kind", "needs_input", "transient"],
     "request-review": ["--summary", "--metadata"],
     "show": ["--json"],
+    "complete": ["--result", "--summary", "--metadata"],
+    "reopen-review": ["--reason"],
+    "reassign": ["profile"],
 }
+
+REVIEW_AUTHOR = "lane-review"  # author of the review lane's change requests (read back by the implementer)
 
 
 class HermesError(RuntimeError):
@@ -35,8 +40,8 @@ class HermesCLI:
         return self._run([self.exe, "kanban", "--board", self.board, *args],
                          capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
 
-    def list_status(self, assignee: str, status: str) -> list[dict]:
-        cp = self._call("list", "--assignee", assignee, "--status", status, "--json", "--sort", "priority")
+    def list_status(self, assignee: str, status: str, sort: str = "priority") -> list[dict]:
+        cp = self._call("list", "--assignee", assignee, "--status", status, "--json", "--sort", sort)
         if cp.returncode != 0:
             raise HermesError(f"list failed: {cp.stderr.strip()[:300]}")
         return json.loads(cp.stdout or "[]")
@@ -51,8 +56,29 @@ class HermesCLI:
         args = ["heartbeat", task_id] + (["--note", note] if note else [])
         return self._call(*args).returncode == 0
 
-    def comment(self, task_id: str, text: str) -> None:
-        self._call("comment", task_id, "--author", self.author, text)
+    def comment(self, task_id: str, text: str, author: str | None = None) -> None:
+        self._call("comment", task_id, "--author", author or self.author, text)
+
+    def show(self, task_id: str) -> dict:
+        cp = self._call("show", task_id, "--json")
+        if cp.returncode != 0:
+            raise HermesError(f"show {task_id} failed: {cp.stderr.strip()[:300]}")
+        return json.loads(cp.stdout)
+
+    def review_feedback(self, task_id: str) -> list[str]:
+        """Change requests left by the review lane, oldest first (empty for a first run)."""
+        comments = self.show(task_id).get("comments") or []
+        return [c["body"] for c in comments if c.get("author") == REVIEW_AUTHOR]
+
+    def complete(self, task_id: str, result: str, metadata: dict) -> tuple[bool, str]:
+        cp = self._call("complete", task_id, "--result", result, "--metadata", json.dumps(metadata))
+        return cp.returncode == 0, cp.stderr.strip()[:500]
+
+    def reopen_review(self, task_id: str) -> bool:
+        return self._call("reopen-review", task_id).returncode == 0
+
+    def reassign(self, task_id: str, profile: str, reason: str) -> bool:
+        return self._call("reassign", task_id, profile, "--reason", reason).returncode == 0
 
     def block(self, task_id: str, kind: str, reason: str) -> bool:
         return self._call("block", task_id, "--kind", kind, reason).returncode == 0

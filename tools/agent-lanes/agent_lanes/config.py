@@ -13,23 +13,28 @@ CLAIM_TTL_MARGIN_SECONDS = 300
 @dataclass(frozen=True)
 class Lane:
     name: str
-    board: str
-    repo: str
-    base: str
-    tool: str
-    model: str
-    effort: str
-    max_budget_usd: float
-    max_parallel: int
-    role: str
-    test_cmd: str
-    max_runtime_seconds: int
-    worktree_root: str
+    board: str = ""
+    repo: str = ""
+    base: str = ""
+    tool: str = "claude"
+    model: str = "sonnet"
+    effort: str = "medium"
+    max_budget_usd: float = 3.0
+    max_parallel: int = 1
+    role: str = "roles/implementador.md"
+    test_cmd: str = ""
+    max_runtime_seconds: int = 7200
+    worktree_root: str = ""
     max_resumes: int = 2
     heartbeat_seconds: float = 240
     remote: str = "origin"
     # -p mode denies any Bash not pre-approved; acceptEdits only covers file edits.
     allowed_tools: tuple[str, ...] = ()
+    # Paths a worker may never change in this repo (checked mechanically on the pushed diff).
+    forbidden_paths: tuple[str, ...] = ()
+    kind: str = "implement"           # implement | review
+    reviews: tuple[str, ...] = ()     # review lane: implementer lanes it reviews
+    max_review_rounds: int = 2        # review lane: change requests before escalating to Oscar
 
     @property
     def claim_ttl_seconds(self) -> int:
@@ -41,16 +46,33 @@ class Lane:
     def role_path(self) -> Path:
         return ROOT / self.role
 
+    @property
+    def base_ref(self) -> str:
+        return f"{self.remote}/{self.base}"
+
+
+TUPLE_FIELDS = ("allowed_tools", "forbidden_paths", "reviews")
+
+
+def _load(path: Path | None) -> dict:
+    return yaml.safe_load((path or ROOT / "lanes.yaml").read_text(encoding="utf-8"))
+
 
 def load_lanes(path: Path | None = None) -> dict[str, Lane]:
-    data = yaml.safe_load((path or ROOT / "lanes.yaml").read_text(encoding="utf-8"))
+    data = _load(path)
     defaults = data.get("defaults", {})
     lanes = {}
     for name, cfg in data["lanes"].items():
         merged = {**defaults, **cfg}
-        merged["allowed_tools"] = tuple(merged.get("allowed_tools") or ())
+        for f in TUPLE_FIELDS:
+            merged[f] = tuple(merged.get(f) or ())
         lanes[name] = Lane(name=name, **merged)
     return lanes
+
+
+def load_runner_settings(path: Path | None = None) -> dict:
+    """Top-level `runner:` block (global worker cap, poll interval)."""
+    return {"max_workers": 1, "interval_seconds": 60, **(_load(path).get("runner") or {})}
 
 
 def load_env(path: Path | None = None) -> dict[str, str]:

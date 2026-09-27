@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Callable
 
 from .config import ROOT, Lane
+from .telegram import telegram_target
 
 log = logging.getLogger("agent_lanes")
 
@@ -77,10 +78,13 @@ class LaneRunner:
         self.state_dir = Path(state_dir)
         self.pid_alive = pid_alive
         self.exclude = set(exclude or ())
+        self._active: dict[str, dict] = {}  # tid -> task being processed (for notice routing)
 
-    def notify(self, text: str) -> None:
+    def notify(self, text: str, task: dict | None = None) -> None:
+        # Origen-Telegram line in the body routes the notice back to that topic (contract with W3b).
+        target = telegram_target((task or {}).get("body"))
         try:
-            self._notify(f"[{self.lane.name}] {text}")
+            self._notify(f"[{self.lane.name}] {text}", target)
         except Exception as exc:
             log.warning("aviso a Telegram falló: %s", exc)
 
@@ -112,17 +116,18 @@ class LaneRunner:
             orphans.append(tid)
         return orphans
 
-    def run_once(self) -> dict[str, str]:
-        """One pass: process up to max_parallel ready tasks sequentially. Returns {task_id: outcome}."""
-        results: dict[str, str] = {}
+    def jobs(self) -> list[tuple[str, Callable[[], str]]]:
+        """Work for one pass: up to max_parallel ready tasks, as (task_id, callable) for the Service."""
         ready = [t for t in self.hermes.list_ready(self.lane.name) if t["id"] not in self.exclude]
-        for task in ready[: self.lane.max_parallel]:
-            results[task["id"]] = self.process(task)
-        return results
+        return [(t["id"], lambda t=t: self.process(t)) for t in ready[: self.lane.max_parallel]]
 
-    def _block(self, tid: str, kind: str, reason: str) -> str:
+    def run_once(self) -> dict[str, str]:
+        """One pass, sequential. Returns {task_id: outcome}."""
+        return {tid: job() for tid, job in self.jobs()}
+
+    def _block(self, tid: str, kind: str, reason: str, task: dict | None = None) -> str:
         self.hermes.block(tid, kind, reason[:1500])
-        self.notify(f"⛔ {tid} bloqueada ({kind}): {reason[:300]}")
+        self.notify(f"⛔ {tid} bloqueada ({kind}): {reason[:300]}", task or self._active.get(tid))
         return f"blocked:{kind}"
 
     def process(self, task: dict) -> str:
@@ -137,18 +142,23 @@ class LaneRunner:
         self.state_dir.mkdir(parents=True, exist_ok=True)
         state_path.write_text(json.dumps({"task_id": tid, "lane": lane.name, "pid": os.getpid(),
                                           "session_id": session_id, "started": time.time()}), encoding="utf-8")
+        self._active[tid] = task
         try:
             return self._work(task, tid, session_id, deadline)
         finally:
+            self._active.pop(tid, None)
             state_path.unlink(missing_ok=True)
 
     def _work(self, task: dict, tid: str, session_id: str, deadline: float) -> str:
         lane = self.lane
         self.hermes.comment(tid, f"LANE claim por {lane.name} · session_id={session_id} · rama lane/{tid}")
-        self.notify(f"▶️ empieza {tid}: {task.get('title', '')[:120]}")
+        self.notify(f"▶️ empieza {tid}: {task.get('title', '')[:120]}", task)
 
         with Heartbeat(lambda: self.hermes.heartbeat(tid), lane.heartbeat_seconds):
             try:
+                feedback = self.hermes.review_feedback(tid)  # non-empty when the review lane reopened it
+                if feedback:
+                    task = {**task, "review_feedback": feedback}
                 cwd = self.git.prepare_worktree(lane, tid)
                 outcome = self.worker.run(lane, task, cwd, session_id, timeout=max(60.0, deadline - self.clock()))
                 resumes = 0
@@ -184,5 +194,5 @@ class LaneRunner:
             if not ok:
                 return self._block(tid, "transient", f"request-review rechazado: {err}")
             self.notify(f"✅ {tid} en review · rama {result.get('branch')} @ {str(result.get('head_sha'))[:10]} · "
-                        f"test `{lane.test_cmd}` exit {check.test_exit}\n{result.get('summary', '')[:500]}")
+                        f"test exit {check.test_exit}\n{result.get('summary', '')[:500]}", task)
             return "review"

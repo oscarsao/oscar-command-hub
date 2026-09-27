@@ -31,7 +31,11 @@ class FakeHermes:
         self.claim_ok = claim_ok
         self.calls: list[tuple] = []
         self.heartbeats = 0
+        self.feedback: list[str] = []
         self._lock = threading.Lock()
+
+    def review_feedback(self, task_id):
+        return list(self.feedback)
 
     def list_ready(self, assignee):
         self.calls.append(("list", assignee))
@@ -101,9 +105,11 @@ class FakeVerifier:
 class FakeNotifier:
     def __init__(self):
         self.msgs = []
+        self.targets = []
 
-    def __call__(self, text):
+    def __call__(self, text, target=None):
         self.msgs.append(text)
+        self.targets.append(target)
 
 
 def ok_outcome(structured=None):
@@ -204,7 +210,7 @@ def test_max_parallel_limits_tasks_per_pass():
 
 
 def test_notifier_failure_does_not_break_flow():
-    def bad(_):
+    def bad(*_):
         raise OSError("telegram down")
 
     h = FakeHermes(tasks=[{"id": "t_1", "title": "T", "body": "B"}])

@@ -4,7 +4,7 @@ from __future__ import annotations
 import subprocess
 from dataclasses import dataclass, field
 
-from .config import Lane
+from .config import ROOT, Lane
 
 
 @dataclass
@@ -13,6 +13,11 @@ class VerifyResult:
     reasons: list[str] = field(default_factory=list)
     test_exit: int | None = None
     remote_sha: str | None = None
+
+
+def render_test_cmd(lane: Lane) -> str:
+    """test_cmd comes only from lanes.yaml (never from a task body); placeholders are fixed values."""
+    return lane.test_cmd.replace("{AGENT_LANES_DIR}", ROOT.as_posix()).replace("{BASE}", lane.base_ref)
 
 
 def _git(cwd: str, *args: str, runner=subprocess.run) -> subprocess.CompletedProcess:
@@ -44,9 +49,17 @@ def verify(lane: Lane, task_id: str, cwd: str, result: dict, runner=subprocess.r
         if head != remote_sha:
             reasons.append(f"HEAD local '{head[:12]}' != remoto '{remote_sha[:12]}' (cambios sin empujar)")
 
+    if remote_sha and lane.forbidden_paths:
+        changed = _git(cwd, "diff", "--name-only", f"{lane.base_ref}...{remote_sha}", runner=runner).stdout.split()
+        hits = [f for f in changed if any(f.replace("\\", "/").startswith(p) for p in lane.forbidden_paths)]
+        if hits:
+            reasons.append(f"toca rutas vetadas en este carril: {', '.join(hits[:10])}")
+
     test_exit = None
+    if not lane.test_cmd:
+        return VerifyResult(ok=not reasons, reasons=reasons, test_exit=None, remote_sha=remote_sha)
     try:
-        t = runner(lane.test_cmd, shell=True, cwd=cwd, capture_output=True, text=True,
+        t = runner(render_test_cmd(lane), shell=True, cwd=cwd, capture_output=True, text=True,
                    encoding="utf-8", errors="replace", timeout=1800)
         test_exit = t.returncode
         if t.returncode != 0:
