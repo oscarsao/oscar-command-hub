@@ -66,7 +66,7 @@ class Heartbeat:
 class LaneRunner:
     def __init__(self, lane: Lane, *, hermes, git, worker, verifier, notify: Callable[[str], None],
                  clock: Callable[[], float] = time.monotonic, state_dir: Path = STATE_DIR,
-                 pid_alive: Callable[[int], bool] = pid_alive):
+                 pid_alive: Callable[[int], bool] = pid_alive, exclude: set[str] | None = None):
         self.lane = lane
         self.hermes = hermes
         self.git = git
@@ -76,6 +76,7 @@ class LaneRunner:
         self.clock = clock
         self.state_dir = Path(state_dir)
         self.pid_alive = pid_alive
+        self.exclude = set(exclude or ())
 
     def notify(self, text: str) -> None:
         try:
@@ -114,7 +115,8 @@ class LaneRunner:
     def run_once(self) -> dict[str, str]:
         """One pass: process up to max_parallel ready tasks sequentially. Returns {task_id: outcome}."""
         results: dict[str, str] = {}
-        for task in self.hermes.list_ready(self.lane.name)[: self.lane.max_parallel]:
+        ready = [t for t in self.hermes.list_ready(self.lane.name) if t["id"] not in self.exclude]
+        for task in ready[: self.lane.max_parallel]:
             results[task["id"]] = self.process(task)
         return results
 

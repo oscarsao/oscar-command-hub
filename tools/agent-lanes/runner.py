@@ -26,6 +26,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--once", action="store_true")
     ap.add_argument("--interval", type=int, default=60)
     ap.add_argument("--check", action="store_true", help="solo test de contrato de la CLI de hermes")
+    ap.add_argument("--exclude", nargs="*", default=[], help="ids de tarea que este runner no debe reclamar")
+    ap.add_argument("--until-one", action="store_true", help="salir tras procesar una tarea")
+    ap.add_argument("--max-minutes", type=float, default=0, help="salir tras N minutos (0 = sin límite)")
     args = ap.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     log = logging.getLogger("agent_lanes")
@@ -44,7 +47,9 @@ def main(argv: list[str] | None = None) -> int:
     notify = TelegramNotifier(env.get("TELEGRAM_BOT_TOKEN"), env.get("TELEGRAM_CHAT_ID"), env.get("TELEGRAM_THREAD_ID"))
     if not notify.enabled:
         log.warning("Telegram desactivado (faltan TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID en agent-lanes/.env)")
-    runner = LaneRunner(lane, hermes=hermes, git=GitOps(), worker=ClaudeWorker(), verifier=verify, notify=notify)
+    runner = LaneRunner(lane, hermes=hermes, git=GitOps(), worker=ClaudeWorker(), verifier=verify, notify=notify,
+                         exclude=set(args.exclude))
+    started = time.monotonic()
     orphans = runner.reconcile()
     if orphans:
         log.warning("reconciliación: bloqueadas por runner reiniciado: %s", orphans)
@@ -52,7 +57,10 @@ def main(argv: list[str] | None = None) -> int:
         results = runner.run_once()
         if results:
             log.info("pasada: %s", results)
-        if args.once:
+        if args.once or (args.until_one and results):
+            return 0
+        if args.max_minutes and time.monotonic() - started > args.max_minutes * 60:
+            log.info("max-minutes alcanzado sin más trabajo")
             return 0
         time.sleep(args.interval)
 

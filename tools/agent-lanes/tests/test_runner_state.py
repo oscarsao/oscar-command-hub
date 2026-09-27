@@ -275,3 +275,12 @@ def test_reconcile_blocks_orphans_and_skips_live(tmp_path):
     assert set(blocked) == {"t_dead", "t_nofile"}
     assert all(c[2] == "transient" and "runner reiniciado" in c[3] for c in blocked.values())
     assert not (tmp_path / "t_dead.json").exists() and (tmp_path / "t_live.json").exists()
+
+
+def test_excluded_tasks_are_never_claimed():
+    h = FakeHermes(tasks=[{"id": "t_skip", "title": "A", "body": ""}, {"id": "t_new", "title": "B", "body": ""}])
+    w = FakeWorker([ok_outcome()])
+    r = LaneRunner(LANE, hermes=h, git=FakeGit(), worker=w, verifier=FakeVerifier(), notify=FakeNotifier(),
+                   exclude={"t_skip"})
+    assert r.run_once() == {"t_new": "review"}
+    assert all(c[1] != "t_skip" for c in h.calls if c[0] == "claim")
