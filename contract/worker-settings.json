@@ -1,0 +1,17 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash|Edit|Write|MultiEdit|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "py",
+            "args": ["-3.12", "{AGENT_LANES_DIR}/contract/guard.py"],
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  }
+}

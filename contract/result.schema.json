@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "LaneWorkerResult",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["status", "summary", "branch", "head_sha", "changed_files", "tests", "questions", "next_steps", "risks"],
+  "properties": {
+    "status": {"type": "string", "enum": ["done", "needs_input", "failed"]},
+    "summary": {"type": "string"},
+    "branch": {"type": "string"},
+    "head_sha": {"type": "string"},
+    "changed_files": {"type": "array", "items": {"type": "string"}},
+    "tests": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["command", "exit_code"],
+      "properties": {
+        "command": {"type": "string"},
+        "exit_code": {"type": "integer"}
+      }
+    },
+    "questions": {"type": "array", "items": {"type": "string"}},
+    "next_steps": {"type": "array", "items": {"type": "string"}},
+    "risks": {"type": "array", "items": {"type": "string"}}
+  }
+}

@@ -1,0 +1,27 @@
+# Carriles de agent-lanes. Contrato: oscar-command-hub/decisions/2026-09-27-arquitectura-carriles.md §5
+# assignee del kanban de Hermes = nombre del carril. El dispatcher de Hermes ignora estos assignees
+# (no son perfiles), así que solo los consume este runner.
+
+defaults:
+  max_resumes: 2
+  heartbeat_seconds: 240
+  # hermes 0.21.4: el heartbeat por CLI NO extiende claim_expires (solo last_heartbeat_at), así que el
+  # lease se pide de una vez con la duración máxima de la tarea. El runner corta antes de que venza.
+  claim_ttl_seconds: 7200
+  worktree_root: C:/Users/oscar/dev/_lanes
+  remote: origin
+
+lanes:
+  claude-oscarhq:
+    board: oscarhq
+    repo: C:/Users/oscar/dev/oscar-hq
+    base: master
+    tool: claude
+    model: sonnet
+    effort: medium
+    max_budget_usd: 3.0
+    max_parallel: 1
+    role: roles/implementador.md
+    # Gate mecánico que ejecuta el propio runner en el worktree. Solo viene de aquí, nunca del cuerpo
+    # de la tarea. (pytest de oscar-hq no es usable como gate hoy: test_api_health falla en master por entorno.)
+    test_cmd: git diff --check origin/master...HEAD
