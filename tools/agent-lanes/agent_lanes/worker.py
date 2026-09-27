@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -86,9 +87,11 @@ class ClaudeWorker:
     def __init__(self, runner=subprocess.run):
         self._run = runner
 
-    def _exec(self, args: list[str], prompt: str, cwd: str, timeout: float) -> WorkerOutcome:
+    def _exec(self, args: list[str], prompt: str, cwd: str, timeout: float, lane: Lane, task_id: str) -> WorkerOutcome:
+        # AGENT_LANES_TASK switches on the "MODO WORKER" section of ~/.claude/CLAUDE.md.
+        env = {**os.environ, "AGENT_LANES_TASK": task_id, "AGENT_LANES_LANE": lane.name}
         try:
-            cp = self._run(args, input=prompt, cwd=cwd, capture_output=True, text=True,
+            cp = self._run(args, input=prompt, cwd=cwd, env=env, capture_output=True, text=True,
                            encoding="utf-8", errors="replace", timeout=timeout)
         except subprocess.TimeoutExpired:
             return WorkerOutcome(False, "runner_timeout", None, None, f"claude superó {int(timeout)}s")
@@ -99,7 +102,7 @@ class ClaudeWorker:
 
     def run(self, lane: Lane, task: dict, cwd: str, session_id: str, timeout: float) -> WorkerOutcome:
         args = base_args(lane, ["--session-id", session_id, "--name", f"task-{task['id']}"])
-        return self._exec(args, build_prompt(task, lane), cwd, timeout)
+        return self._exec(args, build_prompt(task, lane), cwd, timeout, lane, task["id"])
 
-    def resume(self, lane: Lane, cwd: str, session_id: str, timeout: float) -> WorkerOutcome:
-        return self._exec(base_args(lane, ["--resume", session_id]), RESUME_PROMPT, cwd, timeout)
+    def resume(self, lane: Lane, cwd: str, session_id: str, timeout: float, task_id: str) -> WorkerOutcome:
+        return self._exec(base_args(lane, ["--resume", session_id]), RESUME_PROMPT, cwd, timeout, lane, task_id)

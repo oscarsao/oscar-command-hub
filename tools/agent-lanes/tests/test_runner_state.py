@@ -84,7 +84,7 @@ class FakeWorker:
         time.sleep(self.delay)
         return self.outcomes.pop(0)
 
-    def resume(self, lane, cwd, session_id, timeout):
+    def resume(self, lane, cwd, session_id, timeout, task_id):
         self.runs.append("resume")
         time.sleep(self.delay)
         return self.outcomes.pop(0)

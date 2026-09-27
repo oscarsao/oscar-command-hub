@@ -85,6 +85,24 @@ def test_telegram_disabled_without_token():
     telegram.TelegramNotifier(None, None)("no-op")
 
 
+def test_worker_env_marks_worker_mode_on_run_and_resume():
+    from agent_lanes.worker import ClaudeWorker
+
+    seen = []
+
+    def fake_run(args, **kw):
+        seen.append(kw["env"])
+        return subprocess.CompletedProcess(args, 0, json.dumps({"subtype": "success", "is_error": False,
+                                                                "structured_output": GOOD}), "")
+
+    w = ClaudeWorker(runner=fake_run)
+    w.run(LANE, {"id": "t_9", "title": "T", "body": ""}, "C:/wt", "sid", timeout=60)
+    w.resume(LANE, "C:/wt", "sid", timeout=60, task_id="t_9")
+    for env in seen:
+        assert env["AGENT_LANES_TASK"] == "t_9" and env["AGENT_LANES_LANE"] == LANE.name
+        assert "PATH" in env  # inherits the parent environment
+
+
 def test_worker_runs_without_any_mcp_server():
     from agent_lanes.worker import base_args
 

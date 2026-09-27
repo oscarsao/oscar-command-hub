@@ -153,7 +153,7 @@ class LaneRunner:
                 while not outcome.ok and resumes < lane.max_resumes and deadline - self.clock() > 60:
                     resumes += 1
                     log.info("%s: resume %d tras %s", tid, resumes, outcome.subtype)
-                    outcome = self.worker.resume(lane, cwd, session_id, timeout=max(60.0, deadline - self.clock()))
+                    outcome = self.worker.resume(lane, cwd, session_id, timeout=max(60.0, deadline - self.clock()), task_id=tid)
             except Exception as exc:
                 return self._block(tid, "transient", f"error del runner: {exc}")
 
