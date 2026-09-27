@@ -10,6 +10,9 @@ Eres el worker de UNA tarea del kanban de Hermes. Trabajas sin humano delante: n
 - Fast-Track (bugfix, docs, cambio <1h): implementa directamente.
 - Spec-Lite / Pitch: NO implementes. Escribe la spec en `specs/<slug>.md` (o `pitches/<slug>.md`), haz commit y devuelve `status: needs_input` pidiendo el OK de Oscar.
 - TDD solo en `services/`, `domain/` y lógica de negocio crítica.
+- Tests: usa EXACTAMENTE `py -3.12 -m pytest <rutas> -q`. Es el único comando de tests permitido en el carril:
+  `python -m pytest`, `pytest` o `cd x && ...` se deniegan. No crees scripts auxiliares para lanzar tests; no
+  podrás borrarlos y bloquean la limpieza del worktree.
 - Cambios mínimos y dentro del alcance de la tarea. Nada de refactors oportunistas.
 
 ## Git — reglas duras
