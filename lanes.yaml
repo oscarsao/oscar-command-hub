@@ -6,8 +6,8 @@ defaults:
   max_resumes: 2
   heartbeat_seconds: 240
   # hermes 0.21.4: el heartbeat por CLI NO extiende claim_expires (solo last_heartbeat_at), así que el
-  # lease se pide de una vez con la duración máxima de la tarea. El runner corta antes de que venza.
-  claim_ttl_seconds: 7200
+  # lease se pide de una vez: claim --ttl = max_runtime + 300 s. El runner corta claude en max_runtime.
+  max_runtime_seconds: 7200
   worktree_root: C:/Users/oscar/dev/_lanes
   remote: origin
   # En -p, acceptEdits solo aprueba ediciones; el resto de Bash se deniega salvo lo listado aquí.

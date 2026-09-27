@@ -7,6 +7,7 @@ from pathlib import Path
 import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
+CLAIM_TTL_MARGIN_SECONDS = 300
 
 
 @dataclass(frozen=True)
@@ -22,13 +23,19 @@ class Lane:
     max_parallel: int
     role: str
     test_cmd: str
-    claim_ttl_seconds: int
+    max_runtime_seconds: int
     worktree_root: str
     max_resumes: int = 2
     heartbeat_seconds: float = 240
     remote: str = "origin"
     # -p mode denies any Bash not pre-approved; acceptEdits only covers file edits.
     allowed_tools: tuple[str, ...] = ()
+
+    @property
+    def claim_ttl_seconds(self) -> int:
+        # hermes 0.21.4: the CLI heartbeat does not extend claim_expires, so the lease is requested up front
+        # and the runner stops at max_runtime, before the sweep could reclaim the task.
+        return self.max_runtime_seconds + CLAIM_TTL_MARGIN_SECONDS
 
     @property
     def role_path(self) -> Path:

@@ -1,19 +1,41 @@
 """Lane runner state machine: ready -> claim -> worktree -> worker (+resume) -> verify -> review | block."""
 from __future__ import annotations
 
+import json
 import logging
+import os
 import threading
 import time
 import uuid
+from pathlib import Path
 from typing import Callable
 
-from .config import Lane
+from .config import ROOT, Lane
 
 log = logging.getLogger("agent_lanes")
 
-# The claim TTL cannot be extended from the CLI (hermes 0.21.4), so the runner stops working this long
-# before it expires, leaving time to block the task itself instead of letting the sweep reclaim it mid-run.
-DEADLINE_MARGIN_SECONDS = 600
+STATE_DIR = ROOT / ".state" / "tasks"
+
+
+def pid_alive(pid: int) -> bool:
+    """Liveness without side effects (on Windows os.kill(pid, 0) would TerminateProcess)."""
+    if os.name != "nt":
+        try:
+            os.kill(pid, 0)
+            return True
+        except OSError:
+            return False
+    import ctypes
+    from ctypes import wintypes
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    handle = kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+    if not handle:
+        return False
+    try:
+        code = wintypes.DWORD()
+        return bool(kernel32.GetExitCodeProcess(handle, ctypes.byref(code))) and code.value == 259  # STILL_ACTIVE
+    finally:
+        kernel32.CloseHandle(handle)
 
 
 class Heartbeat:
@@ -43,7 +65,8 @@ class Heartbeat:
 
 class LaneRunner:
     def __init__(self, lane: Lane, *, hermes, git, worker, verifier, notify: Callable[[str], None],
-                 clock: Callable[[], float] = time.monotonic):
+                 clock: Callable[[], float] = time.monotonic, state_dir: Path = STATE_DIR,
+                 pid_alive: Callable[[int], bool] = pid_alive):
         self.lane = lane
         self.hermes = hermes
         self.git = git
@@ -51,12 +74,42 @@ class LaneRunner:
         self.verifier = verifier
         self._notify = notify
         self.clock = clock
+        self.state_dir = Path(state_dir)
+        self.pid_alive = pid_alive
 
     def notify(self, text: str) -> None:
         try:
             self._notify(f"[{self.lane.name}] {text}")
         except Exception as exc:
             log.warning("aviso a Telegram falló: %s", exc)
+
+    def _state_path(self, tid: str) -> Path:
+        return self.state_dir / f"{tid}.json"
+
+    def reconcile(self) -> list[str]:
+        """At startup: block this lane's `running` tasks whose runner is gone, instead of waiting for the TTL.
+
+        Only this runner consumes the lane's assignee, so a running task without a live owner PID is orphaned.
+        """
+        orphans = []
+        for task in self.hermes.list_status(self.lane.name, "running"):
+            tid = task["id"]
+            path = self._state_path(tid)
+            state = {}
+            if path.exists():
+                try:
+                    state = json.loads(path.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError):
+                    state = {}
+            pid = state.get("pid")
+            if pid and self.pid_alive(int(pid)):
+                continue
+            session = state.get("session_id")
+            self._block(tid, "transient", "runner reiniciado: la tarea quedó en running sin proceso vivo"
+                        + (f" (session_id={session}; se puede retomar con --resume)" if session else ""))
+            path.unlink(missing_ok=True)
+            orphans.append(tid)
+        return orphans
 
     def run_once(self) -> dict[str, str]:
         """One pass: process up to max_parallel ready tasks sequentially. Returns {task_id: outcome}."""
@@ -76,8 +129,19 @@ class LaneRunner:
         if not self.hermes.claim(tid, lane.claim_ttl_seconds):
             log.info("%s: claim perdido (otro runner o ya no está ready)", tid)
             return "claim_lost"
-        deadline = self.clock() + lane.claim_ttl_seconds - DEADLINE_MARGIN_SECONDS
+        deadline = self.clock() + lane.max_runtime_seconds
         session_id = str(uuid.uuid4())
+        state_path = self._state_path(tid)
+        self.state_dir.mkdir(parents=True, exist_ok=True)
+        state_path.write_text(json.dumps({"task_id": tid, "lane": lane.name, "pid": os.getpid(),
+                                          "session_id": session_id, "started": time.time()}), encoding="utf-8")
+        try:
+            return self._work(task, tid, session_id, deadline)
+        finally:
+            state_path.unlink(missing_ok=True)
+
+    def _work(self, task: dict, tid: str, session_id: str, deadline: float) -> str:
+        lane = self.lane
         self.hermes.comment(tid, f"LANE claim por {lane.name} · session_id={session_id} · rama lane/{tid}")
         self.notify(f"▶️ empieza {tid}: {task.get('title', '')[:120]}")
 
@@ -94,9 +158,9 @@ class LaneRunner:
                 return self._block(tid, "transient", f"error del runner: {exc}")
 
             if not outcome.ok:
+                why = "max_runtime alcanzado" if deadline - self.clock() <= 60 else f"tras {resumes} resume(s)"
                 return self._block(tid, "transient",
-                                   f"el worker no terminó tras {resumes} resume(s): {outcome.raw_error} "
-                                   f"(session_id={session_id})")
+                                   f"el worker no terminó ({why}): {outcome.raw_error} (session_id={session_id})")
             result = outcome.structured
             if result["status"] == "needs_input":
                 questions = "\n".join(f"- {q}" for q in result.get("questions") or []) or result.get("summary", "")

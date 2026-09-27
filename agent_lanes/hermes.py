@@ -35,11 +35,14 @@ class HermesCLI:
         return self._run([self.exe, "kanban", "--board", self.board, *args],
                          capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
 
-    def list_ready(self, assignee: str) -> list[dict]:
-        cp = self._call("list", "--assignee", assignee, "--status", "ready", "--json", "--sort", "priority")
+    def list_status(self, assignee: str, status: str) -> list[dict]:
+        cp = self._call("list", "--assignee", assignee, "--status", status, "--json", "--sort", "priority")
         if cp.returncode != 0:
             raise HermesError(f"list failed: {cp.stderr.strip()[:300]}")
         return json.loads(cp.stdout or "[]")
+
+    def list_ready(self, assignee: str) -> list[dict]:
+        return self.list_status(assignee, "ready")
 
     def claim(self, task_id: str, ttl: int) -> bool:
         return self._call("claim", task_id, "--ttl", str(ttl)).returncode == 0

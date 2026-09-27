@@ -15,7 +15,7 @@ LANE = Lane(
     name="claude-oscarhq", board="oscarhq", repo="C:/repo", base="master", tool="claude",
     model="sonnet", effort="medium", max_budget_usd=3.0, max_parallel=1,
     role="roles/implementador.md", test_cmd="git diff --check origin/master...HEAD",
-    claim_ttl_seconds=7200, worktree_root="C:/wt", max_resumes=2, heartbeat_seconds=240,
+    max_runtime_seconds=7200, worktree_root="C:/wt", max_resumes=2, heartbeat_seconds=240,
 )
 
 GOOD = {
@@ -210,3 +210,68 @@ def test_notifier_failure_does_not_break_flow():
     h = FakeHermes(tasks=[{"id": "t_1", "title": "T", "body": "B"}])
     r = LaneRunner(LANE, hermes=h, git=FakeGit(), worker=FakeWorker([ok_outcome()]), verifier=FakeVerifier(), notify=bad)
     assert r.run_once() == {"t_1": "review"}
+
+
+# --- lease + reconciliation (approved by the Coordinator 2026-09-27) ---------------------------
+
+def test_claim_ttl_is_max_runtime_plus_margin():
+    r, h, *_ = make([ok_outcome()])
+    r.run_once()
+    claim = [c for c in h.calls if c[0] == "claim"][0]
+    assert claim[2] == 7200 + 300
+
+
+def test_max_runtime_reached_blocks_transient_without_resume():
+    t = {"now": 0.0}
+
+    class SlowWorker(FakeWorker):
+        def run(self, *a, **k):
+            t["now"] += 7200  # the claude call consumed the whole runtime budget
+            return cut_outcome("runner_timeout")
+
+    h = FakeHermes(tasks=[{"id": "t_1", "title": "T", "body": "B"}])
+    w = SlowWorker([])
+    r = LaneRunner(LANE, hermes=h, git=FakeGit(), worker=w, verifier=FakeVerifier(), notify=FakeNotifier(),
+                   clock=lambda: t["now"])
+    assert r.run_once() == {"t_1": "blocked:transient"}
+    assert w.runs == []  # SlowWorker.run doesn't record; no resume was attempted either
+    assert "max_runtime" in [c for c in h.calls if c[0] == "block"][0][3]
+
+
+class ReconHermes(FakeHermes):
+    def __init__(self, running):
+        super().__init__(tasks=[])
+        self.running = running
+
+    def list_status(self, assignee, status):
+        return list(self.running) if status == "running" else []
+
+
+def test_state_file_written_during_run_and_removed_after(tmp_path):
+    seen = {}
+
+    class Peek(FakeWorker):
+        def run(self, lane, task, cwd, session_id, timeout):
+            seen["files"] = [p.name for p in tmp_path.iterdir()]
+            return ok_outcome()
+
+    h = FakeHermes(tasks=[{"id": "t_1", "title": "T", "body": "B"}])
+    r = LaneRunner(LANE, hermes=h, git=FakeGit(), worker=Peek([]), verifier=FakeVerifier(), notify=FakeNotifier(),
+                   state_dir=tmp_path)
+    assert r.run_once() == {"t_1": "review"}
+    assert seen["files"] == ["t_1.json"]
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_reconcile_blocks_orphans_and_skips_live(tmp_path):
+    import json, os
+    (tmp_path / "t_dead.json").write_text(json.dumps({"task_id": "t_dead", "lane": LANE.name, "pid": 999999}))
+    (tmp_path / "t_live.json").write_text(json.dumps({"task_id": "t_live", "lane": LANE.name, "pid": os.getpid()}))
+    h = ReconHermes(running=[{"id": "t_dead"}, {"id": "t_live"}, {"id": "t_nofile"}])
+    r = LaneRunner(LANE, hermes=h, git=FakeGit(), worker=FakeWorker([]), verifier=FakeVerifier(),
+                   notify=FakeNotifier(), state_dir=tmp_path, pid_alive=lambda pid: pid == os.getpid())
+    assert sorted(r.reconcile()) == ["t_dead", "t_nofile"]
+    blocked = {c[1]: c for c in h.calls if c[0] == "block"}
+    assert set(blocked) == {"t_dead", "t_nofile"}
+    assert all(c[2] == "transient" and "runner reiniciado" in c[3] for c in blocked.values())
+    assert not (tmp_path / "t_dead.json").exists() and (tmp_path / "t_live.json").exists()

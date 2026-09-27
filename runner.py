@@ -45,6 +45,9 @@ def main(argv: list[str] | None = None) -> int:
     if not notify.enabled:
         log.warning("Telegram desactivado (faltan TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID en agent-lanes/.env)")
     runner = LaneRunner(lane, hermes=hermes, git=GitOps(), worker=ClaudeWorker(), verifier=verify, notify=notify)
+    orphans = runner.reconcile()
+    if orphans:
+        log.warning("reconciliación: bloqueadas por runner reiniciado: %s", orphans)
     while True:
         results = runner.run_once()
         if results:
