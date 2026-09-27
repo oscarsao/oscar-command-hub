@@ -22,7 +22,8 @@ CRON_TS = ["kanban", "session_search", "todo", "no_mcp"]
 
 
 def build(keep_browser: bool):
-    tg = ["clarify", "kanban", "memory", "session_search", "skills", "todo", "tts", "vision", "web", "no_mcp"]
+    tg = ["clarify", "image_gen", "kanban", "memory", "session_search", "skills", "todo", "tts", "vision", "web",
+          "no_mcp"]
     if keep_browser:
         tg.insert(0, "browser")
     subs = [
