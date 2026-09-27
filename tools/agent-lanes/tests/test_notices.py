@@ -50,10 +50,10 @@ def test_render_is_at_most_three_lines_and_escapes_html():
     assert len(render("running", "t_1", "T", "l", "en curso").split("\n")) == 2  # sin enlaces, sin tercera línea
 
 
-def test_questions_block_max_5_items_and_300_chars_total():
+def test_questions_block_max_5_items_and_limit_total():
     qs = [f"pregunta {i} " + "z" * 200 for i in range(8)]
     block = questions_block(qs)
-    assert 2 <= len(block) <= 5 and len("\n".join(block)) <= 300
+    assert 2 <= len(block) <= 5 and len("\n".join(block)) <= notices.QUESTIONS_MAX_CHARS
     assert all(b.startswith("• ") for b in block)
     short = questions_block([f"¿{i}?" for i in range(9)])
     assert len(short) == 5
@@ -200,7 +200,7 @@ def test_needs_input_alert_has_short_bullets_and_reply_hint():
     assert n.silent[-1] is False and alert.startswith("❓ t_1")
     assert "responde en este hilo o a Hermes" in alert
     bullets = [l for l in alert.split("\n") if l.startswith("• ")]
-    assert 1 <= len(bullets) <= 5 and len("\n".join(bullets)) <= 300
+    assert 1 <= len(bullets) <= 5 and len("\n".join(bullets)) <= notices.QUESTIONS_MAX_CHARS
 
 
 def test_review_status_line_has_files_tests_and_cost():

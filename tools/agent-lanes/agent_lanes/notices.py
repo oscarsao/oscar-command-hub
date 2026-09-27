@@ -23,8 +23,8 @@ log = logging.getLogger("agent_lanes")
 EMOJI = {"running": "▶️", "review": "🔍", "done": "✅", "changes": "🔁", "needs_input": "❓", "blocked": "⛔"}
 TITLE_MAX = 60
 QUESTIONS_MAX_ITEMS = 5
-QUESTIONS_MAX_CHARS = 300  # total del bloque de viñetas, no por viñeta
-QUESTION_MAX_CHARS = 110   # cada viñeta, para que quepan al menos 2 dentro de los 300
+QUESTIONS_MAX_CHARS = 1200  # total del bloque: Oscar debe poder responder desde Telegram sin abrir la tarjeta
+QUESTION_MAX_CHARS = 280   # cada viñeta; 5 x 280 < límite de Telegram (4096) con el resto del mensaje
 
 
 def truncate(text: str | None, n: int) -> str:
@@ -57,7 +57,7 @@ def status_line(*parts) -> str:
 
 
 def questions_block(questions) -> list[str]:
-    """Máximo 5 viñetas y 300 caracteres en total (contando saltos de línea)."""
+    """Máximo 5 viñetas y 1200 caracteres en total (contando saltos de línea)."""
     lines: list[str] = []
     for q in list(questions or [])[:QUESTIONS_MAX_ITEMS]:
         line = "• " + truncate(q, QUESTION_MAX_CHARS)
