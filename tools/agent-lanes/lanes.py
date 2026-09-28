@@ -8,6 +8,9 @@
     py -3.12 lanes.py restart --drain [--timeout 3600]
                                                    # reinicio ordenado: deja de reclamar, espera a los workers y
                                                    # reinicia la tarea programada "agent-lanes runner"
+    py -3.12 lanes.py integrator migration-applied <task_id>
+                                                   # la migración de esa ficha fusionada YA está aplicada (autor
+                                                   # coordinador): desbloquea el 🚀 Desplegar de lo último de la base
 """
 from __future__ import annotations
 
@@ -101,6 +104,9 @@ def main(argv: list[str]) -> int:
     if argv[:1] == ["renotify"]:
         from agent_lanes import renotify
         return renotify.main(argv[1:])
+    if argv[:2] == ["integrator", "migration-applied"] and len(argv) == 3:
+        from agent_lanes.integrator import migration_applied_cli
+        return migration_applied_cli(argv[2])
     if argv[:1] == ["restart"]:
         return restart(argv[1:])
     if argv[:1] != ["status"]:
