@@ -16,8 +16,9 @@ from typing import Callable
 
 from .config import ROOT, Lane
 from .hermes import REVIEW_AUTHOR
+from .integration import CHANNEL, link_line, render_ficha, repo_name, risk_of, risks_from_files
 from .notices import (MessageStore, TaskNotices, files_label, money, questions_block, render, status_line,
-                      test_label)
+                      test_label, truncate)
 from .runner import dm_mirror
 from .telegram import telegram_target
 from .worker import WorkerOutcome, render_settings, run_claude
@@ -89,8 +90,11 @@ class ClaudeReviewer:
 class ReviewRunner:
     def __init__(self, review_lane: Lane, lanes: dict[str, Lane], *, hermes_for: Callable[[str], object], git,
                  reviewer, verifier, notify, clock: Callable[[], float] = time.monotonic,
-                 messages: MessageStore | None = None, links: Callable | None = None, decisions=None):
+                 messages: MessageStore | None = None, links: Callable | None = None, decisions=None,
+                 integration=None):
         self.lane = review_lane
+        # IntegrationRoute (tema de Integración): la tarjeta done con ✅ Aprobar va allí como ficha + copia en el DM.
+        self._integration = integration
         self._decisions = decisions  # DecisionDesk (botones) solo con CARRILES_BOT_TOKEN
         self.lanes = {n: l for n, l in lanes.items() if n in review_lane.reviews}
         self.hermes_for = hermes_for
@@ -104,7 +108,7 @@ class ReviewRunner:
     def notify(self, state: str, task: dict, status: str, *, alert: bool = False,
                bullets: list[str] | None = None, changed_files=None, buttons: bool = False,
                block_kind: str | None = None, questions=None, summary: str | None = None,
-               for_oscar: str | None = None, yes_no: bool = True) -> None:
+               for_oscar: str | None = None, yes_no: bool = True, test_exit=None, deps=None) -> None:
         """Edita el mensaje único de la tarea (o envía uno nuevo si `alert`). `status` es texto público."""
         target = telegram_target(task.get("body"))
         mirror = dm_mirror(self._decisions, target, alert, state)
@@ -115,18 +119,51 @@ class ReviewRunner:
                 lane_target = (reviewed.telegram if reviewed else None) or self.lane.telegram
                 name = reviewed.name if reviewed else self.lane.name
                 links = self._links(reviewed, task["id"], changed_files=changed_files) if (self._links and reviewed) else []
-                text = render(state, task["id"], task.get("title"), name, status, links, bullets, body=task.get("body"),
-                              for_oscar=for_oscar)
+                integ = self._integration if (state == "done" and reviewed) else None
+                if integ:
+                    text = self._ficha(reviewed, task, status, links, changed_files, for_oscar, test_exit, deps)
+                else:
+                    text = render(state, task["id"], task.get("title"), name, status, links, bullets,
+                                  body=task.get("body"), for_oscar=for_oscar)
                 markup = None
                 if buttons and self._decisions and reviewed:
                     markup = self._decisions.markup(state, task=task, lane=reviewed, block_kind=block_kind,
                                                     questions=questions, summary=summary, changed_files=changed_files,
                                                     for_oscar=for_oscar, yes_no=yes_no)
+                if integ:  # tema de Integración (nunca el origen) + copia espejo en el DM de Oscar
+                    owner = str(getattr(self._decisions, "owner_id", "") or "") if alert else ""
+                    prefix = f"✅ {task['id']} · {truncate(task.get('title'), 40)} · lista para aprobar"
+                    self._notices.publish(task["id"], text, None, integ.target, alert=alert, reply_markup=markup,
+                                          channel=CHANNEL, leave_behind=lambda sent: link_line(prefix, sent),
+                                          **({"mirror_to": owner} if owner else {}))
+                    return
                 self._notices.publish(task["id"], text, target, lane_target, alert=alert, reply_markup=markup,
                                       **({"mirror_to": mirror} if mirror else {}))
                 return
             except Exception as exc:
                 log.warning("aviso a Telegram falló (intento %d/2): %s", attempt, exc)
+
+    def _ficha(self, lane: Lane, task: dict, status: str, links, changed_files, for_oscar, test_exit, deps) -> str:
+        """Ficha de la tarjeta done (antes del PR): riesgos deducidos de los archivos, ya que aún no hay gates."""
+        policy = self._integration.policies.get(lane.name)
+        gates = ["✔ revisión aprobada"]
+        if test_exit is not None:
+            gates.append("✔ tests OK" if test_exit == 0 else f"⛔ tests exit {test_exit}")
+        return render_ficha(risk=risk_of(policy), phase="PARA APROBAR", tid=task["id"], title=task.get("title"),
+                            repo=repo_name(lane), base=lane.base, status=status, for_oscar=for_oscar, gates=gates,
+                            risks=risks_from_files(policy, changed_files), deps=deps or (), links=links)
+
+    def _deps(self, h, tid: str, show: dict) -> list[str]:
+        """Dependencias sin integrar (enlaces padre del kanban), solo si hay tema de Integración. Nunca lanza."""
+        if not self._integration:
+            return []
+        try:
+            from .deps import pending_parents
+            return [f"{w['id']} · {truncate(w['title'], 40)} · {w['reason']}"
+                    for w in pending_parents(h, tid, show)[:5]]
+        except Exception as exc:
+            log.info("%s: no se pudieron leer las dependencias: %s", tid, exc)
+            return []
 
     def jobs(self) -> list[tuple[str, Callable[[], str]]]:
         found = []
@@ -201,7 +238,8 @@ class ReviewRunner:
                 test_label(check.test_exit), money(cost), "lista para merge",
                 None if cleaned else "limpieza local pendiente"), alert=True,
                 changed_files=meta.get("changed_files"), buttons=True,
-                summary=verdict.get("summary") or meta.get("summary"), for_oscar=meta.get("for_oscar"))
+                summary=verdict.get("summary") or meta.get("summary"), for_oscar=meta.get("for_oscar"),
+                test_exit=check.test_exit, deps=self._deps(h, tid, show))
             return "done"
 
         changes = verdict.get("required_changes") or [verdict.get("summary", "")]

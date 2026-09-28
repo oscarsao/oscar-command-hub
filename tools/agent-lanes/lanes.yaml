@@ -22,6 +22,14 @@ telegram:
     - {chat: 6744452215}              # DM de Oscar (cualquier hilo)
     - {chat: -1003530490339, thread: 5}  # Gestión · Operaciones General
 
+# Tema de Integración (28-09, Oscar): TODO aviso de PR/merge/deploy (tarjeta done con ✅ Aprobar, "Listo para integrar",
+# gates fallidos, en espera, fusionado, desplegado, fallo de deploy) va aquí como ficha con cabecera por riesgo
+# (🟢 staging · 🟠 deploy manual · 🔴 producción · ⏸ en espera · ⛔ gates fallidos) y, como copia espejo sincronizada,
+# al DM de Oscar. En el tema del carril solo queda una línea con enlace. El runner mantiene aquí un mensaje FIJADO con lo
+# pendiente de integrar (lo edita en cada pasada del integrador; message_id en .state/integrator/pinned.json).
+# Sin esta clave, los avisos siguen en el tema del carril con el formato de siempre.
+integration_telegram: {chat: -1003530490339, thread: 398}   # Gestión · 🚦 Integración y despliegues
+
 defaults:
   max_resumes: 2
   heartbeat_seconds: 240
@@ -180,6 +188,8 @@ integrator:
       # fusionado (cwd = checkout enlazado con la CLI), ids explícitos, y sondeo de ESE deployment (no /api/health:
       # respondería el contenedor viejo). Ids leídos con `railway list --json` el 28-09 (no son secretos).
       deploy: railway_up
+      risk: manual                  # 🟠 cabecera de la ficha: deploy manual con botón
+      risk_label: OSCAR HQ
       manual_migrations: [supabase/migrations/]
       # Infraestructura de arranque/deploy: se puede fusionar, pero sin botón de deploy (lo revisa Oscar).
       sensitive_paths: [railway.json, railway.toml, nixpacks.toml, Procfile, Dockerfile, .railwayignore, requirements.txt, .github/]
@@ -193,6 +203,7 @@ integrator:
       # de staging). Nunca master: la promoción a producción es release/<fecha> con OK de Oscar, fuera del carril.
       # Con migración de Alembic no hay botón. Se verifica con GET /health de staging hasta que commit_sha sea el del merge.
       deploy: on_merge
+      risk: staging                 # 🟢 develop = staging. Un on_merge sin `risk` se trata como 🔴 PRODUCCIÓN.
       merge_label: "🔀 Fusionar en develop (despliega staging)"
       merge_warning: "⚠️ Fusionar despliega STAGING (develop), no producción; a master solo por release/<fecha>"
       alembic_versions: backend/alembic/versions/

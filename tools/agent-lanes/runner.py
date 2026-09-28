@@ -19,7 +19,8 @@ from agent_lanes.decisions import CALLBACKS_DIR, OWNER_TELEGRAM_ID, CallbackStor
 from agent_lanes.reminders import Reminders
 from agent_lanes.git_ops import GitOps
 from agent_lanes.hermes import HermesCLI
-from agent_lanes.integrator import build_integrator
+from agent_lanes.integration import IntegrationRoute
+from agent_lanes.integrator import build_integrator, load_integrator_settings
 from agent_lanes.review import ClaudeReviewer, ReviewRunner, sweep_done
 from agent_lanes.notices import LinkBuilder, MessageStore
 from agent_lanes.ops import OpsWorkspace, verify_ops
@@ -115,11 +116,14 @@ def main(argv: list[str] | None = None) -> int:
     runners += [LaneRunner(l, hermes=hermes_for(l.board), git=OpsWorkspace(), worker=ClaudeWorker(), verifier=verify_ops,
                            notify=notify, exclude=set(args.exclude), messages=messages, links=links, decisions=decisions)
                 for l in selected.values() if l.kind == "ops"]
+    # Tema de Integración (integration_telegram): la tarjeta done con ✅ Aprobar va allí aunque el integrador esté apagado.
+    integration = (IntegrationRoute(tg_settings["integration"], load_integrator_settings(env=env).policies)
+                   if tg_settings.get("integration") else None)
     for name, lane in selected.items():
         if lane.kind == "review":
             runners.append(ReviewRunner(lane, all_lanes, hermes_for=hermes_for, git=git, reviewer=ClaudeReviewer(),
                                         verifier=verify, notify=notify, messages=messages, links=links,
-                                        decisions=decisions))
+                                        decisions=decisions, integration=integration))
     # Carril Integrador: solo con INTEGRATOR_ENABLED. Sin bot de carriles corre los gates y avisa sin botones.
     integrator = build_integrator(env, all_lanes, hermes_for=hermes_for, links=links, notifier=notify,
                                   messages=messages, desk=decisions)

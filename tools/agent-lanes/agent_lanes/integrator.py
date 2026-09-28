@@ -50,9 +50,11 @@ if __package__ in (None, ""):  # `py agent_lanes/integrator.py`
     __package__ = "agent_lanes"
 
 from . import proc as _proc  # noqa: E402
-from .config import ROOT, _load  # noqa: E402
+from .config import ROOT, _chat_thread, _load  # noqa: E402
 from .deps import is_integration_comment, pending_parents, waiting_line  # noqa: E402
 from .hermes import OSCAR_AUTHOR  # noqa: E402
+from .integration import (CHANNEL, FAILED, WAITING, PinnedSummary, link_line, phase_for, render_ficha,  # noqa: E402
+                          repo_name, risk_of, summary_state, summary_text)
 from .notices import MessageStore, TaskNotices, render, status_line, truncate  # noqa: E402
 from .telegram import telegram_target  # noqa: E402
 from .verify import render_test_cmd  # noqa: E402
@@ -129,6 +131,10 @@ class Policy:
     # on_merge: texto del botón y aviso. MigraTeam (28-09) fusiona en develop = staging, nunca en master.
     merge_label: str = "🚀 Fusionar y desplegar a producción"
     merge_warning: str = ""
+    # Cabecera de la ficha en el tema de Integración: staging (🟢) | manual (🟠, deploy con botón) | production (🔴).
+    # Vacío = se deduce del deploy asumiendo lo peor (on_merge = 🔴 PRODUCCIÓN). risk_label cambia el texto (OSCAR HQ).
+    risk: str = ""
+    risk_label: str = ""
 
 
 @dataclass(frozen=True)
@@ -139,6 +145,9 @@ class IntegratorSettings:
     deploy_timeout_seconds: int = 900
     poll_seconds: int = 20
     policies: dict = field(default_factory=dict)
+    # Tema de Integración (`integration_telegram` de lanes.yaml): fichas + resumen fijado + copia en el DM de Oscar.
+    # None = los avisos siguen en el tema del carril, con el formato de siempre.
+    integration_telegram: tuple[str, str] | None = None
 
 
 def _truthy(v) -> bool:
@@ -147,7 +156,8 @@ def _truthy(v) -> bool:
 
 def load_integrator_settings(path: Path | None = None, env: dict | None = None) -> IntegratorSettings:
     """`integrator:` de lanes.yaml + INTEGRATOR_ENABLED (entorno del proceso o .env). Sin sección: apagado."""
-    cfg = (_load(path) or {}).get("integrator") or {}
+    data = _load(path) or {}
+    cfg = data.get("integrator") or {}
     env = env or {}
     enabled = _truthy(os.environ.get("INTEGRATOR_ENABLED", env.get("INTEGRATOR_ENABLED")))
     # INTEGRATOR_LANES=claude-oscarhq,... limita los carriles activos sin tocar sus políticas (vacío = todos).
@@ -168,7 +178,8 @@ def load_integrator_settings(path: Path | None = None, env: dict | None = None) 
     return IntegratorSettings(enabled=enabled, interval_seconds=int(cfg.get("interval_seconds") or 300),
                               worktree_root=cfg.get("worktree_root") or str(ROOT / ".state" / "integrator" / "wt"),
                               deploy_timeout_seconds=int(cfg.get("deploy_timeout_seconds") or 900),
-                              poll_seconds=int(cfg.get("poll_seconds") or 20), policies=policies)
+                              poll_seconds=int(cfg.get("poll_seconds") or 20), policies=policies,
+                              integration_telegram=_chat_thread(data.get("integration_telegram")))
 
 
 # --- gates puros ---------------------------------------------------------------------------------------
@@ -279,7 +290,8 @@ class Integrator:
                  runner=_proc.run, gh_exe: str = GH_EXE, railway_exe: str = RAILWAY_EXE,
                  clock: Callable[[], float] = time.monotonic, sleep: Callable[[float], None] = time.sleep,
                  http_get: Callable[[str], tuple[int, str]] | None = None, state_dir: Path = STATE_DIR,
-                 dry_run: bool = False, out: Callable[[str], None] = print):
+                 dry_run: bool = False, out: Callable[[str], None] = print,
+                 now: Callable[[], float] = time.time):
         self.settings = settings
         self.lanes = lanes
         self.hermes_for = hermes_for
@@ -299,6 +311,12 @@ class Integrator:
         self._lock = threading.Lock()  # worktrees temporales y fetch: una operación git a la vez
         self._deploying = threading.Lock()  # un deploy a la vez (dos 🚀 seguidos no encadenan dos `railway up`)
         self._last_pass: float | None = None
+        self._now = now  # reloj de pared: antigüedad del resumen fijado (self._clock es monotónico)
+        # Resumen fijado del tema de Integración: se edita en cada pasada (y tras cada botón) si cambia.
+        target = settings.integration_telegram
+        self.pinned = (PinnedSummary(notifier, target, self.state_dir / "pinned.json")
+                       if target and notifier and not dry_run else None)
+        self._seen: list[tuple[object, Policy, str]] = []  # (carril, política, tarea) vistos en la última pasada
 
     # --- utilidades ----------------------------------------------------------------------------------
 
@@ -346,7 +364,9 @@ class Integrator:
         self.state_dir.mkdir(parents=True, exist_ok=True)
         path = self._state_path(tid)
         tmp = path.with_suffix(f".{os.getpid()}.{threading.get_ident()}.tmp")
-        tmp.write_text(json.dumps({**self._state(tid), **data, "updated": time.time()}), encoding="utf-8")
+        cur = self._state(tid)
+        since = {} if cur.get("since") else {"since": self._now()}  # pendiente desde (antigüedad del resumen)
+        tmp.write_text(json.dumps({**cur, **since, **data, "updated": time.time()}), encoding="utf-8")
         os.replace(tmp, path)
 
     def _comment(self, lane, tid: str, text: str) -> None:
@@ -367,6 +387,7 @@ class Integrator:
             return {}
         self._last_pass = now
         results = {}
+        seen = []
         for name, policy in self.settings.policies.items():
             lane = self.lanes.get(name)
             if not lane:
@@ -375,8 +396,11 @@ class Integrator:
                 tasks = self.hermes_for(lane.board).list_status(lane.name, "done")
             except Exception as exc:
                 log.warning("integrador %s: no se pudieron listar tareas: %s", name, exc)
+                seen += [x for x in self._seen if x[0] is lane]  # sin listado: se conserva lo de la pasada anterior
                 continue
             for task in tasks:
+                if TID_RE.fullmatch(task.get("id") or ""):
+                    seen.append((lane, policy, task["id"]))
                 try:
                     out = self.consider(lane, policy, task)
                 except Exception as exc:  # una tarjeta rota no para las demás
@@ -384,7 +408,28 @@ class Integrator:
                     out = "error"
                 if out:
                     results[task["id"]] = out
+        self._seen = seen
+        self.refresh_summary()
         return results
+
+    def refresh_summary(self) -> str | None:
+        """Edita el mensaje fijado del tema de Integración con lo pendiente (solo si cambia). Nunca lanza."""
+        if not self.pinned or self.dry_run:
+            return None
+        try:
+            entries = []
+            for lane, policy, tid in list(self._seen):
+                st = self._state(tid)
+                state = summary_state(st.get("status") or "", deploy=policy.deploy, migration=st.get("migration"),
+                                      problem=st.get("pr_problem"))
+                if not state or not st.get("pr"):
+                    continue
+                entries.append({"emoji": risk_of(policy).emoji, "pr": st["pr"], "title": st.get("title") or tid,
+                                "state": state, "since": st.get("since")})
+            return self.pinned.update(summary_text(entries, self._now()))
+        except Exception as exc:
+            log.warning("resumen de integración falló: %s", exc)
+            return None
 
     @property
     def approvals_dir(self) -> Path:
@@ -447,12 +492,17 @@ class Integrator:
             return None
         number, url = approval
         task = {**(show.get("task") or {}), **task}
+        from .review import implementation_metadata  # import tardío: review no depende del integrador
+        for_oscar = (implementation_metadata(show) or {}).get("for_oscar")
+        if for_oscar:
+            task["for_oscar"] = str(for_oscar)[:600]
+        about = {"lane": lane.name, "title": (task.get("title") or "")[:200]}  # para el resumen fijado
         pr = self._pr_view(self.links.repo_slug(lane), number)
         problem = self._pr_problem(lane, tid, pr) or self._approval_problem(tid, number, pr, show)
         if problem:
             if st.get("status") != "pr_problem" or st.get("pr_problem") != problem:
                 log.info("%s: PR #%s no integrable: %s", tid, number, problem)
-                self._save(tid, status="pr_problem", pr_problem=problem, pr=number)
+                self._save(tid, status="pr_problem", pr_problem=problem, pr=number, **about)
             return None
         # Dependencias lógicas (kanban link padre -> hijo): los gates solo ven conflictos, no que este PR necesite
         # el código de otro todavía sin integrar. Sin enlace declarado no hay forma de saberlo.
@@ -461,7 +511,7 @@ class Integrator:
             key = ",".join(w["id"] for w in waiting)
             if st.get("status") != "waiting_deps" or st.get("waiting") != key:
                 self._publish_waiting(lane, task, number, url, waiting)
-                self._save(tid, status="waiting_deps", pr=number, pr_url=url, waiting=key)
+                self._save(tid, status="waiting_deps", pr=number, pr_url=url, waiting=key, **about)
             return "waiting_deps"
         if st.get("head_sha") == pr["headRefOid"] and st.get("status") in ("failed", "offered", "merging"):
             return None  # gates ya hechos sobre esta cabeza; se repiten al pulsar si la base se movió
@@ -471,11 +521,12 @@ class Integrator:
             return "dry-run:" + ("ok" if result.ok else "failed")
         if not result.ok:
             self._publish_failed(lane, task, number, url, result)
-            self._save(tid, status="failed", pr=number, pr_url=url, head_sha=result.head_sha, base_sha=result.base_sha)
+            self._save(tid, status="failed", pr=number, pr_url=url, head_sha=result.head_sha, base_sha=result.base_sha,
+                       **about)
             return "gates_failed"
         self._offer(lane, policy, task, number, url, result)
         self._save(tid, status="offered", pr=number, pr_url=url, head_sha=result.head_sha, base_sha=result.base_sha,
-                   migration=result.migration)
+                   migration=result.migration, **about)
         return "offered"
 
     def _pr_view(self, slug: str, number: int) -> dict | None:
@@ -649,23 +700,54 @@ class Integrator:
         base = self.links(lane, tid, branch=False) if callable(self.links) else []
         return [*base, (f"PR #{number}", url)]
 
-    def _text(self, state: str, lane, rec: dict, status: str, bullets=None) -> str:
-        return render(state, rec["task_id"], rec.get("title"), lane.name, status,
-                      self._links(lane, rec["task_id"], rec["pr_number"], rec["pr_url"]), bullets,
-                      body=rec.get("body"))
+    def _text(self, state: str, lane, rec: dict, status: str, bullets=None, *, phase: str | None = None,
+              override: str | None = None) -> str:
+        """Sin tema de Integración: el aviso de siempre. Con él: ficha con cabecera por riesgo (integration.py)."""
+        links = self._links(lane, rec["task_id"], rec["pr_number"], rec["pr_url"])
+        if not self.settings.integration_telegram:
+            return render(state, rec["task_id"], rec.get("title"), lane.name, status, links, bullets,
+                          body=rec.get("body"))
+        phase = phase or phase_for(state, status)
+        if override is None and state == "blocked":
+            override = FAILED
+        # Tras fusionar/desplegar, la nota "fusionar NO despliega…" ya no aporta.
+        deploy = None if phase in ("FUSIONADO", "DESPLEGANDO", "DESPLEGADO") else rec.get("deploy_note")
+        return render_ficha(risk=risk_of(self.settings.policies.get(lane.name)), phase=phase, override=override,
+                            tid=rec["task_id"], title=rec.get("title"), repo=repo_name(lane), base=lane.base,
+                            status=status, pr=rec.get("pr_number"), for_oscar=rec.get("for_oscar"),
+                            gates=rec.get("gates") or (), risks=rec.get("risks") or (), deploy=deploy,
+                            deps=rec.get("deps") or (), links=links)
 
-    def _rec(self, lane, task: dict, number: int, url: str, result: GateResult) -> dict:
-        return {"kind": "integrate", "task_id": task["id"], "board": lane.board, "lane": lane.name,
-                "title": task.get("title") or "", "body": (task.get("body") or "")[:4000], "pr_number": number,
-                "pr_url": url, "head_sha": result.head_sha, "base_sha": result.base_sha,
-                "migration": result.migration, "changed_files": result.changed_files[:50]}
+    def _rec(self, lane, task: dict, number: int, url: str, result: GateResult | None = None,
+             policy: Policy | None = None) -> dict:
+        rec = {"kind": "integrate", "task_id": task["id"], "board": lane.board, "lane": lane.name,
+               "title": task.get("title") or "", "body": (task.get("body") or "")[:4000], "pr_number": number,
+               "pr_url": url, **({"for_oscar": task["for_oscar"]} if task.get("for_oscar") else {})}
+        if result is not None:
+            policy = policy or self.settings.policies.get(lane.name) or Policy(lane=lane.name)
+            rec.update({"head_sha": result.head_sha, "base_sha": result.base_sha, "migration": result.migration,
+                        "changed_files": result.changed_files[:50],
+                        # campos de la ficha: también sirven para redibujarla tras pulsar un botón
+                        "gates": [f"✔ {p}" for p in result.passed] + [f"⛔ {r}" for r in result.reasons],
+                        "risks": self._risk_lines(result), "deploy_note": self._deploy_note(policy, result)})
+        return rec
 
-    def _publish(self, lane, task: dict, text: str, markup: dict | None = None) -> None:
+    def _publish(self, lane, task: dict, text: str, markup: dict | None = None, *, link: str | None = None) -> None:
+        """Con tema de Integración: aviso allí (nunca en el origen de la tarea) + copia espejo en el DM de Oscar; en el
+        tema del carril queda solo `link` (línea corta con enlace). Sin él: el tema del carril, como siempre."""
         if not self._notices:
             return
+        target = self.settings.integration_telegram
         try:
-            self._notices.publish(task["id"], text, telegram_target(task.get("body")), lane.telegram, alert=True,
-                                  reply_markup=markup)
+            if target:
+                owner = str(getattr(self.desk, "owner_id", "") or "") if self.desk else ""
+                prefix = link or f"🚦 {task['id']} · {truncate(task.get('title'), 40)}"
+                self._notices.publish(task["id"], text, None, target, alert=True, reply_markup=markup,
+                                      channel=CHANNEL, leave_behind=lambda sent: link_line(prefix, sent),
+                                      **({"mirror_to": owner} if owner else {}))
+            else:
+                self._notices.publish(task["id"], text, telegram_target(task.get("body")), lane.telegram,
+                                      alert=True, reply_markup=markup)
         except Exception as exc:
             log.warning("%s: aviso del integrador falló: %s", task["id"], exc)
 
@@ -673,17 +755,23 @@ class Integrator:
         rec = self._rec(lane, task, number, url, result)
         self._comment(lane, task["id"], f"INTEGRADOR: gates fallidos · PR #{number} @ {result.head_sha[:12]} sobre "
                       f"{lane.base} @ {result.base_sha[:12]}\n" + "\n".join(f"- {d}" for d in result.detail or result.reasons))
-        self._publish(lane, task, self._text("blocked", lane, rec, status_line(
-            f"⛔ no se puede integrar PR #{number}", "; ".join(result.reasons)), [f"✔ {p}" for p in result.passed]))
+        if self.settings.integration_telegram:  # la ficha ya lista cada gate con ✔/⛔
+            status = status_line(f"⛔ no se puede integrar PR #{number}", "detalle en la tarjeta")
+        else:
+            status = status_line(f"⛔ no se puede integrar PR #{number}", "; ".join(result.reasons))
+        self._publish(lane, task, self._text("blocked", lane, rec, status, [f"✔ {p}" for p in result.passed],
+                                             phase="NO SE PUEDE INTEGRAR"),
+                      link=f"⛔ PR #{number} no se puede integrar")
 
     def _publish_waiting(self, lane, task: dict, number: int, url: str, waiting: list[dict]) -> None:
         self._comment(lane, task["id"], f"INTEGRADOR: PR #{number} en espera · " + waiting_line(waiting, limit=10))
-        rec = {"task_id": task["id"], "title": task.get("title") or "", "body": (task.get("body") or "")[:4000],
-               "pr_number": number, "pr_url": url}
+        rec = {**self._rec(lane, task, number, url),
+               "deps": [f"{w['id']} · {truncate(w['title'], 40)} · {w['reason']}" for w in waiting[:5]]}
         self._publish(lane, task, self._text("blocked", lane, rec, status_line(
             f"⏸ PR #{number} aprobado, pero depende de otra tarea", waiting_line(waiting)),
             [f"• {w['id']} · {w['title'][:60]} · {w['reason']}" for w in waiting[:5]]
-            + ["se ofrecerá Fusionar en cuanto estén integradas"]))
+            + ["se ofrecerá Fusionar en cuanto estén integradas"], phase="EN ESPERA", override=WAITING),
+            link=f"⏸ PR #{number} en espera de dependencias")
 
     def _spec(self, policy: Policy, migration: str | None) -> list[list[dict]] | None:
         if policy.deploy == DEPLOY_ON_MERGE:
@@ -691,23 +779,31 @@ class Integrator:
             return None if migration else [[{"text": policy.merge_label, "action": INT_MERGE_DEPLOY}]]
         return [[{"text": "🔀 Fusionar", "action": INT_MERGE}]]
 
-    def _bullets(self, policy: Policy, result: GateResult) -> list[str]:
-        out = [f"✔ {p}" for p in result.passed]
+    @staticmethod
+    def _risk_lines(result: GateResult) -> list[str]:
         if result.migration == "alembic":
-            out.append("⚠️ requiere migración de Alembic (no se aplica sola desde aquí)")
-        elif result.migration == "infra":
-            out.append("⚠️ toca infraestructura de deploy: " + ", ".join(result.sensitive[:3]) + " (revísalo tú)")
-        elif result.migration:
-            out.append("⚠️ requiere migración manual (supabase/migrations)")
+            return ["⚠️ requiere migración de Alembic (no se aplica sola desde aquí)"]
+        if result.migration == "infra":
+            return ["⚠️ toca infraestructura de deploy: " + ", ".join(result.sensitive[:3]) + " (revísalo tú)"]
+        if result.migration:
+            return ["⚠️ requiere migración manual (supabase/migrations)"]
+        return []
+
+    @staticmethod
+    def _deploy_note(policy: Policy, result: GateResult) -> str | None:
         if policy.deploy == DEPLOY_ON_MERGE:
-            out.append(NEEDS_MIGRATION if result.migration else (policy.merge_warning or MIGRATEAM_WARNING))
-        elif policy.deploy == DEPLOY_RAILWAY_UP:
-            out.append("fusionar NO despliega; el deploy es otro botón" if not result.migration else
-                       "fusionar NO despliega; " + NEEDS_MIGRATION)
-        return out
+            return NEEDS_MIGRATION if result.migration else (policy.merge_warning or MIGRATEAM_WARNING)
+        if policy.deploy == DEPLOY_RAILWAY_UP:
+            return ("fusionar NO despliega; el deploy es otro botón" if not result.migration else
+                    "fusionar NO despliega; " + NEEDS_MIGRATION)
+        return None
+
+    def _bullets(self, policy: Policy, result: GateResult) -> list[str]:
+        note = self._deploy_note(policy, result)
+        return [f"✔ {p}" for p in result.passed] + self._risk_lines(result) + ([note] if note else [])
 
     def _offer(self, lane, policy: Policy, task: dict, number: int, url: str, result: GateResult) -> None:
-        rec = self._rec(lane, task, number, url, result)
+        rec = self._rec(lane, task, number, url, result, policy)
         spec = self._spec(policy, result.migration)
         markup = None
         if spec and self.desk:
@@ -719,7 +815,8 @@ class Integrator:
                       (f" · requiere migración ({result.migration})" if result.migration else "") +
                       " · esperando a Oscar")
         self._publish(lane, task, self._text("done", lane, rec, status_line(
-            f"🚦 Listo para integrar PR #{number}", hint), self._bullets(policy, result)), markup)
+            f"🚦 Listo para integrar PR #{number}", hint), self._bullets(policy, result),
+            phase="LISTO PARA INTEGRAR"), markup, link=f"🚦 PR #{number} listo para integrar")
 
     def _report(self, tid: str, number: int, result: GateResult, policy: Policy) -> None:
         self._out(f"[dry-run] {tid} · PR #{number} @ {result.head_sha[:12]} sobre {result.base_sha[:12]}: "
@@ -739,6 +836,12 @@ class Integrator:
 
     def on_button(self, action: str, rec: dict, where: dict, desk) -> bool:
         """True = acción terminada (bien o mal, con su aviso). False = no se hizo nada: vuelven los botones."""
+        try:
+            return self._on_button(action, rec, where, desk)
+        finally:
+            self.refresh_summary()  # fusionado/desplegado: el fijado no espera a la próxima pasada
+
+    def _on_button(self, action: str, rec: dict, where: dict, desk) -> bool:
         if not self.settings.enabled or rec.get("kind") != "integrate":
             return False
         policy = self.settings.policies.get(rec.get("lane"))
@@ -757,11 +860,22 @@ class Integrator:
 
     def _edit(self, desk, lane, rec: dict, where: dict, state: str, status: str, bullets=None,
               markup: dict | None = None) -> None:
-        try:
-            desk.notifier.edit(where["chat_id"], where["message_id"], self._text(state, lane, rec, status, bullets),
-                               **({"reply_markup": markup} if markup else {}))
-        except Exception as exc:
-            log.warning("%s: no se pudo editar el aviso: %s", rec.get("task_id"), exc)
+        """Edita el mensaje pulsado y TODAS las copias del aviso (tema de Integración, DM): siempre sincronizadas."""
+        text = self._text(state, lane, rec, status, bullets)
+        extra = {"reply_markup": markup} if markup else {}
+        targets = [where] if where and where.get("message_id") else []
+        if self._notices:
+            targets += self._notices.store.all_messages(rec.get("task_id") or "")
+        seen = set()
+        for msg in targets:
+            key = (str(msg.get("chat_id")), str(msg.get("message_id")))
+            if key in seen:
+                continue
+            seen.add(key)
+            try:
+                desk.notifier.edit(msg["chat_id"], msg["message_id"], text, **extra)
+            except Exception as exc:
+                log.warning("%s: no se pudo editar el aviso %s: %s", rec.get("task_id"), msg.get("message_id"), exc)
 
     def _merge(self, lane, policy: Policy, rec: dict, where: dict, desk) -> bool:
         tid, number = rec["task_id"], int(rec["pr_number"])
