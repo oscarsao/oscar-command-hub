@@ -130,6 +130,13 @@ def test_lanes_yaml_declares_the_integration_topic_and_risks():
     assert header(risk_of(s.policies["claude-migrateam"]), "listo") == "🟢 STAGING · LISTO"
 
 
+def test_integrator_lanes_filter_does_not_hide_policies_from_the_ficha(monkeypatch):
+    monkeypatch.setenv("INTEGRATOR_LANES", "claude-oscarhq")
+    assert list(load_integrator_settings(env={}).policies) == ["claude-oscarhq"]  # el integrador sí se limita
+    route = IntegrationRoute(INTEG, load_integrator_settings(env={}, lane_filter=False).policies)
+    assert header(risk_of(route.policies.get("claude-migrateam")), "para aprobar") == "🟢 STAGING · PARA APROBAR"
+
+
 def test_without_integration_key_the_topic_is_off(tmp_path):
     y = tmp_path / "l.yaml"
     y.write_text("lanes: {}\n", encoding="utf-8")
@@ -403,6 +410,10 @@ def test_summary_text_and_states():
     assert summary_text([], NOW) == SUMMARY_EMPTY
     assert age_label(NOW - 30 * 3600, NOW) == "30 h" and age_label(None, NOW) == "?"
     assert summary_state("deployed") is None and summary_state("integrated") is None
+    # fusionado o cerrado a mano en GitHub (p. ej. MigraTeam con migración, sin botón): sale de la lista
+    assert summary_state("pr_problem", problem="el PR está merged") is None
+    assert summary_state("pr_problem", problem="el PR está closed") is None
+    assert summary_state("pr_problem", problem="hay commits después de tu aprobación").startswith("⚠️ hay commits")
     assert summary_state("merged", deploy="on_merge") == "🚀 fusionado, deploy sin confirmar"
     assert summary_state("offered", deploy="on_merge", migration="alembic") == "⏸ migración pendiente"
 

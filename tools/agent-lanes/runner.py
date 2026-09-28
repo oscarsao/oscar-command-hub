@@ -117,7 +117,7 @@ def main(argv: list[str] | None = None) -> int:
                            notify=notify, exclude=set(args.exclude), messages=messages, links=links, decisions=decisions)
                 for l in selected.values() if l.kind == "ops"]
     # Tema de Integración (integration_telegram): la tarjeta done con ✅ Aprobar va allí aunque el integrador esté apagado.
-    integration = (IntegrationRoute(tg_settings["integration"], load_integrator_settings(env=env).policies)
+    integration = (IntegrationRoute(tg_settings["integration"], load_integrator_settings(env=env, lane_filter=False).policies)
                    if tg_settings.get("integration") else None)
     for name, lane in selected.items():
         if lane.kind == "review":

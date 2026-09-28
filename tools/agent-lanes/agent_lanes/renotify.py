@@ -338,7 +338,7 @@ def main(argv: list[str]) -> int:
                         owner_id=env.get("OWNER_TELEGRAM_ID") or OWNER_TELEGRAM_ID)
     from .integration import IntegrationRoute
     from .integrator import load_integrator_settings
-    integration = (IntegrationRoute(tg_settings["integration"], load_integrator_settings(env=env).policies)
+    integration = (IntegrationRoute(tg_settings["integration"], load_integrator_settings(env=env, lane_filter=False).policies)
                    if tg_settings.get("integration") else None)
     r = Renotifier(lanes, hermes_for=hermes_for, notifier=notifier, messages=MessageStore(MESSAGES_DIR),
                    links=links, desk=desk, integration=integration)

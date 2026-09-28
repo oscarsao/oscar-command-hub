@@ -154,8 +154,11 @@ def _truthy(v) -> bool:
     return str(v or "").strip().lower() in ("1", "true", "yes", "si", "sí", "on")
 
 
-def load_integrator_settings(path: Path | None = None, env: dict | None = None) -> IntegratorSettings:
-    """`integrator:` de lanes.yaml + INTEGRATOR_ENABLED (entorno del proceso o .env). Sin sección: apagado."""
+def load_integrator_settings(path: Path | None = None, env: dict | None = None, *,
+                             lane_filter: bool = True) -> IntegratorSettings:
+    """`integrator:` de lanes.yaml + INTEGRATOR_ENABLED (entorno del proceso o .env). Sin sección: apagado.
+    `lane_filter=False`: todas las políticas aunque INTEGRATOR_LANES limite los carriles activos (la cabecera de
+    riesgo de las fichas no puede caer a 🟢 SIN DEPLOY en un carril cuyo merge despliega)."""
     data = _load(path) or {}
     cfg = data.get("integrator") or {}
     env = env or {}
@@ -165,7 +168,7 @@ def load_integrator_settings(path: Path | None = None, env: dict | None = None) 
             if x.strip()}
     policies = {}
     for name, p in (cfg.get("lanes") or {}).items():
-        if only and name not in only:
+        if lane_filter and only and name not in only:
             continue
         p = dict(p or {})
         p["manual_migrations"] = tuple(p.get("manual_migrations") or ())

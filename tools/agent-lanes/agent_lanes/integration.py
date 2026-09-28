@@ -263,6 +263,8 @@ def summary_state(status: str, *, deploy: str = "none", migration: str | None = 
     if status == "stale":
         return "🔄 se revisa de nuevo"
     if status == "pr_problem":
+        if (problem or "").startswith("el PR está "):  # fusionado/cerrado a mano en GitHub: ya no está pendiente
+            return None
         return "⚠️ " + truncate(problem or "problema con el PR", 60)
     if status == "merged":
         if migration:
