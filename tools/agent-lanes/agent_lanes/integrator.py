@@ -81,13 +81,31 @@ UUID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{
 SECRET_RULES: tuple[tuple[str, re.Pattern], ...] = (
     ("clave sk-", re.compile(r"(?<![\w-])sk-(?:[A-Za-z]+-)*[A-Za-z0-9_-]{20,}")),
     ("token de GitHub", re.compile(r"\b(?:gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{40,})\b")),
-    ("URL de Postgres con contraseña", re.compile(r"postgres(?:ql)?://[^\s:/@'\"]+:[^\s@/'\"]+@")),
     ("JWT largo (eyJ…)", re.compile(r"\beyJ[A-Za-z0-9_-]{15,}\.eyJ[A-Za-z0-9_-]{15,}\.[A-Za-z0-9_-]{10,}")),
-    ("service_role con valor", re.compile(
-        r"service_role[\w]*[\"']?\s*[:=]\s*[\"']?(?!\s*(?:os\.|process\.|\$\{|<|None|null|\"\"|''))[A-Za-z0-9._-]{20,}",
-        re.I)),
     ("clave privada", re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----")),
+    ("clave de Stripe live", re.compile(r"\b(?:sk|rk)_live_[A-Za-z0-9]{20,}")),
+    ("clave de AWS", re.compile(r"\bAKIA[0-9A-Z]{16}\b")),
+    ("token de bot de Telegram", re.compile(r"\b\d{8,10}:AA[A-Za-z0-9_-]{33}\b")),
+    ("token de Slack", re.compile(r"\bxox[abposr]-[A-Za-z0-9-]{10,}")),
+    ("clave de Google", re.compile(r"\bAIza[0-9A-Za-z_-]{35}\b")),
+    ("clave secreta de Supabase", re.compile(r"\bsb_secret_[A-Za-z0-9_-]{20,}")),
+    ("URL de base de datos con contraseña", re.compile(
+        r"\b(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis)(?:\+\w+)?://[^\s:/@'\"]+:[^\s@/'\"]+@")),
+    ("service_role con valor", re.compile(
+        r"service[_-]?role[\w-]*[\"']?\s*[:=]\s*[\"']?(?!\s*(?:os\.|process\.|\$\{|<|None|null|\"\"|''))"
+        r"[A-Za-z0-9._-]{20,}", re.I)),
 )
+
+# Ejecutables en el diff: con cwd = worktree, cmd.exe y CreateProcess los encuentran antes que el PATH
+# (py.bat, git.exe...): ejecutarían código del PR con las credenciales de Oscar. Gate que falla, sin excepción.
+EXEC_SUFFIXES = (".bat", ".cmd", ".exe", ".com", ".ps1", ".vbs", ".js", ".dll", ".scr", ".msi")
+# Un .py con nombre de módulo de la stdlib (scripts/argparse.py) suplanta el import de un script de la base.
+STDLIB_NAMES = frozenset(getattr(sys, "stdlib_module_names", ()))
+# Entorno mínimo del test_cmd: sin tokens del runner y sin buscar ejecutables en el directorio actual.
+SAFE_ENV_KEYS = ("PATH", "PATHEXT", "SYSTEMROOT", "WINDIR", "COMSPEC", "TEMP", "TMP", "USERPROFILE",
+                 "LOCALAPPDATA", "APPDATA", "PROGRAMDATA", "PROGRAMFILES", "HOMEDRIVE", "HOMEPATH")
+TID_RE = re.compile(r"t_[0-9A-Za-z]{1,40}")
+APPROVALS_DIR = STATE_DIR / "approvals"
 
 
 # --- configuración -----------------------------------------------------------------------------------
@@ -104,6 +122,9 @@ class Policy:
     railway_environment: str = ""
     health_url: str = ""
     health_commit_key: str = ""              # clave del JSON de health con el sha desplegado (MigraTeam: commit_sha)
+    # Infraestructura de arranque/deploy (Procfile, railway.*, alembic/env.py...): se fusiona, pero sin botón de
+    # deploy (MigraTeam: sin botón) y con aviso, igual que una migración.
+    sensitive_paths: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -129,6 +150,9 @@ def load_integrator_settings(path: Path | None = None, env: dict | None = None) 
     for name, p in (cfg.get("lanes") or {}).items():
         p = dict(p or {})
         p["manual_migrations"] = tuple(p.get("manual_migrations") or ())
+        p["sensitive_paths"] = tuple(p.get("sensitive_paths") or ())
+        if p.get("health_url") and not str(p["health_url"]).startswith("https://"):
+            raise ValueError(f"integrator.lanes.{name}.health_url debe ser https://")
         policies[name] = Policy(lane=name, **{k: ("" if v is None else v) for k, v in p.items()})
         if policies[name].deploy not in (DEPLOY_RAILWAY_UP, DEPLOY_ON_MERGE, DEPLOY_NONE):
             raise ValueError(f"integrator.lanes.{name}.deploy desconocido: {policies[name].deploy}")
@@ -141,13 +165,23 @@ def load_integrator_settings(path: Path | None = None, env: dict | None = None) 
 # --- gates puros ---------------------------------------------------------------------------------------
 
 def scan_secrets(diff: str) -> list[tuple[str, int, str]]:
-    """Líneas AÑADIDAS de un diff unificado -> [(archivo, línea, regla)]. Nunca devuelve el valor."""
-    hits, path, line = [], None, 0
+    """Líneas AÑADIDAS de un diff unificado -> [(archivo, línea, regla)]. Nunca devuelve el valor.
+    Las cabeceras `---`/`+++` solo cuentan justo tras `diff --git` (una línea añadida `++ x` no es cabecera)."""
+    hits, path, line, header = [], None, 0, False
     for raw in (diff or "").splitlines():
-        if raw.startswith("+++ "):
-            p = raw[4:].strip()
-            path = None if p == "/dev/null" else (p[2:] if p.startswith("b/") else p)
+        if raw.startswith("diff --git "):
+            header, path = True, None
             continue
+        if header:
+            if raw.startswith("+++ "):
+                p = raw[4:].strip()
+                path = None if p == "/dev/null" else (p[2:] if p.startswith("b/") else p)
+            elif raw.startswith("Binary files"):
+                hits.append((raw[13:].split(" and ")[-1].split(" differ")[0].removeprefix("b/"), 0,
+                             "archivo binario sin revisar"))
+            if not raw.startswith("@@"):
+                continue
+            header = False
         if raw.startswith("@@"):
             m = re.search(r"\+(\d+)", raw)
             line = int(m.group(1)) if m else 0
@@ -224,6 +258,7 @@ class GateResult:
     passed: list[str] = field(default_factory=list)
     changed_files: list[str] = field(default_factory=list)
     migration: str | None = None                       # "alembic" | "supabase" | None
+    sensitive: list[str] = field(default_factory=list)  # infraestructura de deploy tocada
     base_sha: str = ""
     head_sha: str = ""
     test_exit: int | None = None
@@ -253,6 +288,7 @@ class Integrator:
         self.dry_run = dry_run
         self._out = out
         self._lock = threading.Lock()  # worktrees temporales y fetch: una operación git a la vez
+        self._deploying = threading.Lock()  # un deploy a la vez (dos 🚀 seguidos no encadenan dos `railway up`)
         self._last_pass: float | None = None
 
     # --- utilidades ----------------------------------------------------------------------------------
@@ -268,8 +304,9 @@ class Integrator:
         kw = {"cwd": cwd} if cwd else {}
         if env:
             kw["env"] = env
+        # stdin cerrado: `railway up` con la sesión caducada no puede quedarse esperando un login.
         return self._run(args, capture_output=True, text=True, encoding="utf-8", errors="replace",
-                         timeout=timeout, shell=shell, **kw)
+                         timeout=timeout, shell=shell, stdin=subprocess.DEVNULL, **kw)
 
     def _git(self, repo: str, *args: str, timeout: int = 300) -> subprocess.CompletedProcess:
         return self._exec(["git", "-C", repo, *args], timeout=timeout)
@@ -340,6 +377,34 @@ class Integrator:
                     results[task["id"]] = out
         return results
 
+    @property
+    def approvals_dir(self) -> Path:
+        return self.state_dir / "approvals"
+
+    def record_approval(self, lane, tid: str, number: int) -> bool:
+        """Lo llama DecisionDesk._approve tras el ✅ de Oscar: registro LOCAL (no un comentario del kanban, que
+        cualquiera con la CLI de hermes puede escribir con --author oscar-telegram) con el PR y su commit de cabeza.
+        El integrador solo actúa sobre ese commit exacto."""
+        slug = self.links.repo_slug(lane) if self.links else None
+        pr = self._pr_view(slug, number) if slug else None
+        sha = (pr or {}).get("headRefOid") or ""
+        if not TID_RE.fullmatch(tid or "") or not re.fullmatch(r"[0-9a-f]{40}", sha):
+            log.warning("%s: no se pudo registrar la aprobación del PR #%s", tid, number)
+            return False
+        self.approvals_dir.mkdir(parents=True, exist_ok=True)
+        path = self.approvals_dir / f"{tid}.json"
+        tmp = path.with_suffix(f".{os.getpid()}.tmp")
+        tmp.write_text(json.dumps({"task_id": tid, "lane": lane.name, "slug": slug, "pr": int(number),
+                                   "head_sha": sha, "at": time.time()}), encoding="utf-8")
+        os.replace(tmp, path)
+        return True
+
+    def _approved_record(self, tid: str) -> dict:
+        try:
+            return json.loads((self.approvals_dir / f"{tid}.json").read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {}
+
     def _approval(self, lane, tid: str, comments: list[dict]) -> tuple[int, str] | None:
         """(número, url) del último APROBADO-OSCAR de Oscar cuyo PR es del repo del carril."""
         slug = self.links.repo_slug(lane) if self.links else None
@@ -358,6 +423,8 @@ class Integrator:
 
     def consider(self, lane, policy: Policy, task: dict) -> str | None:
         tid = task["id"]
+        if not TID_RE.fullmatch(tid or ""):
+            return None
         st = self._state(tid)
         if st.get("status") in ("integrated", "merged", "deployed"):
             return None
@@ -373,7 +440,7 @@ class Integrator:
         number, url = approval
         task = {**(show.get("task") or {}), **task}
         pr = self._pr_view(self.links.repo_slug(lane), number)
-        problem = self._pr_problem(lane, tid, pr)
+        problem = self._pr_problem(lane, tid, pr) or self._approval_problem(tid, number, pr, show)
         if problem:
             if st.get("status") != "pr_problem" or st.get("pr_problem") != problem:
                 log.info("%s: PR #%s no integrable: %s", tid, number, problem)
@@ -404,6 +471,20 @@ class Integrator:
             return json.loads(cp.stdout or "null")
         except json.JSONDecodeError:
             return None
+
+    def _approval_problem(self, tid: str, number: int, pr: dict, show: dict) -> str | None:
+        """El commit a integrar debe ser EXACTAMENTE el que aprobó Oscar (registro local) y el que revisó el carril
+        review (metadata del handoff). Commits empujados después no se integran sin volver a pasar por Oscar."""
+        rec = self._approved_record(tid)
+        if not rec or int(rec.get("pr") or 0) != number:
+            return "sin registro local de tu aprobación para este PR"
+        if rec.get("head_sha") != pr.get("headRefOid"):
+            return "hay commits después de tu aprobación"
+        from .review import implementation_metadata  # import tardío: review no depende del integrador
+        reviewed = str((implementation_metadata(show) or {}).get("head_sha") or "").lower()
+        if reviewed and not pr["headRefOid"].startswith(reviewed):
+            return "el commit del PR no es el que revisó el carril review"
+        return None
 
     @staticmethod
     def _pr_problem(lane, tid: str, pr: dict | None) -> str | None:
@@ -452,7 +533,8 @@ class Integrator:
         res.base_sha = (self._git(repo, "rev-parse", f"{remote}/{base}").stdout or "").strip()
         wt = Path(self.settings.worktree_root) / f"int-{tid}"
         self._remove_worktree(repo, wt)
-        cp = self._git(repo, "worktree", "add", "--detach", str(wt), res.base_sha)
+        cp = self._git(repo, "-c", f"core.hooksPath={self._nohooks()}", "worktree", "add", "--detach", str(wt),
+                       res.base_sha)
         if cp.returncode != 0:
             res.reasons.append("no se pudo preparar la copia de prueba")
             res.detail.append(f"git worktree add: {(cp.stderr or '').strip()[:300]}")
@@ -473,7 +555,7 @@ class Integrator:
                           "merge", "--no-ff", "--no-edit", res.head_sha)
         if merge.returncode != 0:
             conflicts = (self._git(w, "diff", "--name-only", "--diff-filter=U").stdout or "").split()
-            self._git(w, "merge", "--abort")
+            self._git(w, "-c", f"core.hooksPath={self._nohooks()}", "merge", "--abort")
             res.reasons.append(f"tiene conflictos con {lane.base}" +
                                (f" en {len(conflicts)} archivo(s)" if conflicts else ""))
             res.detail.append("conflictos: " + (", ".join(conflicts[:20]) or (merge.stderr or "").strip()[:300]))
@@ -482,7 +564,24 @@ class Integrator:
         rng = f"{res.base_sha}...{res.head_sha}"
         res.changed_files = (self._git(w, "diff", "--no-renames", "--name-only", rng).stdout or "").split()
 
-        hits = scan_secrets(self._git(w, "diff", "--no-renames", "-U0", rng).stdout or "")
+        forbidden = [f for f in res.changed_files if any(f.startswith(p) for p in lane.forbidden_paths)]
+        if forbidden:
+            res.reasons.append(f"toca rutas vetadas del carril: {', '.join(forbidden[:5])}")
+        execs = [f for f in res.changed_files if f.lower().endswith(EXEC_SUFFIXES)]
+        shadow = [f for f in res.changed_files if f.endswith(".py") and Path(f).stem in STDLIB_NAMES]
+        if execs or shadow:
+            res.reasons.append("añade ejecutables o módulos que suplantan la librería estándar: "
+                               + ", ".join((execs + shadow)[:5]))
+        if any(Path(f).name == ".gitattributes" or (Path(f).name.startswith(".env") and not f.endswith(
+                (".example", ".sample", ".template"))) for f in res.changed_files):
+            res.reasons.append("toca .gitattributes o un .env (revísalo a mano)")
+        res.sensitive = [f for f in res.changed_files
+                         if any(f.startswith(p) or Path(f).name == p for p in policy.sensitive_paths)]
+
+        # --text/--no-textconv/--no-ext-diff/--no-color: ni .gitattributes, ni binarios, ni la config del repo
+        # pueden dejar ciego al scan.
+        hits = scan_secrets(self._git(w, "diff", "--no-renames", "--no-color", "--no-ext-diff", "--no-textconv",
+                                      "--text", "-U0", rng).stdout or "")
         if hits:
             where = ", ".join(f"{p}:{n} ({rule})" for p, n, rule in hits[:10])
             res.reasons.append(f"posible secreto en el código: {where}")
@@ -500,15 +599,20 @@ class Integrator:
             res.migration = "alembic"
         if any(f.startswith(p) for p in policy.manual_migrations for f in res.changed_files):
             res.migration = res.migration or "supabase"
+        if res.sensitive:  # infraestructura de arranque/deploy: el deploy queda en manual, como una migración
+            res.migration = res.migration or "infra"
+            res.detail.append("toca infraestructura de deploy: " + ", ".join(res.sensitive[:10]))
 
         if res.reasons or not lane.test_cmd:
             return  # nunca se ejecuta test_cmd sobre un diff que ya falló
         try:
-            t = self._exec(render_test_cmd(lane), cwd=w, timeout=1800, shell=True)
+            t = self._exec(render_test_cmd(lane), cwd=w, timeout=1800, shell=True, env=safe_env())
             res.test_exit = t.returncode
             if t.returncode != 0:
                 res.reasons.append("los tests del carril fallan con el PR fusionado")
-                res.detail.append(f"test_cmd exit {t.returncode}: {(t.stdout + t.stderr).strip()[-400:]}")
+                # A la tarjeta solo el exit: la salida puede llevar una línea con un secreto. Completa, al log.
+                res.detail.append(f"test_cmd exit {t.returncode} (salida en el log del runner)")
+                log.warning("integrador test_cmd exit %s: %s", t.returncode, (t.stdout + t.stderr).strip()[-1500:])
             else:
                 res.passed.append("tests OK")
         except subprocess.TimeoutExpired:
@@ -516,7 +620,8 @@ class Integrator:
 
     def _remove_worktree(self, repo: str, wt: Path) -> None:
         """Solo worktrees propios del integrador (int-*/intdep-*), nunca lane-<id> ni otros."""
-        assert wt.name.startswith(("int-", "intdep-")), wt
+        if not wt.name.startswith(("int-", "intdep-")) or Path(self.settings.worktree_root) not in wt.parents:
+            raise PermissionError(f"worktree ajeno: {wt}")
         if wt.exists():
             self._git(repo, "worktree", "remove", "--force", str(wt))
         self._git(repo, "worktree", "prune")
@@ -565,6 +670,8 @@ class Integrator:
         out = [f"✔ {p}" for p in result.passed]
         if result.migration == "alembic":
             out.append("⚠️ requiere migración de Alembic (no se aplica sola desde aquí)")
+        elif result.migration == "infra":
+            out.append("⚠️ toca infraestructura de deploy: " + ", ".join(result.sensitive[:3]) + " (revísalo tú)")
         elif result.migration:
             out.append("⚠️ requiere migración manual (supabase/migrations)")
         if policy.deploy == DEPLOY_ON_MERGE:
@@ -660,6 +767,11 @@ class Integrator:
                     f"⛔ no fusionado PR #{number}", "cambió la necesidad de migración", "se revisará de nuevo"))
                 return True
             rec = {**rec, "base_sha": result.base_sha, "migration": result.migration}
+        if self._remote_sha(lane, lane.base) != rec["base_sha"]:  # se movió otra vez durante los gates repetidos
+            self._save(tid, status="stale")
+            self._edit(desk, lane, rec, where, "blocked", status_line(
+                f"⛔ no fusionado PR #{number}", f"{lane.base} cambió durante la comprobación", "se revisará de nuevo"))
+            return True
         self._save(tid, status="merging", head_sha=rec["head_sha"])
         args = ["pr", "merge", str(number), "--repo", slug, "--squash", "--match-head-commit", rec["head_sha"]]
         if pr["headRefName"] == f"lane/{tid}" and not pr.get("isCrossRepository"):
@@ -668,14 +780,18 @@ class Integrator:
         if cp.returncode != 0:
             log.warning("%s: gh pr merge falló: %s", tid, (cp.stderr or "").strip()[:300])
             after = self._pr_view(slug, number) or {}
+            outside = True
             if after.get("state") != "MERGED":
                 self._save(tid, status="offered")
                 self._edit(desk, lane, rec, where, "blocked", status_line(
                     f"⛔ GitHub no aceptó la fusión del PR #{number}", "detalle en el log", "puedes reintentar"))
                 return False
+        else:
+            outside = False
         merged = self._pr_view(slug, number) or {}
         sha = ((merged.get("mergeCommit") or {}).get("oid") or "").strip()
-        self._comment(lane, tid, f"{INTEGRATED_PREFIX} {sha or '?'} · PR {rec['pr_url']}")
+        self._comment(lane, tid, f"{INTEGRATED_PREFIX} {sha or '?'} · PR {rec['pr_url']}"
+                      + (" (fusionado fuera del integrador)" if outside else ""))
         self._save(tid, status="merged", merge_sha=sha)
         rec = {**rec, "merge_sha": sha}
         short = sha[:7] or "?"
@@ -712,6 +828,15 @@ class Integrator:
         return data if isinstance(data, list) else None
 
     def _deploy_railway(self, lane, policy: Policy, rec: dict, where: dict, desk) -> bool:
+        if not self._deploying.acquire(blocking=False):
+            self._edit(desk, lane, rec, where, "blocked", "⛔ ya hay un deploy en curso; vuelve a pulsar cuando acabe")
+            return False
+        try:
+            return self._deploy_railway_locked(lane, policy, rec, where, desk)
+        finally:
+            self._deploying.release()
+
+    def _deploy_railway_locked(self, lane, policy: Policy, rec: dict, where: dict, desk) -> bool:
         tid, sha = rec["task_id"], rec["merge_sha"]
         if not (policy.railway_dir and policy.railway_project and policy.railway_service and policy.railway_environment):
             self._edit(desk, lane, rec, where, "blocked", "⛔ deploy no configurado (ids de Railway en lanes.yaml)")
@@ -739,7 +864,8 @@ class Integrator:
             self._edit(desk, lane, rec, where, "running", status_line(f"🚀 desplegando {sha[:7]}…"))
             wt = Path(self.settings.worktree_root) / f"intdep-{tid}"
             self._remove_worktree(lane.repo, wt)
-            add = self._git(lane.repo, "worktree", "add", "--detach", str(wt), sha)
+            add = self._git(lane.repo, "-c", f"core.hooksPath={self._nohooks()}", "worktree", "add", "--detach",
+                            str(wt), sha)
             if add.returncode != 0:
                 self._edit(desk, lane, rec, where, "blocked", "⛔ no se desplegó: no se pudo preparar la copia")
                 return False
@@ -839,10 +965,25 @@ class Integrator:
         return True
 
 
+def safe_env() -> dict[str, str]:
+    """Entorno mínimo para el test_cmd: sin tokens del proceso y sin que cmd.exe busque `py`/`git` en el
+    directorio actual (un py.bat del PR se ejecutaría en lugar del real)."""
+    env = {k: v for k, v in os.environ.items() if k.upper() in SAFE_ENV_KEYS}
+    env["NoDefaultCurrentDirectoryInExePath"] = "1"
+    return env
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *a, **kw):  # un 30x no puede llevar el health a otro host
+        return None
+
+
 def _http_get(url: str, timeout: float = 15) -> tuple[int, str]:
+    if not url.startswith("https://"):
+        raise ValueError("health_url debe ser https")
     req = urllib.request.Request(url, headers={"User-Agent": "agent-lanes-integrator"})
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with urllib.request.build_opener(_NoRedirect).open(req, timeout=timeout) as resp:
             return resp.status, resp.read(20000).decode("utf-8", "replace")
     except urllib.error.HTTPError as exc:
         return exc.code, ""

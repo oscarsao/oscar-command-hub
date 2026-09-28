@@ -117,6 +117,8 @@ integrator:
       # respondería el contenedor viejo). Ids leídos con `railway list --json` el 28-09 (no son secretos).
       deploy: railway_up
       manual_migrations: [supabase/migrations/]
+      # Infraestructura de arranque/deploy: se puede fusionar, pero sin botón de deploy (lo revisa Oscar).
+      sensitive_paths: [railway.json, railway.toml, nixpacks.toml, Procfile, Dockerfile, .railwayignore, requirements.txt, .github/]
       railway_dir: C:/Users/oscar/dev/oscar-hq
       railway_project: 34da294f-afdf-47f9-8ea9-5ffe3551e8f0      # Oscar HQ
       railway_service: 8dcda4bf-5a6f-49f5-aa75-b0b38f82e9ed      # Oscar HQ
@@ -128,5 +130,7 @@ integrator:
       # verifica con GET /health hasta que commit_sha sea el del merge (confirmado el 28-09 que lo devuelve).
       deploy: on_merge
       alembic_versions: backend/alembic/versions/
+      # alembic/env.py, alembic.ini, Procfile... corren en el arranque de Railway contra la BD de producción: sin botón.
+      sensitive_paths: [backend/alembic/, backend/alembic.ini, backend/Procfile, backend/railway.json, backend/railway.toml, backend/nixpacks.toml, backend/Dockerfile, railway.json, vercel.json, frontend/vercel.json, .github/]
       health_url: https://ocr-pdf-and-images-production.up.railway.app/health
       health_commit_key: commit_sha

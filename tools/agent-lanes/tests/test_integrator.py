@@ -27,6 +27,10 @@ SECRET = "sk-ant-api03-" + "Z" * 40
 OHQ_SLUG, MGT_SLUG = "oscarsao/oscar-hq", "PildoraDigital/OCR-PDF-and-images"
 
 
+def diff(path, body, start=1):
+    return f"diff --git a/{path} b/{path}\n--- a/{path}\n+++ b/{path}\n@@ -0,0 +{start} @@\n{body}\n"
+
+
 def cp(rc=0, out="", err=""):
     return subprocess.CompletedProcess([], rc, out, err)
 
@@ -44,7 +48,7 @@ class World:
         self.remote_base = BASE    # ls-remote (para detectar que la base se movió)
         self.conflict = False
         self.changed = ["src/app.py"]
-        self.diff = "+++ b/src/app.py\n@@ -1,0 +1,1 @@\n+print('hola')\n"
+        self.diff = diff("src/app.py", "+print('hola')", start=1)
         self.test_rc = 0
         self.alembic_files: dict[str, str] = {}
         self.merge_rc = 0
@@ -131,8 +135,11 @@ class FakeHermes:
     def list_status(self, assignee, status):
         return [t for t in self.tasks if t.get("assignee") == assignee and status == "done"]
 
+    reviewed = HEAD
+
     def show(self, tid):
-        return {"task": {"id": tid}, "comments": list(self.comments_by.get(tid, []))}
+        runs = [{"metadata": {"branch": f"lane/{tid}", "head_sha": self.reviewed}}] if self.reviewed else []
+        return {"task": {"id": tid}, "comments": list(self.comments_by.get(tid, [])), "runs": runs}
 
     def comment(self, tid, text, author=None):
         self.comments.append((tid, text, author))
@@ -211,8 +218,16 @@ def approved(slug=OHQ_SLUG, author=OSCAR_AUTHOR):
     return {"author": author, "body": f"APROBADO-OSCAR 2026-09-28 10:00 · PR https://github.com/{slug}/pull/7"}
 
 
+def record(tmp_path, pr=7, head=HEAD, tid="t_1"):
+    d = tmp_path / "state" / "approvals"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / f"{tid}.json").write_text(json.dumps({"task_id": tid, "pr": pr, "head_sha": head}), encoding="utf-8")
+
+
 def make(tmp_path, *, name="claude-oscarhq", comments=None, desk=True, enabled=True, dry_run=False, world=None,
-         health=None, out=None):
+         health=None, out=None, approve=True):
+    if approve:
+        record(tmp_path)
     slug = OHQ_SLUG if name == "claude-oscarhq" else MGT_SLUG
     w = world or World(slug)
     ln = lane(name, tmp_path)
@@ -362,7 +377,7 @@ def test_failing_tests_block(tmp_path):
 
 def test_secret_blocks_and_value_never_leaks(tmp_path):
     w = World()
-    w.diff = f"+++ b/src/cfg.py\n@@ -3,0 +4,2 @@\n+x = 1\n+KEY = '{SECRET}'\n"
+    w.diff = diff("src/cfg.py", f"+x = 1\n+KEY = '{SECRET}'", start=4)
     integ, w, h, tg, _, _ = make(tmp_path, world=w)
     assert integ.run_pass() == {"t_1": "gates_failed"}
     assert "src/cfg.py:5 (clave sk-)" in tg.sent[-1]["text"]
@@ -372,24 +387,28 @@ def test_secret_blocks_and_value_never_leaks(tmp_path):
 
 @pytest.mark.parametrize("line,rule", [
     (f"k = '{SECRET}'", "clave sk-"), ("t = 'ghp_" + "a" * 36 + "'", "token de GitHub"),
-    ("DB=postgresql://postgres:hunter2@db.x.supabase.co:5432/postgres", "URL de Postgres con contraseña"),
+    ("DB=postgresql://postgres:hunter2@db.x.supabase.co:5432/postgres", "URL de base de datos con contraseña"),
     ("jwt = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJyb2xlIjoic2VydmljZV9yb2xlIn0.abcdefghijklmnop'",
      "JWT largo (eyJ…)"),
     ("SUPABASE_SERVICE_ROLE_KEY=abcdefghijklmnopqrstuvwxyz123456", "service_role con valor"),
+    ("serviceRoleKey = 'abcdefghijklmnopqrstuvwxyz123456'", "service_role con valor"),
+    ("STRIPE=sk_live_" + "a1" * 15, "clave de Stripe live"), ("id=AKIAABCDEFGHIJKLMNOP", "clave de AWS"),
+    ("BOT=123456789:AA" + "b" * 33, "token de bot de Telegram"),
+    ("DB=postgresql+psycopg://app:pw@db:5432/x", "URL de base de datos con contraseña"),
     ("-----BEGIN RSA PRIVATE KEY-----", "clave privada")])
 def test_secret_rules_detect(line, rule):
-    assert scan_secrets(f"+++ b/f.env\n@@ -0,0 +1 @@\n+{line}\n") == [("f.env", 1, rule)]
+    assert scan_secrets(diff("f.env", f"+{line}")) == [("f.env", 1, rule)]
 
 
 @pytest.mark.parametrize("line", ["task-sk-list = 1", "sk-short", "key = os.environ['SERVICE_ROLE_KEY']",
                                   "service_role_key = os.getenv('X')", "postgres://localhost/db",
                                   "url = 'postgresql://user@host/db'"])
 def test_secret_rules_ignore_harmless(line):
-    assert scan_secrets(f"+++ b/f.py\n@@ -0,0 +1 @@\n+{line}\n") == []
+    assert scan_secrets(diff("f.py", f"+{line}")) == []
 
 
 def test_secret_scan_ignores_removed_lines():
-    assert scan_secrets(f"+++ b/f.py\n@@ -1 +0,0 @@\n-k = '{SECRET}'\n") == []
+    assert scan_secrets(diff("f.py", f"-k = '{SECRET}'")) == []
 
 
 # --- migraciones ---------------------------------------------------------------------------------------
@@ -667,3 +686,164 @@ def test_desk_without_integrator_ignores_int_buttons(tmp_path):
     d.integrator = None
     press(d, tg)
     assert not [a for a in w.argv(GH) if a[1:3] == ["pr", "merge"]]
+
+
+# --- hallazgos del security-auditor (28-09) --------------------------------------------------------------
+
+def test_forged_approval_comment_without_local_record_is_ignored(tmp_path):
+    integ, w, h, tg, _, _ = make(tmp_path, approve=False)
+    assert integ.run_pass() == {}
+    assert not w.argv("merge") and tg.sent == []
+    assert "sin registro local" in integ._state("t_1")["pr_problem"]
+
+
+def test_commits_after_approval_are_not_integrated(tmp_path):
+    w = World()
+    w.pr["headRefOid"] = "e" * 40  # el worker empujó después del ✅
+    integ, w, h, tg, _, _ = make(tmp_path, world=w)
+    assert integ.run_pass() == {}
+    assert not w.argv("merge") and integ._state("t_1")["pr_problem"] == "hay commits después de tu aprobación"
+
+
+def test_pr_head_must_be_the_reviewed_commit(tmp_path):
+    integ, w, h, tg, _, _ = make(tmp_path)
+    h.reviewed = "f" * 40
+    assert integ.run_pass() == {}
+    assert "revisó el carril review" in integ._state("t_1")["pr_problem"]
+
+
+def test_record_approval_from_desk_approve(tmp_path):
+    integ, w, h, tg, d, _ = make(tmp_path, approve=False)
+    assert integ.record_approval(integ.lanes["claude-oscarhq"], "t_1", 7)
+    assert integ._approved_record("t_1")["head_sha"] == HEAD
+    assert not integ.record_approval(integ.lanes["claude-oscarhq"], "../x", 7)
+
+
+@pytest.mark.parametrize("path", ["py.bat", "tools/git.exe", "run.cmd", "scripts/argparse.py", "scripts/json.py"])
+def test_executables_and_stdlib_shadowing_block_before_tests(tmp_path, path):
+    w = World()
+    w.changed = [path]
+    integ, w, h, tg, _, _ = make(tmp_path, world=w)
+    assert integ.run_pass() == {"t_1": "gates_failed"}
+    assert "suplantan" in tg.sent[-1]["text"]
+    assert not [c for c in w.calls if c[1].get("shell")]  # test_cmd nunca se ejecuta
+
+
+def test_forbidden_paths_of_the_lane_block(tmp_path):
+    w = World()
+    w.changed = [".github/workflows/deploy.yml"]
+    integ, w, h, tg, _, _ = make(tmp_path, world=w)
+    integ.lanes["claude-oscarhq"] = Lane(**{**integ.lanes["claude-oscarhq"].__dict__,
+                                            "forbidden_paths": (".github/workflows/",)})
+    assert integ.run_pass() == {"t_1": "gates_failed"}
+    assert "rutas vetadas" in tg.sent[-1]["text"]
+
+
+def test_env_file_and_gitattributes_block(tmp_path):
+    w = World()
+    w.changed = ["backend/.env.production"]
+    integ, w, h, tg, _, _ = make(tmp_path, world=w)
+    assert integ.run_pass() == {"t_1": "gates_failed"}
+
+
+def test_sensitive_infra_in_migrateam_has_no_button(tmp_path):
+    w = World(MGT_SLUG)
+    w.changed = ["backend/Procfile"]
+    integ, w, h, tg, _, _ = make(tmp_path, name="claude-migrateam", world=w)
+    integ.settings.policies["claude-migrateam"] = Policy(**{**MGT_POLICY.__dict__,
+                                                           "sensitive_paths": ("backend/Procfile",)})
+    assert integ.run_pass() == {"t_1": "offered"}
+    assert tg.sent[-1]["markup"] is None and "toca infraestructura de deploy" in tg.sent[-1]["text"]
+
+
+def test_binary_file_is_flagged_by_secret_scan():
+    d = "diff --git a/x.sqlite b/x.sqlite\nnew file mode 100644\nBinary files /dev/null and b/x.sqlite differ\n"
+    assert scan_secrets(d) == [("x.sqlite", 0, "archivo binario sin revisar")]
+
+
+def test_added_line_that_looks_like_header_does_not_blind_the_scan():
+    body = f"+++ /dev/null\n+k = '{SECRET}'"
+    assert scan_secrets(diff("a.py", body))[0][2] == "clave sk-"
+
+
+def test_secret_scan_diff_flags(tmp_path):
+    integ, w, *_ = make(tmp_path)
+    integ.run_pass()
+    scan = next(a for a in w.argv("diff") if "-U0" in a)
+    assert {"--text", "--no-textconv", "--no-ext-diff", "--no-color"} <= set(scan)
+
+
+def test_test_cmd_runs_with_minimal_env_without_cwd_lookup(tmp_path, monkeypatch):
+    monkeypatch.setenv("CARRILES_BOT_TOKEN", "123:secreto")
+    integ, w, *_ = make(tmp_path)
+    integ.run_pass()
+    env = next(c[1]["env"] for c in w.calls if c[1].get("shell"))
+    assert env["NoDefaultCurrentDirectoryInExePath"] == "1" and "CARRILES_BOT_TOKEN" not in env
+
+
+def test_test_output_never_reaches_the_card(tmp_path):
+    w = World()
+    w.test_rc = 1
+    integ, w, h, tg, _, _ = make(tmp_path, world=w)
+    integ.run_pass()
+    assert all("tests rotos" not in t for _, t, _ in h.comments)
+
+
+def test_all_commands_have_closed_stdin(tmp_path):
+    integ, w, *_ = make(tmp_path)
+    integ.run_pass()
+    assert all(kw.get("stdin") == subprocess.DEVNULL for _, kw in w.calls)
+
+
+def test_worktree_hooks_neutralised_on_add_and_abort(tmp_path):
+    w = World()
+    w.conflict = True
+    integ, w, *_ = make(tmp_path, world=w)
+    integ.run_pass()
+    for a in [a for a in w.argv("worktree") if "add" in a] + [a for a in w.argv("merge") if "--abort" in a]:
+        assert any(x.startswith("core.hooksPath=") for x in a)
+
+
+def test_foreign_worktree_is_never_removed(tmp_path):
+    integ, *_ = make(tmp_path)
+    with pytest.raises(PermissionError):
+        integ._remove_worktree("C:/repo", Path(integ.settings.worktree_root) / "lane-t_1")
+    with pytest.raises(PermissionError):
+        integ._remove_worktree("C:/repo", tmp_path / "otro" / "int-t_1")
+
+
+def test_health_url_must_be_https(tmp_path):
+    y = tmp_path / "l.yaml"
+    y.write_text("lanes: {}\nintegrator:\n  lanes:\n    x: {deploy: on_merge, health_url: 'http://h/health'}\n")
+    with pytest.raises(ValueError):
+        load_integrator_settings(y, env={})
+
+
+def test_merge_aborted_if_base_moves_again_during_regates(tmp_path):
+    integ, w, h, tg, d, _ = make(tmp_path)
+    integ.run_pass()
+    w.remote_base = BASE2  # ls-remote ve una base nueva, pero el fetch de los gates repetidos ve otra
+    w.base = BASE2
+    orig = integ.run_gates
+
+    def regates(*a, **kw):
+        r = orig(*a, **kw)
+        w.remote_base = "9" * 40  # alguien empuja a master mientras se repetían
+        return r
+    integ.run_gates = regates
+    press(d, tg)
+    assert not [a for a in w.argv(GH) if a[1:3] == ["pr", "merge"]]
+    assert "cambió durante la comprobación" in tg.edits[-1]["text"]
+
+
+def test_second_deploy_while_one_runs_is_refused(tmp_path):
+    integ, w, h, tg, d, _ = make(tmp_path)
+    integ.run_pass()
+    press(d, tg)
+    integ._deploying.acquire()
+    try:
+        press(d, tg)
+    finally:
+        integ._deploying.release()
+    assert not [a for a in w.argv(RW) if a[1] == "up"]
+    assert "ya hay un deploy en curso" in tg.edits[-1]["text"]

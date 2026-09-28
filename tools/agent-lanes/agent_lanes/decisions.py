@@ -325,6 +325,11 @@ class DecisionDesk:
         stamp = self._now().strftime("%Y-%m-%d %H:%M")
         if not self._hermes(rec).comment(tid, f"APROBADO-OSCAR {stamp} · PR {url}", author=OSCAR_AUTHOR):
             log.warning("%s: PR %s abierto pero no se pudo comentar la aprobación en la tarjeta", tid, url)
+        if self.integrator:  # registro local PR + commit aprobado: lo único de lo que se fía el Integrador
+            try:
+                self.integrator.record_approval(lane, tid, number)
+            except Exception as exc:
+                log.warning("%s: no se pudo registrar la aprobación para el integrador: %s", tid, exc)
         # Nunca se fusiona aquí: el merge es del carril Integrador.
         self._edit(rec, where, "approved", f"✅ aprobada · PR #{number}", extra_links=[(f"PR #{number}", url)])
         return True
