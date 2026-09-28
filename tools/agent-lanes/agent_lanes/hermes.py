@@ -100,15 +100,101 @@ def pending_hermes_answer(show: dict | None) -> dict | None:
 
 def oscar_answers_from(show: dict | None) -> list[str]:
     """Respuestas de Oscar en la tarjeta, en orden: las de los botones (`Respuesta de Oscar: …` de oscar-telegram) y
-    las que apuntó Hermes (`RESPUESTA-OSCAR: …`), estas como "Respuesta de Oscar (vía Hermes): <texto>"."""
-    out = []
+    las que apuntó Hermes (`RESPUESTA-OSCAR: …`), estas como "Respuesta de Oscar (vía Hermes): <texto>".
+    Varias respuestas a la MISMA pregunta (Oscar la contestó otra vez): solo cuenta la última, en su posición; los
+    comentarios no se borran."""
+    out: list[tuple[str | None, str]] = []
     for c in (show or {}).get("comments") or []:
         body = c.get("body") or ""
         if c.get("author") == OSCAR_AUTHOR and body.startswith(ANSWER_PREFIX):
-            out.append(body)
+            key = answer_question(body)
+            out = [(k, b) for k, b in out if key is None or k != key]
+            out.append((key, body))
         elif (text := hermes_answer_text(c)) is not None:
-            out.append(f"Respuesta de Oscar (vía Hermes): {text}")
-    return out
+            out.append((None, f"Respuesta de Oscar (vía Hermes): {text}"))
+    return [b for _, b in out]
+
+
+# --- progreso de las respuestas a un needs_input con varias preguntas ------------------------------------
+# Visto el 28-09 (t_6a2fdf4d): con varias preguntas, un botón respondía solo la 1ª y todas las vistas volvían a pintar
+# la tarjeta desde la 1ª; Oscar la contestó tres veces. El estado de las respuestas se deriva SIEMPRE del kanban.
+
+ANSWER_ARROW = " → "
+# Etiquetas del ✍️ antiguo: una respuesta libre que valía para todas las preguntas (o para las que quedaban).
+LEGACY_ALL_LABELS = ("todas las preguntas", "resto de preguntas")
+
+
+def _norm(text) -> str:
+    return " ".join(str(text or "").split()).casefold()
+
+
+def answer_question(body: str | None) -> str | None:
+    """Pregunta (normalizada) de un comentario `Respuesta de Oscar: <pregunta> → <respuesta>`; None si no lo es."""
+    b = body or ""
+    if not b.startswith(ANSWER_PREFIX) or ANSWER_ARROW not in b:
+        return None
+    return _norm(b[len(ANSWER_PREFIX):].split(ANSWER_ARROW, 1)[0]) or None
+
+
+def last_needs_input_block(show: dict | None) -> dict | None:
+    """Último evento `blocked` si es needs_input y tiene fecha legible; None en otro caso (fail-closed)."""
+    block = next((ev for ev in reversed((show or {}).get("events") or []) if ev.get("kind") == "blocked"), None)
+    if not block or (block.get("payload") or {}).get("kind") != "needs_input" or _ts(block.get("created_at")) is None:
+        return None
+    return block
+
+
+def answer_progress(show: dict | None, questions) -> tuple[dict[int, str], int | None]:
+    """({índice: respuesta}, índice de la siguiente pregunta pendiente o None si están todas) para `questions`
+    (normalizadas: [{question, ...}]) en la ronda actual. Cuenta un comentario si es ESTRICTAMENTE posterior al
+    último bloqueo needs_input y es:
+      - de oscar-telegram `Respuesta de Oscar: <pregunta> → <respuesta>` (pregunta comparada normalizada; si hay
+        varias a la misma pregunta, la última);
+      - de oscar-telegram con la etiqueta antigua del ✍️ ("todas las preguntas" / "resto de preguntas"): todas;
+      - un `RESPUESTA-OSCAR:` válido (Hermes): todas.
+    Sin fechas legibles no cuenta nada (se pinta desde la 1ª, como antes)."""
+    qs = list(questions or ())
+    block = last_needs_input_block(show)
+    answers: dict[int, str] = {}
+    if block is not None and qs:
+        blocked_at = _ts(block.get("created_at"))
+        # Pregunta -> índice, las más largas primero: el cuerpo EMPIEZA por la pregunta conocida (una respuesta libre
+        # con " → " dentro no confunde) y una pregunta que es prefijo de otra no se lleva la respuesta de la larga.
+        known = sorted(((_norm(q.get("question") if isinstance(q, dict) else q), i) for i, q in enumerate(qs)),
+                       key=lambda kv: -len(kv[0]))
+        for c in (show or {}).get("comments") or []:
+            at = _ts(c.get("created_at"))
+            if at is None or at <= blocked_at:
+                continue
+            body = c.get("body") or ""
+            if (text := hermes_answer_text(c)) is not None:
+                answers.update({i: text for i in range(len(qs))})
+                continue
+            if c.get("author") != OSCAR_AUTHOR:
+                continue
+            if not body.startswith(ANSWER_PREFIX):
+                continue
+            rest = " ".join(body[len(ANSWER_PREFIX):].split())
+            low = rest.casefold()
+            hit = next(((k, i) for k, i in known if k and low.startswith(k + ANSWER_ARROW.rstrip())), None)
+            if hit:
+                answers[hit[1]] = rest[len(hit[0]) + len(ANSWER_ARROW):].strip()
+                continue
+            legacy = next((k for k in LEGACY_ALL_LABELS if low.startswith(k + ANSWER_ARROW.rstrip())), None)
+            if legacy:
+                answers.update({i: rest[len(legacy) + len(ANSWER_ARROW):].strip() for i in range(len(qs))})
+    nxt = next((i for i in range(len(qs)) if i not in answers), None)
+    return answers, nxt
+
+
+def resume(h, tid: str) -> str | None:
+    """Devuelve una tarea respondida al carril: `unblock`; si falla porque Hermes la pasó a triage (bloqueo repetido,
+    block_loop_detected; desde ahí `unblock` falla), `requeue_triage` la saca sin reescribirla. Estado resultante
+    ("ready", o "todo" si espera a un padre) o None si fallan ambas vías."""
+    if h.unblock(tid):
+        return "ready"
+    requeue = getattr(h, "requeue_triage", None)
+    return (requeue(tid) if requeue else None) or None
 
 
 class HermesError(RuntimeError):

@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from . import proc as _proc
 from .config import Lane
 from .decisions import keyboard_spec
-from .hermes import OSCAR_AUTHOR, pending_hermes_answer
+from .hermes import OSCAR_AUTHOR, answer_progress, pending_hermes_answer
 from .notices import (
     MessageStore,
     decision_since,
@@ -115,13 +115,38 @@ def split_for_oscar(reason: str | None) -> tuple[str, str | None]:
     return "\n".join(keep), plain
 
 
+ACTIONS_HEADER = "Acciones propuestas"  # carril ops (runner._work): lo que sigue son acciones, no preguntas
+
+
 def parse_questions(reason: str | None) -> list[dict]:
-    """Preguntas desde el motivo del bloqueo: una por viñeta `- `; sin viñetas, el motivo entero es la pregunta."""
+    """Preguntas desde el motivo del bloqueo: una por viñeta `- `; sin viñetas, el motivo entero es la pregunta.
+    Las viñetas de "Acciones propuestas (no ejecutadas):" (carril ops) no son preguntas: el parseo para ahí."""
     lines = (reason or "").strip().splitlines()
+    cut = next((i for i, l in enumerate(lines) if l.strip().startswith(ACTIONS_HEADER)), len(lines))
+    lines = lines[:cut]
     bullets = [l.strip()[2:].strip() for l in lines if l.strip().startswith("- ")]
     if bullets:
         return normalize_questions([_question(b) for b in bullets if b])
-    return normalize_questions([(reason or "").strip()])
+    return normalize_questions([chr(10).join(lines).strip()])
+
+
+def block_questions(show: dict | None) -> list[dict]:
+    """Preguntas del último bloqueo needs_input de la tarjeta: `questions` de la metadata del último run o, sin ella,
+    las viñetas del motivo del bloqueo. La misma fuente para los avisos, /decisiones y la autocuración."""
+    show = show or {}
+    block = _last_block(show) or {}
+    runs = show.get("runs") or []
+    reason = block.get("reason") or (runs[-1].get("summary") if runs else "") or ""
+    meta = (runs[-1].get("metadata") if runs else None) or {}
+    if not isinstance(meta, dict):
+        meta = {}
+    reason, _ = split_for_oscar(reason)
+    return normalize_questions(meta.get("questions")) or parse_questions(reason)
+
+
+def progress_label(index: int, total: int) -> str | None:
+    """"Pregunta 2/3" (None con una sola pregunta)."""
+    return f"Pregunta {index + 1}/{total}" if total > 1 else None
 
 
 @dataclass
@@ -139,6 +164,11 @@ class Pending:
     since: float | None = None  # desde cuándo espera a Oscar (último blocked, o completed_at si está lista)
     for_oscar: str | None = None  # explicación llana del worker (sustituye al "Qué:" técnico del aviso)
     yes_no: bool = True  # False en escaladas de review: sin [✅ Sí, adelante] [❌ No] por defecto
+    q_index: int = 0  # siguiente pregunta pendiente (las anteriores ya las respondió Oscar en esta ronda)
+    answered: list[int] = field(default_factory=list)  # índices ya respondidos (derivado del kanban)
+
+    def pending_questions(self) -> list[dict]:
+        return [q for i, q in enumerate(self.questions) if i not in self.answered]
 
 
 def _last_block(show: dict) -> dict | None:
@@ -232,13 +262,26 @@ class Renotifier:
         if not isinstance(meta, dict):
             meta = {}
         reason, plain = split_for_oscar(reason)
-        questions = normalize_questions(meta.get("questions")) or parse_questions(reason)
+        questions = block_questions(show)
+        # Preguntas ya respondidas en esta ronda (kanban, no memoria): se pinta la siguiente pendiente, nunca una
+        # respondida. Con todas respondidas la tarea no es una decisión pendiente: la autocuración la desbloquea.
+        answers, nxt = answer_progress(show, questions)
+        if questions and nxt is None:
+            self.out(f"{tid}: se salta (todas sus preguntas respondidas, pendiente de desbloqueo)")
+            return None
+        nxt = nxt or 0
         m = _ROUNDS_RE.match(reason.strip())
         public = f"{m.group(1)}ª petición de cambios: decides tú" if m else "necesita tu decisión"
-        return Pending(tid, lane, "needs_input", task, status_line(public, NEEDS_HINT),
-                       bullets=questions_block(questions), questions=questions, since=decision_since(task, show),
+        # Escalada de review (m): los cambios pedidos se muestran todos y ✍️ los responde a la vez; sin secuencia.
+        many = len(questions) > 1 and not m
+        if not many:
+            nxt = 0
+        bullets = questions_block(questions[nxt:nxt + 1] if many else questions)
+        return Pending(tid, lane, "needs_input", task,
+                       status_line(public, progress_label(nxt, len(questions)) if many else None, NEEDS_HINT),
+                       bullets=bullets, questions=questions, since=decision_since(task, show),
                        summary=(runs[-1].get("summary") if runs else None), for_oscar=plain or meta.get("for_oscar"),
-                       yes_no=not m)
+                       yes_no=not m, q_index=nxt, answered=sorted(answers))
 
     def _plan_triage(self, lane: Lane, show: dict) -> Pending | None:
         """Tarea de carril que Hermes pasó a triage por bloquearse dos veces por lo mismo. Motivo público: la pregunta
@@ -310,7 +353,7 @@ class Renotifier:
                                 generic_origins=getattr(self.notifier, "generic_origins", set()))
         chat, thread = target or (getattr(self.notifier, "chat_id", None), getattr(self.notifier, "thread_id", None))
         spec = keyboard_spec(p.state, block_kind=p.block_kind, questions=p.questions, yes_no=p.yes_no,
-                             ops=getattr(p.lane, "kind", "") == "ops") or []
+                             ops=getattr(p.lane, "kind", "") == "ops", index=p.q_index) or []
         buttons = " | ".join(b["text"] for row in spec for b in row)
         self.out(f"[dry-run] {p.tid} · {p.lane.name} · {EMOJI[p.state]} {p.block_kind or p.state} → "
                  f"chat {chat} tema {thread or 0}\n    {p.status}\n"
@@ -333,7 +376,7 @@ class Renotifier:
                                 tree=self.tree)
                 lr.notify(p.state, p.tid, p.task, p.status, alert=True, bullets=p.bullets, buttons=True,
                           block_kind=p.block_kind, questions=p.questions, changed_files=p.changed_files,
-                          summary=p.summary, for_oscar=p.for_oscar, yes_no=p.yes_no)
+                          summary=p.summary, for_oscar=p.for_oscar, yes_no=p.yes_no, q_index=p.q_index)
         except Exception as exc:
             log.warning("%s: renotify falló: %s", p.tid, exc)
         new = self.messages.get(p.tid)

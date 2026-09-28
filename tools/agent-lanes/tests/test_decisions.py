@@ -378,27 +378,41 @@ def test_option_comments_answer_and_unblocks(tmp_path):
     assert "💬 respondida: SQLite" in tg.edits[-1]["text"] and tg.edits[-1]["markup"] is None
 
 
-def test_several_questions_option_answers_first_and_keeps_free_reply_for_the_rest(tmp_path):
+def test_several_questions_go_in_sequence_on_the_same_card(tmp_path):
+    """28-09 (t_6a2fdf4d): antes un botón respondía la 1ª y pedía "el resto con ✍️"; ahora la misma tarjeta pasa a la
+    2ª con SUS botones y solo la última desbloquea (más casos en test_preguntas_secuencia.py)."""
     desk, tg, h = _desk(tmp_path)
     q = {"question": "¿Qué BD?", "options": ["Supabase", "SQLite"], "recommended": 0}
     markup = desk.markup("needs_input", task={"id": "t_1", "title": "T"}, lane=LANE, questions=[q, "¿Y la cola?"])
     _press(desk, markup, 0)
     assert h.calls == [("comment", "t_1", "Respuesta de Oscar: ¿Qué BD? → Supabase", OSCAR_AUTHOR)]  # sin unblock
     edit = tg.edits[-1]
-    assert "💬 1ª: Supabase · responde el resto con ✍️" in edit["text"]
-    rest = edit["markup"]
-    assert [b["text"] for row in rest["inline_keyboard"] for b in row] == ["✍️ Otra respuesta", "🗄 Aparcar",
-                                                                          "💬 Explícame más"]
-    _press(desk, rest, 0, cid="cq2")
+    assert "💬 1ª: Supabase" in edit["text"] and "Pregunta 2/2" in edit["text"] and "• ¿Y la cola?" in edit["text"]
+    step = edit["markup"]
+    assert [b["text"] for row in step["inline_keyboard"] for b in row] == [
+        "✅ Sí, adelante", "❌ No", "✍️ Otra respuesta", "🗄 Aparcar", "💬 Explícame más"]
+    _press(desk, step, 2, cid="cq2")  # ✍️ en la 2ª
     _reply(desk, 501, "Redis")
-    assert h.calls[1:] == [("comment", "t_1", "Respuesta de Oscar: resto de preguntas → Redis", OSCAR_AUTHOR),
+    assert h.calls[1:] == [("comment", "t_1", "Respuesta de Oscar: ¿Y la cola? → Redis", OSCAR_AUTHOR),
                            ("unblock", "t_1")]
+    assert "💬 respondida (2/2): Redis" in tg.edits[-1]["text"]
 
 
-def test_free_reply_with_several_questions_answers_all(tmp_path):
+def test_free_reply_with_several_questions_answers_only_the_current_one(tmp_path):
     desk, tg, h = _desk(tmp_path)
     markup = desk.markup("needs_input", task={"id": "t_1", "title": "T"}, lane=LANE, questions=["¿A?", "¿B?"])
     _press(desk, markup, 2)  # 0 y 1 son [✅ Sí, adelante] [❌ No] de la 1ª pregunta; 2 = ✍️ Otra respuesta
+    assert "(Pregunta 1/2)" in tg.sent[-1]["text"]
+    _reply(desk, 501, "A sí")
+    assert h.calls == [("comment", "t_1", "Respuesta de Oscar: ¿A? → A sí", OSCAR_AUTHOR)]  # sin unblock
+    assert "Pregunta 2/2" in tg.edits[-1]["text"] and "• ¿B?" in tg.edits[-1]["text"]
+
+
+def test_review_escalation_free_reply_still_answers_every_change(tmp_path):
+    desk, tg, h = _desk(tmp_path)
+    markup = desk.markup("needs_input", task={"id": "t_1", "title": "T"}, lane=LANE, questions=["cambio A", "cambio B"],
+                         yes_no=False)
+    _press(desk, markup, 0)  # ✍️ Otra respuesta
     _reply(desk, 501, "A sí, B no")
     assert h.calls[0][2] == "Respuesta de Oscar: todas las preguntas → A sí, B no" and h.calls[1] == ("unblock", "t_1")
 

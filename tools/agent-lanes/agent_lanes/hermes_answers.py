@@ -11,6 +11,12 @@ needs_input (hermes.pending_hermes_answer). Al encontrarlo hace lo mismo que un 
   1. retira los teclados del aviso y edita todas sus copias (tema, DM, bandeja) a "✅ respondido vía Hermes";
   2. `unblock`: la tarea vuelve a ready y el worker recibe la respuesta (hermes.oscar_answers).
 Si el unblock falla, la siguiente vuelta lo reintenta (el comentario sigue siendo posterior al bloqueo).
+
+Autocuración (28-09, t_6a2fdf4d): una tarea bloqueada needs_input con TODAS sus preguntas respondidas en la tarjeta
+(`Respuesta de Oscar: <pregunta> → …` posteriores al bloqueo, hermes.answer_progress) que sigue parada se devuelve al
+carril en esta misma vuelta: `unblock` o, si Hermes la pasó a triage por bloqueo repetido, `requeue_triage`. En triage
+solo si su último bloqueo fue needs_input y está respondido entero: nunca se anula la protección anti-bucle de Hermes
+con respuestas a medias.
 """
 from __future__ import annotations
 
@@ -18,12 +24,14 @@ import logging
 import threading
 from typing import Callable
 
-from .hermes import hermes_answer_text, pending_hermes_answer
+from .hermes import answer_progress, hermes_answer_text, last_needs_input_block, pending_hermes_answer, resume
 from .notices import truncate
 
 log = logging.getLogger("agent_lanes")
 
 ANSWERED_VIA_HERMES = "✅ respondido vía Hermes"
+HEALED = "💬 respondida"  # + " (N/N)": todas sus preguntas contestadas en la tarjeta
+REASON_CUT = 1490  # runner._block guarda reason[:1500] en la tarjeta
 
 
 class HermesAnswers:
@@ -45,16 +53,57 @@ class HermesAnswers:
             except Exception as exc:  # un tablero ilegible no para los demás
                 log.warning("respuestas vía Hermes: %s no leído: %s", name, exc)
                 continue
-            for t in blocked:
+            try:
+                stuck = h.list_status(name, "triage") if hasattr(h, "list_status") else []
+            except Exception as exc:
+                log.info("respuestas vía Hermes: triage de %s no leído: %s", name, exc)
+                stuck = []
+            for t in [*blocked, *stuck]:
                 try:
                     show = h.show(t["id"])
                 except Exception as exc:
                     log.info("respuestas vía Hermes: %s no leída: %s", t.get("id"), exc)
                     continue
                 comment = pending_hermes_answer(show)
-                if comment and self.apply(lane, h, show, comment):
+                if comment:
+                    if self.apply(lane, h, show, comment):
+                        done.append(t["id"])
+                elif self.heal(lane, h, show):
                     done.append(t["id"])
         return done
+
+    def heal(self, lane, h, show: dict) -> bool:
+        """Autocuración: blocked/triage con su último bloqueo needs_input y TODAS las preguntas respondidas después."""
+        task = show.get("task") or {}
+        if task.get("status") not in ("blocked", "triage") or last_needs_input_block(show) is None:
+            return False
+        from .renotify import ACTIONS_HEADER, block_questions  # perezoso: renotify arrastra runner/review
+        reason = (last_needs_input_block(show).get("payload") or {}).get("reason") or ""
+        if len(reason) >= REASON_CUT and ACTIONS_HEADER not in reason:
+            # Motivo cortado por el límite de `hermes block` justo en las preguntas: la última puede faltar o estar a
+            # medias. Fail-closed: sigue en /decisiones, pero no se desbloquea sola.
+            return False
+        questions = block_questions(show)
+        answers, nxt = answer_progress(show, questions)
+        if not questions or nxt is not None:
+            return False
+        tid, n = task["id"], len(questions)
+        log.info("%s: autocuración: %d/%d preguntas respondidas en la tarjeta y seguía en %s; se devuelve al carril",
+                 tid, n, n, task.get("status"))
+        if self.desk:
+            rec = {"task_id": tid, "board": lane.board, "lane": lane.name, "title": task.get("title") or "",
+                   "body": (task.get("body") or "")[:4000]}
+            last = answers.get(n - 1) or ""
+            try:
+                self.desk.answered_elsewhere(rec, f"{HEALED} ({n}/{n})" + (f": {truncate(last, 100)}" if last else ""))
+            except Exception as exc:
+                log.warning("%s: no se pudieron actualizar los avisos tras la autocuración: %s", tid, exc)
+        status = resume(h, tid)
+        if not status:
+            log.warning("%s: autocuración: unblock y requeue_triage fallaron; se reintenta en la próxima vuelta", tid)
+            return False
+        log.info("%s: autocuración hecha (queda en %s)", tid, status)
+        return True
 
     def apply(self, lane, h, show: dict, comment: dict) -> bool:
         task = show.get("task") or {}
@@ -67,7 +116,7 @@ class HermesAnswers:
                 self.desk.answered_elsewhere(rec, f"{ANSWERED_VIA_HERMES}: {truncate(text, 120)}")
             except Exception as exc:
                 log.warning("%s: no se pudieron actualizar los avisos tras la respuesta vía Hermes: %s", tid, exc)
-        if not h.unblock(tid):
+        if not resume(h, tid):
             log.warning("%s: respuesta vía Hermes detectada pero el unblock falló; se reintenta", tid)
             return False
         log.info("%s: respondida vía Hermes (%s); desbloqueada", tid, comment.get("author"))

@@ -109,12 +109,20 @@ def question_key(questions) -> tuple:
 
 
 def group_pending(pendings: list) -> list[list]:
-    """Agrupa las tareas con exactamente las mismas preguntas (en el orden de la primera aparición)."""
+    """Agrupa las tareas con exactamente las mismas preguntas Y el mismo progreso (mismas ya respondidas, misma
+    pregunta en curso), en el orden de la primera aparición."""
     groups: dict[tuple, list] = {}
     for p in pendings:
-        key = question_key(p.questions) or ("__solo__", p.tid)
+        qk = question_key(p.questions)
+        key = (qk, getattr(p, "q_index", 0), tuple(getattr(p, "answered", ()) or ())) if qk else ("__solo__", p.tid)
         groups.setdefault(key, []).append(p)
     return list(groups.values())
+
+
+def pending_of(p) -> list[dict]:
+    """Preguntas que le quedan a una decisión (las ya respondidas en esta ronda no cuentan)."""
+    answered = set(getattr(p, "answered", ()) or ())
+    return [q for i, q in enumerate(normalize_questions(p.questions)) if i not in answered]
 
 
 def fully_recommended(questions) -> bool:
@@ -135,6 +143,14 @@ def panel_url(base_url: str | None) -> str | None:
         parts = urlsplit(base)
         return f"{parts.scheme}://{parts.netloc}/" if parts.scheme and parts.netloc else None
     return base.rstrip("/") + "/"
+
+
+def _progress_label(p) -> str | None:
+    """"Pregunta 2/3" de una decisión con varias preguntas (None con una)."""
+    n = len(getattr(p, "questions", None) or ())
+    if n < 2 or not getattr(p, "yes_no", True):  # escalada de review: sin secuencia
+        return None
+    return f"Pregunta {getattr(p, 'q_index', 0) + 1}/{n}"
 
 
 class CommandCenter:
@@ -375,7 +391,7 @@ class CommandCenter:
     def _agent_questions(self, where, pendings: list, now: float, scope: str) -> None:
         """Preguntas de los agentes (tareas de carril en needs_input): cabecera + una tarjeta con botones por tarea."""
         groups = group_pending(pendings)
-        eligible = [p for p in pendings if fully_recommended(p.questions)]
+        eligible = [p for p in pendings if fully_recommended(pending_of(p))]
         head = (f"❓ {_plural(len(pendings), 'decisión', 'decisiones')} · la más antigua hace "
                 f"{hours_ago(pendings[0].since, now)} h{scope}")
         dups = sum(len(g) - 1 for g in groups if len(g) > 1)
@@ -385,7 +401,9 @@ class CommandCenter:
         if eligible:
             head += f"\n{len(eligible)} con opción recomendada en todas sus preguntas"
             # Todas: al pulsar se aplican las elegibles y las demás se nombran como "sin tocar".
-            markup = self.desk.accept_all_markup([self.desk.member(p.task, p.lane, p.questions) for p in pendings])
+            markup = self.desk.accept_all_markup([self.desk.member(p.task, p.lane, p.questions,
+                                                                   q_index=getattr(p, "q_index", 0))
+                                                  for p in pendings])
         else:
             head += "\nNinguna tiene opción recomendada: decide en cada tarjeta"
         if len(groups) > MAX_CARDS:
@@ -398,18 +416,20 @@ class CommandCenter:
                 self._group_card(where, group, now)
 
     def _decision_card(self, where, p, now: float) -> None:
-        status = status_line("necesita tu decisión", f"hace {hours_ago(p.since, now)} h")
+        status = status_line("necesita tu decisión", _progress_label(p), f"hace {hours_ago(p.since, now)} h")
         text = render("needs_input", p.tid, p.task.get("title"), p.lane.name, status,
                       self._links_for(p.lane, p.tid), p.bullets, body=p.task.get("body"),
                       for_oscar=getattr(p, "for_oscar", None), tree=self._tree(p.lane.board, p.tid))
         markup = self.desk.markup("needs_input", task=p.task, lane=p.lane, questions=p.questions,
                                   summary=p.summary, for_oscar=getattr(p, "for_oscar", None),
-                                  yes_no=getattr(p, "yes_no", True))
+                                  yes_no=getattr(p, "yes_no", True), q_index=getattr(p, "q_index", 0))
         self._mirror(p.tid, self._send(where, text, markup=markup), markup)
 
     def _group_card(self, where, group: list, now: float) -> None:
         e = html.escape
-        lines = [f"❓ Misma pregunta en {len(group)} tareas · la respuesta se aplica a todas"]
+        step = _progress_label(group[0])
+        lines = [f"❓ Misma pregunta en {len(group)} tareas · la respuesta se aplica a todas"
+                 + (f" · {step}" if step else "")]
         for p in group:
             card = card_url(self.base_url, p.lane.board, p.tid)
             tid = f'<a href="{e(card, quote=True)}">{e(p.tid)}</a>' if card else e(p.tid)
@@ -420,8 +440,9 @@ class CommandCenter:
         if len(text) > TEXT_MAX:
             text = text[:TEXT_MAX]
         yes_no = all(getattr(p, "yes_no", True) for p in group)
-        members = [self.desk.member(p.task, p.lane, p.questions, yes_no) for p in group]
-        markup = self.desk.group_markup(members, group[0].questions, yes_no)
+        q_index = getattr(group[0], "q_index", 0)
+        members = [self.desk.member(p.task, p.lane, p.questions, yes_no, q_index=q_index) for p in group]
+        markup = self.desk.group_markup(members, group[0].questions, yes_no, q_index=q_index)
         self._send(where, text, markup=markup)
 
     # --- /aprobar -------------------------------------------------------------------------------------
@@ -623,7 +644,7 @@ class CommandCenter:
                               for_oscar=p.for_oscar)
                 markup = self.desk.markup(p.state, task=task, lane=lane, block_kind=p.block_kind,
                                           questions=p.questions, summary=p.summary, changed_files=p.changed_files,
-                                          for_oscar=p.for_oscar, yes_no=p.yes_no)
+                                          for_oscar=p.for_oscar, yes_no=p.yes_no, q_index=p.q_index)
                 return text, markup
         state, label = STATUS_TEXT.get(status, (status or "?", status or "?"))
         lane_name = lane.name if lane else (task.get("assignee") or board)
