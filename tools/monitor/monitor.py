@@ -209,7 +209,17 @@ class Monitor:
             self.alert("ALTA", "Hay un worker huérfano en los carriles (persistente)", "orphan", every=900)
 
     def refresh_health(self) -> None:
-        if time.time() - self.health_at < 60:
+        """Solo el servicio headless consulta (cada 5 min) y deja el resultado en .state/health.json; la ventana lo
+        lee. 28-09: dos monitores cada 60 s contra producción dispararon el rate limit de MigraTeam (429)."""
+        import json
+        shared = STATE / "health.json"
+        if not self.write_log:
+            try:
+                self.health = json.loads(shared.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                self.health = {"(servicio de alertas)": "sin datos todavía"}
+            return
+        if time.time() - self.health_at < 300:
             return
         self.health_at = time.time()
         for name, url in HEALTH.items():
@@ -222,9 +232,14 @@ class Monitor:
             except Exception:
                 code = 0
             ok = 200 <= code < 400 or (name == "Panel kanban" and code in (302, 401, 403))
-            self.health[name] = f"{'✅' if ok else '❌'} {code or 'sin respuesta'}"
-            if not ok:
+            limited = code == 429  # vivo pero limitando peticiones: no es una caída
+            self.health[name] = f"{'✅' if ok else ('🟡' if limited else '❌')} {code or 'sin respuesta'}"
+            if not ok and not limited:
                 self.alert("ALTA", f"{name} no responde bien ({code or 'sin respuesta'})", f"health-{name}", every=600)
+        try:
+            shared.write_text(json.dumps(self.health, ensure_ascii=False), encoding="utf-8")
+        except OSError:
+            pass
 
     def refresh_branch_drift(self) -> str:
         """MigraTeam: develop debe contener master. Tras un hotfix directo a master hay que devolverlo a develop
