@@ -352,3 +352,18 @@ def test_healing_is_fail_closed_when_the_block_reason_was_cut_at_the_limit(tmp_p
     cc, desk, bot, h, messages, _ = setup(tmp_path, {"t_aaaaaaa1": show})
     assert HermesAnswers({MIG.name: MIG}, hermes_for=lambda b: h, desk=desk).tick() == []
     assert ("unblock", "t_aaaaaaa1") not in h.calls
+
+
+def test_no_heal_loop_after_block_loop_detected_or_reclaim():
+    # 28-09: t_3db189f4 se relanzaba cada 2 min: el 2º bloqueo es block_loop_detected y el worker ya había corrido.
+    from agent_lanes.hermes_answers import answered_after_last_claim
+    from agent_lanes.hermes import last_needs_input_block
+    show = {"events": [{"kind": "blocked", "created_at": 100, "payload": {"kind": "needs_input", "reason": "x"}},
+                       {"kind": "claimed", "created_at": 300},
+                       {"kind": "block_loop_detected", "created_at": 400}],
+            "comments": [{"author": "oscar-telegram", "created_at": 200, "body": "Respuesta de Oscar: ¿A? → sí"},
+                         {"author": "default", "created_at": 400, "body": "BLOCKED: El worker necesita decisión: ..."}]}
+    assert last_needs_input_block(show)["created_at"] == 400  # la ronda actual es la del 2º bloqueo
+    assert not answered_after_last_claim(show)                # la respuesta es anterior al último claim
+    show["comments"].append({"author": "oscar-telegram", "created_at": 500, "body": "Respuesta de Oscar: ¿B? → no"})
+    assert answered_after_last_claim(show)

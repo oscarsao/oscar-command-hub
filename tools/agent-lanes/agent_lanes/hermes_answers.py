@@ -27,6 +27,25 @@ from typing import Callable
 from .hermes import answer_progress, hermes_answer_text, last_needs_input_block, pending_hermes_answer, resume
 from .notices import truncate
 
+
+def answered_after_last_claim(show: dict | None) -> bool:
+    """¿Hay una respuesta de Oscar (botón o RESPUESTA-OSCAR) POSTERIOR a la última vez que un worker cogió la tarea?
+    Sin ella, el worker ya vio esas respuestas y volvió a bloquearse: no se autocura (freno anti-bucle)."""
+    from .hermes import ANSWER_PREFIX, OSCAR_AUTHOR, _ts
+    show = show or {}
+    claims = [t for ev in show.get("events") or [] if ev.get("kind") == "claimed"
+              and (t := _ts(ev.get("created_at"))) is not None]
+    last_claim = max(claims) if claims else None
+    for c in show.get("comments") or []:
+        at = _ts(c.get("created_at"))
+        if at is None:
+            continue
+        is_answer = (c.get("author") == OSCAR_AUTHOR and (c.get("body") or "").startswith(ANSWER_PREFIX)) \
+            or hermes_answer_text(c) is not None
+        if is_answer and (last_claim is None or at > last_claim):
+            return True
+    return False
+
 log = logging.getLogger("agent_lanes")
 
 ANSWERED_VIA_HERMES = "✅ respondido vía Hermes"
@@ -72,7 +91,7 @@ class HermesAnswers:
                     done.append(t["id"])
         return done
 
-    def heal(self, lane, h, show: dict) -> bool:
+    def heal(self, lane, h, show: dict) -> bool:  # noqa: C901 (lectura lineal de condiciones)
         """Autocuración: blocked/triage con su último bloqueo needs_input y TODAS las preguntas respondidas después."""
         task = show.get("task") or {}
         if task.get("status") not in ("blocked", "triage") or last_needs_input_block(show) is None:
@@ -86,6 +105,10 @@ class HermesAnswers:
         questions = block_questions(show)
         answers, nxt = answer_progress(show, questions)
         if not questions or nxt is not None:
+            return False
+        if not answered_after_last_claim(show):
+            # Freno anti-bucle (28-09): el worker ya corrió con esas respuestas y volvió a bloquearse. Relanzarla otra
+            # vez sin una respuesta NUEVA de Oscar solo repite el mismo bloqueo (y gasta y notifica cada 2 min).
             return False
         tid, n = task["id"], len(questions)
         log.info("%s: autocuración: %d/%d preguntas respondidas en la tarjeta y seguía en %s; se devuelve al carril",

@@ -137,11 +137,25 @@ def answer_question(body: str | None) -> str | None:
 
 
 def last_needs_input_block(show: dict | None) -> dict | None:
-    """Último evento `blocked` si es needs_input y tiene fecha legible; None en otro caso (fail-closed)."""
-    block = next((ev for ev in reversed((show or {}).get("events") or []) if ev.get("kind") == "blocked"), None)
+    """Último bloqueo needs_input con fecha legible; None en otro caso (fail-closed).
+
+    28-09 (bucle t_3db189f4/t_e8e76d7c): el 2º bloqueo por lo mismo Hermes NO lo registra como `blocked` sino como
+    `block_loop_detected` (y pasa la tarea a triage). Si solo se mirase `blocked`, la "ronda actual" sería la anterior
+    y sus respuestas contarían para la pregunta nueva -> autocuración -> relanzado -> bloqueo... en bucle. Por eso la
+    fecha del bloqueo es la MÁS RECIENTE entre `blocked`, `block_loop_detected` y el comentario "BLOCKED:"."""
+    show = show or {}
+    events = show.get("events") or []
+    block = next((ev for ev in reversed(events) if ev.get("kind") == "blocked"), None)
     if not block or (block.get("payload") or {}).get("kind") != "needs_input" or _ts(block.get("created_at")) is None:
         return None
-    return block
+    latest = _ts(block.get("created_at"))
+    for ev in events:
+        if ev.get("kind") == "block_loop_detected" and (t := _ts(ev.get("created_at"))) is not None:
+            latest = max(latest, t)
+    for c in show.get("comments") or []:
+        if (c.get("body") or "").startswith("BLOCKED") and (t := _ts(c.get("created_at"))) is not None:
+            latest = max(latest, t)
+    return {**block, "created_at": latest}
 
 
 def answer_progress(show: dict | None, questions) -> tuple[dict[int, str], int | None]:
