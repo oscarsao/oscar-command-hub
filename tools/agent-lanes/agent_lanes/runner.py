@@ -108,7 +108,7 @@ class LaneRunner:
     def notify(self, state: str, tid: str, task: dict | None, status: str, *, alert: bool = False,
                bullets: list[str] | None = None, branch_link: bool = True, changed_files=None,
                buttons: bool = False, block_kind: str | None = None, questions=None, summary: str | None = None,
-               for_oscar: str | None = None) -> None:
+               for_oscar: str | None = None, yes_no: bool = True) -> None:
         """Estado de la tarea en su único mensaje. `status` es texto público: nunca rutas, stderr ni trazas.
         `buttons`: añade los botones de decisión del estado (si hay bot de carriles). `for_oscar`: explicación llana
         del worker, sustituye al "Qué:" técnico; `summary`: último resumen del worker (lo usa 💬 Explícame más)."""
@@ -125,7 +125,7 @@ class LaneRunner:
                 if buttons and self._decisions:
                     markup = self._decisions.markup(state, task=task, lane=self.lane, block_kind=block_kind,
                                                     questions=questions, changed_files=changed_files,
-                                                    summary=summary, for_oscar=for_oscar)
+                                                    summary=summary, for_oscar=for_oscar, yes_no=yes_no)
                 self._notices.publish(tid, text, target, self.lane.telegram, alert=alert, reply_markup=markup,
                                       **({"mirror_to": mirror} if mirror else {}))
                 return

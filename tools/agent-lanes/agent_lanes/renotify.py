@@ -136,6 +136,7 @@ class Pending:
     summary: str | None = None
     since: float | None = None  # desde cuándo espera a Oscar (último blocked, o completed_at si está lista)
     for_oscar: str | None = None  # explicación llana del worker (sustituye al "Qué:" técnico del aviso)
+    yes_no: bool = True  # False en escaladas de review: sin [✅ Sí, adelante] [❌ No] por defecto
 
 
 def _last_block(show: dict) -> dict | None:
@@ -226,7 +227,8 @@ class Renotifier:
         public = f"{m.group(1)}ª petición de cambios: decides tú" if m else "necesita tu decisión"
         return Pending(tid, lane, "needs_input", task, status_line(public, NEEDS_HINT),
                        bullets=questions_block(questions), questions=questions, since=decision_since(task, show),
-                       summary=(runs[-1].get("summary") if runs else None), for_oscar=plain or meta.get("for_oscar"))
+                       summary=(runs[-1].get("summary") if runs else None), for_oscar=plain or meta.get("for_oscar"),
+                       yes_no=not m)
 
     def _plan_done(self, lane: Lane, show: dict) -> Pending | None:
         task = show["task"]
@@ -279,7 +281,7 @@ class Renotifier:
                                 allowed_chats=getattr(self.notifier, "allowed_chats", set()),
                                 generic_origins=getattr(self.notifier, "generic_origins", set()))
         chat, thread = target or (getattr(self.notifier, "chat_id", None), getattr(self.notifier, "thread_id", None))
-        spec = keyboard_spec(p.state, block_kind=p.block_kind, questions=p.questions) or []
+        spec = keyboard_spec(p.state, block_kind=p.block_kind, questions=p.questions, yes_no=p.yes_no) or []
         buttons = " | ".join(b["text"] for row in spec for b in row)
         self.out(f"[dry-run] {p.tid} · {p.lane.name} · {EMOJI[p.state]} {p.block_kind or p.state} → "
                  f"chat {chat} tema {thread or 0}\n    {p.status}\n"
@@ -301,7 +303,7 @@ class Renotifier:
                                 notify=self.notifier, messages=self.messages, links=self.links, decisions=self.desk)
                 lr.notify(p.state, p.tid, p.task, p.status, alert=True, bullets=p.bullets, buttons=True,
                           block_kind=p.block_kind, questions=p.questions, changed_files=p.changed_files,
-                          summary=p.summary, for_oscar=p.for_oscar)
+                          summary=p.summary, for_oscar=p.for_oscar, yes_no=p.yes_no)
         except Exception as exc:
             log.warning("%s: renotify falló: %s", p.tid, exc)
         new = self.messages.get(p.tid)

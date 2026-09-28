@@ -52,7 +52,8 @@ DEFAULT_OPTION_LABELS = ("✅ Sí, adelante", "❌ No")  # botones de una pregun
 EXPLAIN_FAILED = "💬 No pude generar la explicación ahora; mira la tarjeta o responde con ✍️"
 
 
-def keyboard_spec(state: str, *, block_kind: str | None = None, questions=None) -> list[list[dict]] | None:
+def keyboard_spec(state: str, *, block_kind: str | None = None, questions=None,
+                  yes_no: bool = True) -> list[list[dict]] | None:
     """Botones por estado: filas de {text, action, index}. None = aviso sin botones (en curso, en review...)."""
     park = {"text": "🗄 Aparcar", "action": PARK}
     if state == "done":
@@ -60,10 +61,10 @@ def keyboard_spec(state: str, *, block_kind: str | None = None, questions=None) 
     if state == "needs_input":
         rows = []
         # Una pregunta sin opciones recibe [✅ Sí, adelante] [❌ No]: siempre se puede decidir con un toque.
-        qs = with_default_options(questions)
+        qs = with_default_options(questions, yes_no)
         if qs and qs[0].get("default_options"):
             rows.append([{"text": label, "action": OPTION, "index": i} for i, label in enumerate(DEFAULT_OPTION_LABELS)])
-        elif qs:  # botones solo para la primera pregunta; el resto con ✍️
+        elif qs and qs[0]["options"]:  # botones solo para la primera pregunta; el resto con ✍️
             for i, opt in enumerate(qs[0]["options"]):
                 star = "⭐ " if i == qs[0]["recommended"] else ""
                 rows.append([{"text": f"{star}{i + 1}) {opt}", "action": OPTION, "index": i}])
@@ -196,11 +197,13 @@ class DecisionDesk:
     # --- teclados -------------------------------------------------------------------------------------
 
     def markup(self, state: str, *, task: dict, lane, block_kind: str | None = None, questions=None,
-               summary: str | None = None, changed_files=None, for_oscar: str | None = None) -> dict | None:
-        spec = keyboard_spec(state, block_kind=block_kind, questions=questions)
+               summary: str | None = None, changed_files=None, for_oscar: str | None = None,
+               yes_no: bool = True) -> dict | None:
+        """`yes_no=False`: escalada de review (sin [✅ Sí, adelante] [❌ No] por defecto)."""
+        spec = keyboard_spec(state, block_kind=block_kind, questions=questions, yes_no=yes_no)
         if not spec:
             return None
-        qs = with_default_options(questions)
+        qs = with_default_options(questions, yes_no)
         rec = {"task_id": task["id"], "board": lane.board, "lane": lane.name, "title": task.get("title") or "",
                "body": (task.get("body") or "")[:4000], "question": qs[0] if qs else None,
                "summary": (summary or "")[:1500], "changed_files": list(changed_files or [])[:50],
@@ -212,17 +215,17 @@ class DecisionDesk:
         return self.store.issue(rec, spec)[1]
 
     @staticmethod
-    def member(task: dict, lane, questions=None) -> dict:
+    def member(task: dict, lane, questions=None, yes_no: bool = True) -> dict:
         """Registro mínimo de una tarea dentro de un teclado de grupo o de "aceptar todo"."""
-        qs = with_default_options(questions)
+        qs = with_default_options(questions, yes_no)
         return {"task_id": task["id"], "board": lane.board, "lane": lane.name, "title": task.get("title") or "",
                 "body": (task.get("body") or "")[:1500], "question": qs[0] if qs else None,
                 "questions": qs, "n_questions": len(qs)}
 
-    def group_markup(self, members: list[dict], questions) -> dict | None:
+    def group_markup(self, members: list[dict], questions, yes_no: bool = True) -> dict | None:
         """Una tarjeta para la misma pregunta en varias tareas: la respuesta se aplica a todas."""
-        spec = keyboard_spec("needs_input", questions=questions)
-        qs = with_default_options(questions)
+        spec = keyboard_spec("needs_input", questions=questions, yes_no=yes_no)
+        qs = with_default_options(questions, yes_no)
         rec = {**members[0], "group": members, "question": qs[0] if qs else None, "n_questions": len(qs)}
         if len(qs) > 1:
             rec["other_label"] = "todas las preguntas"

@@ -345,3 +345,29 @@ def test_schema_accepts_short_for_oscar_and_rejects_long():
 def test_role_requires_options_and_explains_for_oscar():
     role = (ROOT / "roles" / "implementador.md").read_text(encoding="utf-8")
     assert "OBLIGATORIO en TODA pregunta" in role and "`for_oscar`" in role
+
+
+# --- G. escaladas de review: sin Sí/No por defecto (28-09) --------------------------------------------------
+
+REVIEW_KB = ["✍️ Otra respuesta", "🗄 Aparcar", "💬 Explícame más"]
+
+
+def test_review_escalation_has_no_default_yes_no(tmp_path):
+    cc, desk, bot, h, messages = center(tmp_path, {})
+    rr = ReviewRunner(LANES["review"], LANES, hermes_for=lambda b: h, git=None, reviewer=None, verifier=None,
+                      notify=bot, messages=messages, decisions=desk)
+    h.block = lambda tid, kind, reason: True
+    rr._block(h, {"id": "t_aaaaaaa1", "title": "T", "body": TOPIC_BODY, "assignee": MIG.name}, "needs_input",
+              "3ª petición de cambios: decide Oscar.\n- Cambia el botón", public="3ª petición de cambios: decides tú",
+              questions=["Cambia el botón"])
+    topic, dm = bot.sent
+    assert texts(topic["markup"]) == REVIEW_KB and texts(dm["markup"]) == REVIEW_KB
+
+
+def test_review_escalation_keeps_no_yes_no_in_decisiones(tmp_path):
+    reason = "3ª petición de cambios: decide Oscar.\n- Cambia el botón"
+    cc, desk, bot, h, messages = center(tmp_path, {"t_aaaaaaa1": needs("t_aaaaaaa1", reason)})
+    [p] = cc.pending_decisions()
+    assert p.yes_no is False
+    command(desk, "/decisiones")
+    assert texts(bot.sent[1]["markup"]) == REVIEW_KB

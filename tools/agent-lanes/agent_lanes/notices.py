@@ -125,12 +125,13 @@ def hours_ago(since: float | None, now: float) -> int:
     return max(0, int((now - since) // 3600)) if since else 0
 
 
-def with_default_options(questions) -> list[dict]:
+def with_default_options(questions, yes_no: bool = True) -> list[dict]:
     """Preguntas normalizadas; la que llega sin opciones recibe DEFAULT_OPTIONS (sin recomendada) y la marca
-    `default_options` para que los botones digan [✅ Sí, adelante] [❌ No]."""
+    `default_options` para que los botones digan [✅ Sí, adelante] [❌ No]. `yes_no=False` (escaladas de review, donde
+    las "preguntas" son cambios pedidos y "Sí" sería ambiguo): sin opciones por defecto."""
     out = []
     for q in normalize_questions(questions):
-        if not q["options"]:
+        if not q["options"] and yes_no:
             q = {**q, "options": list(DEFAULT_OPTIONS), "recommended": None, "default_options": True}
         out.append(q)
     return out

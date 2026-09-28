@@ -299,7 +299,8 @@ class CommandCenter:
                       self._links_for(p.lane, p.tid), p.bullets, body=p.task.get("body"),
                       for_oscar=getattr(p, "for_oscar", None))
         markup = self.desk.markup("needs_input", task=p.task, lane=p.lane, questions=p.questions,
-                                  summary=p.summary, for_oscar=getattr(p, "for_oscar", None))
+                                  summary=p.summary, for_oscar=getattr(p, "for_oscar", None),
+                                  yes_no=getattr(p, "yes_no", True))
         self._mirror(p.tid, self._send(where, text, markup=markup), markup)
 
     def _group_card(self, where, group: list, now: float) -> None:
@@ -314,8 +315,9 @@ class CommandCenter:
         text = "\n".join(lines)
         if len(text) > TEXT_MAX:
             text = text[:TEXT_MAX]
-        members = [self.desk.member(p.task, p.lane, p.questions) for p in group]
-        markup = self.desk.group_markup(members, group[0].questions)
+        yes_no = all(getattr(p, "yes_no", True) for p in group)
+        members = [self.desk.member(p.task, p.lane, p.questions, yes_no) for p in group]
+        markup = self.desk.group_markup(members, group[0].questions, yes_no)
         self._send(where, text, markup=markup)
 
     # --- /aprobar -------------------------------------------------------------------------------------
@@ -430,7 +432,7 @@ class CommandCenter:
                               for_oscar=p.for_oscar)
                 markup = self.desk.markup(p.state, task=task, lane=lane, block_kind=p.block_kind,
                                           questions=p.questions, summary=p.summary, changed_files=p.changed_files,
-                                          for_oscar=p.for_oscar)
+                                          for_oscar=p.for_oscar, yes_no=p.yes_no)
                 return text, markup
         state, label = STATUS_TEXT.get(status, (status or "?", status or "?"))
         lane_name = lane.name if lane else (task.get("assignee") or board)
