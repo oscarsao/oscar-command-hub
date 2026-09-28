@@ -16,6 +16,7 @@ import subprocess
 from . import proc as _proc
 import threading
 from pathlib import Path
+from typing import Callable
 from urllib.parse import quote, urlsplit
 
 log = logging.getLogger("agent_lanes")
@@ -413,17 +414,26 @@ class TaskNotices:
         self.store = store or MessageStore()
 
     def publish(self, tid: str, text: str, target=None, lane_target=None, *, alert: bool = False,
-                reply_markup: dict | None = None, mirror_to: str | None = None) -> None:
+                reply_markup: dict | None = None, mirror_to: str | None = None, channel: str | None = None,
+                leave_behind: Callable[[dict], str] | None = None) -> None:
         """`mirror_to`: chat (DM de Oscar) que recibe además una copia del aviso, con los mismos botones. Si el aviso
-        principal ya cayó en ese chat, no se duplica."""
+        principal ya cayó en ese chat, no se duplica.
+
+        `channel`: canal del aviso (None = tema del carril; "integration" = tema de Integración). Un aviso de otro
+        canal nunca edita el mensaje del anterior: se envía uno nuevo. `leave_behind(sent)`: al pasar una alerta a otro
+        canal, el mensaje anterior no se borra sino que se edita con esta línea corta (enlace al nuevo)."""
         rec = self.store.get(tid)
         bot = getattr(self.notifier, "bot_id", None)
         # Un bot solo edita/borra sus propios mensajes: si el aviso anterior es de otro bot (se pasó a
         # CARRILES_BOT_TOKEN), se envía uno nuevo y el viejo se deja como está.
-        mine = bool(rec) and (not rec.get("bot") or not bot or str(rec.get("bot")) == str(bot))
+        same_bot = bool(rec) and (not rec.get("bot") or not bot or str(rec.get("bot")) == str(bot))
+        same_channel = (rec or {}).get("channel") == channel
+        mine = same_bot and same_channel
         extra = {"reply_markup": reply_markup} if reply_markup is not None else {}
         mirrors = [m for m in (rec or {}).get("mirrors") or ()
                    if not m.get("bot") or not bot or str(m.get("bot")) == str(bot)]
+        if not same_channel and not alert:
+            mirrors = []  # las copias del otro canal no siguen a este aviso
         if rec and mine and not alert:
             if self.notifier.edit(rec["chat_id"], rec["message_id"], text, **extra):
                 for m in mirrors:  # las copias siguen el estado de la tarea (sin notificar)
@@ -441,7 +451,12 @@ class TaskNotices:
         token = markup_token(reply_markup)
         if token:
             sent["token"] = token
-        if rec and mine and alert:  # el aviso nuevo sustituye al mensaje de progreso: un mensaje por tarea
+        # trail = la línea corta que quedó en el canal anterior; sigue apuntando al aviso vigente de este canal.
+        trail = (rec or {}).get("trail") if same_channel else None
+        if rec and same_bot and alert and not same_channel and leave_behind:
+            # Cambio de canal (tema del carril -> Integración): el viejo queda como una línea con enlace al nuevo.
+            trail = {k: rec.get(k) for k in ("chat_id", "thread_id", "message_id")}
+        elif rec and same_bot and alert:  # el aviso nuevo sustituye al mensaje de progreso: un mensaje por tarea
             try:
                 self.notifier.delete(rec["chat_id"], rec["message_id"])
             except Exception as exc:
@@ -455,7 +470,13 @@ class TaskNotices:
                 except Exception:
                     pass
             mirrors = []
-        self.store.put(tid, {**sent, **({"mirrors": mirrors} if mirrors else {})})
+        if trail and leave_behind:
+            try:
+                self.notifier.edit(trail["chat_id"], trail["message_id"], leave_behind(sent))
+            except Exception as exc:
+                log.info("%s: no se pudo dejar la línea de enlace: %s", tid, exc)
+        self.store.put(tid, {**sent, **({"mirrors": mirrors} if mirrors else {}),
+                             **({"channel": channel} if channel else {}), **({"trail": trail} if trail else {})})
         if alert and mirror_to and hasattr(self.notifier, "send_to") and str(sent.get("chat_id")) != str(mirror_to):
             try:
                 copy = self.notifier.send_to(str(mirror_to), None, text, **extra)

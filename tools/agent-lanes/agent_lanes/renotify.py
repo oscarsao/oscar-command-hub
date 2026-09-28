@@ -162,7 +162,7 @@ class Renotifier:
     def __init__(self, lanes: dict[str, Lane], *, hermes_for: Callable[[str], object], notifier,
                  messages: MessageStore, links, desk,
                  branch_state: Callable[[Lane, str, str | None], tuple[bool, bool]] = _git_branch_state,
-                 out: Callable[[str], None] = print):
+                 out: Callable[[str], None] = print, integration=None):
         if not desk or not getattr(notifier, "bot_id", None):
             raise SystemExit("renotify necesita el bot de carriles (CARRILES_BOT_TOKEN): sin él no hay botones")
         self.lanes = lanes
@@ -175,6 +175,7 @@ class Renotifier:
         self.out = out
         self.bot_id = str(notifier.bot_id)
         self.review_lane = next((l for l in lanes.values() if l.kind == "review"), None)
+        self.integration = integration  # IntegrationRoute: las tarjetas done van al tema de Integración
 
     # --- qué hay pendiente --------------------------------------------------------------------------
 
@@ -297,7 +298,7 @@ class Renotifier:
             if p.state == "done" and self.review_lane:
                 rr = ReviewRunner(self.review_lane, self.lanes, hermes_for=self.hermes_for, git=None, reviewer=None,
                                   verifier=None, notify=self.notifier, messages=self.messages, links=self.links,
-                                  decisions=self.desk)
+                                  decisions=self.desk, integration=self.integration)
                 rr.notify("done", {**p.task, "assignee": p.lane.name}, p.status, alert=True,
                           changed_files=p.changed_files, buttons=True, summary=p.summary, for_oscar=p.for_oscar)
             else:
@@ -335,8 +336,12 @@ def main(argv: list[str]) -> int:
     links = LinkBuilder(env.get("KANBAN_BASE_URL") or tg_settings["kanban_base_url"])
     desk = DecisionDesk(notifier, CallbackStore(CALLBACKS_DIR), lanes=lanes, hermes_for=hermes_for, links=links,
                         owner_id=env.get("OWNER_TELEGRAM_ID") or OWNER_TELEGRAM_ID)
+    from .integration import IntegrationRoute
+    from .integrator import load_integrator_settings
+    integration = (IntegrationRoute(tg_settings["integration"], load_integrator_settings(env=env, lane_filter=False).policies)
+                   if tg_settings.get("integration") else None)
     r = Renotifier(lanes, hermes_for=hermes_for, notifier=notifier, messages=MessageStore(MESSAGES_DIR),
-                   links=links, desk=desk)
+                   links=links, desk=desk, integration=integration)
     sent, failed = r.run(lane=args.lane, task=args.task, dry_run=args.dry_run, force=args.force)
     verb = "enviaría" if args.dry_run else "reenviados"
     print(f"\n{verb}: {len(sent)} {' '.join(sent)}" + (f" · FALLIDOS: {' '.join(failed)}" if failed else ""))

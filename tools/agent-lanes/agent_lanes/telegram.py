@@ -159,6 +159,17 @@ class TelegramNotifier:
             return "not modified" in exc.description.lower()
         return True
 
+    def pin(self, chat_id: str, message_id) -> bool:
+        """pinChatMessage sin notificar. False si no se pudo (el bot no es admin, mensaje borrado...)."""
+        if not self._token or not message_id:
+            return False
+        try:
+            self._api("pinChatMessage", {"chat_id": chat_id, "message_id": int(message_id),
+                                         "disable_notification": True})
+        except TelegramAPIError:
+            return False
+        return True
+
     def delete(self, chat_id: str, message_id) -> bool:
         if not self._token or not message_id:
             return False
