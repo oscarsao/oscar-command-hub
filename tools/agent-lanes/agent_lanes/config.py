@@ -32,10 +32,12 @@ class Lane:
     allowed_tools: tuple[str, ...] = ()
     # Paths a worker may never change in this repo (checked mechanically on the pushed diff).
     forbidden_paths: tuple[str, ...] = ()
-    kind: str = "implement"           # implement | review
+    kind: str = "implement"           # implement | review | ops
     reviews: tuple[str, ...] = ()     # review lane: implementer lanes it reviews
     max_review_rounds: int = 2        # review lane: change requests before escalating to Oscar
     telegram: tuple[str, str] | None = None  # (chat, thread) de los avisos del carril; ver lanes.yaml
+    # ops: raíces bajo las que una tarea puede declarar `Destino-Ops:` (config de confianza, no del cuerpo).
+    dest_roots: tuple[str, ...] = ()
 
     @property
     def claim_ttl_seconds(self) -> int:
@@ -52,7 +54,7 @@ class Lane:
         return f"{self.remote}/{self.base}"
 
 
-TUPLE_FIELDS = ("allowed_tools", "forbidden_paths", "reviews")
+TUPLE_FIELDS = ("allowed_tools", "forbidden_paths", "reviews", "dest_roots")
 
 
 def _load(path: Path | None) -> dict:

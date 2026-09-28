@@ -13,10 +13,14 @@ from .config import ROOT, Lane
 
 SCHEMA_PATH = ROOT / "contract" / "result.schema.json"
 SETTINGS_TEMPLATE = ROOT / "contract" / "worker-settings.json"
+OPS_SCHEMA_PATH = ROOT / "contract" / "ops-result.schema.json"
+OPS_SETTINGS_TEMPLATE = ROOT / "contract" / "ops-worker-settings.json"
 STATE_DIR = ROOT / ".state"
 
 RESUME_PROMPT = ("Continúa donde lo dejaste y termina la tarea. Recuerda: commit y push SOLO de tu rama lane/<task_id>. "
                  "Devuelve el JSON del schema.")
+OPS_RESUME_PROMPT = ("Continúa donde lo dejaste y termina la tarea. Recuerda: sin borrar ni mover, escritura solo en el "
+                     "workspace y los destinos declarados, acciones externas como propuesta. Devuelve el JSON del schema.")
 
 
 @dataclass
@@ -48,22 +52,41 @@ def build_prompt(task: dict, lane: Lane) -> str:
     )
 
 
-def _answers_section(answers: list[str] | None) -> str:
+def build_ops_prompt(task: dict, lane: Lane, cwd: str, origins: list[str], dests: list[str]) -> str:
+    def listed(xs):
+        return "\n".join(f"- {x}" for x in xs) if xs else "- (ninguno)"
+    return (
+        f"Tarea {task['id']} del kanban de Hermes (board {lane.board}, carril {lane.name}): trabajo OPERATIVO.\n"
+        f"Workspace de la tarea (carpeta de trabajo, no es git): {cwd}\n"
+        f"Orígenes declarados (solo lectura):\n{listed(origins)}\n"
+        f"Destinos declarados (se puede escribir además del workspace):\n{listed(dests)}\n"
+        "Al terminar devuelve el JSON del schema con evidencias verificables. Las acciones externas o irreversibles "
+        "van en proposed_actions + needs_input, nunca se ejecutan.\n\n"
+        f"# {task.get('title', '')}\n\n{task.get('body') or ''}\n"
+        + _answers_section(task.get("oscar_answers"), ops=True)
+        + _feedback_section(task.get("review_feedback"), ops=True)
+    )
+
+
+def _answers_section(answers: list[str] | None, ops: bool = False) -> str:
     if not answers:
         return ""
     items = "\n".join(f"- {a}" for a in answers[-5:])
     return ("\n## Decisiones de Oscar (respuestas a tus preguntas; obligatorio respetarlas)\n"
-            "Esta tarea ya se bloqueó antes pidiendo decisión y Oscar ha respondido. Tu worktree conserva el trabajo "
+            "Esta tarea ya se bloqueó antes pidiendo decisión y Oscar ha respondido. Tu "
+            + ("workspace" if ops else "worktree") + " conserva el trabajo "
             f"anterior: continúa desde ahí aplicando estas decisiones.\n\n{items}\n")
 
 
-def _feedback_section(feedback: list[str] | None) -> str:
+def _feedback_section(feedback: list[str] | None, ops: bool = False) -> str:
     if not feedback:
         return ""
     items = "\n\n".join(feedback[-2:])
+    how = ("Tu workspace ya tiene el trabajo anterior: parte de ahí y aplica SOLO estos cambios." if ops else
+           "Tu rama ya tiene el trabajo anterior: parte de ahí, aplica SOLO estos "
+           "cambios, commit y push de la misma rama.")
     return ("\n## Cambios pedidos por la revisión (obligatorio atenderlos)\n"
-            "Esta tarea vuelve de review. Tu rama ya tiene el trabajo anterior: parte de ahí, aplica SOLO estos "
-            f"cambios, commit y push de la misma rama.\n\n{items}\n")
+            f"Esta tarea vuelve de review. {how}\n\n{items}\n")
 
 
 def base_args(lane: Lane, session_flag: list[str]) -> list[str]:
@@ -77,6 +100,26 @@ def base_args(lane: Lane, session_flag: list[str]) -> list[str]:
         *(["--allowedTools", *lane.allowed_tools] if lane.allowed_tools else []),
         "--append-system-prompt-file", str(lane.role_path),
         "--json-schema", SCHEMA_PATH.read_text(encoding="utf-8"),
+        "--max-budget-usd", str(lane.max_budget_usd),
+        "--model", lane.model,
+        "--effort", lane.effort,
+        "--output-format", "json",
+    ]
+
+
+def ops_args(lane: Lane, session_flag: list[str], add_dirs: list[str]) -> list[str]:
+    """Worker ops. Sin --strict-mcp-config: así cargan los conectores de claude.ai (en -p se cargan salvo con
+    --strict-mcp-config/--bare). El filtro real es contract/ops_guard.py (lista blanca de herramientas MCP de lectura;
+    exit 2 bloquea en cualquier modo); ops-worker-settings.json añade deny explícitos y --allowedTools las de lectura."""
+    dirs = [a for d in add_dirs for a in ("--add-dir", d)]
+    return [
+        "claude", "-p", *session_flag,
+        "--settings", str(render_settings(OPS_SETTINGS_TEMPLATE)),
+        "--permission-mode", "acceptEdits",
+        *(["--allowedTools", *lane.allowed_tools] if lane.allowed_tools else []),
+        *dirs,
+        "--append-system-prompt-file", str(lane.role_path),
+        "--json-schema", OPS_SCHEMA_PATH.read_text(encoding="utf-8"),
         "--max-budget-usd", str(lane.max_budget_usd),
         "--model", lane.model,
         "--effort", lane.effort,
@@ -122,14 +165,29 @@ def run_claude(runner, args: list[str], prompt: str, cwd: str, timeout: float, e
 class ClaudeWorker:
     def __init__(self, runner=_proc.run):
         self._run = runner
+        self._ops: dict[str, tuple[dict, list[str]]] = {}  # session_id -> (env, add_dirs) del run() ops, para resume
 
-    def _exec(self, args: list[str], prompt: str, cwd: str, timeout: float, lane: Lane, task_id: str) -> WorkerOutcome:
+    def _exec(self, args: list[str], prompt: str, cwd: str, timeout: float, lane: Lane, task_id: str,
+              extra_env: dict | None = None) -> WorkerOutcome:
         return run_claude(self._run, args, prompt, cwd, timeout,
-                          {"AGENT_LANES_TASK": task_id, "AGENT_LANES_LANE": lane.name})
+                          {"AGENT_LANES_TASK": task_id, "AGENT_LANES_LANE": lane.name, **(extra_env or {})})
 
     def run(self, lane: Lane, task: dict, cwd: str, session_id: str, timeout: float) -> WorkerOutcome:
-        args = base_args(lane, ["--session-id", session_id, "--name", f"task-{task['id']}"])
+        flag = ["--session-id", session_id, "--name", f"task-{task['id']}"]
+        if lane.kind == "ops":
+            from .ops import task_targets, worker_env
+            origins, dests, _ = task_targets(lane, task)
+            env, dirs = worker_env(lane, task, cwd), [*dests, *origins]
+            self._ops[session_id] = (env, dirs)
+            return self._exec(ops_args(lane, flag, dirs), build_ops_prompt(task, lane, cwd, origins, dests), cwd,
+                              timeout, lane, task["id"], env)
+        args = base_args(lane, flag)
         return self._exec(args, build_prompt(task, lane), cwd, timeout, lane, task["id"])
 
     def resume(self, lane: Lane, cwd: str, session_id: str, timeout: float, task_id: str) -> WorkerOutcome:
+        if lane.kind == "ops":
+            # Sin el entorno del run() (proceso reiniciado) el hook no tiene workspace: bloquea toda escritura.
+            env, dirs = self._ops.get(session_id, ({"AGENT_LANES_ROLE": "ops"}, []))
+            return self._exec(ops_args(lane, ["--resume", session_id], dirs), OPS_RESUME_PROMPT, cwd, timeout, lane,
+                              task_id, env)
         return self._exec(base_args(lane, ["--resume", session_id]), RESUME_PROMPT, cwd, timeout, lane, task_id)

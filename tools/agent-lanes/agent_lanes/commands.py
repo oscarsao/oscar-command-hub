@@ -310,7 +310,7 @@ class CommandCenter:
         e = html.escape
         out = ["🛣 <b>Tareas en curso y en cola</b>" + (f" · {e(brand)}" if brand else "")]
         for name, lane in self.lanes.items():
-            if lane.kind != "implement" or (brand and BRANDS.get(name) != brand):
+            if lane.kind not in ("implement", "ops") or (brand and BRANDS.get(name) != brand):
                 continue
             h = self.hermes_for(lane.board)
             running, ready = h.list_status(name, "running"), h.list_status(name, "ready")

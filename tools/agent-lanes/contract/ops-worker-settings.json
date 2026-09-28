@@ -1,0 +1,62 @@
+{
+  "permissions": {
+    "deny": [
+      "WebFetch",
+      "WebSearch",
+      "Agent",
+      "Task",
+      "Skill",
+      "NotebookEdit",
+      "PowerShell",
+      "mcp__claude_ai_Google_Calendar__create_event",
+      "mcp__claude_ai_Google_Calendar__update_event",
+      "mcp__claude_ai_Google_Calendar__delete_event",
+      "mcp__claude_ai_Google_Calendar__respond_to_event",
+      "mcp__claude_ai_Google_Drive__share_file",
+      "mcp__claude_ai_Google_Drive__create_file",
+      "mcp__claude_ai_Google_Drive__update_file",
+      "mcp__claude_ai_Google_Drive__copy_file",
+      "mcp__claude_ai_Google_Drive__trash_file",
+      "mcp__claude_ai_Google_Drive__download_file_content",
+      "mcp__claude_ai_ClickUp__clickup_execute_operator",
+      "mcp__claude_ai_ClickUp__clickup_create_*",
+      "mcp__claude_ai_ClickUp__clickup_update_*",
+      "mcp__claude_ai_ClickUp__clickup_delete_*",
+      "mcp__claude_ai_ClickUp__clickup_move_task",
+      "mcp__claude_ai_ClickUp__clickup_merge_tasks",
+      "mcp__claude_ai_ClickUp__clickup_send_chat_message",
+      "mcp__claude_ai_Supabase__*",
+      "mcp__claude_ai_Vercel__*",
+      "mcp__claude_ai_Gmail__*",
+      "mcp__claude_ai_Stripe__*",
+      "mcp__claude_ai_Cloudflare_Developer_Platform__*",
+      "mcp__claude_ai_Apollo_io__*",
+      "mcp__claude_ai_Canva__*",
+      "mcp__claude_ai_Gamma__*",
+      "mcp__claude_ai_Lucid__*",
+      "mcp__claude_ai_PostHog__*",
+      "mcp__claude_ai_Claude_Docs__*",
+      "mcp__claude-in-chrome__*",
+      "mcp__sentry__*",
+      "mcp__gtm__*"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "py",
+            "args": [
+              "-3.12",
+              "{AGENT_LANES_DIR}/contract/ops_guard.py"
+            ],
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  }
+}

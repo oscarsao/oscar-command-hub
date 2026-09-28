@@ -207,7 +207,9 @@ class LaneRunner:
 
     def _work(self, task: dict, tid: str, session_id: str, deadline: float) -> str:
         lane = self.lane
-        self.hermes.comment(tid, f"LANE claim por {lane.name} · session_id={session_id} · rama lane/{tid}")
+        ops = lane.kind == "ops"
+        where = "workspace ops (sin git)" if ops else f"rama lane/{tid}"
+        self.hermes.comment(tid, f"LANE claim por {lane.name} · session_id={session_id} · {where}")
 
         with Heartbeat(lambda: self.hermes.heartbeat(tid), lane.heartbeat_seconds):
             try:
@@ -220,8 +222,8 @@ class LaneRunner:
                     task = {**task, "oscar_answers": answers}
                 self.notify("running", tid, task,
                             status_line("en curso", f"aplicando cambios de revisión (ronda {len(feedback)})"
-                                        if feedback else None), branch_link=bool(feedback))
-                cwd = self.git.prepare_worktree(lane, tid)
+                                        if feedback else None), branch_link=bool(feedback) and not ops)
+                cwd = self.git.prepare_worktree(lane, tid, task) if ops else self.git.prepare_worktree(lane, tid)
                 outcome = self.worker.run(lane, task, cwd, session_id, timeout=max(60.0, deadline - self.clock()))
                 resumes = 0
                 while not outcome.ok and resumes < lane.max_resumes and deadline - self.clock() > 60:
@@ -240,16 +242,22 @@ class LaneRunner:
             if result["status"] == "needs_input":
                 asked = normalize_questions(result.get("questions")) or normalize_questions([result.get("summary", "")])
                 detail = "\n".join(f"- {question_text(q)}" for q in asked) or result.get("summary", "")
+                if ops and result.get("proposed_actions"):  # la acción exacta queda en la tarjeta para Oscar
+                    detail += "\nAcciones propuestas (no ejecutadas):\n" + "\n".join(
+                        f"- [{a.get('id')}] {a.get('description')} · {a.get('tool')} {a.get('arguments')}"
+                        for a in result["proposed_actions"])
                 return self._block(tid, "needs_input", f"El worker necesita decisión:\n{detail}", task,
                                    public="necesita tu decisión", questions=asked)
             if result["status"] != "done":
                 return self._block(tid, "transient", f"worker status={result['status']}: {result.get('summary', '')}",
                                    task, public="el worker no pudo completarla")
 
-            check = self.verifier(lane, tid, cwd, result)
+            check = self.verifier(lane, tid, cwd, result, task=task) if ops else self.verifier(lane, tid, cwd, result)
             if not check.ok:
                 return self._block(tid, "transient", "verificación mecánica fallida: " + "; ".join(check.reasons),
                                    task, public="verificación mecánica fallida")
+            if ops:
+                return self._to_review_ops(tid, task, session_id, cwd, resumes, outcome, result)
 
             metadata = {
                 "lane": lane.name, "session_id": session_id, "worktree": cwd, "resumes": resumes,
@@ -266,3 +274,18 @@ class LaneRunner:
                 "en review", files_label(len(result.get("changed_files") or [])), test_label(check.test_exit),
                 money(outcome.cost_usd)), changed_files=result.get("changed_files"))
             return "review"
+
+    def _to_review_ops(self, tid, task, session_id, cwd, resumes, outcome, result) -> str:
+        """Ops nunca se marca done sola: siempre review, y Oscar valida con [✅ Validar / 🔁 Pedir cambios]."""
+        metadata = {"lane": self.lane.name, "kind": "ops", "session_id": session_id, "workspace": cwd,
+                    "resumes": resumes, "cost_usd": outcome.cost_usd, "verified": True,
+                    **{k: result.get(k) for k in ("evidence", "proposed_actions", "next_steps", "risks")}}
+        ok, err = self.hermes.request_review(tid, result.get("summary", "")[:1500], metadata)
+        if not ok:
+            return self._block(tid, "transient", f"request-review rechazado: {err}", task,
+                               public="el kanban rechazó el paso a review")
+        n = len(result.get("evidence") or [])
+        self.notify("review", tid, task, status_line(
+            "pendiente de tu validación", f"{n} evidencia{'s' if n != 1 else ''}",
+            money(outcome.cost_usd)), branch_link=False, buttons=True, alert=True)
+        return "review"

@@ -47,9 +47,13 @@ ACCEPT_ALL = "accept_all"  # cabecera de /decisiones: aplica la opción recomend
 REPLY_ACTIONS = (CHANGES, OTHER)  # piden texto a Oscar con force_reply
 
 
-def keyboard_spec(state: str, *, block_kind: str | None = None, questions=None) -> list[list[dict]] | None:
-    """Botones por estado: filas de {text, action, index}. None = aviso sin botones (en curso, en review...)."""
+def keyboard_spec(state: str, *, block_kind: str | None = None, questions=None,
+                  ops: bool = False) -> list[list[dict]] | None:
+    """Botones por estado: filas de {text, action, index}. None = aviso sin botones (en curso, en review...).
+    `ops`: el carril ops no tiene carril review ni PR; su review la valida Oscar directamente."""
     park = {"text": "🗄 Aparcar", "action": PARK}
+    if state == "review" and ops:
+        return [[{"text": "✅ Validar", "action": APPROVE}, {"text": "🔁 Pedir cambios", "action": CHANGES}, park]]
     if state == "done":
         return [[{"text": "✅ Aprobar", "action": APPROVE}, {"text": "🔁 Pedir cambios", "action": CHANGES}, park]]
     if state == "needs_input":
@@ -186,7 +190,8 @@ class DecisionDesk:
 
     def markup(self, state: str, *, task: dict, lane, block_kind: str | None = None, questions=None,
                summary: str | None = None, changed_files=None) -> dict | None:
-        spec = keyboard_spec(state, block_kind=block_kind, questions=questions)
+        spec = keyboard_spec(state, block_kind=block_kind, questions=questions,
+                             ops=getattr(lane, "kind", "") == "ops")
         if not spec:
             return None
         qs = normalize_questions(questions)
@@ -451,6 +456,8 @@ class DecisionDesk:
 
     def _approve(self, rec: dict, where: dict) -> bool:
         lane, tid = self._lane(rec), rec["task_id"]
+        if lane is not None and lane.kind == "ops":
+            return self._validate_ops(rec, where)
         slug = self.links.repo_slug(lane) if (self.links and lane) else None
         if not slug:
             self._edit(rec, where, "blocked", "no se pudo abrir el PR: el repo del carril no está en GitHub")
@@ -470,6 +477,20 @@ class DecisionDesk:
                 log.warning("%s: no se pudo registrar la aprobación para el integrador: %s", tid, exc)
         # Nunca se fusiona aquí: el merge es del carril Integrador.
         self._edit(rec, where, "approved", f"✅ aprobada · PR #{number}", extra_links=[(f"PR #{number}", url)])
+        return True
+
+    def _validate_ops(self, rec: dict, where: dict) -> bool:
+        """Carril ops: sin PR ni Integrador. Validar = `complete` de la tarea en review + comentario de Oscar.
+        No ejecuta ninguna acción propuesta: eso queda como siguiente paso (ver README, carril ops)."""
+        tid, h = rec["task_id"], self._hermes(rec)
+        stamp = self._now().strftime("%Y-%m-%d %H:%M")
+        ok, err = h.complete(tid, "Validado por Oscar desde Telegram", {"validated_by": OSCAR_AUTHOR, "at": stamp})
+        if not ok:
+            log.warning("%s: complete (validación ops) falló: %s", tid, err)
+            self._edit(rec, where, "blocked", "no se pudo validar: la tarea ya no está en review (mira la tarjeta)")
+            return False
+        h.comment(tid, f"VALIDADO-OSCAR {stamp} (carril ops)", author=OSCAR_AUTHOR)
+        self._edit(rec, where, "approved", "✅ validada")
         return True
 
     def _gh(self, *args: str):

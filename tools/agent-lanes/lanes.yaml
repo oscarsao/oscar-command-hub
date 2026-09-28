@@ -90,6 +90,68 @@ lanes:
     # Sin suite de tests versionada: gate = diff --check + compilación de los .py cambiados.
     test_cmd: py -3.12 "{AGENT_LANES_DIR}/agent_lanes/checks.py" {BASE}
 
+  # Carril OPERATIVO (sin repo): vault/buzón del disco E:, calendario, accesos, ClickUp... Qué va aquí: README.md.
+  # Carpeta de trabajo por tarea en worktree_root/<task_id> (no git). Hook: contract/ops_guard.py (lista blanca, fail
+  # closed): sin borrar/mover, escritura solo en el workspace y en `Destino-Ops:` bajo dest_roots, MCP solo lectura.
+  # Acciones externas/irreversibles -> needs_input con la acción exacta. Nunca done solo: siempre review para Oscar.
+  # Todo lo heredable de defaults que es de código se sobrescribe aquí (allowed_tools, forbidden_paths, role...).
+  claude-ops:
+    kind: ops
+    telegram: {chat: -1003530490339, thread: 5}
+    board: oscarhq
+    repo: ""
+    base: ""
+    test_cmd: ""
+    role: roles/ops.md
+    worktree_root: C:/Users/oscar/dev/_lanes/ops
+    dest_roots: [C:/Users/oscar]
+    max_parallel: 1
+    max_budget_usd: 2.0
+    max_runtime_seconds: 3600
+    forbidden_paths: []
+    # En -p lo no listado se deniega; el hook decide igualmente (una entrada aquí no salta el hook).
+    allowed_tools:
+      - "Bash(ls:*)"
+      - "Bash(cat:*)"
+      - "Bash(head:*)"
+      - "Bash(tail:*)"
+      - "Bash(wc:*)"
+      - "Bash(du:*)"
+      - "Bash(stat:*)"
+      - "Bash(find:*)"
+      - "Bash(grep:*)"
+      - "Bash(sha256sum:*)"
+      - "Bash(tree:*)"
+      - "Bash(diff:*)"
+      - "Bash(cp:*)"
+      - "Bash(mkdir:*)"
+      - "Bash(robocopy:*)"
+      - "Bash(git status:*)"
+      - "Bash(git log:*)"
+      - "Bash(gh repo view:*)"
+      - "Bash(gh repo list:*)"
+      - "Bash(gh api:*)"
+      - "Bash(cloudflared tunnel list:*)"
+      - "Bash(cloudflared tunnel info:*)"
+      - "mcp__claude_ai_Google_Calendar__list_calendars"
+      - "mcp__claude_ai_Google_Calendar__list_events"
+      - "mcp__claude_ai_Google_Calendar__get_event"
+      - "mcp__claude_ai_Google_Calendar__search_events"
+      - "mcp__claude_ai_Google_Drive__search_files"
+      - "mcp__claude_ai_Google_Drive__read_file_content"
+      - "mcp__claude_ai_Google_Drive__get_file_metadata"
+      - "mcp__claude_ai_Google_Drive__get_file_permissions"
+      - "mcp__claude_ai_Google_Drive__list_recent_files"
+      - "mcp__claude_ai_ClickUp__clickup_get_task"
+      - "mcp__claude_ai_ClickUp__clickup_filter_tasks"
+      - "mcp__claude_ai_ClickUp__clickup_search"
+      - "mcp__claude_ai_ClickUp__clickup_get_workspace_hierarchy"
+      - "mcp__claude_ai_ClickUp__clickup_get_list"
+      - "mcp__claude_ai_ClickUp__clickup_get_folder"
+      - "mcp__claude_ai_ClickUp__clickup_get_task_comments"
+      - "mcp__claude_ai_ClickUp__clickup_get_workspace_members"
+      - "mcp__claude_ai_ClickUp__clickup_get_custom_fields"
+
   review:
     kind: review
     reviews: [claude-oscarhq, claude-migrateam, claude-scraper, claude-nextjobs]

@@ -22,6 +22,7 @@ from agent_lanes.hermes import HermesCLI
 from agent_lanes.integrator import build_integrator
 from agent_lanes.review import ClaudeReviewer, ReviewRunner, sweep_done
 from agent_lanes.notices import LinkBuilder, MessageStore
+from agent_lanes.ops import OpsWorkspace, verify_ops
 from agent_lanes.runner import MESSAGES_DIR, LaneRunner
 from agent_lanes.service import Service, acquire_single_instance
 from agent_lanes.telegram import notifier_from_env
@@ -109,6 +110,11 @@ def main(argv: list[str] | None = None) -> int:
                                 notify=notify, exclude=set(args.exclude), messages=messages, links=links,
                                 decisions=decisions)
                      for l in impl.values()]
+    # Carril ops: sin repo. Carpeta de trabajo por tarea + verificación por evidencias; siempre acaba en review para
+    # Oscar (no está en `review.reviews`, y sweep_done no lo toca: el workspace se conserva).
+    runners += [LaneRunner(l, hermes=hermes_for(l.board), git=OpsWorkspace(), worker=ClaudeWorker(), verifier=verify_ops,
+                           notify=notify, exclude=set(args.exclude), messages=messages, links=links, decisions=decisions)
+                for l in selected.values() if l.kind == "ops"]
     for name, lane in selected.items():
         if lane.kind == "review":
             runners.append(ReviewRunner(lane, all_lanes, hermes_for=hermes_for, git=git, reviewer=ClaudeReviewer(),

@@ -27,7 +27,7 @@ def lane_rows(lanes: dict[str, Lane], *, hermes_for: Callable[[str], object], st
               pid_alive: Callable[[int], bool]) -> list[dict]:
     rows = []
     for name, lane in lanes.items():
-        if lane.kind != "implement":
+        if lane.kind not in ("implement", "ops"):
             continue
         h = hermes_for(lane.board)
         running = h.list_status(name, "running")
