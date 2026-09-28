@@ -281,6 +281,18 @@ def test_integration_ficha_shows_tree_lines():
     assert "Depende de: t_9" in text and "🔗 Parte de: t_e · Épica" in text and "↳ 2 subtareas: ✅ 2" in text
 
 
+def test_renotified_notice_carries_the_tree(tmp_path):
+    from agent_lanes import renotify
+    from tests.test_commands import LANES
+    show = needs("t_aaaaaaa1", "El worker necesita decisión:\n- ¿Publicar ya? [1) Sí (recomendada) / 2) No]")
+    cc, desk, bot, h, messages = center(tmp_path, {"t_aaaaaaa1": show})
+    tree = lambda board, tid, show=None, **kw: ["↳ 2 subtareas: ✅ 2"]  # noqa: E731
+    r = renotify.Renotifier(LANES, hermes_for=lambda b: h, notifier=bot, messages=messages, links=None, desk=desk,
+                            out=lambda s: None, tree=tree)
+    assert r.run(task="t_aaaaaaa1")[0] == ["t_aaaaaaa1"]
+    assert "↳ 2 subtareas: ✅ 2" in bot.sent[0]["text"]
+
+
 # --- 2b. /tarea y /tareas -------------------------------------------------------------------------------
 
 def _kanban(tasks, links):
