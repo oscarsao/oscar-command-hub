@@ -24,6 +24,7 @@ import time
 from typing import Callable
 
 from .decisions import OWNER_TELEGRAM_ID
+from .deps import dependency_order, pending_parents, waiting_line
 from .notices import (BRANDS, TEXT_MAX, card_url, hours_ago, markup_token, normalize_questions, render,
                       status_line, truncate)
 
@@ -272,11 +273,24 @@ class CommandCenter:
         if not ready:
             self._send(where, f"Nada listo para integrar{scope}", html=False)
             return
-        self._send(where, f"✅ {_plural(len(ready), 'tarea lista', 'tareas listas')} para integrar{scope}",
-                   html=False)
+        # Orden recomendado: cada tarea después de las que necesita (kanban link padre -> hijo), luego antigüedad.
+        waits = {}
+        for p in ready:
+            try:
+                waits[p.tid] = pending_parents(self.hermes_for(p.lane.board), p.tid)
+            except Exception as exc:
+                log.warning("/aprobar: dependencias de %s no leídas: %s", p.tid, exc)
+                waits[p.tid] = []
+        ready = dependency_order(ready, lambda p: p.tid, lambda p: [w["id"] for w in waits[p.tid]])
+        head = f"✅ {_plural(len(ready), 'tarea lista', 'tareas listas')} para integrar{scope}"
+        if any(waits.values()):
+            head += "\nOrden recomendado: las marcadas con ⏸ necesitan antes el código de otra tarea."
+        self._send(where, head, html=False)
         for p in ready[:MAX_CARDS]:
             text = render("done", p.tid, p.task.get("title"), p.lane.name, p.status,
                           self._links_for(p.lane, p.tid, p.changed_files), body=p.task.get("body"))
+            if waits[p.tid]:
+                text += "\n" + html.escape(waiting_line(waits[p.tid])) + " · puedes aprobarla, pero no se fusionará antes"
             markup = self.desk.markup("done", task=p.task, lane=p.lane, summary=p.summary,
                                       changed_files=p.changed_files)
             self._mirror(p.tid, self._send(where, text, markup=markup), markup)

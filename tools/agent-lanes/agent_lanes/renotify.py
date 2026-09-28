@@ -223,7 +223,7 @@ class Renotifier:
         if any((c.get("body") or "").startswith(APPROVED_PREFIX) and c.get("author") == OSCAR_AUTHOR
                for c in comments):
             return None
-        if any((c.get("body") or "").startswith(INTEGRATED_PREFIX) for c in comments):
+        if any((c.get("body") or "").startswith(INTEGRATED_PREFIX + " ") for c in comments):  # no "INTEGRADOR:"
             return None
         exists, merged = self.branch_state(lane, tid, meta.get("head_sha"))
         if not exists or merged:

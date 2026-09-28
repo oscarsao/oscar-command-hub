@@ -51,6 +51,7 @@ if __package__ in (None, ""):  # `py agent_lanes/integrator.py`
 
 from . import proc as _proc  # noqa: E402
 from .config import ROOT, _load  # noqa: E402
+from .deps import is_integration_comment, pending_parents, waiting_line  # noqa: E402
 from .hermes import OSCAR_AUTHOR  # noqa: E402
 from .notices import MessageStore, TaskNotices, render, status_line, truncate  # noqa: E402
 from .telegram import telegram_target  # noqa: E402
@@ -435,8 +436,7 @@ class Integrator:
             return None
         show = self.hermes_for(lane.board).show(tid)
         comments = show.get("comments") or []
-        if any((c.get("body") or "").startswith(INTEGRATED_PREFIX) and c.get("author") == INTEGRATOR_AUTHOR
-               for c in comments):
+        if any(is_integration_comment(c) for c in comments):
             self._save(tid, status="integrated")
             return None
         approval = self._approval(lane, tid, comments)
@@ -451,6 +451,15 @@ class Integrator:
                 log.info("%s: PR #%s no integrable: %s", tid, number, problem)
                 self._save(tid, status="pr_problem", pr_problem=problem, pr=number)
             return None
+        # Dependencias lógicas (kanban link padre -> hijo): los gates solo ven conflictos, no que este PR necesite
+        # el código de otro todavía sin integrar. Sin enlace declarado no hay forma de saberlo.
+        waiting = pending_parents(self.hermes_for(lane.board), tid, show)
+        if waiting:
+            key = ",".join(w["id"] for w in waiting)
+            if st.get("status") != "waiting_deps" or st.get("waiting") != key:
+                self._publish_waiting(lane, task, number, url, waiting)
+                self._save(tid, status="waiting_deps", pr=number, pr_url=url, waiting=key)
+            return "waiting_deps"
         if st.get("head_sha") == pr["headRefOid"] and st.get("status") in ("failed", "offered", "merging"):
             return None  # gates ya hechos sobre esta cabeza; se repiten al pulsar si la base se movió
         result = self.run_gates(lane, policy, tid, number, pr["headRefOid"])
@@ -664,6 +673,15 @@ class Integrator:
         self._publish(lane, task, self._text("blocked", lane, rec, status_line(
             f"⛔ no se puede integrar PR #{number}", "; ".join(result.reasons)), [f"✔ {p}" for p in result.passed]))
 
+    def _publish_waiting(self, lane, task: dict, number: int, url: str, waiting: list[dict]) -> None:
+        self._comment(lane, task["id"], f"INTEGRADOR: PR #{number} en espera · " + waiting_line(waiting, limit=10))
+        rec = {"task_id": task["id"], "title": task.get("title") or "", "body": (task.get("body") or "")[:4000],
+               "pr_number": number, "pr_url": url}
+        self._publish(lane, task, self._text("blocked", lane, rec, status_line(
+            f"⏸ PR #{number} aprobado, pero depende de otra tarea", waiting_line(waiting)),
+            [f"• {w['id']} · {w['title'][:60]} · {w['reason']}" for w in waiting[:5]]
+            + ["se ofrecerá Fusionar en cuanto estén integradas"]))
+
     def _spec(self, policy: Policy, migration: str | None) -> list[list[dict]] | None:
         if policy.deploy == DEPLOY_ON_MERGE:
             # MigraTeam: el merge ES el deploy. Siempre botón explícito; con migración pendiente, ninguno.
@@ -753,6 +771,12 @@ class Integrator:
             self._save(tid, status="stale")  # la próxima pasada repite los gates
             self._edit(desk, lane, rec, where, "blocked", status_line(f"⛔ no fusionado PR #{number}", why,
                                                                       "se revisará de nuevo"))
+            return True
+        waiting = pending_parents(self.hermes_for(lane.board), tid)
+        if waiting:  # un padre se reabrió o dejó de estar integrado desde que se ofreció el botón
+            self._save(tid, status="waiting_deps", waiting=",".join(w["id"] for w in waiting))
+            self._edit(desk, lane, rec, where, "blocked", status_line(f"⛔ no fusionado PR #{number}",
+                                                                      waiting_line(waiting)))
             return True
         self._edit(desk, lane, rec, where, "running", status_line(f"🔀 fusionando PR #{number}…"))
         base_now = self._remote_sha(lane, lane.base)

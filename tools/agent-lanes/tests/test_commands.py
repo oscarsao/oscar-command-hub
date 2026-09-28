@@ -444,3 +444,19 @@ def test_pending_decisions_are_oldest_first_with_since(tmp_path):
              "t_bbbbbbb2": needs("t_bbbbbbb2", Q_REC, blocked_at=2000.0)}
     cc, *_ = center(tmp_path, shows)
     assert [(p.tid, p.since) for p in cc.pending_decisions()] == [("t_bbbbbbb2", 2000.0), ("t_aaaaaaa1", 9000.0)]
+
+
+def test_aprobar_orders_by_dependency_and_marks_waiting(tmp_path):
+    # t_fffffff6 (iría primero por ID) necesita el código de t_fffffff7, aún sin integrar.
+    shows = {"t_fffffff7": done_show("t_fffffff7", assignee="claude-oscarhq"),
+             "t_fffffff6": done_show("t_fffffff6", assignee="claude-oscarhq")}
+    for tid, s in shows.items():
+        s["task"]["id"] = tid
+        s["task"]["branch_name"] = f"lane/{tid}"
+    shows["t_fffffff6"]["parents"] = ["t_fffffff7"]
+    cc, desk, bot, h, messages = center(tmp_path, shows)
+    command(desk, "/aprobar")
+    head, first, second = bot.sent
+    assert "Orden recomendado" in head["text"]
+    assert first["text"].startswith("✅ t_fffffff7") and "⏸" not in first["text"]
+    assert second["text"].startswith("✅ t_fffffff6") and "⏸ espera a t_fffffff7 (sin integrar)" in second["text"]
