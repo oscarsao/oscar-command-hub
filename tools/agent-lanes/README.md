@@ -82,6 +82,47 @@ cada acción aprobada en `next_steps` ("APROBADA, pendiente de ejecución") y la
 3. El resultado lleva la evidencia de la ejecución (enlace/id devuelto) y vuelve a review como siempre.
 Requiere preguntas con `action_id` en el schema y un tipo de botón nuevo; hasta entonces v1 termina en propuesta.
 
+## Responder desde Hermes
+Oscar puede contestar a Hermes (en su DM) la pregunta de un carril en vez de pulsar los botones del bot de Trabajos.
+Para que el runner lo tome como respuesta, Hermes la apunta en la tarjeta con **este formato exacto** y con su perfil
+`default`:
+
+```
+hermes kanban --board <tablero> comment <t_id> --author default "RESPUESTA-OSCAR: <respuesta>"
+```
+
+Con varias preguntas, una línea por pregunta, numeradas en el orden del aviso:
+
+```
+RESPUESTA-OSCAR: 1) Sí, adelante
+2) 19 €
+```
+
+Reglas (el runner no interpreta nada más):
+- El cuerpo **empieza** por `RESPUESTA-OSCAR:` (mayúsculas, con guion y dos puntos, sin nada delante) y lleva texto
+  detrás. No cuentan `Respuesta de Oscar: …`, `Oscar decide (28-09): …` ni resúmenes libres.
+- Autor: solo `default` (Hermes) u `oscar-telegram`. Lo escrito por los workers (`agent-lanes`, `lane-*`) o por el
+  integrador (`lane-integrator`) se ignora aunque lleve el prefijo.
+- Solo vale si es **posterior al último bloqueo** needs_input de la tarea. Una respuesta de una ronda anterior no
+  responde la pregunta nueva: si el worker vuelve a preguntar, hay que escribir otro `RESPUESTA-OSCAR:`.
+- Una respuesta por tarea bloqueada. Si Oscar ya respondió con botones, no hace falta (y la tarea ya no estará
+  bloqueada).
+
+Qué pasa después (hilo `lane-hermes-answers` del runner, cada 60 s): los avisos de la tarea (tema y DM) pasan a
+"✅ respondido vía Hermes: …" sin botones (un toque tardío responde "ya no está activa"), la tarea se desbloquea, deja de
+salir en /decisiones y en los recordatorios, y el worker la retoma con la respuesta en "Decisiones de Oscar" como
+"Respuesta de Oscar (vía Hermes): …". Si el desbloqueo falla, se reintenta en la siguiente vuelta.
+
+## Padres e hijas en Telegram
+Los enlaces `hermes kanban link <padre> <hija>` se ven también en Telegram:
+- Todo aviso de tarea (inicio, avance, needs_input, review, lista, integración) añade, si aplica:
+  `🔗 Parte de: t_x · título` (padres sin código pendiente), `⏸ Depende de: t_y (en review)` (padres que aún
+  bloquean su integración, `deps.pending_parents`) y `↳ 3 subtareas: ✅ 1 · ▶️ 1 · ⏳ 1` (✅ done/archived,
+  ▶️ running/review/blocked, ⏳ el resto). La ficha de Integración no repite ⏸: ya lo lista en "Depende de".
+- `/tarea t_x` añade el árbol: padre(s), hermanas, la tarea (👉) e hijas, con estado y enlace al panel.
+- `/tareas` pone cada hija debajo de su padre cuando ambos salen en la lista.
+Las lecturas `show` se cachean (60 s, y se vacían en cada pasada del bucle; 30 s en los comandos).
+
 ## Otros
 - Tests: `cd tools/agent-lanes && py -3.12 -m pytest -q`.
 - Una pasada de un carril: `py -3.12 runner.py --lane claude-ops --once`. Estado: `py -3.12 lanes.py status`.

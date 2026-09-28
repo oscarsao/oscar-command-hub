@@ -32,6 +32,67 @@ REVIEW_AUTHOR = "lane-review"  # author of the review lane's change requests (re
 OSCAR_AUTHOR = "oscar-telegram"  # Oscar's decisions from Telegram buttons (answers are read back by the implementer)
 ANSWER_PREFIX = "Respuesta de Oscar:"
 
+# Respuesta de Oscar llegada por Hermes (clarify en su DM, 28-09): Hermes la apunta en la tarjeta con SU perfil
+# (`default`) y este prefijo EXACTO. Nada más cuenta como respuesta: ni "Oscar decide (28-09): …" ni "Respuesta de
+# Oscar: …" escritos por `default`, ni nada de los workers (agent-lanes, lane-*) o del integrador. Ver README,
+# "Responder desde Hermes".
+HERMES_AUTHOR = "default"
+HERMES_ANSWER_PREFIX = "RESPUESTA-OSCAR:"
+HERMES_ANSWER_AUTHORS = frozenset({HERMES_AUTHOR, OSCAR_AUTHOR})  # lista blanca, nunca una lista negra
+
+
+def hermes_answer_text(comment: dict | None) -> str | None:
+    """Texto de la respuesta si `comment` es un `RESPUESTA-OSCAR: …` válido (autor permitido, prefijo exacto al
+    principio del cuerpo y texto no vacío detrás). None en cualquier otro caso."""
+    c = comment or {}
+    if c.get("author") not in HERMES_ANSWER_AUTHORS:
+        return None
+    body = c.get("body")
+    if not isinstance(body, str) or not body.startswith(HERMES_ANSWER_PREFIX):
+        return None
+    return body[len(HERMES_ANSWER_PREFIX):].strip() or None
+
+
+def _ts(value) -> float | None:
+    try:
+        return float(value) if value is not None and not isinstance(value, bool) else None
+    except (TypeError, ValueError):
+        return None
+
+
+def pending_hermes_answer(show: dict | None) -> dict | None:
+    """Comentario `RESPUESTA-OSCAR:` que desbloquea la tarea: la tarea está `blocked`, su último bloqueo es
+    needs_input y el comentario es ESTRICTAMENTE posterior a ese bloqueo (una respuesta de una ronda anterior no
+    responde la pregunta nueva). El más reciente si hay varios. Fail-closed: sin fechas legibles, None."""
+    show = show or {}
+    if (show.get("task") or {}).get("status") != "blocked":
+        return None
+    block = next((ev for ev in reversed(show.get("events") or []) if ev.get("kind") == "blocked"), None)
+    if not block or (block.get("payload") or {}).get("kind") != "needs_input":
+        return None
+    blocked_at = _ts(block.get("created_at"))
+    if blocked_at is None:
+        return None
+    found = None
+    for c in show.get("comments") or []:
+        at = _ts(c.get("created_at"))
+        if at is not None and at > blocked_at and hermes_answer_text(c):
+            found = c
+    return found
+
+
+def oscar_answers_from(show: dict | None) -> list[str]:
+    """Respuestas de Oscar en la tarjeta, en orden: las de los botones (`Respuesta de Oscar: …` de oscar-telegram) y
+    las que apuntó Hermes (`RESPUESTA-OSCAR: …`), estas como "Respuesta de Oscar (vía Hermes): <texto>"."""
+    out = []
+    for c in (show or {}).get("comments") or []:
+        body = c.get("body") or ""
+        if c.get("author") == OSCAR_AUTHOR and body.startswith(ANSWER_PREFIX):
+            out.append(body)
+        elif (text := hermes_answer_text(c)) is not None:
+            out.append(f"Respuesta de Oscar (vía Hermes): {text}")
+    return out
+
 
 class HermesError(RuntimeError):
     pass
@@ -79,10 +140,9 @@ class HermesCLI:
         return [c["body"] for c in comments if c.get("author") == REVIEW_AUTHOR]
 
     def oscar_answers(self, task_id: str) -> list[str]:
-        """Oscar's answers to the worker's questions (Telegram buttons / free reply), oldest first."""
-        comments = self.show(task_id).get("comments") or []
-        return [c["body"] for c in comments
-                if c.get("author") == OSCAR_AUTHOR and (c.get("body") or "").startswith(ANSWER_PREFIX)]
+        """Oscar's answers to the worker's questions (Telegram buttons / free reply / RESPUESTA-OSCAR vía Hermes),
+        oldest first."""
+        return oscar_answers_from(self.show(task_id))
 
     def assign(self, task_id: str, profile: str) -> bool:
         return self._call("assign", task_id, profile).returncode == 0

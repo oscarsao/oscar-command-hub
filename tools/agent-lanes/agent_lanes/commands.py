@@ -25,7 +25,8 @@ import time
 from typing import Callable
 
 from .decisions import OWNER_TELEGRAM_ID
-from .deps import dependency_order, pending_parents, waiting_line
+from .deps import (ShowCache, child_bucket, dependency_order, family, pending_parents, tree_lines,
+                   waiting_line)
 from .notices import (BOARD_BRANDS, BRANDS, DECISION_CARD_STATUSES, OSCAR_ASSIGNEE, TEXT_MAX, card_url,
                       decision_since, hours_ago, is_decision_card, markup_token, normalize_questions, render,
                       status_line, truncate)
@@ -135,6 +136,7 @@ class CommandCenter:
         self._brief = brief
         self._renotifier = renotifier
         self._now = now
+        self._shows = ShowCache(ttl=30)  # árbol padre/hijas: una lectura por tarea y comando, no una por línea
 
     # --- entrada --------------------------------------------------------------------------------------
 
@@ -221,6 +223,16 @@ class CommandCenter:
     def _links_for(self, lane, tid: str, changed_files=None) -> list:
         return self.links(lane, tid, changed_files=changed_files) if self.links else []
 
+    def _tree(self, board: str | None, tid: str, **kw) -> list[str]:
+        """Líneas 🔗/⏸/↳ de una tarjeta (deps.tree_lines, nunca lanza)."""
+        if not board:
+            return []
+        try:
+            h = self.hermes_for(board)
+        except Exception:
+            return []
+        return tree_lines(h, tid, cache=self._shows, **kw)
+
     def _mirror(self, tid: str, sent, markup) -> None:
         """Registra la tarjeta como copia del aviso de la tarea: una decisión en cualquiera edita todas."""
         if self.messages and sent:
@@ -297,7 +309,7 @@ class CommandCenter:
         status = status_line("necesita tu decisión", f"hace {hours_ago(p.since, now)} h")
         text = render("needs_input", p.tid, p.task.get("title"), p.lane.name, status,
                       self._links_for(p.lane, p.tid), p.bullets, body=p.task.get("body"),
-                      for_oscar=getattr(p, "for_oscar", None))
+                      for_oscar=getattr(p, "for_oscar", None), tree=self._tree(p.lane.board, p.tid))
         markup = self.desk.markup("needs_input", task=p.task, lane=p.lane, questions=p.questions,
                                   summary=p.summary, for_oscar=getattr(p, "for_oscar", None),
                                   yes_no=getattr(p, "yes_no", True))
@@ -344,7 +356,8 @@ class CommandCenter:
         for p in ready[:MAX_CARDS]:
             text = render("done", p.tid, p.task.get("title"), p.lane.name, p.status,
                           self._links_for(p.lane, p.tid, p.changed_files), body=p.task.get("body"),
-                          for_oscar=p.for_oscar)
+                          for_oscar=p.for_oscar,
+                          tree=self._tree(p.lane.board, p.tid, with_waiting=False))  # ⏸ ya va debajo
             if waits[p.tid]:
                 text += "\n" + html.escape(waiting_line(waits[p.tid])) + " · puedes aprobarla, pero no se fusionará antes"
             markup = self.desk.markup("done", task=p.task, lane=p.lane, summary=p.summary,
@@ -365,24 +378,68 @@ class CommandCenter:
     def tasks_text(self, brand: str | None, *, with_links: bool = True) -> str:
         e = html.escape
         out = ["🛣 <b>Tareas en curso y en cola</b>" + (f" · {e(brand)}" if brand else "")]
+        sections = []
         for name, lane in self.lanes.items():
             if lane.kind not in ("implement", "ops") or (brand and BRANDS.get(name) != brand):
                 continue
             h = self.hermes_for(lane.board)
             running, ready = h.list_status(name, "running"), h.list_status(name, "ready")
+            items = [("▶️", lane, t) for t in running] + [("⏳", lane, t) for t in ready[:READY_PER_LANE]]
+            sections.append((name, lane, items, len(ready)))
+        # Una hija cuyo padre también sale en la lista va debajo de él (aunque sea de otro carril del tablero).
+        shown = [it for _, _, items, _ in sections for it in items]
+        parent_of = self._shown_parents(shown)
+        kids: dict[str, list] = {}
+        for it in shown:
+            if it[2]["id"] in parent_of:
+                kids.setdefault(parent_of[it[2]["id"]], []).append(it)
+
+        def emit(it, depth: int = 0) -> None:
+            emoji, lane, t = it
+            out.append(("   " * depth + "↳ " if depth else "") + f"{emoji} " + self._task_ref(lane, t, with_links))
+            for kid in kids.get(t["id"], ()):  # _shown_parents deja un bosque (sin ciclos): termina
+                emit(kid, depth + 1)
+
+        for name, lane, items, n_ready in sections:
             out.append(f"\n<b>{e(name)}</b>" + (f" · {e(BRANDS[name])}" if name in BRANDS else ""))
-            if not running and not ready:
+            if not items:
                 out.append("libre, sin cola")
-            for t in running:
-                out.append("▶️ " + self._task_ref(lane, t, with_links))
-            for t in ready[:READY_PER_LANE]:
-                out.append("⏳ " + self._task_ref(lane, t, with_links))
-            if len(ready) > READY_PER_LANE:
-                out.append(f"  +{len(ready) - READY_PER_LANE} más en cola")
+            top = [it for it in items if it[2]["id"] not in parent_of]
+            for it in top:
+                emit(it)
+            if items and not top:
+                out.append("(sus tareas van bajo su padre)")
+            if n_ready > READY_PER_LANE:
+                out.append(f"  +{n_ready - READY_PER_LANE} más en cola")
         text = "\n".join(out)
         if len(text) > TEXT_MAX and with_links:  # sin enlaces antes que cortar el HTML a medias
             return self.tasks_text(brand, with_links=False)
         return text[:TEXT_MAX]
+
+    def _shown_parents(self, items: list) -> dict[str, str]:
+        """{hija: padre} entre las tareas listadas (mismo tablero). Una lectura `show` cacheada por tarea; si no se
+        puede leer, la tarea sale suelta. Un ciclo se rompe quitando un enlace (el resultado es siempre un bosque)."""
+        by_id = {t["id"]: lane for _, lane, t in items}
+        out: dict[str, str] = {}
+        for _, lane, t in items:
+            try:
+                parents = self._shows.show(self.hermes_for(lane.board), t["id"]).get("parents") or []
+            except Exception:
+                continue
+            for p in parents:
+                pid = p if isinstance(p, str) else (p or {}).get("id")
+                if pid in by_id and pid != t["id"] and by_id[pid].board == lane.board:
+                    out[t["id"]] = pid
+                    break
+        for tid in list(out):
+            seen, cur = {tid}, out.get(tid)
+            while cur in out:
+                if cur in seen:
+                    out.pop(cur, None)  # el nodo donde se cierra el ciclo pierde su enlace
+                    break
+                seen.add(cur)
+                cur = out[cur]
+        return out
 
     def _task_ref(self, lane, t: dict, with_links: bool) -> str:
         e = html.escape
@@ -403,6 +460,9 @@ class CommandCenter:
             return
         board, show = found
         text, markup = self.task_card(board, show)
+        tree = self.tree_text(board, show)
+        if tree and len(text) + 1 + len(tree) <= TEXT_MAX:
+            text += "\n" + tree
         sent = self._send(where, text, markup=markup)
         if markup:
             self._mirror(tid, sent, markup)
@@ -416,6 +476,45 @@ class CommandCenter:
             if show and show.get("task"):
                 return board, show
         return None
+
+    def tree_text(self, board: str, show: dict, budget: int = TEXT_MAX // 2) -> str:
+        """Árbol de /tarea en HTML: padre(s), la tarea con sus hermanas y, debajo, sus hijas; cada una con su estado y
+        enlace al panel. "" si la tarea no tiene enlaces. Nunca corta el HTML: si no cabe en `budget`, quita líneas."""
+        task = show.get("task") or {}
+        tid = task.get("id") or ""
+        try:
+            fam = family(self.hermes_for(board), tid, show, cache=self._shows)
+        except Exception:
+            return ""
+        if not (fam["parents"] or fam["children"]):
+            return ""
+        e = html.escape
+
+        def ref(b: dict, *, me: bool = False) -> str:
+            url = card_url(self.base_url, board, b["id"])
+            idt = f'<a href="{e(url, quote=True)}">{e(b["id"])}</a>' if url else f"<code>{e(b['id'])}</code>"
+            label = STATUS_TEXT.get(b["status"], (b["status"], b["status"]))[1]
+            title = e(truncate(b.get("title"), 48))
+            return (f"{idt} · <b>{title}</b>" if me else f"{idt} · {title}") + \
+                f" · {child_bucket(b['status'])} {e(label)}" + (" (esta)" if me else "")
+
+        def part(key: str, cap: int, fmt, indent: str) -> list[str]:
+            shown = fam[key][:cap]
+            n = fam[f"n_{key}"] - len(shown)
+            return [fmt(b) for b in shown] + ([f"{indent}+{n} más en el panel"] if n > 0 else [])
+
+        me = {"id": tid, "title": task.get("title") or "", "status": str(task.get("status") or "?")}
+        pad = "  " if fam["parents"] else ""
+        for cap in (10, 5, 3, 1, 0):  # menos filas por lista hasta que quepa; nunca se corta el HTML
+            lines = ["🌳 <b>Árbol</b>"]
+            lines += part("parents", max(cap, 1), lambda b: f"🔗 Padre: {ref(b)}", "")
+            lines += part("siblings", cap, lambda b: f"{pad}• {ref(b)}", pad)
+            lines.append(f"{pad}👉 {ref(me, me=True)}")
+            lines += part("children", cap, lambda b: f"{pad}   ↳ {ref(b)}", pad + "   ")
+            text = "\n".join(lines)
+            if len(text) <= budget:
+                return text
+        return ""
 
     def task_card(self, board: str, show: dict) -> tuple[str, dict | None]:
         """Ficha con el render de los avisos y los botones de su estado (needs_input, bloqueo transitorio, lista)."""

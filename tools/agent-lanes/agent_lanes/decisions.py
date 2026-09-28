@@ -194,6 +194,7 @@ class DecisionDesk:
         self.integrator = None  # carril Integrador (INTEGRATOR_ENABLED): botones int_* de fusionar/desplegar
         self.messages = messages  # MessageStore: todas las copias de cada aviso (sincronización tema <-> DM)
         self.commands = None      # CommandCenter: /hoy, /decisiones, /aprobar, /tareas, /tarea
+        self.tree = None          # deps.TreeReader: líneas 🔗/⏸/↳ al redibujar un aviso (opcional)
         # 💬 Explícame más: rec -> texto llano (claude -p --model haiku sin herramientas); inyectable en tests.
         self.explainer = explainer or (lambda rec: _explain(rec, runner=self._run))
 
@@ -571,6 +572,13 @@ class DecisionDesk:
             self._edit(rec, where, "answered", "💬 respuesta anotada · no se pudo desbloquear (mira la tarjeta)")
         return True
 
+    def answered_elsewhere(self, rec: dict, status: str) -> None:
+        """La tarea se respondió fuera de los botones (RESPUESTA-OSCAR vía Hermes): sus teclados dejan de valer (un
+        toque tardío recibe "ya no está activa") y todas las copias del aviso (tema, DM, bandeja) pasan a `status`
+        sin botones."""
+        self._retire(rec)
+        self._edit(rec, None, "answered", status)
+
     def _explain(self, rec: dict, where: dict) -> None:
         """💬 Explícame más: explicación llana como respuesta al aviso pulsado, en el mismo chat/tema."""
         try:
@@ -638,8 +646,9 @@ class DecisionDesk:
             return
         lane = self._lane(rec)
         links = self.links(lane, rec["task_id"], changed_files=rec.get("changed_files")) if (self.links and lane) else []
+        tree = self.tree(rec.get("board"), rec["task_id"]) if self.tree else None
         text = render(state, rec["task_id"], rec.get("title"), rec["lane"], status, [*links, *extra_links],
-                      body=rec.get("body"), for_oscar=rec.get("for_oscar"))
+                      body=rec.get("body"), for_oscar=rec.get("for_oscar"), tree=tree)
         extra = {"reply_markup": markup} if markup else {}
         seen = set()
         if where:

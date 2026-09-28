@@ -707,9 +707,10 @@ class Integrator:
               override: str | None = None) -> str:
         """Sin tema de Integración: el aviso de siempre. Con él: ficha con cabecera por riesgo (integration.py)."""
         links = self._links(lane, rec["task_id"], rec["pr_number"], rec["pr_url"])
+        tree_of = getattr(self, "tree", None)  # deps.TreeReader que pone runner.py; None = sin árbol
         if not self.settings.integration_telegram:
             return render(state, rec["task_id"], rec.get("title"), lane.name, status, links, bullets,
-                          body=rec.get("body"))
+                          body=rec.get("body"), tree=tree_of(lane.board, rec["task_id"]) if tree_of else None)
         phase = phase or phase_for(state, status)
         if override is None and state == "blocked":
             override = FAILED
@@ -719,7 +720,8 @@ class Integrator:
                             tid=rec["task_id"], title=rec.get("title"), repo=repo_name(lane), base=lane.base,
                             status=status, pr=rec.get("pr_number"), for_oscar=rec.get("for_oscar"),
                             gates=rec.get("gates") or (), risks=rec.get("risks") or (), deploy=deploy,
-                            deps=rec.get("deps") or (), links=links)
+                            deps=rec.get("deps") or (), links=links,
+                            tree=tree_of(lane.board, rec["task_id"], with_waiting=False) if tree_of else ())
 
     def _rec(self, lane, task: dict, number: int, url: str, result: GateResult | None = None,
              policy: Policy | None = None) -> dict:

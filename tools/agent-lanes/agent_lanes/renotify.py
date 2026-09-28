@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from . import proc as _proc
 from .config import Lane
 from .decisions import keyboard_spec
-from .hermes import OSCAR_AUTHOR
+from .hermes import OSCAR_AUTHOR, pending_hermes_answer
 from .notices import (
     MessageStore,
     decision_since,
@@ -162,7 +162,7 @@ class Renotifier:
     def __init__(self, lanes: dict[str, Lane], *, hermes_for: Callable[[str], object], notifier,
                  messages: MessageStore, links, desk,
                  branch_state: Callable[[Lane, str, str | None], tuple[bool, bool]] = _git_branch_state,
-                 out: Callable[[str], None] = print, integration=None):
+                 out: Callable[[str], None] = print, integration=None, tree=None):
         if not desk or not getattr(notifier, "bot_id", None):
             raise SystemExit("renotify necesita el bot de carriles (CARRILES_BOT_TOKEN): sin él no hay botones")
         self.lanes = lanes
@@ -176,6 +176,7 @@ class Renotifier:
         self.bot_id = str(notifier.bot_id)
         self.review_lane = next((l for l in lanes.values() if l.kind == "review"), None)
         self.integration = integration  # IntegrationRoute: las tarjetas done van al tema de Integración
+        self.tree = tree  # deps.TreeReader: líneas 🔗/⏸/↳ en los avisos reenviados
 
     # --- qué hay pendiente --------------------------------------------------------------------------
 
@@ -213,6 +214,9 @@ class Renotifier:
         kind = (block or {}).get("kind")
         if kind not in ("needs_input", "transient"):
             self.out(f"{tid}: se salta (bloqueo de tipo {kind or 'desconocido'})")
+            return None
+        if pending_hermes_answer(show):  # ya respondida vía Hermes: el vigilante la desbloquea en su próxima vuelta
+            self.out(f"{tid}: se salta (respondida vía Hermes, pendiente de desbloqueo)")
             return None
         runs = show.get("runs") or []
         reason = block.get("reason") or (runs[-1].get("summary") if runs else "") or ""
@@ -298,12 +302,13 @@ class Renotifier:
             if p.state == "done" and self.review_lane:
                 rr = ReviewRunner(self.review_lane, self.lanes, hermes_for=self.hermes_for, git=None, reviewer=None,
                                   verifier=None, notify=self.notifier, messages=self.messages, links=self.links,
-                                  decisions=self.desk, integration=self.integration)
+                                  decisions=self.desk, integration=self.integration, tree=self.tree)
                 rr.notify("done", {**p.task, "assignee": p.lane.name}, p.status, alert=True,
                           changed_files=p.changed_files, buttons=True, summary=p.summary, for_oscar=p.for_oscar)
             else:
                 lr = LaneRunner(p.lane, hermes=self.hermes_for(p.lane.board), git=None, worker=None, verifier=None,
-                                notify=self.notifier, messages=self.messages, links=self.links, decisions=self.desk)
+                                notify=self.notifier, messages=self.messages, links=self.links, decisions=self.desk,
+                                tree=self.tree)
                 lr.notify(p.state, p.tid, p.task, p.status, alert=True, bullets=p.bullets, buttons=True,
                           block_kind=p.block_kind, questions=p.questions, changed_files=p.changed_files,
                           summary=p.summary, for_oscar=p.for_oscar, yes_no=p.yes_no)
@@ -340,8 +345,10 @@ def main(argv: list[str]) -> int:
     from .integrator import load_integrator_settings
     integration = (IntegrationRoute(tg_settings["integration"], load_integrator_settings(env=env, lane_filter=False).policies)
                    if tg_settings.get("integration") else None)
+    from .deps import TreeReader
+    desk.tree = TreeReader(hermes_for)
     r = Renotifier(lanes, hermes_for=hermes_for, notifier=notifier, messages=MessageStore(MESSAGES_DIR),
-                   links=links, desk=desk, integration=integration)
+                   links=links, desk=desk, integration=integration, tree=desk.tree)
     sent, failed = r.run(lane=args.lane, task=args.task, dry_run=args.dry_run, force=args.force)
     verb = "enviaría" if args.dry_run else "reenviados"
     print(f"\n{verb}: {len(sent)} {' '.join(sent)}" + (f" · FALLIDOS: {' '.join(failed)}" if failed else ""))
