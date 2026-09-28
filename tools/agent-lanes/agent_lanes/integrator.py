@@ -876,8 +876,9 @@ class Integrator:
                 return False
             try:
                 # Worktree limpio del commit fusionado: nada sin commitear del checkout raíz llega a producción.
-                # cwd = railway_dir (enlazado) + ids explícitos; sin -y, `up` nunca crea un proyecto nuevo.
-                up = self._railway(policy, "up", str(wt), "--detach", *self._ids(policy), timeout=900)
+                # cwd = el worktree + ids explícitos (sin -y, `up` nunca crea un proyecto nuevo). `railway up <ruta>`
+                # desde otro cwd falla con "prefix not found" (CLI 5.59, visto en el deploy de W4 el 28-09).
+                up = self._exec([self.railway_exe, "up", "--detach", *self._ids(policy)], cwd=str(wt), timeout=900)
             finally:
                 self._remove_worktree(lane.repo, wt)
         if up.returncode != 0:

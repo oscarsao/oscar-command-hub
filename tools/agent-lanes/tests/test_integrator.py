@@ -584,11 +584,11 @@ def merged_and_press_deploy(tmp_path, world=None, health=None):
 def test_deploy_railway_up_polls_the_new_deployment(tmp_path):
     integ, w, h, tg, d, clock = merged_and_press_deploy(tmp_path)
     up = next(a for a in w.argv(RW) if a[1] == "up")
-    assert up[2].endswith("intdep-t_1") and "--detach" in up and "-y" not in up and "--new" not in up
+    assert "--detach" in up and "-y" not in up and "--new" not in up
     assert up[up.index("-p") + 1] == PROJECT and up[up.index("-s") + 1] == SERVICE
     assert up[up.index("-e") + 1] == ENVIRONMENT
     up_kw = next(kw for a, kw in w.calls if a and a[0] == RW and a[1] == "up")
-    assert up_kw["cwd"] == "C:/Users/oscar/dev/oscar-hq"
+    assert str(up_kw["cwd"]).replace("\\", "/").endswith("intdep-t_1")  # desde el worktree limpio del merge
     assert "🚀 desplegado · ddddddd" in tg.edits[-1]["text"]
     assert any(t.startswith(f"DESPLEGADO {MERGE} · railway deployment {NEW_DEP} SUCCESS") for _, t, _ in h.comments)
     assert clock.t > 0  # pasó por BUILDING antes de SUCCESS: no se quedó con el SUCCESS viejo
