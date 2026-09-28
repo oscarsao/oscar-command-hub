@@ -41,9 +41,20 @@ class GitOps:
                            capture_output=True, text=True, timeout=60).returncode == 0
         if exists:
             self._git(lane.repo, "worktree", "add", str(path), branch)
+        elif self._fetch_remote_lane(lane, branch):
+            # Tarea reabierta tras la limpieza de done (Oscar pidió cambios): la rama local ya no existe pero la
+            # remota conserva el trabajo. Partir de la base lo perdería y el push sería non-fast-forward.
+            self._git(lane.repo, "worktree", "add", str(path), "-b", branch, f"{lane.remote}/{branch}")
         else:
             self._git(lane.repo, "worktree", "add", str(path), "-b", branch, f"{lane.remote}/{lane.base}")
         return str(path)
+
+    def _fetch_remote_lane(self, lane: Lane, branch: str) -> bool:
+        """True si <remote>/lane/<id> existe (y queda actualizada en refs/remotes)."""
+        cp = self._run(["git", "-C", lane.repo, "fetch", lane.remote,
+                        f"+refs/heads/{branch}:refs/remotes/{lane.remote}/{branch}"],
+                       capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300)
+        return cp.returncode == 0
 
     def _branch_exists(self, repo: str, branch: str) -> bool:
         return self._run(["git", "-C", repo, "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}"],

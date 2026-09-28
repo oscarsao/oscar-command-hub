@@ -14,6 +14,7 @@ import time
 from logging.handlers import RotatingFileHandler
 
 from agent_lanes.config import ROOT, load_env, load_lanes, load_runner_settings, load_telegram_settings
+from agent_lanes.decisions import OWNER_TELEGRAM_ID, CallbackStore, DecisionDesk, UpdatePoller
 from agent_lanes.git_ops import GitOps
 from agent_lanes.hermes import HermesCLI
 from agent_lanes.review import ClaudeReviewer, ReviewRunner, sweep_done
@@ -25,6 +26,8 @@ from agent_lanes.verify import verify
 from agent_lanes.worker import ClaudeWorker
 
 LOCK = ROOT / ".state" / "runner.lock"
+CALLBACKS_DIR = ROOT / ".state" / "callbacks"  # un JSON por teclado enviado (callback_data corto -> tarea/acción)
+TG_OFFSET = ROOT / ".state" / "tg_offset"      # offset de getUpdates del bot de carriles
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -68,23 +71,37 @@ def main(argv: list[str] | None = None) -> int:
 
     env = load_env()
     allowed = {c.strip() for c in env.get("TELEGRAM_ALLOWED_CHATS", "").split(",") if c.strip()}
-    notify = TelegramNotifier(env.get("TELEGRAM_BOT_TOKEN"), env.get("TELEGRAM_CHAT_ID"), env.get("TELEGRAM_THREAD_ID"),
-                              allowed_chats=allowed, generic_origins=load_telegram_settings()["generic_origins"])
+    tg_settings = load_telegram_settings()
+    # CARRILES_BOT_TOKEN = bot propio de los carriles: avisos con botones + escucha de pulsaciones. Sin él, el bot de
+    # Hermes y sin botones ni getUpdates (Hermes ya lo consume; dos consumidores del mismo bot chocan).
+    lanes_bot = env.get("CARRILES_BOT_TOKEN") or None
+    notify = TelegramNotifier(lanes_bot or env.get("TELEGRAM_BOT_TOKEN"), env.get("TELEGRAM_CHAT_ID"),
+                              env.get("TELEGRAM_THREAD_ID"), allowed_chats=allowed,
+                              generic_origins=tg_settings["generic_origins"])
     if not notify.enabled:
         log.warning("Telegram desactivado (faltan TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID en agent-lanes/.env)")
-    tg_settings = load_telegram_settings()
     # Un solo almacén de message_id para todos los carriles: la tarea pasa del implementador a review y vuelve.
     messages = MessageStore(MESSAGES_DIR)
     links = LinkBuilder(env.get("KANBAN_BASE_URL") or tg_settings["kanban_base_url"])
+    decisions = None
+    if lanes_bot and notify.enabled and not args.once:
+        decisions = DecisionDesk(notify, CallbackStore(CALLBACKS_DIR), lanes=all_lanes, hermes_for=hermes_for,
+                                 links=links, owner_id=env.get("OWNER_TELEGRAM_ID") or OWNER_TELEGRAM_ID)
+        UpdatePoller(notify, decisions, TG_OFFSET).start()
+        log.info("bot de carriles activo (id %s): avisos con botones y escucha de decisiones", notify.bot_id)
+    else:
+        log.info("sin bot de carriles: avisos con el bot de Hermes, sin botones")
     git = GitOps()
     impl = {n: l for n, l in selected.items() if l.kind == "implement"}
     runners: list = [LaneRunner(l, hermes=hermes_for(l.board), git=git, worker=ClaudeWorker(), verifier=verify,
-                                notify=notify, exclude=set(args.exclude), messages=messages, links=links)
+                                notify=notify, exclude=set(args.exclude), messages=messages, links=links,
+                                decisions=decisions)
                      for l in impl.values()]
     for name, lane in selected.items():
         if lane.kind == "review":
             runners.append(ReviewRunner(lane, all_lanes, hermes_for=hermes_for, git=git, reviewer=ClaudeReviewer(),
-                                        verifier=verify, notify=notify, messages=messages, links=links))
+                                        verifier=verify, notify=notify, messages=messages, links=links,
+                                        decisions=decisions))
     service = Service(runners, max_workers=args.max_workers or settings["max_workers"])
     interval = args.interval or settings["interval_seconds"]
     log.info("runner: carriles=%s max_workers=%s interval=%ss", list(selected), service.max_workers, interval)

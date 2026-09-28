@@ -43,8 +43,18 @@ def build_prompt(task: dict, lane: Lane) -> str:
         f"Estás en un worktree dedicado en la rama lane/{task['id']} creada desde {lane.remote}/{lane.base}.\n"
         f"Al terminar: commit, `git push -u {lane.remote} lane/{task['id']}` y devuelve el JSON del schema.\n\n"
         f"# {task.get('title', '')}\n\n{task.get('body') or ''}\n"
+        + _answers_section(task.get("oscar_answers"))
         + _feedback_section(task.get("review_feedback"))
     )
+
+
+def _answers_section(answers: list[str] | None) -> str:
+    if not answers:
+        return ""
+    items = "\n".join(f"- {a}" for a in answers[-5:])
+    return ("\n## Decisiones de Oscar (respuestas a tus preguntas; obligatorio respetarlas)\n"
+            "Esta tarea ya se bloqueó antes pidiendo decisión y Oscar ha respondido. Tu worktree conserva el trabajo "
+            f"anterior: continúa desde ahí aplicando estas decisiones.\n\n{items}\n")
 
 
 def _feedback_section(feedback: list[str] | None) -> str:

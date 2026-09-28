@@ -39,15 +39,21 @@ def test_truncate_title_to_60_with_ellipsis():
     assert truncate("  corto \n título ", 60) == "corto título"
 
 
-def test_render_is_at_most_three_lines_and_escapes_html():
+def test_render_card_format_and_escapes_html():
+    body = "Modo OASP: Spec-Lite\n\n## Objetivo\n- Que el <aviso> tenga **contexto**\n\n## Criterios\n- x"
     text = render("review", "t_1", "Arregla <script> & " + "y" * 80, "claude-oscarhq", "en review · 2 archivos",
-                  [("rama", "https://github.com/o/r/compare/master...lane/t_1"), ("tarjeta", "https://k/t?a=1&b=2")])
+                  [("🗂 Tarjeta", "https://k/t?a=1&b=2"), ("🔀 Cambios", "https://github.com/o/r/compare/m...lane/t_1")],
+                  body=body)
     lines = text.split("\n")
-    assert len(lines) == 3
-    assert lines[0].startswith("🔍 t_1 · Arregla &lt;script&gt; &amp; ") and lines[0].endswith(" · claude-oscarhq")
-    assert "<script>" not in text and "…" in lines[0]
-    assert '<a href="https://k/t?a=1&amp;b=2">tarjeta</a>' in lines[2]
-    assert len(render("running", "t_1", "T", "l", "en curso").split("\n")) == 2  # sin enlaces, sin tercera línea
+    assert len(lines) == 5
+    assert lines[0].startswith("🔍 t_1 · Arregla &lt;script&gt; &amp; ") and lines[0].endswith("…")
+    assert lines[1] == "Píldora · claude-oscarhq · Spec-Lite"
+    assert lines[2] == "Qué: Que el &lt;aviso&gt; tenga contexto"
+    assert lines[3] == "en review · 2 archivos"
+    assert "<script>" not in text
+    assert lines[4].startswith('<a href="https://k/t?a=1&amp;b=2">🗂 Tarjeta</a> · ')
+    # sin objetivo ni enlaces: cabecera, contexto y estado
+    assert render("running", "t_1", "T", "l", "en curso").split("\n") == ["▶️ t_1 · T", "l", "en curso"]
 
 
 def test_questions_block_max_5_items_and_limit_total():
@@ -103,11 +109,11 @@ def test_link_builder_reads_origin_once_and_omits_card_without_base():
         return subprocess.CompletedProcess(args, 0, "git@github.com:oscarsao/oscar-hq.git\n", "")
 
     lb = notices.LinkBuilder(None, runner=run)
-    assert lb(LANE, "t_1") == [("rama", "https://github.com/oscarsao/oscar-hq/compare/master...lane/t_1")]
+    assert lb(LANE, "t_1") == [("🔀 Cambios", "https://github.com/oscarsao/oscar-hq/compare/master...lane/t_1")]
     assert lb(LANE, "t_2")[0][1].endswith("...lane/t_2")
     assert calls == [["git", "-C", "C:/repo", "remote", "get-url", "origin"]]
     assert notices.LinkBuilder("https://k", runner=run)(LANE, "t_1", branch=False) == [
-        ("tarjeta", "https://k/tasks/oscarhq/t_1")]
+        ("🗂 Tarjeta", "https://k/tasks/oscarhq/t_1")]
 
 
 # --- almacén + edición vs mensaje nuevo ---------------------------------------------------------------
@@ -209,7 +215,7 @@ def test_review_status_line_has_files_tests_and_cost():
     n = FakeNotifier()
     LaneRunner(LANE, hermes=FakeHermes(tasks=[{"id": "t_1", "title": "T", "body": "B"}]), git=FakeGit(),
                worker=FakeWorker([out]), verifier=FakeVerifier(), notify=n).run_once()
-    assert n.edits[-1][1].split("\n")[1] == "en review · 2 archivos · test OK · 1,7 $"
+    assert n.edits[-1][1].split("\n")[2] == "en review · 2 archivos · tests OK · 1,7 $"
     assert "ok" not in n.edits[-1][1].split("\n")[1:]  # el resumen del worker no va a Telegram
 
 
@@ -266,7 +272,7 @@ def test_review_done_is_a_new_alert_and_cleanup_error_goes_to_card_only(tmp_path
     assert r.run_once() == {"t_1": "done"}
     assert n.silent == [False] and n.deleted == [77]
     text = n.msgs[0]
-    assert text.startswith("✅ t_1") and "review aprobada · 2 archivos · test OK · 1,4 $" in text
+    assert text.startswith("✅ t_1") and "review aprobada · 2 archivos · tests OK · 1,4 $" in text
     assert "lista para merge" in text and "limpieza local pendiente" in text
     assert_clean(text)
     assert any(c[0] == "comment" and RAW_GIT in c[2] for c in rh.calls)

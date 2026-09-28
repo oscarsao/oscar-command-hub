@@ -11,8 +11,8 @@ from pathlib import Path
 from typing import Callable
 
 from .config import ROOT, Lane
-from .notices import (MessageStore, TaskNotices, files_label, money, questions_block, render,
-                      status_line, test_label)
+from .notices import (MessageStore, TaskNotices, files_label, money, normalize_questions, question_text,
+                      questions_block, render, status_line, test_label)
 from .telegram import telegram_target
 
 log = logging.getLogger("agent_lanes")
@@ -71,8 +71,9 @@ class LaneRunner:
     def __init__(self, lane: Lane, *, hermes, git, worker, verifier, notify: Callable[[str], None],
                  clock: Callable[[], float] = time.monotonic, state_dir: Path = STATE_DIR,
                  pid_alive: Callable[[int], bool] = pid_alive, exclude: set[str] | None = None,
-                 messages: MessageStore | None = None, links: Callable | None = None):
+                 messages: MessageStore | None = None, links: Callable | None = None, decisions=None):
         self.lane = lane
+        self._decisions = decisions  # DecisionDesk (botones) solo con CARRILES_BOT_TOKEN
         self.hermes = hermes
         self.git = git
         self.worker = worker
@@ -86,15 +87,21 @@ class LaneRunner:
         self._active: dict[str, dict] = {}  # tid -> task being processed (for notice routing)
 
     def notify(self, state: str, tid: str, task: dict | None, status: str, *, alert: bool = False,
-               bullets: list[str] | None = None, branch_link: bool = True) -> None:
-        """Estado de la tarea en su único mensaje. `status` es texto público: nunca rutas, stderr ni trazas."""
-        task = task or {}
+               bullets: list[str] | None = None, branch_link: bool = True, changed_files=None,
+               buttons: bool = False, block_kind: str | None = None, questions=None) -> None:
+        """Estado de la tarea en su único mensaje. `status` es texto público: nunca rutas, stderr ni trazas.
+        `buttons`: añade los botones de decisión del estado (si hay bot de carriles)."""
+        task = {"id": tid, **(task or {})}
         # Origen-Telegram routes the notice back to that topic (contract with W3b); lane.telegram is the fallback.
         target = telegram_target(task.get("body"))
         try:
-            links = self._links(self.lane, tid, branch=branch_link) if self._links else []
-            text = render(state, tid, task.get("title"), self.lane.name, status, links, bullets)
-            self._notices.publish(tid, text, target, self.lane.telegram, alert=alert)
+            links = self._links(self.lane, tid, branch=branch_link, changed_files=changed_files) if self._links else []
+            text = render(state, tid, task.get("title"), self.lane.name, status, links, bullets, body=task.get("body"))
+            markup = None
+            if buttons and self._decisions:
+                markup = self._decisions.markup(state, task=task, lane=self.lane, block_kind=block_kind,
+                                                questions=questions, changed_files=changed_files)
+            self._notices.publish(tid, text, target, self.lane.telegram, alert=alert, reply_markup=markup)
         except Exception as exc:
             log.warning("aviso a Telegram falló: %s", exc)
 
@@ -146,17 +153,22 @@ class LaneRunner:
         return {tid: job() for tid, job in self.jobs()}
 
     def _block(self, tid: str, kind: str, reason: str, task: dict | None = None, *, public: str,
-               questions: list[str] | None = None) -> str:
+               questions: list | None = None) -> str:
         """`reason` (detalle técnico) va a la tarjeta y al log; a Telegram solo `public` (+ preguntas si needs_input)."""
         log.warning("%s bloqueada (%s): %s", tid, kind, reason)
-        if not self.hermes.block(tid, kind, reason[:1500]):
+        blocked = self.hermes.block(tid, kind, reason[:1500])
+        if not blocked:
             log.error("no se pudo bloquear %s (%s) en el kanban: la tarea sigue en running", tid, kind)
         task = task or self._active.get(tid)
+        # Botones solo si el bloqueo quedó hecho: Reintentar/Responder hacen `unblock`.
         if kind == "needs_input":
-            self.notify("needs_input", tid, task, status_line(public, "responde en este hilo o a Hermes"),
-                        alert=True, bullets=questions_block(questions))
+            hint = "responde con un botón o en la tarjeta" if (blocked and self._decisions) else \
+                "responde en este hilo o a Hermes"
+            self.notify("needs_input", tid, task, status_line(public, hint), alert=True,
+                        bullets=questions_block(questions), buttons=bool(blocked), questions=questions)
         else:
-            self.notify("blocked", tid, task, status_line("bloqueada", public, "detalle en la tarjeta"), alert=True)
+            self.notify("blocked", tid, task, status_line("bloqueada", public, "detalle en la tarjeta"), alert=True,
+                        buttons=bool(blocked), block_kind=kind)
         return f"blocked:{kind}"
 
     def process(self, task: dict) -> str:
@@ -188,6 +200,10 @@ class LaneRunner:
                 feedback = self.hermes.review_feedback(tid)  # non-empty when the review lane reopened it
                 if feedback:
                     task = {**task, "review_feedback": feedback}
+                # Respuestas de Oscar a un needs_input anterior (botones de Telegram): el worker debe verlas.
+                answers = self.hermes.oscar_answers(tid) if hasattr(self.hermes, "oscar_answers") else []
+                if answers:
+                    task = {**task, "oscar_answers": answers}
                 self.notify("running", tid, task,
                             status_line("en curso", f"aplicando cambios de revisión (ronda {len(feedback)})"
                                         if feedback else None), branch_link=bool(feedback))
@@ -208,10 +224,10 @@ class LaneRunner:
                                    public="el worker no terminó (tiempo o presupuesto agotado)")
             result = outcome.structured
             if result["status"] == "needs_input":
-                questions = "\n".join(f"- {q}" for q in result.get("questions") or []) or result.get("summary", "")
-                return self._block(tid, "needs_input", f"El worker necesita decisión:\n{questions}", task,
-                                   public="necesita tu decisión",
-                                   questions=result.get("questions") or [result.get("summary", "")])
+                asked = normalize_questions(result.get("questions")) or normalize_questions([result.get("summary", "")])
+                detail = "\n".join(f"- {question_text(q)}" for q in asked) or result.get("summary", "")
+                return self._block(tid, "needs_input", f"El worker necesita decisión:\n{detail}", task,
+                                   public="necesita tu decisión", questions=asked)
             if result["status"] != "done":
                 return self._block(tid, "transient", f"worker status={result['status']}: {result.get('summary', '')}",
                                    task, public="el worker no pudo completarla")
@@ -234,5 +250,5 @@ class LaneRunner:
             # El resumen completo queda en la tarjeta (request-review); aquí solo la línea de estado.
             self.notify("review", tid, task, status_line(
                 "en review", files_label(len(result.get("changed_files") or [])), test_label(check.test_exit),
-                money(outcome.cost_usd)))
+                money(outcome.cost_usd)), changed_files=result.get("changed_files"))
             return "review"

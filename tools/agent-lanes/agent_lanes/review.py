@@ -88,8 +88,9 @@ class ClaudeReviewer:
 class ReviewRunner:
     def __init__(self, review_lane: Lane, lanes: dict[str, Lane], *, hermes_for: Callable[[str], object], git,
                  reviewer, verifier, notify, clock: Callable[[], float] = time.monotonic,
-                 messages: MessageStore | None = None, links: Callable | None = None):
+                 messages: MessageStore | None = None, links: Callable | None = None, decisions=None):
         self.lane = review_lane
+        self._decisions = decisions  # DecisionDesk (botones) solo con CARRILES_BOT_TOKEN
         self.lanes = {n: l for n, l in lanes.items() if n in review_lane.reviews}
         self.hermes_for = hermes_for
         self.git = git
@@ -100,16 +101,22 @@ class ReviewRunner:
         self.clock = clock
 
     def notify(self, state: str, task: dict, status: str, *, alert: bool = False,
-               bullets: list[str] | None = None) -> None:
+               bullets: list[str] | None = None, changed_files=None, buttons: bool = False,
+               block_kind: str | None = None, questions=None, summary: str | None = None) -> None:
         """Edita el mensaje único de la tarea (o envía uno nuevo si `alert`). `status` es texto público."""
         try:
             # Reviewed lane's destination (brand topic), else the review lane's own, else the .env default.
             reviewed = self.lanes.get(task.get("assignee"))
             lane_target = (reviewed.telegram if reviewed else None) or self.lane.telegram
             name = reviewed.name if reviewed else self.lane.name
-            links = self._links(reviewed, task["id"]) if (self._links and reviewed) else []
-            text = render(state, task["id"], task.get("title"), name, status, links, bullets)
-            self._notices.publish(task["id"], text, telegram_target(task.get("body")), lane_target, alert=alert)
+            links = self._links(reviewed, task["id"], changed_files=changed_files) if (self._links and reviewed) else []
+            text = render(state, task["id"], task.get("title"), name, status, links, bullets, body=task.get("body"))
+            markup = None
+            if buttons and self._decisions and reviewed:
+                markup = self._decisions.markup(state, task=task, lane=reviewed, block_kind=block_kind,
+                                                questions=questions, summary=summary, changed_files=changed_files)
+            self._notices.publish(task["id"], text, telegram_target(task.get("body")), lane_target, alert=alert,
+                                  reply_markup=markup)
         except Exception as exc:
             log.warning("aviso a Telegram falló: %s", exc)
 
@@ -127,14 +134,15 @@ class ReviewRunner:
                questions: list[str] | None = None) -> str:
         """`reason` (detalle técnico) va a la tarjeta y al log; a Telegram solo `public` (+ preguntas si needs_input)."""
         log.warning("%s bloqueada en review (%s): %s", task["id"], kind, reason)
-        if not h.block(task["id"], kind, reason[:1500]):
+        blocked = h.block(task["id"], kind, reason[:1500])
+        if not blocked:  # block solo mueve running/ready: una tarea en review puede no quedar bloqueada
             log.error("no se pudo bloquear %s (%s) en el kanban", task["id"], kind)
         if kind == "needs_input":
             self.notify("needs_input", task, status_line(public, "responde en este hilo o a Hermes"), alert=True,
-                        bullets=questions_block(questions))
+                        bullets=questions_block(questions), buttons=bool(blocked), questions=questions)
         else:
             self.notify("blocked", task, status_line("bloqueada en review", public, "detalle en la tarjeta"),
-                        alert=True)
+                        alert=True, buttons=bool(blocked), block_kind=kind)
         return f"blocked:{kind}"
 
     def process(self, task: dict, lane: Lane, h) -> str:
@@ -182,7 +190,9 @@ class ReviewRunner:
             self.notify("done", task, status_line(
                 "review aprobada", files_label(len(meta.get("changed_files") or [])),
                 test_label(check.test_exit), money(cost), "lista para merge",
-                None if cleaned else "limpieza local pendiente"), alert=True)
+                None if cleaned else "limpieza local pendiente"), alert=True,
+                changed_files=meta.get("changed_files"), buttons=True,
+                summary=verdict.get("summary") or meta.get("summary"))
             return "done"
 
         changes = verdict.get("required_changes") or [verdict.get("summary", "")]
@@ -209,7 +219,7 @@ class ReviewRunner:
         # Los cambios pedidos quedan como comentario en la tarjeta; aquí solo el recuento.
         self.notify("changes", task, status_line(
             f"cambios pedidos (ronda {rnd})", f"{len(changes)} cambio" + ("" if len(changes) == 1 else "s"),
-            "vuelve al carril"))
+            "vuelve al carril"), changed_files=meta.get("changed_files"))
         return "changes"
 
 

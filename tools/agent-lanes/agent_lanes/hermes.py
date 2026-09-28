@@ -22,11 +22,15 @@ CONTRACT = {
     "complete": ["--result", "--summary", "--metadata"],
     "reopen-review": ["--reason"],
     "reassign": ["profile"],
+    "assign": ["profile"],
+    "unblock": ["--reason"],
     "notify-list": ["--json"],
     "notify-unsubscribe": ["--platform", "--chat-id", "--thread-id"],
 }
 
 REVIEW_AUTHOR = "lane-review"  # author of the review lane's change requests (read back by the implementer)
+OSCAR_AUTHOR = "oscar-telegram"  # Oscar's decisions from Telegram buttons (answers are read back by the implementer)
+ANSWER_PREFIX = "Respuesta de Oscar:"
 
 
 class HermesError(RuntimeError):
@@ -73,6 +77,18 @@ class HermesCLI:
         """Change requests left by the review lane, oldest first (empty for a first run)."""
         comments = self.show(task_id).get("comments") or []
         return [c["body"] for c in comments if c.get("author") == REVIEW_AUTHOR]
+
+    def oscar_answers(self, task_id: str) -> list[str]:
+        """Oscar's answers to the worker's questions (Telegram buttons / free reply), oldest first."""
+        comments = self.show(task_id).get("comments") or []
+        return [c["body"] for c in comments
+                if c.get("author") == OSCAR_AUTHOR and (c.get("body") or "").startswith(ANSWER_PREFIX)]
+
+    def assign(self, task_id: str, profile: str) -> bool:
+        return self._call("assign", task_id, profile).returncode == 0
+
+    def unblock(self, task_id: str) -> bool:
+        return self._call("unblock", task_id).returncode == 0
 
     def complete(self, task_id: str, result: str, metadata: dict) -> tuple[bool, str]:
         cp = self._call("complete", task_id, "--result", result, "--metadata", json.dumps(metadata))

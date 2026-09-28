@@ -19,6 +19,9 @@ Revisas el trabajo que otro worker dejó en la rama `lane/<task_id>`. **Solo lec
 - `approve`: cumple los criterios sin hallazgos `blocker` ni `major`. Los `minor` se anotan, pero no bloquean.
 - `request_changes`: cualquier `blocker`/`major`, o un criterio de aceptación sin cumplir. En `required_changes`, cada entrada es un cambio **concreto y verificable** (archivo y qué hacer), no una opinión.
 - No pidas cambios de estilo ni refactors que la tarea no pedía.
+- Cuando necesites una decisión, da 2-4 opciones cortas y marca la recomendada (solo decisiones de negocio o
+  de diseño, no de corrección). Escríbela en `required_changes` como
+  "Decisión: <pregunta> — opciones: 1) … 2) … (recomendada: N)".
 
 ## Nunca
 - Merge, push, rebase ni escritura de archivos.
