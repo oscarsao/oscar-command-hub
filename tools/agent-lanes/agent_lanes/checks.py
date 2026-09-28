@@ -12,16 +12,24 @@ from __future__ import annotations
 
 import os
 import subprocess
-
-from . import proc as _proc
 import sys
 
 TIMEOUT = 600
+# Standalone script (runs by path, not as a package): no relative imports. Same no-window flag as agent_lanes.proc.
+_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000) if sys.platform == "win32" else 0
+
+
+class _proc:  # noqa: N801 - mirrors agent_lanes.proc.run so call sites stay identical
+    @staticmethod
+    def run(*args, **kwargs) -> subprocess.CompletedProcess:
+        if _NO_WINDOW:
+            kwargs["creationflags"] = kwargs.get("creationflags", 0) | _NO_WINDOW
+        return subprocess.run(*args, **kwargs)
 
 
 def _git(*args: str) -> subprocess.CompletedProcess:
     return _proc.run(["git", *args], capture_output=True, text=True, encoding="utf-8", errors="replace",
-                          timeout=TIMEOUT)
+                     timeout=TIMEOUT)
 
 
 def run_from_base(base: str, script: str, args: list[str]) -> tuple[int, str]:
