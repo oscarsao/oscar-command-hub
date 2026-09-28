@@ -168,7 +168,8 @@ class Renotifier:
     def collect(self, *, lane: str | None = None, task: str | None = None,
                 statuses: tuple[str, ...] = ("blocked", "done")) -> list[Pending]:
         """`statuses`: ("blocked",) para la bandeja y los recordatorios (sin el git ls-remote de las done)."""
-        impl = {n: l for n, l in self.lanes.items() if l.kind == "implement"}
+        # ops entra solo por sus bloqueos (needs_input con acciones a aprobar): su plan "done" es de git/PR.
+        impl = {n: l for n, l in self.lanes.items() if l.kind in ("implement", "ops")}
         if lane and lane not in impl:
             raise SystemExit(f"'{lane}' no es un carril de código de lanes.yaml ({', '.join(impl)})")
         found = []
@@ -177,7 +178,7 @@ class Renotifier:
                 continue
             h = self.hermes_for(ln.board)
             for status, plan in (("blocked", self._plan_blocked), ("done", self._plan_done)):
-                if status not in statuses:
+                if status not in statuses or (status == "done" and ln.kind == "ops"):
                     continue
                 for t in h.list_status(name, status):
                     if task and t["id"] != task:

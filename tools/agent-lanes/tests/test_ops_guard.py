@@ -148,3 +148,36 @@ def test_hook_process_exit_codes(ctx):
     assert ok.returncode == 0, ok.stderr
     bad = subprocess.run([sys.executable, str(GUARD)], input="{no json", capture_output=True, text=True)
     assert bad.returncode == 2
+
+
+# --- endurecimiento (flags con =, enlaces, credenciales reales) ------------------------------------------
+
+@pytest.mark.parametrize("cmd", [
+    "git log --output=C:/Windows/x", "git diff --ext-diff=x", "gh api repos/o/r/collaborators/a --input=body.json",
+    "gh api repos/o/r -fpermission=push", "gh api x --field=a=b", "gh api x --raw-field=a=b", "gh api x --method=PUT",
+    "gh api x -XPUT", "robocopy E:/v vault /JOB:x.rcj", "robocopy E:/v vault /SAVE:x", "cp -l E:/a.md a.md",
+    "cp --link E:/a.md a.md", "cp -s E:/a.md a.md", "cp -rl E:/v v", "cp --symbolic-link E:/a a",
+    'cat "C:/Users/oscar/AppData/Roaming/GitHub CLI/hosts.yml"', "cat ~/.cloudflared/abc.json", "cat ~/.claude.json",
+    "cat ~/.npmrc", "ls ~/.docker", "grep -r TunnelSecret ~", "grep -rn x C:/Users/oscar", "rg TunnelSecret ~",
+    "cp -r ~ backup", "robocopy C:/Users/oscar vault /E", "cd ~/.cloudflared && cat x.json",
+    "cat C:/Users/oscar/oscar-command-hub/tools/agent-lanes/.state/tg_offset", "sha256sum ~/.ssh/known_hosts",
+])
+def test_blocks_hardened(ctx, cmd):
+    assert bash(ctx, cmd), cmd
+
+
+@pytest.mark.parametrize("cmd", ["ls ~", "cloudflared tunnel list", "grep TODO ~/notas.md", "ls C:/Users/oscar",
+                                 "cp -r E:/vault/. vault", "find C:/Users/oscar/Documents -name '*.md'"])
+def test_hardening_keeps_legit_reads(ctx, cmd):
+    assert bash(ctx, cmd) is None, bash(ctx, cmd)
+
+
+def test_read_tools_block_protected_roots(ctx):
+    assert tool(ctx, "Read", file_path="C:/Users/oscar/.cloudflared/abc.json")
+    assert tool(ctx, "Read", file_path="C:/Users/oscar/AppData/Roaming/GitHub CLI/hosts.yml")
+    assert tool(ctx, "Read", file_path="C:/Users/oscar/.claude.json")
+    assert tool(ctx, "Grep", pattern="TunnelSecret", path="C:/Users/oscar")  # recursivo: contiene raíces protegidas
+    assert tool(ctx, "Glob", pattern="C:/Users/oscar/.cloudflared/*.json")
+    assert tool(ctx, "Glob", pattern="*.json", path="C:/Users/oscar/.cloudflared")
+    assert tool(ctx, "Read", file_path=str(ctx["ws"] / "informe.md")) is None  # el workspace siempre se lee
+    assert tool(ctx, "Grep", pattern="x", path="E:/vault") is None

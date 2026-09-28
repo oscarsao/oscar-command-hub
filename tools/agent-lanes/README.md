@@ -27,8 +27,9 @@ Destino-Ops: C:/Users/oscar/Obsidian     # se puede escribir aquí, además del 
 ```
 
 Los destinos los valida el runner, no el worker: deben ser absolutos, colgar de `dest_roots` de `lanes.yaml`
-(hoy `C:/Users/oscar`), no ser rutas protegidas (sistema, `AppData`, `.claude`, `.ssh`, el hub, la raíz de los
-workspaces) y no solaparse con un origen. Un destino inválido bloquea la tarea antes de lanzar el worker.
+(hoy `C:/Users/oscar`), no ser rutas protegidas (sistema, `AppData`, cualquier `~/.*` como `~/.claude.json` o
+`~/.local/bin`, perfiles de PowerShell, el hub, `dev/_lanes`, `dev/_hub-wt` y los `repo` de todos los carriles) y
+no solaparse con un origen. Un destino inválido bloquea la tarea antes de lanzar el worker.
 
 ### Límites de seguridad (`contract/ops_guard.py`, hook PreToolUse con matcher `*`, lista blanca, fail closed)
 - Herramientas: Bash, Read/Grep/Glob, Edit/Write/MultiEdit y las internas inocuas (TodoWrite, ToolSearch,
@@ -40,6 +41,12 @@ workspaces) y no solaparse con un origen. Un destino inválido bloquea la tarea 
   `bcdedit`, `git push`, `gh pr merge`, `railway`, `vercel`, `alembic`, `supabase`, intérpretes y shells anidados,
   `curl`/`wget`, variables `$X` y `$(...)`.
 - Secretos: cualquier referencia a `.env`, tokens, claves o credenciales se bloquea (Bash, Read, Grep, Glob, Write).
+  Además, raíces protegidas en lectura: `~/AppData` (credenciales de gh/vercel/railway), `~/.claude*`,
+  `~/.cloudflared`, `~/.config`, `~/.ssh`, `~/.docker`, `~/.npmrc`, `.env`/`.state` de agent-lanes. Un comando
+  recursivo (`grep -r`, `rg`, `cp -r`, `robocopy`) tampoco puede partir de una carpeta que las contenga (`~`).
+  El túnel se consulta con `cloudflared tunnel list|info`.
+- Flags con valor pegado (`--output=`, `-fcampo=`, `--input=`) cuentan igual; `robocopy /JOB /SAVE` y `cp -l/-s`
+  (enlaces al original) bloqueados.
 - Rutas: `realpath` + `normcase` y contención por ruta (`ops/t_1` no cubre `ops/t_10`); `/c/...` de Git Bash y
   relativas al `cwd` real (sigue los `cd` del comando).
 - MCP: sin `--strict-mcp-config`, así cargan los conectores de claude.ai en `-p`. El hook solo deja pasar nombres
@@ -57,6 +64,8 @@ comprueba que cada ruta de evidencia existe dentro del workspace o de un destino
 el nº de archivos, y exige al menos una evidencia de ruta. Nunca marca done: `request-review` y aviso con
 [✅ Validar] (hace `complete` + comentario `VALIDADO-OSCAR`, sin PR) / [🔁 Pedir cambios] (vuelve al carril con el
 comentario) / [🗄 Aparcar]. El carril `review` no revisa ops y `sweep_done` no borra sus workspaces.
+Los `needs_input` de ops entran en `/decisiones` y en los recordatorios; la review de ops pendiente todavía no
+(siguiente paso: un plan de "review ops" en `renotify.py`, y `/tarea` con sus botones).
 
 ### Acciones externas o irreversibles
 Compartir, invitar, crear eventos/calendarios/tareas, mover el original, configurar un túnel o servicio: el worker

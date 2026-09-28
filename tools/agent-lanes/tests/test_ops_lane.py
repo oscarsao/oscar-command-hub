@@ -110,6 +110,27 @@ def test_validate_dests(tmp_path):
     assert bad  # la raíz de workspaces no es un destino
 
 
+@pytest.mark.parametrize("dest", [
+    "C:/Users/oscar/.claude.json", "C:/Users/oscar/.local/bin", "C:/Users/oscar/.cloudflared",
+    "C:/Users/oscar/dev/_lanes/lane-t_9", "C:/Users/oscar/dev/_lanes", "C:/Users/oscar/dev/oscar-hq",
+    "C:/Users/oscar/dev/migrateam/backend", "C:/Users/oscar/Documents/WindowsPowerShell",
+    "C:/Users/oscar/dev/_hub-wt/otro", "C:/Users/oscar/oscar-command-hub/x",
+])
+def test_protected_destinations(dest):
+    lane = Lane(name="claude-ops", kind="ops", worktree_root="C:/Users/oscar/dev/_lanes/ops",
+                dest_roots=("C:/Users/oscar",))
+    _, ok, bad = task_targets(lane, {"body": f"Destino-Ops: {dest}"})
+    assert ok == [] and bad and "protegida" in bad[0], bad
+
+
+def test_legit_destination_under_home():
+    lane = Lane(name="claude-ops", kind="ops", worktree_root="C:/Users/oscar/dev/_lanes/ops",
+                dest_roots=("C:/Users/oscar",))
+    body = "Origen-Ops: E:/Obsidian\nDestino-Ops: C:/Users/oscar/Obsidian"
+    _, ok, bad = task_targets(lane, {"body": body})
+    assert bad == [] and len(ok) == 1
+
+
 def test_workspace_created_and_reused(lane):
     ws = OpsWorkspace()
     p = ws.prepare_worktree(lane, "t_1", {"id": "t_1", "body": ""})
@@ -305,3 +326,28 @@ def test_validate_ops_failure_keeps_task(tmp_path, lane):
     desk, tg, _ = _desk(tmp_path, hermes=h, gh=lambda a, **k: None, lanes={lane.name: lane})
     _press(desk, desk.markup("review", task={"id": "t_1"}, lane=lane), 0)
     assert h.kinds() == ["complete"] and "no se pudo validar" in tg.edits[-1]["text"]
+
+
+# --- recordatorios / bandeja (/decisiones) -------------------------------------------------------------
+
+def test_renotify_collects_ops_blocks_but_never_ops_done(tmp_path):
+    from agent_lanes import renotify
+    from agent_lanes.decisions import CallbackStore, DecisionDesk
+    from agent_lanes.notices import MessageStore
+    from tests import test_renotify as T
+
+    ops = Lane(name="claude-ops", kind="ops", board="oscarhq")
+    lanes = {**T.LANES, ops.name: ops}
+    shows = {"t_o1": T.blocked_show("t_o1", "needs_input", "El worker necesita decisión:\n- ¿Comparto con Andrea?",
+                                    assignee="claude-ops"),
+             "t_o2": T.done_show("t_o2", assignee="claude-ops")}
+    h = T.BoardHermes(shows)
+    bot = T.Bot()
+    desk = DecisionDesk(bot, CallbackStore(tmp_path / "cb"), lanes=lanes, hermes_for=lambda b: h, links=None)
+
+    def no_git(*a):
+        raise AssertionError("ops no consulta ramas git")
+    r = renotify.Renotifier(lanes, hermes_for=lambda b: h, notifier=bot, messages=MessageStore(tmp_path / "m"),
+                            links=None, desk=desk, branch_state=no_git, out=lambda *_: None)
+    found = r.collect()
+    assert [(p.tid, p.state) for p in found] == [("t_o1", "needs_input")]

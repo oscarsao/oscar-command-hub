@@ -12,7 +12,7 @@ import json
 import os
 from pathlib import Path
 
-from .config import Lane
+from .config import Lane, load_lanes
 from .ops_paths import inside_any, normalize, parse_targets, validate_dests
 from .verify import VerifyResult
 
@@ -28,10 +28,18 @@ def workspace_path(lane: Lane, task_id: str) -> Path:
     return Path(lane.worktree_root) / task_id
 
 
+def lane_repos() -> list[str]:
+    """Checkouts de los carriles de código: nunca destino de un worker ops."""
+    try:
+        return [l.repo for l in load_lanes().values() if l.repo]
+    except Exception:  # sin lanes.yaml legible no se valida ningún destino: fail closed en validate_dests
+        return ["C:/"]
+
+
 def task_targets(lane: Lane, task: dict | None) -> tuple[list[str], list[str], list[str]]:
     """(orígenes, destinos válidos normalizados, motivos de rechazo) de la tarea."""
     origins, dests = parse_targets((task or {}).get("body"))
-    ok, bad = validate_dests(dests, origins, lane.dest_roots, lane.worktree_root)
+    ok, bad = validate_dests(dests, origins, lane.dest_roots, lane.worktree_root, lane_repos() if dests else ())
     return origins, ok, bad
 
 

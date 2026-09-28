@@ -17,7 +17,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from agent_lanes.ops_paths import inside_any, is_secret, normalize  # noqa: E402
+from agent_lanes.ops_paths import inside_any, is_secret, normalize, read_protected  # noqa: E402
 
 # Herramientas internas inocuas (lista de tareas, carga diferida de herramientas, salida --json-schema).
 INTERNAL_OK = {"TodoWrite", "ToolSearch", "StructuredOutput", "TaskCreate", "TaskGet", "TaskList", "TaskUpdate"}
@@ -77,12 +77,14 @@ READ_CMDS = {"ls", "dir", "cat", "head", "tail", "wc", "du", "df", "stat", "file
 WRITE_CMDS = {"cp", "copy", "mkdir", "md", "touch", "tee", "robocopy", "xcopy"}
 
 FIND_BAD = {"-delete", "-exec", "-execdir", "-ok", "-okdir", "-fprint", "-fprint0", "-fprintf", "-fls"}
-ROBOCOPY_BAD = {"/mir", "/purge", "/mov", "/move", "/xx", "/xo", "/create"}
+ROBOCOPY_BAD = {"/mir", "/purge", "/mov", "/move", "/xx", "/xo", "/create", "/job", "/save"}  # /JOB carga opciones
 GIT_READ = {"status", "log", "show", "diff", "ls-files", "rev-parse", "describe", "ls-remote", "blame", "shortlog"}
 GH_READ = {("repo", "view"), ("repo", "list"), ("issue", "list"), ("issue", "view"), ("pr", "list"), ("pr", "view"),
            ("pr", "status"), ("pr", "diff"), ("pr", "checks"), ("release", "list"), ("release", "view"),
            ("run", "list"), ("run", "view"), ("org", "list"), ("auth", "status")}
-GH_API_WRITE = {"-x", "--method", "-f", "--field", "--raw-field", "--input"}  # se compara en minúsculas (-F = -f)
+GH_API_WRITE = ("-x", "--method", "-f", "--field", "--raw-field", "--input")  # prefijos, en minúsculas (-F = -f)
+GIT_BAD_FLAGS = ("--output", "--ext-diff", "--textconv", "--exec", "--upload-pack", "--receive-pack")
+PROTECTED_READ_MSG = "leer credenciales o configuración protegida (AppData, ~/.claude*, ~/.cloudflared, .env...) prohibido"
 
 
 class Blocked(Exception):
@@ -141,6 +143,14 @@ def _check_segment(seg: str, cwd: str, roots: list[str]) -> str:
         raise Blocked("asignaciones de variables prohibidas en ops")
     name, args = _cmd_name(tokens[0]), tokens[1:]
     low = [a.lower() for a in args]
+    recursive = name == "rg" or name in ("robocopy", "xcopy") or (
+        name in ("grep", "egrep", "fgrep", "cp", "copy") and any(
+            a in ("--recursive", "--archive", "--dereference-recursive") or
+            (a.startswith("-") and not a.startswith("--") and set(a[1:]) & set("rRa")) for a in args))
+    for a in args:  # cada argumento que pueda ser ruta (también el valor de --flag=valor)
+        for cand in ([a] if not a.startswith("-") else []) + ([a.split("=", 1)[1]] if "=" in a else []):
+            if cand and read_protected(cand, cwd, roots, recursive=recursive):
+                raise Blocked(PROTECTED_READ_MSG)
     if name == "git" and "push" in low:
         raise Blocked("git push prohibido en ops")
     if name == "gh" and "pr" in low and "merge" in low:
@@ -152,6 +162,10 @@ def _check_segment(seg: str, cwd: str, roots: list[str]) -> str:
 
     if name == "cd":
         return normalize(args[0], cwd) if args else normalize("~")
+    if name in ("cp", "copy") and any(a in ("--link", "--symbolic-link") or
+                                      (a.startswith("-") and not a.startswith("--") and set(a[1:]) & set("ls"))
+                                      for a in args):
+        raise Blocked("cp -l/-s (enlaces) prohibido: un enlace al original permitiría modificarlo")
     if name == "find" and FIND_BAD & set(low):
         raise Blocked("find con -delete/-exec/-fprint prohibido")
     if name == "sort" and any(a == "-o" or a.startswith(("-o", "--output")) for a in args):
@@ -170,12 +184,12 @@ def _check_segment(seg: str, cwd: str, roots: list[str]) -> str:
         rest = list(args)
         while rest and rest[0] in ("-C", "--no-pager"):
             rest = rest[2:] if rest[0] == "-C" else rest[1:]
-        if not rest or rest[0].lower() not in GIT_READ or "--output" in low or "--ext-diff" in low:
+        if not rest or rest[0].lower() not in GIT_READ or any(a.startswith(GIT_BAD_FLAGS) for a in low):
             raise Blocked("git solo en lectura (status/log/show/diff/ls-files/...)")
     if name == "gh":
         pos = _positional(args)
         if pos[:1] == ["api"]:
-            if GH_API_WRITE & set(low) or any(a.startswith(("--method", "-X")) for a in args):
+            if any(a.startswith(GH_API_WRITE) for a in low):
                 raise Blocked("gh api solo GET (sin -X/-f/-F/--input)")
         elif tuple(p.lower() for p in pos[:2]) not in GH_READ or "--show-token" in low                 or (pos[:2] == ["auth", "status"] and "-t" in low):
             raise Blocked("gh solo en lectura (repo/issue/pr view|list, api GET, auth status)")
@@ -241,6 +255,15 @@ def check(payload: dict, env=None) -> str | None:
     if tool in READ_TOOLS:
         if any(is_secret(ti.get(k) or "") for k in ("file_path", "path", "glob", "pattern")):
             return "leer ficheros de secretos (.env, tokens, claves, credenciales) está prohibido"
+        try:
+            roots = _roots(env)
+        except Blocked as exc:
+            return str(exc)
+        target = ti.get("file_path") or ti.get("path")
+        if target and read_protected(target, cwd, roots, recursive=tool == "Grep"):
+            return PROTECTED_READ_MSG
+        if tool == "Glob" and ti.get("pattern") and read_protected(ti["pattern"], target or cwd, roots):
+            return PROTECTED_READ_MSG
         return None
     if tool in WRITE_TOOLS:
         try:
