@@ -14,7 +14,7 @@ import time
 from logging.handlers import RotatingFileHandler
 
 from agent_lanes.config import ROOT, load_env, load_lanes, load_runner_settings, load_telegram_settings
-from agent_lanes.decisions import OWNER_TELEGRAM_ID, CallbackStore, DecisionDesk, UpdatePoller
+from agent_lanes.decisions import CALLBACKS_DIR, OWNER_TELEGRAM_ID, CallbackStore, DecisionDesk, UpdatePoller
 from agent_lanes.git_ops import GitOps
 from agent_lanes.hermes import HermesCLI
 from agent_lanes.integrator import build_integrator
@@ -22,12 +22,11 @@ from agent_lanes.review import ClaudeReviewer, ReviewRunner, sweep_done
 from agent_lanes.notices import LinkBuilder, MessageStore
 from agent_lanes.runner import MESSAGES_DIR, LaneRunner
 from agent_lanes.service import Service, acquire_single_instance
-from agent_lanes.telegram import TelegramNotifier
+from agent_lanes.telegram import notifier_from_env
 from agent_lanes.verify import verify
 from agent_lanes.worker import ClaudeWorker
 
 LOCK = ROOT / ".state" / "runner.lock"
-CALLBACKS_DIR = ROOT / ".state" / "callbacks"  # un JSON por teclado enviado (callback_data corto -> tarea/acción)
 TG_OFFSET = ROOT / ".state" / "tg_offset"      # offset de getUpdates del bot de carriles
 
 
@@ -71,14 +70,10 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     env = load_env()
-    allowed = {c.strip() for c in env.get("TELEGRAM_ALLOWED_CHATS", "").split(",") if c.strip()}
     tg_settings = load_telegram_settings()
     # CARRILES_BOT_TOKEN = bot propio de los carriles: avisos con botones + escucha de pulsaciones. Sin él, el bot de
     # Hermes y sin botones ni getUpdates (Hermes ya lo consume; dos consumidores del mismo bot chocan).
-    lanes_bot = env.get("CARRILES_BOT_TOKEN") or None
-    notify = TelegramNotifier(lanes_bot or env.get("TELEGRAM_BOT_TOKEN"), env.get("TELEGRAM_CHAT_ID"),
-                              env.get("TELEGRAM_THREAD_ID"), allowed_chats=allowed,
-                              generic_origins=tg_settings["generic_origins"])
+    notify, lanes_bot = notifier_from_env(env, tg_settings)
     if not notify.enabled:
         log.warning("Telegram desactivado (faltan TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID en agent-lanes/.env)")
     # Un solo almacén de message_id para todos los carriles: la tarea pasa del implementador a review y vuelve.

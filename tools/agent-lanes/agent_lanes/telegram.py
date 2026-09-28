@@ -32,6 +32,17 @@ def resolve_target(origin: tuple[str, str] | None, lane_target: tuple[str, str] 
     return tuple(lane_target) if lane_target else None
 
 
+def notifier_from_env(env: dict, tg_settings: dict) -> tuple[TelegramNotifier, bool]:
+    """(notificador, es_bot_de_carriles). CARRILES_BOT_TOKEN = bot propio de los carriles (botones + escucha); sin
+    él, el bot de Hermes (TELEGRAM_BOT_TOKEN) y sin botones. La usan el runner y `lanes.py renotify`."""
+    allowed = {c.strip() for c in env.get("TELEGRAM_ALLOWED_CHATS", "").split(",") if c.strip()}
+    lanes_bot = env.get("CARRILES_BOT_TOKEN") or None
+    notifier = TelegramNotifier(lanes_bot or env.get("TELEGRAM_BOT_TOKEN"), env.get("TELEGRAM_CHAT_ID"),
+                                env.get("TELEGRAM_THREAD_ID"), allowed_chats=allowed,
+                                generic_origins=tg_settings["generic_origins"])
+    return notifier, bool(lanes_bot)
+
+
 class TelegramAPIError(RuntimeError):
     """Telegram respondió con error; `description` es el texto de la API (nunca contiene el token)."""
 

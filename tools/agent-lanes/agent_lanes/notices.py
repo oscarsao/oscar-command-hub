@@ -311,6 +311,14 @@ class MessageStore:
             tmp.write_text(json.dumps(rec), encoding="utf-8")
             os.replace(tmp, self._path(tid))
 
+    def drop(self, tid: str) -> None:
+        """Olvida el mensaje de una tarea (el siguiente aviso sale como mensaje nuevo)."""
+        if self.root is None:
+            self._mem.pop(tid, None)
+            return
+        with self._lock:
+            self._path(tid).unlink(missing_ok=True)
+
 
 class TaskNotices:
     """Publica el estado de una tarea en su único mensaje."""

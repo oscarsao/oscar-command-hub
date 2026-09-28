@@ -3,6 +3,8 @@
     py -3.12 lanes.py status                       # por carril: libre/ocupado, ready, review, en curso / última
     py -3.12 lanes.py take <task_id>               # consola interactiva: claim + worktree lane/<id>
     py -3.12 lanes.py close <task_id> "<resumen>"  # verificación mecánica + request-review (nunca merge)
+    py -3.12 lanes.py renotify [--lane X] [--task t_id] [--dry-run] [--force]
+                                                   # reenvía con botones los avisos pendientes de decisión
 """
 from __future__ import annotations
 
@@ -81,6 +83,9 @@ def main(argv: list[str]) -> int:
         return take(argv[1])
     if argv[:1] == ["close"] and len(argv) == 3:
         return close(argv[1], argv[2])
+    if argv[:1] == ["renotify"]:
+        from agent_lanes import renotify
+        return renotify.main(argv[1:])
     if argv[:1] != ["status"]:
         print(__doc__)
         return 2

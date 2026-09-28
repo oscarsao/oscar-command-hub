@@ -25,12 +25,16 @@ from pathlib import Path
 from typing import Callable
 
 from . import proc as _proc
+from .config import ROOT
 from .hermes import ANSWER_PREFIX, OSCAR_AUTHOR, REVIEW_AUTHOR
 from .notices import card_url, normalize_questions, render, truncate
 from .review import CHANGES_PREFIX
 
 log = logging.getLogger("agent_lanes")
 
+# Un JSON por teclado enviado (callback_data corto -> tarea/acción). Lo escriben el runner y `lanes.py renotify`;
+# lo lee la escucha del runner-servicio.
+CALLBACKS_DIR = ROOT / ".state" / "callbacks"
 OWNER_TELEGRAM_ID = "6744452215"  # Oscar; configurable con OWNER_TELEGRAM_ID en .env
 NOT_OWNER = "Solo Oscar puede decidir"
 GH_EXE = r"C:\Program Files\GitHub CLI\gh.exe"
