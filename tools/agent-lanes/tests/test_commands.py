@@ -252,6 +252,38 @@ def test_accept_all_applies_recommended_and_leaves_the_rest(tmp_path):
     assert bot.answers[-1] == "Esta decisión ya no está activa"
 
 
+def test_after_accept_all_the_skipped_tasks_keep_working_buttons(tmp_path):
+    shows = {"t_aaaaaaa1": needs("t_aaaaaaa1", Q_REC), "t_bbbbbbb2": needs("t_bbbbbbb2", Q_NOREC)}
+    cc, desk, bot, h, _ = center(tmp_path, shows)
+    command(desk, "/decisiones")
+    card_b = next(m for m in bot.sent if m["text"].startswith("❓ t_bbbbbbb2"))
+    press(desk, bot.sent[0], 0)
+    press(desk, card_b, 0, cid="despues")  # 1) Mosquera en la tarea sin recomendada
+    assert bot.answers[-1] == "Hecho, lo aplico"
+    assert ("comment", "t_bbbbbbb2", f"{ANSWER_PREFIX} ¿Qué despacho primero? → Mosquera", OSCAR_AUTHOR) in h.calls
+
+
+def test_keyboard_issued_during_the_action_stays_active(tmp_path):
+    """Un botón que publica un teclado nuevo de la MISMA tarea (Fusionar -> [🚀 Desplegar]) no se lo auto-anula."""
+    cc, desk, bot, h, messages = center(tmp_path, {})
+    fresh = {}
+
+    class Integrator:
+        def on_button(self, action, rec, where, d):
+            _, markup = d.store.issue(rec, [[{"text": "🚀 Desplegar", "action": "int_deploy"}]])
+            TaskNotices(bot, messages).publish(rec["task_id"], "🔀 fusionada", None, MIG.telegram, alert=True,
+                                               reply_markup=markup)
+            fresh["token"] = markup["inline_keyboard"][0][0]["callback_data"].split(":")[0]
+            return True
+
+    desk.integrator = Integrator()
+    rec = {"task_id": "t_1", "board": "migrateam", "lane": MIG.name, "title": "T"}
+    _, merge = desk.store.issue(rec, [[{"text": "🔀 Fusionar", "action": "int_merge"}]])
+    TaskNotices(bot, messages).publish("t_1", "✅ t_1", None, MIG.telegram, alert=True, reply_markup=merge)
+    press(desk, bot.sent[-1], 0)
+    assert desk.store.get(fresh["token"]) is not None
+
+
 def test_accept_all_skips_tasks_already_decided(tmp_path):
     shows = {"t_aaaaaaa1": needs("t_aaaaaaa1", Q_REC)}
     cc, desk, bot, h, _ = center(tmp_path, shows)

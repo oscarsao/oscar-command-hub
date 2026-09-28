@@ -286,6 +286,10 @@ class DecisionDesk:
 
     def _safe(self, token: str, rec: dict, where: dict, fn: Callable[[], bool], after=None) -> None:
         """Ejecuta la acción; si falla, devuelve los botones para que Oscar pueda repetir."""
+        # Tokens de las copias ANTES de actuar: la acción puede emitir teclados nuevos para la misma tarea
+        # (p. ej. [🚀 Desplegar] tras fusionar) y esos deben seguir vivos. Grupo y "aceptar todo" retiran por
+        # miembro dentro de la acción, solo en los que salieron bien.
+        before = set() if (rec.get("group") or rec.get("accept_all")) else self._tokens(rec)
         try:
             ok = fn()
         except Exception as exc:
@@ -293,7 +297,8 @@ class DecisionDesk:
             self._edit(rec, where, "blocked", "no se pudo aplicar la decisión; detalle en el log")
             ok = False
         if ok:
-            self._retire(rec, token)
+            for tok in before - {token}:
+                self.store.consume(tok)
         if not ok:
             self.store.restore(token)
             try:
@@ -306,19 +311,16 @@ class DecisionDesk:
             except Exception:
                 pass
 
-    def _retire(self, rec: dict, pressed: str | None = None) -> None:
-        """Tras una decisión: los botones de las OTRAS copias (tema, DM, bandeja) dejan de valer."""
+    def _tokens(self, rec: dict) -> set[str]:
+        """Tokens de teclado de todas las copias del aviso de una tarea (tema, DM, bandeja)."""
         if not self.messages:
-            return
-        for m in self._members(rec):
-            for msg in self.messages.all_messages(m["task_id"]):
-                tok = msg.get("token")
-                if tok and tok != pressed:
-                    self.store.consume(tok)
+            return set()
+        return {m["token"] for m in self.messages.all_messages(rec["task_id"]) if m.get("token")}
 
-    @staticmethod
-    def _members(rec: dict) -> list[dict]:
-        return list(rec.get("group") or rec.get("accept_all") or [rec])
+    def _retire(self, rec: dict) -> None:
+        """Tras decidir una tarea desde un grupo o "aceptar todo": sus botones en las demás copias dejan de valer."""
+        for tok in self._tokens(rec):
+            self.store.consume(tok)
 
     def _still_pending(self, rec: dict) -> bool:
         """¿Sigue bloqueada esperando a Oscar? (grupo y "aceptar todo": no responder dos veces)."""
