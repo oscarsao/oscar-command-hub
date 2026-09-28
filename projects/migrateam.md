@@ -7,8 +7,15 @@ Plataforma para despachos de abogados (inmigración). Flujo: portal-cliente, des
 plantillas, secuencias, email, etiquetado.
 
 ## Estado general
-- Deploy: push a `master` → Railway auto (backend); frontend Vercel promote.
-- Rama: `master`. Backend start: `alembic upgrade head && uvicorn`.
+- **Ramas (28-09, decisión de Oscar; CLAUDE.md del repo):** todo entra por `develop` = **staging**
+  (Railway staging `migrateam-backend-staging-staging.up.railway.app` + Vercel develop, Supabase
+  `rfkfpnppxunviedctdkk`). `master` = **producción** (push despliega solo en minutos) y solo recibe una
+  promoción `release/<fecha>` con OK de Oscar, o un hotfix puntual que **hay que devolver a develop enseguida**
+  (el monitor avisa si develop se queda por detrás). El carril `claude-migrateam` parte de `develop` y su PR va
+  contra `develop`; el Integrador solo ofrece "Fusionar en develop (despliega staging)".
+- 28-09: develop sincronizado con master (PR #91, 20 commits de hotfix que no se habían devuelto); staging en
+  `37c59086965d`.
+- Backend start: `alembic upgrade head && uvicorn` (en staging corre contra la BD de staging).
 - Sesiones de Claude Code activas en worktrees (`C--Users-oscar-dev-migrateam`).
 - Tune/emails: se probó enviar cada plantilla a oscarsao20@gmail.com. Etiquetado para generar contenido.
 

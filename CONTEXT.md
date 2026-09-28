@@ -63,6 +63,15 @@ Detalle: `decisions/2026-09-27-arquitectura-carriles.md` y `decisions/2026-09-27
 - **La Sesión Maestra y `ORDENES_MAESTRO.md` están retirados** (en `archive/`).
 - **Codex: EN PAUSA** (decisión del 27-09). El carril `codex-*` queda sin implementar.
 - **Modelos:** Sonnet por defecto; Opus solo para diseño/arquitectura y en los subagentes fijados.
+- **Actualización 28-09** (detalle: `decisions/2026-09-28-ramas-bandeja-monitor.md`):
+  - Carriles y repos: `claude-oscarhq` → oscarsao/oscar-hq (`master`, deploy manual `railway up`);
+    `claude-migrateam` → PildoraDigital/OCR-PDF-and-images (**`develop`**, nunca master);
+    `claude-scraper` → oscarsao/icp-prospect-engine; `claude-nextjobs` → oscarsao/nextjobs-autoapply.
+    `claude-ops` (en construcción) = trabajo operativo sin repo; `claude-hub` (plan D) = este repo.
+  - Integrador activo solo en Oscar HQ; respeta dependencias padre→hijo del kanban (#10 no antes que #9).
+  - Telegram: un bot por tema (Hermes en Operaciones; C-level en el resto; CMO en Marketing). Los temas los crea
+    SIEMPRE el bot de Trabajos (los que crea Hermes le hacen contestar a todo).
+  - Monitor en vivo: `tools/monitor/monitor.py` (PC, carriles, Hermes, servicios, chats, alertas).
 
 ## Fuentes de verdad
 | Qué | Dónde |

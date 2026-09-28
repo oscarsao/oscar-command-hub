@@ -169,8 +169,10 @@ class Monitor:
             self.lanes_text = f"lanes.py status falló: {exc}"
         if "VIVO" not in self.lanes_text:
             self.alert("ALTA", "El runner de carriles NO está vivo", "runner-dead", every=900)
-        if "huérfano" in self.lanes_text:
-            self.alert("ALTA", "Hay un worker huérfano en los carriles", "orphan", every=900)
+        # Un "huérfano" dura unos segundos mientras un carril coge tarea: solo alerta si persiste en 2 lecturas (≥15 s).
+        self._orphan_hits = (getattr(self, "_orphan_hits", 0) + 1) if "huérfano" in self.lanes_text else 0
+        if self._orphan_hits >= 2:
+            self.alert("ALTA", "Hay un worker huérfano en los carriles (persistente)", "orphan", every=900)
 
     def refresh_health(self) -> None:
         if time.time() - self.health_at < 60:
