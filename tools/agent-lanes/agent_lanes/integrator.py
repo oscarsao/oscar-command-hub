@@ -69,7 +69,18 @@ INTEGRATOR_AUTHOR = "lane-integrator"
 APPROVED_PREFIX = "APROBADO-OSCAR"
 INTEGRATED_PREFIX = "INTEGRADO"
 INT_MERGE, INT_DEPLOY, INT_MERGE_DEPLOY = "int_merge", "int_deploy", "int_merge_deploy"
-INT_ACTIONS = (INT_MERGE, INT_DEPLOY, INT_MERGE_DEPLOY)
+INT_MIGRATION_APPLIED = "int_mig_applied"  # ✅ Migración aplicada (ficha fusionada con migración pendiente)
+INT_ACTIONS = (INT_MERGE, INT_DEPLOY, INT_MERGE_DEPLOY, INT_MIGRATION_APPLIED)
+MIGRATION_APPLIED_PREFIX = "MIGRACION-APLICADA"
+MIGRATION_KINDS = ("supabase", "alembic")  # "infra" no es una migración: no se da por aplicada con un botón
+MIGRATION_BUTTON = {"text": "✅ Migración aplicada", "action": INT_MIGRATION_APPLIED}
+
+
+def pending_migration(st: dict) -> str | None:
+    """Migración (o infraestructura) que aún bloquea el deploy de una ficha: la de su estado salvo que Oscar o el
+    coordinador la hayan marcado como aplicada (`migration_applied`)."""
+    mig = st.get("migration")
+    return None if (mig in MIGRATION_KINDS and st.get("migration_applied")) else (mig or None)
 DEPLOY_RAILWAY_UP, DEPLOY_ON_MERGE, DEPLOY_NONE = "railway_up", "on_merge", "none"
 NEEDS_MIGRATION = "⏸ requiere aplicar migración antes (manual, con OK)"
 MIGRATEAM_WARNING = "⚠️ Fusionar DESPLIEGA a producción solo (Railway, en minutos)"
@@ -419,13 +430,15 @@ class Integrator:
 
     def refresh_summary(self) -> str | None:
         """Edita el mensaje fijado del tema de Integración con lo pendiente (solo si cambia). Nunca lanza."""
-        if not self.pinned or self.dry_run:
+        # Sin una pasada hecha (_last_pass None: arranque, o la CLI del coordinador) _seen está vacío y el fijado
+        # quedaría en "nada pendiente": no se toca.
+        if not self.pinned or self.dry_run or self._last_pass is None:
             return None
         try:
             entries = []
             for lane, policy, tid in list(self._seen):
                 st = self._state(tid)
-                state = summary_state(st.get("status") or "", deploy=policy.deploy, migration=st.get("migration"),
+                state = summary_state(st.get("status") or "", deploy=policy.deploy, migration=pending_migration(st),
                                       problem=st.get("pr_problem"))
                 if not state or not st.get("pr"):
                     continue
@@ -866,8 +879,53 @@ class Integrator:
         if action == INT_DEPLOY and policy.deploy == DEPLOY_RAILWAY_UP and not rec.get("migration") \
                 and rec.get("merge_sha"):
             return self._deploy_railway(lane, policy, rec, where, desk)
+        if action == INT_MIGRATION_APPLIED:
+            ok, _ = self.mark_migration_applied(rec.get("task_id") or "", OSCAR_AUTHOR, desk=desk, where=where)
+            return ok
         log.warning("%s: botón %s no válido para %s", rec.get("task_id"), action, policy.lane)
         return False
+
+    def mark_migration_applied(self, tid: str, author: str, *, desk=None, where: dict | None = None) -> tuple[bool, str]:
+        """Oscar (botón) o el coordinador (`lanes.py integrator migration-applied`) confirman que la migración de una
+        ficha fusionada YA está aplicada: `migration_applied` en el estado, comentario MIGRACION-APLICADA, ficha sin el
+        aviso de migración (con [🚀 Desplegar] si el carril despliega con botón) y deja de bloquear el deploy de lo
+        último de la base. Nunca aplica nada: solo registra lo que ya se hizo fuera. (ok, mensaje)."""
+        if not TID_RE.fullmatch(tid or ""):
+            return False, f"id de tarea no válido: {tid!r}"
+        st = self._state(tid)
+        lane = self.lanes.get(st.get("lane") or "")
+        if not st or lane is None:
+            return False, f"{tid}: sin estado del integrador (¿no la fusionó el integrador?)"
+        if st.get("status") != "merged":
+            return False, f"{tid}: no está fusionada pendiente de deploy (estado {st.get('status') or '?'})"
+        if st.get("migration") not in MIGRATION_KINDS:
+            return False, f"{tid}: no tiene migración pendiente" + (
+                " (toca infraestructura: eso no se marca como aplicado)" if st.get("migration") else "")
+        if st.get("migration_applied"):
+            return True, f"{tid}: la migración ya constaba como aplicada ({st['migration_applied'].get('by')})"
+        stamp = time.strftime("%Y-%m-%d %H:%M")
+        self._save(tid, migration_applied={"by": author, "at": self._now()})
+        if not self.dry_run and not self.hermes_for(lane.board).comment(
+                tid, f"{MIGRATION_APPLIED_PREFIX} {stamp} · {st['migration']} · PR #{st.get('pr', '?')} · "
+                     f"marcada por {author}", author=author):
+            log.warning("%s: no se pudo comentar %s en la tarjeta", tid, MIGRATION_APPLIED_PREFIX)
+        sha = st.get("merge_sha") or ""
+        rec = {"kind": "integrate", "task_id": tid, "board": lane.board, "lane": lane.name,
+               "title": st.get("title") or "", "pr_number": st.get("pr"), "pr_url": st.get("pr_url") or "",
+               "merge_sha": sha, "migration": None}
+        policy = self.settings.policies.get(lane.name)
+        if desk is not None:
+            for msg in (self._notices.store.all_messages(tid) if self._notices else ()):
+                if msg.get("token"):
+                    desk.store.consume(msg["token"])  # el ✅ de las demás copias ya no vale
+            markup = None
+            if policy and policy.deploy == DEPLOY_RAILWAY_UP and sha:
+                markup = desk.store.issue(rec, [[{"text": "🚀 Desplegar", "action": INT_DEPLOY}]])[1]
+            self._edit(desk, lane, rec, where, "done", status_line(
+                f"✅ fusionado · {sha[:7] or '?'}", "migración aplicada", "sin desplegar" if markup else None),
+                markup=markup)
+        self.refresh_summary()
+        return True, f"{tid}: migración marcada como aplicada por {author}"
 
     def _edit(self, desk, lane, rec: dict, where: dict, state: str, status: str, bullets=None,
               markup: dict | None = None) -> None:
@@ -957,7 +1015,11 @@ class Integrator:
             return self._verify_on_merge(lane, policy, rec, where, desk)
         if policy.deploy == DEPLOY_RAILWAY_UP:
             if rec.get("migration"):
-                self._edit(desk, lane, rec, where, "done", status_line(f"✅ fusionado · {short}", NEEDS_MIGRATION))
+                # Oscar aplica la migración a mano y lo dice con [✅ Migración aplicada]: desbloquea el 🚀.
+                markup = (desk.store.issue(rec, [[dict(MIGRATION_BUTTON)]])[1]
+                          if rec["migration"] in MIGRATION_KINDS else None)
+                self._edit(desk, lane, rec, where, "done", status_line(f"✅ fusionado · {short}", NEEDS_MIGRATION),
+                           markup=markup)
                 return True
             markup = desk.store.issue(rec, [[{"text": "🚀 Desplegar", "action": INT_DEPLOY}]])[1]
             self._edit(desk, lane, rec, where, "done", status_line(f"✅ fusionado · {short}", "sin desplegar"),
@@ -1106,7 +1168,7 @@ class Integrator:
         if tip != sha and not self._is_ancestor(lane, sha, tip):
             return f"{lane.base} ya no contiene esta fusión"
         for other, st in self._merged_states(lane, tid):
-            if st.get("migration") and self._is_ancestor(lane, st["merge_sha"], tip):
+            if pending_migration(st) and self._is_ancestor(lane, st["merge_sha"], tip):
                 return f"{lane.base} incluye el PR #{st.get('pr', '?')} con migración o infraestructura pendiente"
         if tip != sha:
             changed = (self._git(lane.repo, "diff", "--no-renames", "--name-only", sha, tip).stdout or "").split()
@@ -1122,7 +1184,7 @@ class Integrator:
         desplegada (comentario, estado, avisos editados y su 🚀 Desplegar retirado). Devuelve sus números de PR."""
         done = []
         for other, st in self._merged_states(lane, tid):
-            if st.get("migration") or not self._is_ancestor(lane, st["merge_sha"], tip):
+            if pending_migration(st) or not self._is_ancestor(lane, st["merge_sha"], tip):
                 continue
             self._comment(lane, other, f"DESPLEGADO {tip} · railway deployment {dep_id} SUCCESS · incluido en el "
                                        f"deploy pedido desde {tid} (fusión {st['merge_sha'][:12]})")
@@ -1234,6 +1296,44 @@ def build_integrator(env: dict, lanes: dict, **kw) -> Integrator | None:
     if not settings.enabled:
         return None
     return Integrator(settings, lanes, **kw)
+
+
+COORDINATOR_AUTHOR = "coordinador"
+
+
+def migration_applied_cli(tid: str, *, integrator: "Integrator | None" = None, out: Callable[[str], None] = print,
+                          author: str = COORDINATOR_AUTHOR) -> int:
+    """`lanes.py integrator migration-applied <t_id>`: lo mismo que el botón [✅ Migración aplicada], con autor
+    `coordinador`. Con el bot de carriles, edita la ficha y ofrece [🚀 Desplegar] (lo atiende el runner-servicio, que
+    lee los teclados de .state/callbacks); sin él, solo estado + comentario en la tarjeta."""
+    integ = integrator or _cli_integrator()
+    ok, msg = integ.mark_migration_applied(tid, author, desk=integ.desk)
+    out(msg)
+    return 0 if ok else 1
+
+
+def _cli_integrator() -> "Integrator":
+    from .config import load_env, load_lanes, load_telegram_settings
+    from .decisions import CALLBACKS_DIR, OWNER_TELEGRAM_ID, CallbackStore, DecisionDesk
+    from .hermes import HermesCLI
+    from .notices import LinkBuilder
+    from .runner import MESSAGES_DIR
+    from .telegram import notifier_from_env
+
+    for stream in (sys.stdout, sys.stderr):
+        stream.reconfigure(encoding="utf-8", errors="replace")
+    env, tg, lanes = load_env(), load_telegram_settings(), load_lanes()
+    settings = load_integrator_settings(env=env, lane_filter=False)
+    cache: dict[str, HermesCLI] = {}
+    hermes_for = lambda board: cache.setdefault(board, HermesCLI(board, author=COORDINATOR_AUTHOR))  # noqa: E731
+    links = LinkBuilder(env.get("KANBAN_BASE_URL") or tg["kanban_base_url"])
+    notifier, lanes_bot = notifier_from_env(env, tg)
+    desk = None
+    if lanes_bot and notifier.enabled:
+        desk = DecisionDesk(notifier, CallbackStore(CALLBACKS_DIR), lanes=lanes, hermes_for=hermes_for, links=links,
+                            owner_id=env.get("OWNER_TELEGRAM_ID") or OWNER_TELEGRAM_ID)
+    return Integrator(settings, lanes, hermes_for=hermes_for, links=links, notifier=notifier if desk else None,
+                      messages=MessageStore(MESSAGES_DIR), desk=desk)
 
 
 def main(argv: list[str] | None = None) -> int:

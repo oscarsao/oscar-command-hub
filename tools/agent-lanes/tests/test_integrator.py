@@ -14,7 +14,8 @@ from agent_lanes.decisions import NOT_OWNER, CallbackStore, DecisionDesk
 from agent_lanes.hermes import OSCAR_AUTHOR
 from agent_lanes.integrator import (INT_DEPLOY, INT_MERGE, INT_MERGE_DEPLOY, INTEGRATOR_AUTHOR, MIGRATEAM_WARNING,
                                     NEEDS_MIGRATION, Integrator, IntegratorSettings, Policy, alembic_heads,
-                                    build_integrator, load_integrator_settings, parse_revision, scan_secrets)
+                                    build_integrator, load_integrator_settings, migration_applied_cli, parse_revision,
+                                    scan_secrets)
 from agent_lanes.notices import MessageStore
 
 OSCAR = 6744452215
@@ -487,7 +488,80 @@ def test_supabase_migration_allows_merge_but_never_deploy(tmp_path):
     assert "requiere migración manual" in tg.sent[-1]["text"]
     press(d, tg)
     assert "✅ fusionado · ddddddd" in tg.edits[-1]["text"] and NEEDS_MIGRATION in tg.edits[-1]["text"]
-    assert tg.edits[-1]["markup"] is None  # sin 🚀 Desplegar
+    assert buttons(tg.edits[-1]["markup"]) == ["✅ Migración aplicada"]  # sin 🚀 Desplegar hasta confirmarla
+
+
+def merged_with_migration(tmp_path):
+    w = World()
+    w.changed = ["supabase/migrations/20260928_x.sql"]
+    integ, w, h, tg, d, clock = make(tmp_path, world=w)
+    integ.run_pass()
+    press(d, tg)  # 🔀 Fusionar
+    return integ, w, h, tg, d
+
+
+def test_migration_applied_button_records_comments_and_offers_deploy(tmp_path):
+    integ, w, h, tg, d = merged_with_migration(tmp_path)
+    press(d, tg)  # ✅ Migración aplicada
+    st = integ._state("t_1")
+    assert st["migration_applied"]["by"] == OSCAR_AUTHOR and st["migration_applied"]["at"]
+    assert any(t.startswith("MIGRACION-APLICADA") and "supabase" in t and a == OSCAR_AUTHOR
+               for _, t, a in h.comments)
+    assert NEEDS_MIGRATION not in tg.edits[-1]["text"] and "migración aplicada" in tg.edits[-1]["text"]
+    assert buttons(tg.edits[-1]["markup"]) == ["🚀 Desplegar"]
+    press(d, tg)  # 🚀 Desplegar
+    assert [a for a in w.argv(RW) if a[1] == "up"] and "🚀 desplegado" in tg.edits[-1]["text"]
+
+
+def test_migration_applied_button_only_for_oscar(tmp_path):
+    integ, w, h, tg, d = merged_with_migration(tmp_path)
+    press(d, tg, user=1234)
+    assert tg.answers[-1] == NOT_OWNER and not integ._state("t_1").get("migration_applied")
+
+
+def test_pending_migration_blocks_deploy_of_the_tip_until_marked_applied(tmp_path):
+    integ, w, h, tg, d, _ = make(tmp_path)
+    integ._save("t_2", status="merged", lane="claude-oscarhq", merge_sha=BASE2, pr=43, migration="supabase",
+                pr_url=f"https://github.com/{OHQ_SLUG}/pull/43", title="RLS")
+    assert integ._tip_problem(integ.lanes["claude-oscarhq"], OHQ_POLICY, "t_1", MERGE, BASE2)
+    assert migration_applied_cli("t_2", integrator=integ, out=lambda s: None) == 0
+    assert integ._tip_problem(integ.lanes["claude-oscarhq"], OHQ_POLICY, "t_1", MERGE, BASE2) is None
+    assert any(tid == "t_2" and t.startswith("MIGRACION-APLICADA") and a == "coordinador" for tid, t, a in h.comments)
+    assert integ._state("t_2")["migration_applied"]["by"] == "coordinador"
+
+
+def test_migration_applied_cli_edits_the_ficha_and_is_idempotent(tmp_path):
+    integ, w, h, tg, d = merged_with_migration(tmp_path)
+    out = []
+    assert migration_applied_cli("t_1", integrator=integ, out=out.append) == 0
+    assert buttons(tg.edits[-1]["markup"]) == ["🚀 Desplegar"] and "migración aplicada" in tg.edits[-1]["text"]
+    n = len(h.comments)
+    assert migration_applied_cli("t_1", integrator=integ, out=out.append) == 0 and len(h.comments) == n
+    assert "ya constaba" in out[-1]
+
+
+@pytest.mark.parametrize("state,expect", [
+    ({"status": "offered", "migration": "supabase"}, "no está fusionada"),
+    ({"status": "merged", "migration": None}, "no tiene migración"),
+    ({"status": "merged", "migration": "infra"}, "infraestructura"),
+    (None, "sin estado"),
+])
+def test_migration_applied_refuses_what_is_not_a_merged_pending_migration(tmp_path, state, expect):
+    integ, w, h, tg, d, _ = make(tmp_path)
+    if state:
+        integ._save("t_3", lane="claude-oscarhq", merge_sha=BASE2, pr=9, **state)
+    out = []
+    assert migration_applied_cli("t_3", integrator=integ, out=out.append) == 1
+    assert expect in out[-1] and not h.comments
+    assert migration_applied_cli("--board x", integrator=integ, out=out.append) == 1
+
+
+def test_lanes_cli_routes_integrator_migration_applied(monkeypatch):
+    import lanes
+    from agent_lanes import integrator as integ_mod
+    seen = []
+    monkeypatch.setattr(integ_mod, "migration_applied_cli", lambda tid: seen.append(tid) or 0)
+    assert lanes.main(["integrator", "migration-applied", "t_6d70f882"]) == 0 and seen == ["t_6d70f882"]
 
 
 # --- botones y merge -----------------------------------------------------------------------------------
