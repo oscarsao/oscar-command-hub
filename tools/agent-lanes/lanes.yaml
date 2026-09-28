@@ -99,3 +99,34 @@ lanes:
     max_budget_usd: 1.5
     max_runtime_seconds: 1800
     max_review_rounds: 2
+
+# Carril Integrador (agent_lanes/integrator.py): fusión determinista de los PR aprobados por Oscar (APROBADO-OSCAR).
+# Solo actúa con INTEGRATOR_ENABLED=true en agent-lanes/.env (por defecto apagado). Nunca fusiona sin el botón de
+# Oscar, nunca --force/--admin, nunca push a la base, nunca migraciones ni variables de entorno.
+# Prueba en seco: py -3.12 -m agent_lanes.integrator --dry-run [--lane claude-oscarhq --pr N]
+# Carriles sin entrada aquí (scraper, nextjobs) no se integran; para añadirlos basta `deploy: none`.
+integrator:
+  interval_seconds: 300          # cada cuánto revisa tarjetas done aprobadas (el runner pasa cada 60 s)
+  worktree_root: C:/Users/oscar/dev/_lanes/_integrator   # worktrees temporales int-<id> / intdep-<id>
+  deploy_timeout_seconds: 900    # 15 min sondeando el deploy
+  poll_seconds: 20
+  lanes:
+    claude-oscarhq:
+      # Fusionar NO despliega: botón aparte [🚀 Desplegar] = `railway up --detach` de un worktree limpio del commit
+      # fusionado (cwd = checkout enlazado con la CLI), ids explícitos, y sondeo de ESE deployment (no /api/health:
+      # respondería el contenedor viejo). Ids leídos con `railway list --json` el 28-09 (no son secretos).
+      deploy: railway_up
+      manual_migrations: [supabase/migrations/]
+      railway_dir: C:/Users/oscar/dev/oscar-hq
+      railway_project: 34da294f-afdf-47f9-8ea9-5ffe3551e8f0      # Oscar HQ
+      railway_service: 8dcda4bf-5a6f-49f5-aa75-b0b38f82e9ed      # Oscar HQ
+      railway_environment: 3236716d-c75a-41fe-b426-9953deb7e426  # production
+      health_url: https://oscar-hq-production.up.railway.app/api/health   # 2ª señal tras SUCCESS, nunca la única
+    claude-migrateam:
+      # Un merge a master DESPLIEGA solo (Railway, en minutos): botón explícito [🚀 Fusionar y desplegar a producción];
+      # con migración de Alembic no hay botón. Su CLI de Railway NO está enlazada (proyecto mellow-patience): se
+      # verifica con GET /health hasta que commit_sha sea el del merge (confirmado el 28-09 que lo devuelve).
+      deploy: on_merge
+      alembic_versions: backend/alembic/versions/
+      health_url: https://ocr-pdf-and-images-production.up.railway.app/health
+      health_commit_key: commit_sha

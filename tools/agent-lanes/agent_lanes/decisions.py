@@ -172,6 +172,7 @@ class DecisionDesk:
         self.gh_exe = gh_exe
         self._spawn = spawn
         self._now = now
+        self.integrator = None  # carril Integrador (INTEGRATOR_ENABLED): botones int_* de fusionar/desplegar
 
     # --- teclados -------------------------------------------------------------------------------------
 
@@ -276,6 +277,8 @@ class DecisionDesk:
 
     def _act(self, rec: dict, button: dict, where: dict) -> bool:
         action = button["action"]
+        if action.startswith("int_"):  # 🔀 Fusionar / 🚀 Desplegar: solo con el Integrador activo
+            return bool(self.integrator) and self.integrator.on_button(action, rec, where, self)
         if action == APPROVE:
             return self._approve(rec, where)
         if action == PARK:

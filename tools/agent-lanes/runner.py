@@ -17,6 +17,7 @@ from agent_lanes.config import ROOT, load_env, load_lanes, load_runner_settings,
 from agent_lanes.decisions import OWNER_TELEGRAM_ID, CallbackStore, DecisionDesk, UpdatePoller
 from agent_lanes.git_ops import GitOps
 from agent_lanes.hermes import HermesCLI
+from agent_lanes.integrator import build_integrator
 from agent_lanes.review import ClaudeReviewer, ReviewRunner, sweep_done
 from agent_lanes.notices import LinkBuilder, MessageStore
 from agent_lanes.runner import MESSAGES_DIR, LaneRunner
@@ -102,6 +103,13 @@ def main(argv: list[str] | None = None) -> int:
             runners.append(ReviewRunner(lane, all_lanes, hermes_for=hermes_for, git=git, reviewer=ClaudeReviewer(),
                                         verifier=verify, notify=notify, messages=messages, links=links,
                                         decisions=decisions))
+    # Carril Integrador: solo con INTEGRATOR_ENABLED. Sin bot de carriles corre los gates y avisa sin botones.
+    integrator = build_integrator(env, all_lanes, hermes_for=hermes_for, links=links, notifier=notify,
+                                  messages=messages, desk=decisions)
+    if integrator:
+        if decisions:
+            decisions.integrator = integrator
+        log.info("integrador activo: %s", list(integrator.settings.policies))
     service = Service(runners, max_workers=args.max_workers or settings["max_workers"])
     interval = args.interval or settings["interval_seconds"]
     log.info("runner: carriles=%s max_workers=%s interval=%ss", list(selected), service.max_workers, interval)
@@ -117,6 +125,12 @@ def main(argv: list[str] | None = None) -> int:
                     log.info("%s: worktrees limpiados tras done: %s", lane.name, cleaned)
             except Exception as exc:
                 log.warning("%s: limpieza falló: %s", lane.name, exc)
+        if integrator:
+            try:
+                if integrated := integrator.run_pass():
+                    log.info("integrador: %s", integrated)
+            except Exception as exc:
+                log.warning("integrador falló: %s", exc)
         results = service.run_pass()
         if results:
             log.info("pasada: %s", results)
