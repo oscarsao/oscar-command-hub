@@ -847,3 +847,8 @@ def test_second_deploy_while_one_runs_is_refused(tmp_path):
         integ._deploying.release()
     assert not [a for a in w.argv(RW) if a[1] == "up"]
     assert "ya hay un deploy en curso" in tg.edits[-1]["text"]
+
+
+def test_integrator_lanes_filter_limits_policies():
+    s = load_integrator_settings(env={"INTEGRATOR_LANES": "claude-oscarhq"})
+    assert list(s.policies) == ["claude-oscarhq"]

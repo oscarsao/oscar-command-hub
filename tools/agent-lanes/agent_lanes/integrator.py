@@ -146,8 +146,13 @@ def load_integrator_settings(path: Path | None = None, env: dict | None = None) 
     cfg = (_load(path) or {}).get("integrator") or {}
     env = env or {}
     enabled = _truthy(os.environ.get("INTEGRATOR_ENABLED", env.get("INTEGRATOR_ENABLED")))
+    # INTEGRATOR_LANES=claude-oscarhq,... limita los carriles activos sin tocar sus políticas (vacío = todos).
+    only = {x.strip() for x in str(os.environ.get("INTEGRATOR_LANES", env.get("INTEGRATOR_LANES")) or "").split(",")
+            if x.strip()}
     policies = {}
     for name, p in (cfg.get("lanes") or {}).items():
+        if only and name not in only:
+            continue
         p = dict(p or {})
         p["manual_migrations"] = tuple(p.get("manual_migrations") or ())
         p["sensitive_paths"] = tuple(p.get("sensitive_paths") or ())
