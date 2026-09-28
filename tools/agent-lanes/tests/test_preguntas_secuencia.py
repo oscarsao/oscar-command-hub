@@ -272,12 +272,12 @@ def test_accept_all_only_answers_pending_questions_and_requeues_from_triage(tmp_
     cc, desk, bot, h, messages, _ = setup(tmp_path, {"t_aaaaaaa1": show})
     command(desk, "/decisiones")
     head = next(m for m in bot.sent if m["text"].startswith("❓ 1 decisión"))
-    h.unblock = lambda tid: (h.calls.append(("unblock", tid)), False)[1]  # como en triage
-    h.requeue_triage = lambda tid, author=None: (h.calls.append(("requeue_triage", tid)), "ready")[1]
+    show["task"]["status"] = "triage"  # Hermes la pasó a triage mientras esperaba: unblock falla, requeue la saca
+    show["events"].append({"kind": "block_loop_detected", "payload": {"kind": "needs_input"}, "created_at": 1001})
     press(desk, head, 0)
     comments = [c[2] for c in h.calls if c[0] == "comment"]
     assert comments == [f"{ANSWER_PREFIX} {Q2} → 19 €", f"{ANSWER_PREFIX} {Q3} → WhatsApp"]  # la 1ª no se pisa
-    assert ("requeue_triage", "t_aaaaaaa1") in h.calls
+    assert ("requeue_triage", "t_aaaaaaa1") in h.calls and show["task"]["status"] == "ready"
     assert not any("no se pudo desbloquear" in e["text"] for e in bot.edits)
 
 
@@ -333,3 +333,22 @@ def test_group_card_moves_to_the_next_question_for_every_task(tmp_path):
     press(desk, as_msg(bot.edits[-1]), 0, cid="g3")
     assert {c[1] for c in h.calls if c[0] == "unblock"} == {"t_aaaaaaa1", "t_bbbbbbb2"}
     assert all(s["task"]["status"] == "ready" for s in shows.values())
+
+
+# --- 8. robustez del emparejamiento y del motivo cortado ------------------------------------------------------
+
+def test_free_answer_with_an_arrow_and_prefix_questions_are_matched_to_the_right_question():
+    qs = renotify.parse_questions("x\n- ¿Precio?\n- ¿Precio? ¿Y con IVA?")
+    show = needs("t_aaaaaaa1", "x")
+    show["comments"] = [answered("t_aaaaaaa1", "¿Precio? ¿Y con IVA?", "sí → 21 %"),
+                        answered("t_aaaaaaa1", "¿precio?", "9 € → mensual", 2001)]
+    assert answer_progress(show, qs) == ({1: "sí → 21 %", 0: "9 € → mensual"}, None)
+
+
+def test_healing_is_fail_closed_when_the_block_reason_was_cut_at_the_limit(tmp_path):
+    long = "El worker necesita decisión:\n- ¿Publicar ya? " + "x" * 1500
+    show = needs("t_aaaaaaa1", long[:1500])
+    show["comments"] = [answered("t_aaaaaaa1", renotify.parse_questions(long[:1500])[0]["question"], "Sí")]
+    cc, desk, bot, h, messages, _ = setup(tmp_path, {"t_aaaaaaa1": show})
+    assert HermesAnswers({MIG.name: MIG}, hermes_for=lambda b: h, desk=desk).tick() == []
+    assert ("unblock", "t_aaaaaaa1") not in h.calls

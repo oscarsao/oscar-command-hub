@@ -376,8 +376,8 @@ class DecisionDesk:
         return self._pending_show(rec) is not None
 
     def _pending_show(self, rec: dict) -> dict | None:
-        """`show` de la tarea si sigue bloqueada esperando a Oscar ({} si el kanban no se puede consultar: fakes);
-        None si ya no espera decisión."""
+        """`show` de la tarea si sigue esperando a Oscar: blocked needs_input, o en triage (block_loop_detected) con su
+        último bloqueo needs_input ({} si el kanban no se puede consultar: fakes). None si ya no espera decisión."""
         h = self._hermes(rec)
         if not hasattr(h, "show"):
             return {}
@@ -385,9 +385,12 @@ class DecisionDesk:
             show = h.show(rec["task_id"])
         except Exception:
             return None
-        if (show.get("task") or {}).get("status") != "blocked":
+        status = (show.get("task") or {}).get("status")
+        if status not in ("blocked", "triage"):
             return None
         kinds = [(e.get("payload") or {}).get("kind") for e in show.get("events") or () if e.get("kind") == "blocked"]
+        if status == "triage":  # Hermes la paró por repetir la misma pregunta: sigue esperando la respuesta
+            return show if kinds and kinds[-1] == "needs_input" else None
         return show if (not kinds or kinds[-1] == "needs_input") else None
 
     def _progress(self, rec: dict, current: int) -> tuple[dict[int, str], int | None]:

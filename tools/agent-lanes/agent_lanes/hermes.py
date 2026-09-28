@@ -133,11 +133,7 @@ def answer_question(body: str | None) -> str | None:
     b = body or ""
     if not b.startswith(ANSWER_PREFIX) or ANSWER_ARROW not in b:
         return None
-    return _norm(b[len(ANSWER_PREFIX):].rsplit(ANSWER_ARROW, 1)[0]) or None
-
-
-def _answer_text(body: str) -> str:
-    return body.rsplit(ANSWER_ARROW, 1)[1].strip() if ANSWER_ARROW in body else ""
+    return _norm(b[len(ANSWER_PREFIX):].split(ANSWER_ARROW, 1)[0]) or None
 
 
 def last_needs_input_block(show: dict | None) -> dict | None:
@@ -162,9 +158,10 @@ def answer_progress(show: dict | None, questions) -> tuple[dict[int, str], int |
     answers: dict[int, str] = {}
     if block is not None and qs:
         blocked_at = _ts(block.get("created_at"))
-        index = {}
-        for i, q in enumerate(qs):
-            index.setdefault(_norm(q.get("question") if isinstance(q, dict) else q), i)
+        # Pregunta -> índice, las más largas primero: el cuerpo EMPIEZA por la pregunta conocida (una respuesta libre
+        # con " → " dentro no confunde) y una pregunta que es prefijo de otra no se lleva la respuesta de la larga.
+        known = sorted(((_norm(q.get("question") if isinstance(q, dict) else q), i) for i, q in enumerate(qs)),
+                       key=lambda kv: -len(kv[0]))
         for c in (show or {}).get("comments") or []:
             at = _ts(c.get("created_at"))
             if at is None or at <= blocked_at:
@@ -175,13 +172,17 @@ def answer_progress(show: dict | None, questions) -> tuple[dict[int, str], int |
                 continue
             if c.get("author") != OSCAR_AUTHOR:
                 continue
-            key = answer_question(body)
-            if key is None:
+            if not body.startswith(ANSWER_PREFIX):
                 continue
-            if key in LEGACY_ALL_LABELS:
-                answers.update({i: _answer_text(body) for i in range(len(qs))})
-            elif key in index:
-                answers[index[key]] = _answer_text(body)
+            rest = " ".join(body[len(ANSWER_PREFIX):].split())
+            low = rest.casefold()
+            hit = next(((k, i) for k, i in known if k and low.startswith(k + ANSWER_ARROW.rstrip())), None)
+            if hit:
+                answers[hit[1]] = rest[len(hit[0]) + len(ANSWER_ARROW):].strip()
+                continue
+            legacy = next((k for k in LEGACY_ALL_LABELS if low.startswith(k + ANSWER_ARROW.rstrip())), None)
+            if legacy:
+                answers.update({i: rest[len(legacy) + len(ANSWER_ARROW):].strip() for i in range(len(qs))})
     nxt = next((i for i in range(len(qs)) if i not in answers), None)
     return answers, nxt
 

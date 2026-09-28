@@ -31,6 +31,7 @@ log = logging.getLogger("agent_lanes")
 
 ANSWERED_VIA_HERMES = "✅ respondido vía Hermes"
 HEALED = "💬 respondida"  # + " (N/N)": todas sus preguntas contestadas en la tarjeta
+REASON_CUT = 1490  # runner._block guarda reason[:1500] en la tarjeta
 
 
 class HermesAnswers:
@@ -76,7 +77,12 @@ class HermesAnswers:
         task = show.get("task") or {}
         if task.get("status") not in ("blocked", "triage") or last_needs_input_block(show) is None:
             return False
-        from .renotify import block_questions  # perezoso: renotify arrastra runner/review
+        from .renotify import ACTIONS_HEADER, block_questions  # perezoso: renotify arrastra runner/review
+        reason = (last_needs_input_block(show).get("payload") or {}).get("reason") or ""
+        if len(reason) >= REASON_CUT and ACTIONS_HEADER not in reason:
+            # Motivo cortado por el límite de `hermes block` justo en las preguntas: la última puede faltar o estar a
+            # medias. Fail-closed: sigue en /decisiones, pero no se desbloquea sola.
+            return False
         questions = block_questions(show)
         answers, nxt = answer_progress(show, questions)
         if not questions or nxt is not None:
