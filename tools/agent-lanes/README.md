@@ -125,4 +125,12 @@ Las lecturas `show` se cachean (60 s, y se vacían en cada pasada del bucle; 30 
 
 ## Otros
 - Tests: `cd tools/agent-lanes && py -3.12 -m pytest -q`.
-- Una pasada de un carril: `py -3.12 runner.py --lane claude-ops --once`. Estado: `py -3.12 lanes.py status`.
+- Una pasada de un carril: `py -3.12 runner.py --lane claude-ops --once`. Estado: `py -3.12 lanes.py status`
+  ("arrancando" = claim recién hecho con el runner vivo; "huérfano" solo con el runner parado).
+- Reiniciar el runner: SIEMPRE `py -3.12 lanes.py restart --drain [--timeout 3600]`, nunca `schtasks /End` a pelo
+  (incidente 27-09). Deja de reclamar, espera a que acaben workers/deploys, reinicia la tarea "agent-lanes runner".
+  Un `.state/drain.json` de más de 2 h se ignora.
+- Candado de repos: cada carril de código declara `github: owner/repo`; si el remote del repo no coincide (o falta),
+  el carril no reclama y el log dice ERROR una vez. Un carril nuevo sin `github:` queda parado.
+- /salud en el bot de carriles: runner, Hermes, servicios y alertas del monitor, develop↔master de MigraTeam, RAM/CPU
+  y decisiones pendientes. Solo lecturas locales (sin HTTP: eso lo hace el monitor).

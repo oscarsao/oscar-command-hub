@@ -22,7 +22,7 @@ from urllib.parse import quote, urlsplit
 log = logging.getLogger("agent_lanes")
 
 EMOJI = {"running": "▶️", "review": "🔍", "done": "✅", "changes": "🔁", "needs_input": "❓", "blocked": "⛔",
-         "approved": "✅", "parked": "🗄", "requeued": "🔄", "answered": "💬"}
+         "approved": "✅", "parked": "🗄", "requeued": "🔄", "answered": "💬", "stuck": "🧊"}
 TITLE_MAX = 60
 OBJECTIVE_MAX = 200
 OPTION_MAX = 40

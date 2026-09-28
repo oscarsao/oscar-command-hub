@@ -34,6 +34,7 @@ from .notices import (
     questions_block,
     status_line,
     test_label,
+    truncate,
 )
 from .review import ReviewRunner, implementation_metadata
 from .runner import FOR_OSCAR_PREFIX, LaneRunner
@@ -43,7 +44,8 @@ log = logging.getLogger("agent_lanes")
 
 APPROVED_PREFIX = "APROBADO-OSCAR"  # = integrator.APPROVED_PREFIX / decisions._approve
 INTEGRATED_PREFIX = "INTEGRADO"     # = integrator.INTEGRATED_PREFIX
-EMOJI = {"needs_input": "❓", "blocked": "⛔", "done": "✅"}
+EMOJI = {"needs_input": "❓", "blocked": "⛔", "done": "✅", "stuck": "🧊"}
+LOOP_EVENT = "block_loop_detected"  # Hermes: segundo bloqueo seguido por lo mismo -> la tarea pasa a triage
 NEEDS_HINT = "responde con un botón o en la tarjeta"
 
 # Motivo técnico del bloqueo (tarjeta) -> frase pública que usó el runner/review al bloquear. Nada más va a Telegram.
@@ -126,7 +128,7 @@ def parse_questions(reason: str | None) -> list[dict]:
 class Pending:
     tid: str
     lane: Lane
-    state: str                  # needs_input | blocked | done
+    state: str                  # needs_input | blocked | done | stuck (triage por bloqueo repetido)
     task: dict
     status: str
     bullets: list[str] = field(default_factory=list)
@@ -182,7 +184,8 @@ class Renotifier:
 
     def collect(self, *, lane: str | None = None, task: str | None = None,
                 statuses: tuple[str, ...] = ("blocked", "done")) -> list[Pending]:
-        """`statuses`: ("blocked",) para la bandeja y los recordatorios (sin el git ls-remote de las done)."""
+        """`statuses`: ("blocked",) para la bandeja y los recordatorios (sin el git ls-remote de las done);
+        ("triage",) para las 🧊 atascadas de /decisiones (fuera del reenvío por defecto)."""
         # ops entra solo por sus bloqueos (needs_input con acciones a aprobar): su plan "done" es de git/PR.
         impl = {n: l for n, l in self.lanes.items() if l.kind in ("implement", "ops")}
         if lane and lane not in impl:
@@ -192,7 +195,8 @@ class Renotifier:
             if lane and name != lane:
                 continue
             h = self.hermes_for(ln.board)
-            for status, plan in (("blocked", self._plan_blocked), ("done", self._plan_done)):
+            for status, plan in (("blocked", self._plan_blocked), ("done", self._plan_done),
+                                 ("triage", self._plan_triage)):
                 if status not in statuses or (status == "done" and ln.kind == "ops"):
                     continue
                 for t in h.list_status(name, status):
@@ -235,6 +239,24 @@ class Renotifier:
                        bullets=questions_block(questions), questions=questions, since=decision_since(task, show),
                        summary=(runs[-1].get("summary") if runs else None), for_oscar=plain or meta.get("for_oscar"),
                        yes_no=not m)
+
+    def _plan_triage(self, lane: Lane, show: dict) -> Pending | None:
+        """Tarea de carril que Hermes pasó a triage por bloquearse dos veces por lo mismo. Motivo público: la pregunta
+        repetida (needs_input) o la frase pública del bloqueo transitorio; nunca el detalle técnico."""
+        task = show["task"]
+        ev = next((e for e in reversed(show.get("events") or []) if e.get("kind") in (LOOP_EVENT, "blocked")), {})
+        payload = ev.get("payload") or {}
+        reason, plain = split_for_oscar(payload.get("reason") or "")
+        if payload.get("kind") == "needs_input":
+            qs = parse_questions(reason)
+            why = "pregunta repetida" + (f": {truncate(qs[0]['question'], 100)}" if qs else "")
+        else:
+            why = public_reason(reason) or "el mismo bloqueo otra vez"
+        times = payload.get("recurrences") or 2
+        since = float(ev["created_at"]) if ev.get("created_at") else decision_since(task, show)
+        status = status_line("atascada en triage", f"bloqueada {times} veces seguidas", why)
+        return Pending(task["id"], lane, "stuck", task, status, block_kind=payload.get("kind"), since=since,
+                       for_oscar=plain)
 
     def _plan_done(self, lane: Lane, show: dict) -> Pending | None:
         task = show["task"]

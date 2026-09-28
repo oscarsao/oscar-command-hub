@@ -170,7 +170,9 @@ def test_decisiones_in_a_brand_topic_only_shows_that_brand_board(tmp_path):
 def test_nothing_pending_only_when_both_lists_are_empty(tmp_path):
     cc, desk, bot, h, messages = center(tmp_path, {"t_d0000003": CARDS["t_d0000003"]})
     command(desk, "/decisiones")
-    assert bot.sent[-1]["text"] == "Nada pendiente de ti 🎉"
+    # t_d0000003 no es una decisión (sin etiqueta), pero se cuenta en la línea 📋 con enlace al panel
+    assert bot.sent[-1]["text"] == ('Nada pendiente de ti 🎉\n📋 1 tarjeta más a tu nombre sin etiqueta · '
+                                    '<a href="https://k/">panel</a>')
 
 
 def test_cards_text_never_cuts_the_html(tmp_path):

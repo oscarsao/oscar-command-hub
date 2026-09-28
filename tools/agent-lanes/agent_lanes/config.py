@@ -38,6 +38,9 @@ class Lane:
     telegram: tuple[str, str] | None = None  # (chat, thread) de los avisos del carril; ver lanes.yaml
     # ops: raíces bajo las que una tarea puede declarar `Destino-Ops:` (config de confianza, no del cuerpo).
     dest_roots: tuple[str, ...] = ()
+    # Candado de repos (28-09): owner/repo de GitHub que DEBE tener `remote` en `repo`. Un carril de código sin él,
+    # o con otro remote, no reclama tareas (runner: guard_github_remote).
+    github: str = ""
 
     @property
     def claim_ttl_seconds(self) -> int:

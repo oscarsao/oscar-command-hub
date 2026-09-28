@@ -9,6 +9,12 @@ también como /cmd@<bot>. Un /cmd@otro_bot (p. ej. el de Hermes) se ignora.
     /aprobar             tareas listas para integrar con [✅ Aprobar] [🔁 Pedir cambios] [🗄 Aparcar]
     /tareas [marca]      en curso y en cola por carril (migrateam | pildora | nextjobs), un solo mensaje
     /tarea t_xxx         ficha de la tarea con los botones de su estado
+    /salud               runner y carriles, gateway de Hermes, servicios y alertas (del monitor), develop↔master de
+                         MigraTeam, RAM/CPU y decisiones pendientes; sin peticiones HTTP (agent_lanes/health.py)
+
+/decisiones también lista las 🧊 atascadas (tareas de carril que Hermes pasó a triage por bloquearse dos veces por
+lo mismo) con [🔄 Reintentar] (las devuelve a ready sin reescribirlas) y cuenta las tarjetas a nombre de Oscar sin
+etiqueta de decisión.
 
 Dentro de un tema de operaciones se filtran por la marca del tema (lanes.yaml: t230 MigraTeam, t231 Píldora); los
 orígenes genéricos (t5 Operaciones · General, el DM) y el General del grupo ven todo.
@@ -23,6 +29,7 @@ import logging
 import re
 import time
 from typing import Callable
+from urllib.parse import urlsplit
 
 from .decisions import OWNER_TELEGRAM_ID
 from .deps import (ShowCache, child_bucket, dependency_order, family, pending_parents, tree_lines,
@@ -39,6 +46,7 @@ COMMANDS = (
     ("aprobar", "Tareas listas para integrar"),
     ("tareas", "En curso y en cola por carril: /tareas [migrateam|pildora|nextjobs]"),
     ("tarea", "Ficha de una tarea con sus botones: /tarea t_xxx"),
+    ("salud", "Estado de runner, Hermes, servicios, MigraTeam y equipo"),
 )
 COMMAND_SCOPES = ("default", "all_private_chats", "all_group_chats")
 HELP_ALIASES = ("start", "ayuda", "help")
@@ -118,11 +126,23 @@ def _plural(n: int, one: str, many: str) -> str:
     return f"{n} {one if n == 1 else many}"
 
 
+def panel_url(base_url: str | None) -> str | None:
+    """Raíz del panel del kanban desde KANBAN_BASE_URL (base simple, o plantilla con {board}/{id} -> esquema+host)."""
+    base = (base_url or "").strip()
+    if not base:
+        return None
+    if "{" in base:
+        parts = urlsplit(base)
+        return f"{parts.scheme}://{parts.netloc}/" if parts.scheme and parts.netloc else None
+    return base.rstrip("/") + "/"
+
+
 class CommandCenter:
     def __init__(self, notifier, desk, *, lanes: dict, hermes_for: Callable[[str], object], messages, links=None,
                  generic_origins=(), bot_username: str | None = None, base_url: str | None = None,
                  owner_id: str | None = None, brief: Callable[[str | None], str] | None = None,
-                 renotifier=None, now: Callable[[], float] = time.time):
+                 renotifier=None, now: Callable[[], float] = time.time,
+                 health: Callable[[], str] | None = None):
         self.notifier = notifier
         self.desk = desk
         self.lanes = lanes
@@ -137,6 +157,7 @@ class CommandCenter:
         self._renotifier = renotifier
         self._now = now
         self._shows = ShowCache(ttl=30)  # árbol padre/hijas: una lectura por tarea y comando, no una por línea
+        self._health = health  # /salud: texto HTML ya montado (tests); None = health.build con lo real
 
     # --- entrada --------------------------------------------------------------------------------------
 
@@ -194,12 +215,24 @@ class CommandCenter:
         found = [p for p in self.renotifier().collect(statuses=("blocked",)) if p.state == "needs_input"]
         return sorted(self._filter(found, brand), key=lambda p: (p.since or 0, p.tid))
 
+    def stuck_tasks(self, brand: str | None = None) -> list:
+        """🧊 Tareas de carril que Hermes pasó a triage por bloquearse dos veces por lo mismo (block_loop_detected):
+        desde ahí `unblock` falla y nadie las ve. Más antigua primero; las cuentan también los recordatorios."""
+        found = [p for p in self.renotifier().collect(statuses=("triage",)) if p.state == "stuck"]
+        return sorted(self._filter(found, brand), key=lambda p: (p.since or 0, p.tid))
+
     def decision_cards(self, brand: str | None = None) -> list[dict]:
         """Tarjetas de decisión de Oscar (no son de carril): asignadas a `oscar`, en ready/blocked y con etiqueta
         [DECISIÓN…]/[SEMANA…]/[IDEA…] en el título, en los tableros de los carriles + default. Más antigua primero.
         [{board, task, since}]. Con `brand` (tema de una marca), solo las de su tablero (default = "Otros")."""
+        return self.oscar_cards(brand)[0]
+
+    def oscar_cards(self, brand: str | None = None) -> tuple[list[dict], int]:
+        """(tarjetas de decisión, nº de tarjetas a nombre de Oscar SIN etiqueta de decisión) en una sola pasada por
+        los tableros: mismos estados y tableros, sin duplicados por id."""
         boards = dict.fromkeys([l.board for l in self.lanes.values() if l.board] + list(EXTRA_BOARDS))
         found: dict[str, dict] = {}
+        untagged: set[str] = set()
         for board in boards:
             if brand and BOARD_BRANDS.get(board, "Otros") != brand:
                 continue
@@ -212,9 +245,14 @@ class CommandCenter:
                     continue
                 for t in tasks:
                     t = {"assignee": OSCAR_ASSIGNEE, "status": status, **t}
-                    if t.get("id") and t["id"] not in found and is_decision_card(t):
+                    if not t.get("id") or t["id"] in found:
+                        continue
+                    if is_decision_card(t):
                         found[t["id"]] = {"board": board, "task": t, "since": decision_since(t)}
-        return sorted(found.values(), key=lambda c: (c["since"] or 0, c["task"]["id"]))
+                        untagged.discard(t["id"])
+                    else:
+                        untagged.add(t["id"])
+        return sorted(found.values(), key=lambda c: (c["since"] or 0, c["task"]["id"])), len(untagged)
 
     def ready_to_approve(self, brand: str | None = None) -> list:
         found = [p for p in self.renotifier().collect(statuses=("done",)) if p.state == "done"]
@@ -253,21 +291,44 @@ class CommandCenter:
     def cmd_decisiones(self, where, args: str, brand: str | None) -> None:
         now = self._now()
         pendings = self.pending_decisions(brand)
-        cards = self.decision_cards(brand)
+        stuck = self.stuck_tasks(brand)
+        cards, untagged = self.oscar_cards(brand)
         scope = f" · {brand}" if brand else ""
-        if not pendings and not cards:
-            self._send(where, f"Nada pendiente de ti{scope} 🎉", html=False)
+        if not pendings and not stuck and not cards:
+            if untagged:  # no son decisiones, pero que no se olviden
+                self._send(where, html.escape(f"Nada pendiente de ti{scope} 🎉") + "\n" + self.untagged_line(untagged))
+            else:
+                self._send(where, f"Nada pendiente de ti{scope} 🎉", html=False)
             return
         if pendings:
             self._agent_questions(where, pendings, now, scope)
+        if stuck:
+            self._stuck_section(where, stuck, now, scope)
         if cards:
-            self._send(where, self.cards_text(cards, now, scope))
+            self._send(where, self.cards_text(cards, now, scope, untagged=untagged))
+        elif untagged:
+            self._send(where, self.untagged_line(untagged))
 
-    def cards_text(self, cards: list[dict], now: float, scope: str = "") -> str:
-        """Un mensaje HTML con las tarjetas de decisión de Oscar (sin botones en v1). Nunca corta el HTML: si no
-        cabe, quita líneas y lo dice."""
+    def _stuck_section(self, where, stuck: list, now: float, scope: str) -> None:
+        """🧊 Atascadas: cabecera + una tarjeta por tarea con [🔄 Reintentar] [🗄 Aparcar]."""
+        head = (f"🧊 Atascadas ({len(stuck)}){scope} · Hermes las paró por bloquearse dos veces por lo mismo; "
+                "🔄 Reintentar las devuelve a la cola sin reescribirlas")
+        if len(stuck) > MAX_CARDS:
+            head += f"\nMuestro {MAX_CARDS}; el resto, en el panel"
+        self._send(where, head, html=False)
+        for p in stuck[:MAX_CARDS]:
+            status = status_line(p.status, f"hace {hours_ago(p.since, now)} h")
+            text = render("stuck", p.tid, p.task.get("title"), p.lane.name, status, self._links_for(p.lane, p.tid),
+                          body=p.task.get("body"), for_oscar=p.for_oscar)
+            markup = self.desk.markup("stuck", task=p.task, lane=p.lane, block_kind=p.block_kind)
+            self._mirror(p.tid, self._send(where, text, markup=markup), markup)
+
+    def cards_text(self, cards: list[dict], now: float, scope: str = "", *, untagged: int = 0) -> str:
+        """Un mensaje HTML con las tarjetas de decisión de Oscar (sin botones en v1) y, debajo, cuántas más tiene a su
+        nombre sin etiqueta (con enlace al panel). Nunca corta el HTML: si no cabe, quita líneas y lo dice."""
         e = html.escape
         head = f"📌 <b>Tus tarjetas de decisión ({len(cards)})</b>{e(scope)}"
+        tail = [self.untagged_line(untagged)] if untagged else []
         lines = []
         for c in cards:
             t = c["task"]
@@ -275,10 +336,41 @@ class CommandCenter:
             ref = f'<a href="{e(url, quote=True)}">{e(t["id"])}</a>' if url else f"<code>{e(t['id'])}</code>"
             lines.append(f"• {ref} · {e(truncate(t.get('title'), CARD_TITLE_MAX))} · hace {hours_ago(c['since'], now)} h")
         shown = len(lines)
-        while shown and len("\n".join([head, *lines[:shown], "  +000 más en el panel"])) > TEXT_MAX:
+        while shown and len("\n".join([head, *lines[:shown], "  +000 más en el panel", *tail])) > TEXT_MAX:
             shown -= 1
         more = [f"  +{len(lines) - shown} más en el panel"] if shown < len(lines) else []
-        return "\n".join([head, *lines[:shown], *more])
+        return "\n".join([head, *lines[:shown], *more, *tail])
+
+    def untagged_line(self, n: int) -> str:
+        """"📋 N tarjetas más a tu nombre sin etiqueta · panel" (enlace a la raíz del panel del kanban)."""
+        e = html.escape
+        url = panel_url(self.base_url)
+        panel = f'<a href="{e(url, quote=True)}">panel</a>' if url else "panel"
+        return f"📋 {_plural(n, 'tarjeta más', 'tarjetas más')} a tu nombre sin etiqueta · {panel}"
+
+    # --- /salud ---------------------------------------------------------------------------------------
+
+    def cmd_salud(self, where, args: str, brand: str | None) -> None:
+        self._send(where, self._health() if self._health is not None else self.health_text())
+
+    def health_text(self) -> str:
+        """Todo local (health.py): .state, `hermes kanban list`, ficheros del monitor y git sin fetch."""
+        from . import drain, health
+        from .runner import STATE_DIR, pid_alive
+        from .status import lane_rows, runner_alive, runner_line
+        lock = drain.LOCK_FILE
+        mig = self.lanes.get(health.MIGRATEAM_LANE)
+        now = self._now()
+        return health.build(
+            runner=lambda: runner_line(lock, pid_alive, drain.active(), drain.BUSY_FILE),
+            rows=lambda: lane_rows(self.lanes, hermes_for=self.hermes_for, state_dir=STATE_DIR, pid_alive=pid_alive,
+                                   runner_is_alive=runner_alive(lock, pid_alive)),
+            gateway=lambda: health.gateway_line(health.HERMES_GATEWAY_STATE, pid_alive, now),
+            monitor=lambda: health.monitor_lines(health.MONITOR_STATE_DIR, now),
+            drift=lambda: health.migrateam_drift(mig.repo if mig else ""),
+            machine=health.machine_line,
+            pending=lambda: (len(self.pending_decisions()), len(self.stuck_tasks()), len(self.decision_cards())),
+            now=now)
 
     def _agent_questions(self, where, pendings: list, now: float, scope: str) -> None:
         """Preguntas de los agentes (tareas de carril en needs_input): cabecera + una tarjeta con botones por tarea."""

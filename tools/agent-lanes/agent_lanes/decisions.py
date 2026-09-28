@@ -76,6 +76,8 @@ def keyboard_spec(state: str, *, block_kind: str | None = None, questions=None,
         return rows
     if state == "blocked" and block_kind == "transient":
         return [[{"text": "🔄 Reintentar", "action": RETRY}, park]]
+    if state == "stuck":  # 🧊 en triage por bloqueo repetido (block_loop_detected): unblock no vale, _retry lo saca
+        return [[{"text": "🔄 Reintentar", "action": RETRY}, park]]
     return None
 
 
@@ -557,10 +559,19 @@ class DecisionDesk:
     def _retry(self, rec: dict, where: dict) -> bool:
         # Se edita ANTES de desbloquear: el runner puede cogerla enseguida y su "▶️ en curso" debe quedar encima.
         self._edit(rec, where, "requeued", "🔄 reencolada")
-        if not self._hermes(rec).unblock(rec["task_id"]):
-            self._edit(rec, where, "blocked", "no se pudo reencolar: la tarea ya no está bloqueada")
-            return False
-        return True
+        h, tid = self._hermes(rec), rec["task_id"]
+        if h.unblock(tid):
+            return True
+        # Bloqueada dos veces por lo mismo, Hermes la pasa a triage y `unblock` falla: se saca de triage sin
+        # reescribirla (también desde un aviso ⛔ antiguo de cuando aún estaba bloqueada).
+        requeue = getattr(h, "requeue_triage", None)
+        status = requeue(tid) if requeue else None
+        if status:
+            if status != "ready":
+                self._edit(rec, where, "requeued", f"🔄 sacada de triage · queda en {status} (espera a otra tarea)")
+            return True
+        self._edit(rec, where, "blocked", "no se pudo reencolar: la tarea ya no está bloqueada ni en triage")
+        return False
 
     def _answer(self, rec: dict, where: dict, question: str, answer: str) -> bool:
         tid, h = rec["task_id"], self._hermes(rec)

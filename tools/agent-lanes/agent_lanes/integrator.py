@@ -313,6 +313,8 @@ class Integrator:
         self._out = out
         self._lock = threading.Lock()  # worktrees temporales y fetch: una operación git a la vez
         self._deploying = threading.Lock()  # un deploy a la vez (dos 🚀 seguidos no encadenan dos `railway up`)
+        self._inflight = 0  # botones de Oscar en marcha (merge, deploy, verificación de /health)
+        self._inflight_lock = threading.Lock()
         self._last_pass: float | None = None
         self._now = now  # reloj de pared: antigüedad del resumen fijado (self._clock es monotónico)
         # Resumen fijado del tema de Integración: se edita en cada pasada (y tras cada botón) si cambia.
@@ -841,9 +843,13 @@ class Integrator:
 
     def on_button(self, action: str, rec: dict, where: dict, desk) -> bool:
         """True = acción terminada (bien o mal, con su aviso). False = no se hizo nada: vuelven los botones."""
+        with self._inflight_lock:  # busy(): un reinicio ordenado no corta un merge ni la verificación del deploy
+            self._inflight += 1
         try:
             return self._on_button(action, rec, where, desk)
         finally:
+            with self._inflight_lock:
+                self._inflight -= 1
             self.refresh_summary()  # fusionado/desplegado: el fijado no espera a la próxima pasada
 
     def _on_button(self, action: str, rec: dict, where: dict, desk) -> bool:
@@ -1002,20 +1008,26 @@ class Integrator:
             return False
         with self._lock:
             self._git(lane.repo, "fetch", lane.remote, f"+refs/heads/{lane.base}:refs/remotes/{lane.remote}/{lane.base}")
+            # Se despliega la PUNTA de la base, no el commit de esta ficha (28-09: 🚀 de a50b290 dejó fuera la
+            # fusión posterior 6f46b0d). Candado: la punta contiene esta fusión y nada pendiente de migración/infra.
             tip = (self._git(lane.repo, "rev-parse", f"{lane.remote}/{lane.base}").stdout or "").strip()
-            if tip != sha:
-                self._edit(desk, lane, rec, where, "blocked", status_line(
-                    "⛔ no se despliega", f"{lane.base} avanzó desde la fusión (hay otros commits)", "despliega a mano"))
+            problem = self._tip_problem(lane, policy, tid, sha, tip)
+            if problem:
+                self._edit(desk, lane, rec, where, "blocked", status_line("⛔ no se despliega", problem,
+                                                                          "despliega a mano"))
                 return True
+            extra = self._count(lane, f"{sha}..{tip}") if tip != sha else 0
             before = self._deployments(policy)
             if before is None:
                 self._edit(desk, lane, rec, where, "blocked", "⛔ no se despliega: Railway no responde")
                 return False
-            self._edit(desk, lane, rec, where, "running", status_line(f"🚀 desplegando {sha[:7]}…"))
+            self._edit(desk, lane, rec, where, "running", status_line(
+                f"🚀 desplegando {tip[:7]}…", f"lo último de {lane.base}, {extra} commit(s) después de esta fusión"
+                if extra else None))
             wt = Path(self.settings.worktree_root) / f"intdep-{tid}"
             self._remove_worktree(lane.repo, wt)
             add = self._git(lane.repo, "-c", f"core.hooksPath={self._nohooks()}", "worktree", "add", "--detach",
-                            str(wt), sha)
+                            str(wt), tip)
             if add.returncode != 0:
                 self._edit(desk, lane, rec, where, "blocked", "⛔ no se desplegó: no se pudo preparar la copia")
                 return False
@@ -1029,7 +1041,7 @@ class Integrator:
         if up.returncode != 0:
             log.warning("%s: railway up falló: %s", tid, (up.stderr or up.stdout or "").strip()[-300:])
             self._edit(desk, lane, rec, where, "blocked", "⛔ deploy falló al subir (detalle en el log)")
-            self._comment(lane, tid, f"DEPLOY-FALLIDO {sha} · railway up exit {up.returncode}")
+            self._comment(lane, tid, f"DEPLOY-FALLIDO {tip} · railway up exit {up.returncode}")
             return True
         dep_id = self._new_deployment_id(policy, up.stdout + up.stderr, {d.get("id") for d in before})
         if not dep_id:
@@ -1039,16 +1051,92 @@ class Integrator:
         status = self._poll_deployment(policy, dep_id)
         if status in RAILWAY_OK:
             health = self._health(policy)
-            self._comment(lane, tid, f"DESPLEGADO {sha} · railway deployment {dep_id} SUCCESS"
-                          + (f" · health {health}" if health else ""))
-            self._save(tid, status="deployed", deployment=dep_id)
-            self._edit(desk, lane, rec, where, "done", status_line(f"🚀 desplegado · {sha[:7]}",
-                                                                   f"health {health}" if health else None))
+            self._comment(lane, tid, f"DESPLEGADO {tip} · railway deployment {dep_id} SUCCESS"
+                          + (f" · health {health}" if health else "")
+                          + (f" · incluye la fusión {sha[:12]} de esta tarea" if tip != sha else ""))
+            self._save(tid, status="deployed", deployment=dep_id, deployed_sha=tip)
+            also = self._mark_included(lane, tid, tip, dep_id, desk)
+            self._edit(desk, lane, rec, where, "done", status_line(
+                f"🚀 desplegado · {tip[:7]}", f"health {health}" if health else None,
+                ("también PR " + ", ".join(f"#{n}" for n in also)) if also else None))
         else:
             why = "sin terminar en 15 min" if status is None else status
-            self._comment(lane, tid, f"DEPLOY-FALLIDO {sha} · railway deployment {dep_id} {why}")
+            self._comment(lane, tid, f"DEPLOY-FALLIDO {tip} · railway deployment {dep_id} {why}")
             self._edit(desk, lane, rec, where, "blocked", status_line("⛔ deploy falló", why, "revisa Railway"))
         return True
+
+    def busy(self) -> list[str]:
+        """Lo que un reinicio ordenado (drain) debe esperar fuera del pool de workers: deploy o gates en marcha."""
+        out = []
+        if self._inflight:
+            out.append("acción de Oscar en marcha (fusión/deploy)")
+        if self._deploying.locked():
+            out.append("deploy en curso")
+        if self._lock.locked():
+            out.append("gates/fusión del integrador")
+        return out
+
+    def _is_ancestor(self, lane, old: str, new: str) -> bool:
+        return self._git(lane.repo, "merge-base", "--is-ancestor", old, new).returncode == 0
+
+    def _count(self, lane, rng: str) -> int:
+        try:
+            return int((self._git(lane.repo, "rev-list", "--count", rng).stdout or "0").strip() or 0)
+        except ValueError:
+            return 0
+
+    def _merged_states(self, lane, exclude: str) -> list[tuple[str, dict]]:
+        """Fichas de este carril fusionadas y sin desplegar (estado local del integrador), salvo `exclude`."""
+        out = []
+        for path in sorted(self.state_dir.glob("t_*.json")):
+            tid = path.stem
+            if tid == exclude or not TID_RE.fullmatch(tid):
+                continue
+            st = self._state(tid)
+            if st.get("lane") == lane.name and st.get("status") == "merged" \
+                    and re.fullmatch(r"[0-9a-f]{40}", st.get("merge_sha") or ""):
+                out.append((tid, st))
+        return out
+
+    def _tip_problem(self, lane, policy: Policy, tid: str, sha: str, tip: str) -> str | None:
+        """Por qué NO desplegar la punta de la base (o None). Antes el candado era "punta == esta fusión"; ahora se
+        despliega lo último, así que se comprueba que no se cuele nada que tampoco se habría desplegado solo."""
+        if not re.fullmatch(r"[0-9a-f]{40}", tip or ""):
+            return f"no se pudo leer {lane.base}"
+        if tip != sha and not self._is_ancestor(lane, sha, tip):
+            return f"{lane.base} ya no contiene esta fusión"
+        for other, st in self._merged_states(lane, tid):
+            if st.get("migration") and self._is_ancestor(lane, st["merge_sha"], tip):
+                return f"{lane.base} incluye el PR #{st.get('pr', '?')} con migración o infraestructura pendiente"
+        if tip != sha:
+            changed = (self._git(lane.repo, "diff", "--no-renames", "--name-only", sha, tip).stdout or "").split()
+            risky = [f for f in changed if any(f.startswith(p) for p in policy.manual_migrations)
+                     or any(f.startswith(p) or Path(f).name == p for p in policy.sensitive_paths)]
+            if risky:
+                return (f"después de esta fusión {lane.base} trae migración o infraestructura: "
+                        + ", ".join(risky[:3]))
+        return None
+
+    def _mark_included(self, lane, tid: str, tip: str, dep_id: str, desk) -> list:
+        """Tras un deploy correcto de `tip`: toda ficha fusionada cuyo merge_sha está en lo desplegado queda como
+        desplegada (comentario, estado, avisos editados y su 🚀 Desplegar retirado). Devuelve sus números de PR."""
+        done = []
+        for other, st in self._merged_states(lane, tid):
+            if st.get("migration") or not self._is_ancestor(lane, st["merge_sha"], tip):
+                continue
+            self._comment(lane, other, f"DESPLEGADO {tip} · railway deployment {dep_id} SUCCESS · incluido en el "
+                                       f"deploy pedido desde {tid} (fusión {st['merge_sha'][:12]})")
+            self._save(other, status="deployed", deployment=dep_id, deployed_sha=tip)
+            rec = {"kind": "integrate", "task_id": other, "board": lane.board, "lane": lane.name,
+                   "title": st.get("title") or "", "pr_number": st.get("pr"), "pr_url": st.get("pr_url") or "",
+                   "merge_sha": st["merge_sha"]}
+            for msg in (self._notices.store.all_messages(other) if self._notices else ()):
+                if msg.get("token") and desk is not None:
+                    desk.store.consume(msg["token"])  # su 🚀 Desplegar ya no tiene sentido
+            self._edit(desk, lane, rec, None, "done", status_line(f"🚀 desplegado · {tip[:7]}",
+                                                                   f"con el deploy de {tid}"))
+            done.append(st.get("pr") or other)
+        return done
 
     def _new_deployment_id(self, policy: Policy, output: str, before: set) -> str | None:
         """Id del deployment que acaba de crear `up`: el de la URL de logs (?id=) o el único nuevo de la lista.

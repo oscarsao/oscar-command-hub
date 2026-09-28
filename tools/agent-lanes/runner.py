@@ -13,13 +13,14 @@ import sys
 import time
 from logging.handlers import RotatingFileHandler
 
+from agent_lanes import drain
 from agent_lanes.config import ROOT, load_env, load_lanes, load_runner_settings, load_telegram_settings
 from agent_lanes.commands import CommandCenter, register_commands
 from agent_lanes.decisions import CALLBACKS_DIR, OWNER_TELEGRAM_ID, CallbackStore, DecisionDesk, UpdatePoller
 from agent_lanes.deps import ShowCache, TreeReader
 from agent_lanes.hermes_answers import HermesAnswers
 from agent_lanes.reminders import Reminders
-from agent_lanes.git_ops import GitOps
+from agent_lanes.git_ops import GitOps, github_slug_problem
 from agent_lanes.hermes import HermesCLI
 from agent_lanes.integration import IntegrationRoute
 from agent_lanes.integrator import build_integrator, load_integrator_settings
@@ -102,7 +103,8 @@ def main(argv: list[str] | None = None) -> int:
         decisions.commands = commands
         log.info("comandos del bot registrados en: %s", register_commands(notify))
         UpdatePoller(notify, decisions, TG_OFFSET).start()
-        Reminders(notify, owner, commands.pending_decisions, REMINDERS_STATE, cards=commands.decision_cards).start()
+        Reminders(notify, owner, commands.pending_decisions, REMINDERS_STATE, cards=commands.decision_cards,
+                  stuck=commands.stuck_tasks).start()
         log.info("bot de carriles activo (id %s, @%s): avisos con botones, comandos, escucha y recordatorios",
                  notify.bot_id, username)
     else:
@@ -116,9 +118,10 @@ def main(argv: list[str] | None = None) -> int:
         HermesAnswers(all_lanes, hermes_for=hermes_for, desk=decisions).start()
     git = GitOps()
     impl = {n: l for n, l in selected.items() if l.kind == "implement"}
+    # Candado de repos: un carril de código solo reclama si el remote de su repo es el `github:` de lanes.yaml.
     runners: list = [LaneRunner(l, hermes=hermes_for(l.board), git=git, worker=ClaudeWorker(), verifier=verify,
                                 notify=notify, exclude=set(args.exclude), messages=messages, links=links,
-                                decisions=decisions, tree=tree)
+                                decisions=decisions, tree=tree, repo_guard=github_slug_problem)
                      for l in impl.values()]
     # Carril ops: sin repo. Carpeta de trabajo por tarea + verificación por evidencias; siempre acaba en review para
     # Oscar (no está en `review.reviews`, y sweep_done no lo toca: el workspace se conserva).
@@ -142,16 +145,32 @@ def main(argv: list[str] | None = None) -> int:
         if decisions:
             decisions.integrator = integrator
         log.info("integrador activo: %s", list(integrator.settings.policies))
-    service = Service(runners, max_workers=args.max_workers or settings["max_workers"])
+    service = Service(runners, max_workers=args.max_workers or settings["max_workers"], busy_path=drain.BUSY_FILE)
     interval = args.interval or settings["interval_seconds"]
     log.info("runner: carriles=%s max_workers=%s interval=%ss", list(selected), service.max_workers, interval)
 
     started = time.monotonic()
+    drain.discard_stale()  # un drain.json de más de 2 h (restart muerto a medias) no deja los carriles parados
     for r in runners:
         if isinstance(r, LaneRunner) and (orphans := r.reconcile()):
             log.warning("reconciliación %s: bloqueadas por runner reiniciado: %s", r.lane.name, orphans)
+    draining_logged = False
     while True:
         shows.clear()
+        # Reinicio ordenado (lanes.py restart --drain): entre pasadas, sin reclamar nada; el acuse dice si queda
+        # algo en marcha fuera del pool (deploy/gates lanzados por un botón de Oscar).
+        if drain.active():
+            busy = integrator.busy() if integrator else []
+            drain.write_ack(busy=busy)
+            if not draining_logged:
+                log.info("drenando: no se reclaman tareas; esperando el reinicio%s",
+                         f" (en marcha: {', '.join(busy)})" if busy else "")
+                draining_logged = True
+            if args.once:
+                return 0
+            time.sleep(min(interval, 5))
+            continue
+        draining_logged = False
         for lane in impl.values():
             try:
                 if cleaned := sweep_done(lane, hermes_for(lane.board), git):

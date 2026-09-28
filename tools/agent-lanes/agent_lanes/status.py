@@ -23,8 +23,39 @@ def _when(ts) -> str:
         return "?"
 
 
+def runner_line(lock: Path, pid_alive: Callable[[int], bool], drain: dict | None = None,
+                busy: Path | None = None) -> str:
+    """Estado del runner-servicio desde .state/runner.lock (+ workers de la pasada en curso, incluido el carril
+    review, desde .state/busy.json; + drenaje en curso, si lo hay)."""
+    try:
+        pid = int(json.loads(Path(lock).read_text(encoding="utf-8"))["pid"])
+    except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError):
+        return "runner: no arrancado (sin .state/runner.lock)"
+    alive = pid_alive(pid)
+    line = f"runner: {'VIVO' if alive else 'PARADO'} (pid {pid})"
+    try:
+        b = json.loads(Path(busy).read_text(encoding="utf-8")) if busy else {}
+    except (OSError, ValueError):
+        b = {}
+    if alive and b.get("pid") == pid and b.get("jobs"):
+        line += " · en marcha: " + ", ".join(f"{j.get('task')} ({j.get('lane')})" for j in b["jobs"][:4])
+    if drain:
+        line += f" · drenando desde {_when(drain.get('since'))} (no reclama)"
+    return line
+
+
+def runner_alive(lock: Path, pid_alive: Callable[[int], bool]) -> bool:
+    try:
+        return pid_alive(int(json.loads(Path(lock).read_text(encoding="utf-8"))["pid"]))
+    except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError):
+        return False
+
+
 def lane_rows(lanes: dict[str, Lane], *, hermes_for: Callable[[str], object], state_dir: Path,
-              pid_alive: Callable[[int], bool]) -> list[dict]:
+              pid_alive: Callable[[int], bool], runner_is_alive: bool | None = None) -> list[dict]:
+    """`runner_is_alive`: una tarea en running sin PID en .state con el runner VIVO está "arrancando" (claim hecho,
+    estado aún sin escribir) o es una toma interactiva; solo con el runner parado es "huérfano" de verdad (t_bdee05fe).
+    None = no se sabe (compatibilidad): se trata como parado."""
     rows = []
     for name, lane in lanes.items():
         if lane.kind not in ("implement", "ops"):
@@ -36,6 +67,8 @@ def lane_rows(lanes: dict[str, Lane], *, hermes_for: Callable[[str], object], st
             state = "libre"
         elif live:
             state = "ocupado"
+        elif runner_is_alive:
+            state = "arrancando"  # claim recién hecho (o consola interactiva): el runner vivo no lo da por perdido
         else:
             state = "huérfano"  # running in the kanban but no live runner: reconcile will block it on start
         done = h.list_status(name, "done", sort="completed-desc")
@@ -47,9 +80,9 @@ def lane_rows(lanes: dict[str, Lane], *, hermes_for: Callable[[str], object], st
 
 
 def format_rows(rows: list[dict], runner_line: str) -> str:
-    head = f"{'CARRIL':18} {'BOARD':10} {'ESTADO':9} {'READY':>5} {'REVIEW':>6}  EN CURSO / ÚLTIMA TERMINADA"
+    head = f"{'CARRIL':18} {'BOARD':10} {'ESTADO':10} {'READY':>5} {'REVIEW':>6}  EN CURSO / ÚLTIMA TERMINADA"
     lines = [runner_line, head, "-" * len(head)]
     for r in rows:
         current = ",".join(r["running"]) if r["running"] else r["last"]
-        lines.append(f"{r['lane']:18} {r['board']:10} {r['state']:9} {r['ready']:>5} {r['review']:>6}  {current}")
+        lines.append(f"{r['lane']:18} {r['board']:10} {r['state']:10} {r['ready']:>5} {r['review']:>6}  {current}")
     return "\n".join(lines)

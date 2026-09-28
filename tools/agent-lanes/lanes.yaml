@@ -65,6 +65,8 @@ lanes:
     telegram: {chat: -1003530490339, thread: 231}
     board: oscarhq
     repo: C:/Users/oscar/dev/oscar-hq
+    # Candado (28-09): el runner solo reclama si `git remote get-url origin` del repo es este owner/repo de GitHub.
+    github: oscarsao/oscar-hq
     base: master
     # pytest de oscar-hq no es usable como gate hoy (test_api_health falla en master por entorno; tarjeta aparte).
     test_cmd: py -3.12 "{AGENT_LANES_DIR}/agent_lanes/checks.py" {BASE}
@@ -73,6 +75,7 @@ lanes:
     telegram: {chat: -1003530490339, thread: 230}
     board: migrateam
     repo: C:/Users/oscar/dev/migrateam
+    github: PildoraDigital/OCR-PDF-and-images
     # 28-09 (Oscar): en MigraTeam todo entra por develop (staging) y solo llega a master por promoción
     # release/<fecha> (CLAUDE.md del repo, tabla de ramas). Un carril NUNCA parte ni apunta a master.
     base: develop
@@ -88,6 +91,7 @@ lanes:
     telegram: {chat: -1003530490339, thread: 231}
     board: oscarhq
     repo: C:/Users/oscar/dev/Scraper
+    github: oscarsao/icp-prospect-engine
     # Rama de trabajo activa (no main), confirmada con git el 27-09: origin/cambio/multiverse-benchmark-harness.
     base: cambio/multiverse-benchmark-harness
     test_cmd: py -3.12 "{AGENT_LANES_DIR}/agent_lanes/checks.py" {BASE}
@@ -96,6 +100,7 @@ lanes:
     telegram: {chat: -1003530490339, thread: 5}
     board: default
     repo: C:/Users/oscar/nextjobs/autoapply_v5
+    github: oscarsao/nextjobs-autoapply
     base: master
     # Sin suite de tests versionada: gate = diff --check + compilación de los .py cambiados.
     test_cmd: py -3.12 "{AGENT_LANES_DIR}/agent_lanes/checks.py" {BASE}

@@ -18,19 +18,45 @@ class Service:
     """Each pass collects the jobs of every lane (implementers and review) and runs them with at most
     `max_workers` claude processes alive at once. Default 1: one worker in total on this PC."""
 
-    def __init__(self, lanes: list, max_workers: int = 1):
+    def __init__(self, lanes: list, max_workers: int = 1, busy_path: Path | None = None):
         self.lanes = lanes
         self.max_workers = max(1, int(max_workers))
+        # .state/busy.json mientras dura una pasada con trabajo: `lanes.py status` y /salud ven también al carril
+        # review (no reclama ni escribe estado por tarea) y no dan "libre" con un worker en marcha (t_bdee05fe).
+        self.busy_path = Path(busy_path) if busy_path else None
+
+    def _mark_busy(self, jobs: list[tuple[str, str]]) -> None:
+        if not self.busy_path:
+            return
+        try:
+            self.busy_path.parent.mkdir(parents=True, exist_ok=True)
+            self.busy_path.write_text(json.dumps({"pid": os.getpid(), "since": time.time(),
+                                                  "jobs": [{"task": t, "lane": l} for t, l in jobs]}),
+                                      encoding="utf-8")
+        except OSError as exc:
+            log.info("busy.json no escrito: %s", exc)
 
     def run_pass(self) -> dict[str, str]:
-        jobs = []
+        jobs, named = [], []
         for lane in self.lanes:
             try:
-                jobs += lane.jobs()
+                found = lane.jobs()
             except Exception as exc:  # one broken lane (hermes/git error) must not stop the others
                 log.error("%s: no se pudieron listar tareas: %s", getattr(lane, "name", lane), exc)
+                continue
+            jobs += found
+            name = getattr(getattr(lane, "lane", None), "name", "?")
+            named += [(tid, name) for tid, _ in found]
         if not jobs:
             return {}
+        self._mark_busy(named)
+        try:
+            return self._run(jobs)
+        finally:
+            if self.busy_path:
+                self.busy_path.unlink(missing_ok=True)
+
+    def _run(self, jobs: list) -> dict[str, str]:
         with ThreadPoolExecutor(max_workers=self.max_workers, thread_name_prefix="lane-job") as pool:
             futures = {tid: pool.submit(job) for tid, job in jobs}
         results = {}

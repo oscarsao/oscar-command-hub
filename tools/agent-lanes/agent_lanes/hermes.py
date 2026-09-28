@@ -2,13 +2,30 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 
 from . import proc as _proc
 from pathlib import Path
 
 HERMES_EXE = Path.home() / "AppData/Local/hermes/bin/hermes.exe"
+HERMES_AGENT_DIR = Path.home() / "AppData/Local/hermes/hermes-agent"
+HERMES_PYTHON = HERMES_AGENT_DIR / "venv/Scripts/python.exe"
 PINNED_VERSION = "0.21.4"
+TRIAGE_STATUS = "triage"
+
+# triage -> todo -> ready SIN reescribir título/cuerpo (verificado 28-09). La CLI `kanban specify` pasa por un LLM y
+# reescribe la tarea: no se usa. Tablero, id y autor van por argv, nunca interpolados en el código.
+_REQUEUE_TRIAGE = (
+    "import sys\n"
+    "from hermes_cli import kanban_db as kb, kanban_db_connect as kbc\n"
+    "board, tid, author = sys.argv[1:4]\n"
+    "with kbc.connect_closing(board=board) as conn:\n"
+    "    ok = kb.specify_triage_task(conn, tid, author=author)\n"
+    "print('ok' if ok else 'no')\n"
+)
+_TID_RE = re.compile(r"^t_[0-9a-f]{8}$")
+_BOARD_RE = re.compile(r"^[\w-]{1,64}$")
 
 # subcommand -> flags the runner relies on
 CONTRACT = {
@@ -149,6 +166,26 @@ class HermesCLI:
 
     def unblock(self, task_id: str) -> bool:
         return self._call("unblock", task_id).returncode == 0
+
+    def requeue_triage(self, task_id: str, author: str = OSCAR_AUTHOR, *, python: Path = HERMES_PYTHON) -> str | None:
+        """Saca de `triage` una tarea que Hermes aparcó por bloquearse dos veces por lo mismo (block_loop_detected;
+        desde ahí `unblock` falla): specify_triage_task con la API de Hermes en su venv, sin tocar título ni cuerpo.
+        Devuelve el estado resultante ("ready", o "todo" si espera a un padre) o None si no estaba en triage/falló."""
+        if not _TID_RE.match(task_id or "") or not _BOARD_RE.match(self.board or ""):
+            return None
+        try:
+            cp = self._run([str(python), "-c", _REQUEUE_TRIAGE, self.board, task_id, author], capture_output=True,
+                           text=True, encoding="utf-8", errors="replace", timeout=60, cwd=str(HERMES_AGENT_DIR))
+        except (OSError, subprocess.SubprocessError):
+            return None
+        if cp.returncode != 0 or (cp.stdout or "").strip().splitlines()[-1:] != ["ok"]:
+            return None
+        self.comment(task_id, "Reintentada por Oscar desde Telegram: sale de triage (bloqueo repetido) sin cambios",
+                     author=author)
+        try:
+            return (self.show(task_id).get("task") or {}).get("status") or "todo"
+        except (HermesError, json.JSONDecodeError):
+            return "todo"
 
     def complete(self, task_id: str, result: str, metadata: dict) -> tuple[bool, str]:
         cp = self._call("complete", task_id, "--result", result, "--metadata", json.dumps(metadata))

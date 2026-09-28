@@ -5,18 +5,24 @@
     py -3.12 lanes.py close <task_id> "<resumen>"  # verificación mecánica + request-review (nunca merge)
     py -3.12 lanes.py renotify [--lane X] [--task t_id] [--dry-run] [--force]
                                                    # reenvía con botones los avisos pendientes de decisión
+    py -3.12 lanes.py restart --drain [--timeout 3600]
+                                                   # reinicio ordenado: deja de reclamar, espera a los workers y
+                                                   # reinicia la tarea programada "agent-lanes runner"
 """
 from __future__ import annotations
 
+import argparse
 import json
 import subprocess
 import sys
 
+from agent_lanes import drain
 from agent_lanes.config import ROOT, load_lanes
-from agent_lanes.git_ops import GitOps
+from agent_lanes.git_ops import GitOps, github_slug_problem
 from agent_lanes.hermes import HermesCLI
 from agent_lanes.runner import STATE_DIR, pid_alive
-from agent_lanes.status import format_rows, lane_rows
+from agent_lanes.status import format_rows, lane_rows, runner_alive
+from agent_lanes.status import runner_line as _runner_line
 from agent_lanes.verify import verify
 
 
@@ -41,6 +47,8 @@ def take(task_id: str) -> int:
     lane, h, task = find_task(task_id)
     if task["status"] != "ready":
         raise SystemExit(f"{task_id} está en '{task['status']}', no en ready")
+    if problem := github_slug_problem(lane):  # candado de repos: el mismo que aplica el runner
+        raise SystemExit(f"no se toma {task_id}: {problem}")
     if not h.claim(task_id, lane.claim_ttl_seconds):
         raise SystemExit(f"claim de {task_id} rechazado (¿otro runner la cogió?)")
     path = GitOps().prepare_worktree(lane, task_id)
@@ -68,13 +76,20 @@ def close(task_id: str, summary: str) -> int:
     return 0 if ok else 1
 
 
+LOCK = ROOT / ".state" / "runner.lock"
+
+
 def runner_line() -> str:
-    lock = ROOT / ".state" / "runner.lock"
-    try:
-        pid = int(json.loads(lock.read_text(encoding="utf-8"))["pid"])
-    except (OSError, ValueError, KeyError, json.JSONDecodeError):
-        return "runner: no arrancado (sin .state/runner.lock)"
-    return f"runner: {'VIVO' if pid_alive(pid) else 'PARADO'} (pid {pid})"
+    return _runner_line(LOCK, pid_alive, drain.active(), drain.BUSY_FILE)
+
+
+def restart(argv: list[str]) -> int:
+    ap = argparse.ArgumentParser(prog="lanes.py restart", description="reinicio ordenado del runner (drain)")
+    ap.add_argument("--drain", action="store_true", required=True,
+                    help="obligatorio: nunca se reinicia con workers vivos (incidente 27-09)")
+    ap.add_argument("--timeout", type=int, default=3600, help="segundos máximos esperando a los workers")
+    args = ap.parse_args(argv)
+    return drain.Restarter(pid_alive=pid_alive).restart(timeout=args.timeout)
 
 
 def main(argv: list[str]) -> int:
@@ -86,12 +101,14 @@ def main(argv: list[str]) -> int:
     if argv[:1] == ["renotify"]:
         from agent_lanes import renotify
         return renotify.main(argv[1:])
+    if argv[:1] == ["restart"]:
+        return restart(argv[1:])
     if argv[:1] != ["status"]:
         print(__doc__)
         return 2
     cache: dict[str, HermesCLI] = {}
     rows = lane_rows(load_lanes(), hermes_for=lambda b: cache.setdefault(b, HermesCLI(b)), state_dir=STATE_DIR,
-                     pid_alive=pid_alive)
+                     pid_alive=pid_alive, runner_is_alive=runner_alive(LOCK, pid_alive))
     print(format_rows(rows, runner_line()))
     return 0
 
