@@ -69,8 +69,17 @@ INTEGRATOR_AUTHOR = "lane-integrator"
 APPROVED_PREFIX = "APROBADO-OSCAR"
 INTEGRATED_PREFIX = "INTEGRADO"
 INT_MERGE, INT_DEPLOY, INT_MERGE_DEPLOY = "int_merge", "int_deploy", "int_merge_deploy"
-INT_ACTIONS = (INT_MERGE, INT_DEPLOY, INT_MERGE_DEPLOY)
+INT_APPLY = "int_apply"  # claude-hub: [🔁 Aplicar (reinicio ordenado)] tras fusionar
+INT_ACTIONS = (INT_MERGE, INT_DEPLOY, INT_MERGE_DEPLOY, INT_APPLY)
 DEPLOY_RAILWAY_UP, DEPLOY_ON_MERGE, DEPLOY_NONE = "railway_up", "on_merge", "none"
+# `apply` de una política con deploy none: qué hace [🔁 Aplicar] tras fusionar. Solo restart_drain (claude-hub):
+# `py -3.12 lanes.py restart --drain` en el checkout VIVO (ROOT), lanzado sin esperar, porque reinicia el propio
+# proceso que atiende el botón. El subcomando lo aporta feat/plan-d-runtime; mientras lanes.py no lo tenga, no hay
+# botón. El fast-forward del checkout raíz a main es cosa de ese restart (deploy de HEAD), nunca del integrador.
+APPLY_RESTART_DRAIN = "restart_drain"
+APPLY_ARGV = {APPLY_RESTART_DRAIN: ["py", "-3.12", "lanes.py", "restart", "--drain"]}
+APPLY_LABEL = "🔁 Aplicar (reinicio ordenado)"
+APPLIED_PREFIX = "APLICADO"
 NEEDS_MIGRATION = "⏸ requiere aplicar migración antes (manual, con OK)"
 MIGRATEAM_WARNING = "⚠️ Fusionar DESPLIEGA a producción solo (Railway, en minutos)"
 RAILWAY_OK = {"SUCCESS"}
@@ -135,6 +144,8 @@ class Policy:
     # Vacío = se deduce del deploy asumiendo lo peor (on_merge = 🔴 PRODUCCIÓN). risk_label cambia el texto (OSCAR HQ).
     risk: str = ""
     risk_label: str = ""
+    # Solo con deploy none: acción de [🔁 Aplicar] tras fusionar (restart_drain = reinicio ordenado del runner).
+    apply: str = ""
 
 
 @dataclass(frozen=True)
@@ -178,6 +189,8 @@ def load_integrator_settings(path: Path | None = None, env: dict | None = None, 
         policies[name] = Policy(lane=name, **{k: ("" if v is None else v) for k, v in p.items()})
         if policies[name].deploy not in (DEPLOY_RAILWAY_UP, DEPLOY_ON_MERGE, DEPLOY_NONE):
             raise ValueError(f"integrator.lanes.{name}.deploy desconocido: {policies[name].deploy}")
+        if policies[name].apply and (policies[name].apply not in APPLY_ARGV or policies[name].deploy != DEPLOY_NONE):
+            raise ValueError(f"integrator.lanes.{name}.apply: solo {sorted(APPLY_ARGV)} y con deploy none")
     return IntegratorSettings(enabled=enabled, interval_seconds=int(cfg.get("interval_seconds") or 300),
                               worktree_root=cfg.get("worktree_root") or str(ROOT / ".state" / "integrator" / "wt"),
                               deploy_timeout_seconds=int(cfg.get("deploy_timeout_seconds") or 900),
@@ -294,8 +307,11 @@ class Integrator:
                  clock: Callable[[], float] = time.monotonic, sleep: Callable[[float], None] = time.sleep,
                  http_get: Callable[[str], tuple[int, str]] | None = None, state_dir: Path = STATE_DIR,
                  dry_run: bool = False, out: Callable[[str], None] = print,
-                 now: Callable[[], float] = time.time):
+                 now: Callable[[], float] = time.time, launcher: Callable[[list[str], str], None] | None = None,
+                 apply_probe: Callable[[str], bool] | None = None):
         self.settings = settings
+        self._launch = launcher or launch_detached      # [🔁 Aplicar]: lanza sin esperar (reinicia este proceso)
+        self._apply_probe = apply_probe or apply_available  # ¿existe ya el subcomando? (lectura estática)
         self.lanes = lanes
         self.hermes_for = hermes_for
         self.links = links
@@ -424,7 +440,7 @@ class Integrator:
             for lane, policy, tid in list(self._seen):
                 st = self._state(tid)
                 state = summary_state(st.get("status") or "", deploy=policy.deploy, migration=st.get("migration"),
-                                      problem=st.get("pr_problem"))
+                                      problem=st.get("pr_problem"), apply=policy.apply)
                 if not state or not st.get("pr"):
                     continue
                 entries.append({"emoji": risk_of(policy).emoji, "pr": st["pr"], "title": st.get("title") or tid,
@@ -799,6 +815,8 @@ class Integrator:
         if policy.deploy == DEPLOY_RAILWAY_UP:
             return ("fusionar NO despliega; el deploy es otro botón" if not result.migration else
                     "fusionar NO despliega; " + NEEDS_MIGRATION)
+        if policy.apply:
+            return "fusionar NO despliega; después, 🔁 Aplicar hace el reinicio ordenado del runner"
         return None
 
     def _bullets(self, policy: Policy, result: GateResult) -> list[str]:
@@ -858,6 +876,8 @@ class Integrator:
         if action == INT_DEPLOY and policy.deploy == DEPLOY_RAILWAY_UP and not rec.get("migration") \
                 and rec.get("merge_sha"):
             return self._deploy_railway(lane, policy, rec, where, desk)
+        if action == INT_APPLY and policy.deploy == DEPLOY_NONE and policy.apply and rec.get("merge_sha"):
+            return self._apply(lane, policy, rec, where, desk)
         log.warning("%s: botón %s no válido para %s", rec.get("task_id"), action, policy.lane)
         return False
 
@@ -955,7 +975,50 @@ class Integrator:
             self._edit(desk, lane, rec, where, "done", status_line(f"✅ fusionado · {short}", "sin desplegar"),
                        markup=markup)
             return True
+        if policy.apply:
+            argv = APPLY_ARGV[policy.apply]
+            if self._apply_probe(policy.apply):
+                markup = desk.store.issue(rec, [[{"text": APPLY_LABEL, "action": INT_APPLY}]])[1]
+                self._edit(desk, lane, rec, where, "done", status_line(
+                    f"✅ fusionado en {lane.base} · {short}", "falta aplicar (reinicio ordenado)"), markup=markup)
+            else:  # el subcomando aún no existe en el checkout vivo (feat/plan-d-runtime sin integrar)
+                self._edit(desk, lane, rec, where, "done", status_line(
+                    f"✅ fusionado en {lane.base} · {short}",
+                    f"para aplicarlo reinicia el runner (`{' '.join(argv[2:])}` aún no existe)"))
+            return True
         self._edit(desk, lane, rec, where, "done", status_line(f"✅ fusionado · {short}"))
+        return True
+
+    def _apply(self, lane, policy: Policy, rec: dict, where: dict, desk) -> bool:
+        """[🔁 Aplicar] (claude-hub): reinicio ordenado del runner en el checkout vivo. Se lanza SIN esperar: el
+        comando termina reiniciando este mismo proceso. Nunca toca git aquí (el avance a main es del restart)."""
+        tid = rec["task_id"]
+        st = self._state(tid)
+        short = (rec.get("merge_sha") or "")[:7] or "?"
+        if st.get("status") == "applied":
+            self._edit(desk, lane, rec, where, "done", status_line(f"🔁 ya aplicado · {short}"))
+            return True
+        if st.get("merge_sha") and st.get("merge_sha") != rec.get("merge_sha"):
+            log.warning("%s: aplicar con un merge distinto del registrado", tid)
+            return False
+        if not self._apply_probe(policy.apply):
+            self._edit(desk, lane, rec, where, "done", status_line(
+                f"✅ fusionado · {short}", "no se puede aplicar desde aquí: falta `lanes.py restart --drain`"))
+            return True
+        argv = APPLY_ARGV[policy.apply]
+        self._edit(desk, lane, rec, where, "running", status_line(f"🔁 aplicando · {short}", "reinicio ordenado…"))
+        try:
+            self._launch(argv, str(ROOT))
+        except Exception as exc:
+            log.warning("%s: no se pudo lanzar el reinicio ordenado: %s", tid, exc)
+            self._edit(desk, lane, rec, where, "blocked", status_line(
+                f"⛔ no se pudo aplicar · {short}", "detalle en el log", "puedes reintentar"))
+            return False
+        self._save(tid, status="applied")
+        self._comment(lane, tid, f"{APPLIED_PREFIX} {rec.get('merge_sha') or '?'} · reinicio ordenado lanzado "
+                      f"(`{' '.join(argv)}`)")
+        self._edit(desk, lane, rec, where, "done", status_line(
+            f"🔁 reinicio ordenado lanzado · {short}", "el runner se reinicia al terminar lo que tenga en curso"))
         return True
 
     def _remote_sha(self, lane, branch: str) -> str | None:
@@ -1120,6 +1183,30 @@ def safe_env() -> dict[str, str]:
     env = {k: v for k, v in os.environ.items() if k.upper() in SAFE_ENV_KEYS}
     env["NoDefaultCurrentDirectoryInExePath"] = "1"
     return env
+
+
+def apply_available(kind: str, lanes_py: Path | None = None) -> bool:
+    """¿El checkout vivo ya tiene el subcomando de [🔁 Aplicar]? Lectura ESTÁTICA de lanes.py: ejecutar
+    `lanes.py restart --help` para comprobarlo podría reiniciar de verdad si el parser no reconoce --help."""
+    if kind != APPLY_RESTART_DRAIN:
+        return False
+    try:
+        src = (lanes_py or ROOT / "lanes.py").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    return bool(re.search(r"""["']restart["']""", src)) and "--drain" in src
+
+
+def launch_detached(argv: list[str], cwd: str) -> None:
+    """Lanza y NO espera (el comando reinicia el proceso que lo lanza). Sin ventana, stdin/stdout cerrados; el
+    comando deja su propio log. Entorno heredado: es el mismo runner que se reinicia a sí mismo."""
+    flags = 0
+    if sys.platform == "win32":
+        flags = (getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+                 | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
+                 | getattr(subprocess, "DETACHED_PROCESS", 0x00000008))
+    subprocess.Popen(argv, cwd=cwd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                     creationflags=flags, close_fds=True)
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):

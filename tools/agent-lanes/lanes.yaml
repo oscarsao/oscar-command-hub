@@ -100,6 +100,30 @@ lanes:
     # Sin suite de tests versionada: gate = diff --check + compilación de los .py cambiados.
     test_cmd: py -3.12 "{AGENT_LANES_DIR}/agent_lanes/checks.py" {BASE}
 
+  # Carril del PROPIO sistema (28-09, plan D): arreglos de agent-lanes/monitor/telegram pedidos desde Telegram, sin
+  # sesión de Claude Code. Es el código que ejecuta a los workers: rol propio (cambios mínimos, tests obligatorios,
+  # hooks de seguridad solo avisando en for_oscar). El hook que se aplica al worker es el del checkout VIVO
+  # (render_settings usa el ROOT del runner), no su copia del worktree: un cambio en contract/ no rige hasta fusionar
+  # y aplicar. test_cmd: el mismo gate genérico + la suite de agent-lanes del worktree (pytest encuentra
+  # tools/agent-lanes/pytest.ini desde la ruta de tests: pythonpath = la copia del worker, nunca el checkout vivo).
+  # OJO: la suite es código del worker y se ejecuta como Oscar (verify.py sin entorno mínimo; el integrador sí).
+  claude-hub:
+    telegram: {chat: -1003530490339, thread: 5}
+    board: default
+    repo: C:/Users/oscar/oscar-command-hub
+    base: main
+    role: roles/hub.md
+    model: sonnet
+    max_budget_usd: 3.0
+    test_cmd: py -3.12 "{AGENT_LANES_DIR}/agent_lanes/checks.py" {BASE} && py -3.12 -m pytest tools/agent-lanes/tests -q
+    # La lista sustituye a la de defaults (no se fusiona): .github/workflows/ se repite a propósito.
+    forbidden_paths:
+      - .github/workflows/
+      - tools/agent-lanes/.env
+      - tools/agent-lanes/.state/
+      - tools/monitor/.state/
+      - tools/telegram/.state/
+
   # Carril OPERATIVO (sin repo): vault/buzón del disco E:, calendario, accesos, ClickUp... Qué va aquí: README.md.
   # Carpeta de trabajo por tarea en worktree_root/<task_id> (no git). Hook: contract/ops_guard.py (lista blanca, fail
   # closed): sin borrar/mover, escritura solo en el workspace y en `Destino-Ops:` bajo dest_roots, MCP solo lectura.
@@ -164,7 +188,7 @@ lanes:
 
   review:
     kind: review
-    reviews: [claude-oscarhq, claude-migrateam, claude-scraper, claude-nextjobs]
+    reviews: [claude-oscarhq, claude-migrateam, claude-scraper, claude-nextjobs, claude-hub]
     role: roles/revisor.md
     model: sonnet
     effort: medium
@@ -211,3 +235,15 @@ integrator:
       sensitive_paths: [backend/alembic/, backend/alembic.ini, backend/Procfile, backend/railway.json, backend/railway.toml, backend/nixpacks.toml, backend/Dockerfile, railway.json, vercel.json, frontend/vercel.json, .github/]
       health_url: https://migrateam-backend-staging-staging.up.railway.app/health
       health_commit_key: commit_sha
+    claude-hub:
+      # 28-09 (plan D): el propio sistema. Fusionar en main NO despliega nada (deploy none). Tras fusionar, botón
+      # [🔁 Aplicar (reinicio ordenado)] = `py -3.12 lanes.py restart --drain` en el checkout vivo (apply:
+      # restart_drain). El subcomando lo aporta feat/plan-d-runtime: hasta que exista en lanes.py el botón no sale.
+      # El avance del checkout raíz a main (fast-forward) es parte de ese restart/deploy de HEAD, nunca del integrador.
+      # Activarlo: añadir claude-hub a INTEGRATOR_LANES en agent-lanes/.env (lo hace el coordinador).
+      deploy: none
+      apply: restart_drain
+      risk: system                  # ⚙️ cabecera de la ficha: cambia el código que ejecuta a los workers
+      risk_label: SISTEMA
+      # Hooks y contrato de seguridad de los workers: se puede fusionar, con aviso en la ficha (revísalo tú).
+      sensitive_paths: [tools/agent-lanes/contract/, tools/agent-lanes/lanes.yaml]

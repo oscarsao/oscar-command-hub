@@ -67,7 +67,9 @@ def test_lanes_yaml_mcp_tools_are_read_only_and_known_to_the_guard():
 def test_code_lanes_unchanged():
     for name, l in load_lanes().items():
         if l.kind == "implement":
-            assert l.dest_roots == () and "Bash(git push:*)" in l.allowed_tools and l.role == "roles/implementador.md"
+            # claude-hub (plan D) tiene rol propio (el sistema de carriles), mismas herramientas que el resto
+            role = "roles/hub.md" if name == "claude-hub" else "roles/implementador.md"
+            assert l.dest_roots == () and "Bash(git push:*)" in l.allowed_tools and l.role == role
 
 
 def test_ops_contract_files_are_valid():
