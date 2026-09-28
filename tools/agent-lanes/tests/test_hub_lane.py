@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import dataclasses
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -89,7 +90,14 @@ def hub(tmp_path, *, probe=True):
     integ, w, h, tg, d, clock = make(tmp_path)
     integ.settings = dataclasses.replace(integ.settings, policies={"claude-oscarhq": HUB_POLICY})
     launched = []
-    integ._launch = lambda argv, cwd: launched.append((argv, cwd))
+
+    def launch(argv, cwd):
+        # el reinicio puede parar este proceso al arrancar: todo registrado ANTES de lanzar
+        assert integ._state("t_1")["status"] == "applied"
+        assert any(t.startswith("APLICADO ") for _, t, _a in h.comments)
+        assert "reinicio ordenado lanzado" in tg.edits[-1]["text"]
+        launched.append((argv, cwd))
+    integ._launch = launch
     integ._apply_probe = lambda kind: probe
     return integ, w, h, tg, d, launched
 
@@ -148,8 +156,9 @@ def test_apply_launch_failure_keeps_it_pending(tmp_path):
     integ.run_pass()
     press(d, tg)
     press(d, tg)
-    assert integ._state("t_1")["status"] == "merged"
-    assert "no se pudo aplicar" in tg.all_text
+    assert integ._state("t_1")["status"] == "merged"  # vuelve a pendiente: el fijado sigue diciendo "falta aplicar"
+    assert "no se pudo aplicar" in tg.edits[-1]["text"]
+    assert any("FALLÓ" in t for _, t, _a in h.comments)
 
 
 def test_apply_button_ignored_for_other_policies(tmp_path):
@@ -186,3 +195,18 @@ def test_launch_detached_does_not_wait(monkeypatch):
     integrator.launch_detached(["py", "-3.12", "lanes.py", "restart", "--drain"], "C:/x")
     assert seen["argv"][-2:] == ["restart", "--drain"] and seen["cwd"] == "C:/x"
     assert seen["stdin"] is subprocess.DEVNULL
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="flags de Windows")
+def test_launch_detached_breaks_away_from_job_or_falls_back(monkeypatch):
+    from agent_lanes import integrator
+    calls = []
+
+    def fake_popen(argv, **kw):
+        calls.append(kw["creationflags"])
+        if kw["creationflags"] & integrator.CREATE_BREAKAWAY_FROM_JOB:
+            raise PermissionError(5, "Acceso denegado")
+    monkeypatch.setattr(integrator.subprocess, "Popen", fake_popen)
+    integrator.launch_detached(["py"], "C:/x")
+    assert len(calls) == 2 and calls[0] & integrator.CREATE_BREAKAWAY_FROM_JOB
+    assert not calls[1] & integrator.CREATE_BREAKAWAY_FROM_JOB and calls[1] & 0x00000008  # DETACHED_PROCESS

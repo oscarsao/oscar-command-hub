@@ -85,6 +85,12 @@ def test_ops_task_that_looks_like_code():
     assert [x.ids for x in f] == [["t_bbbbbb03"]] and "claude-ops" in f[0].title
 
 
+def test_lane_words_match_whole_words_only():
+    assert not A.looks_code("Programa rápido de capital para contestar el reporte")
+    assert A.looks_code("Arreglar la API de login") and A.looks_code("abrir un PR")
+    assert A.looks_ops("Inventariar los accesos del disco E:")
+
+
 def test_lane_task_on_another_board():
     f = A.check_lane_fit([it("t_bbbbbb05", "Arreglar bug en api.py", board="default")], LANES)
     assert f and f[0].ids == ["t_bbbbbb05"] and "board" in f[0].title

@@ -1006,19 +1006,23 @@ class Integrator:
                 f"✅ fusionado · {short}", "no se puede aplicar desde aquí: falta `lanes.py restart --drain`"))
             return True
         argv = APPLY_ARGV[policy.apply]
-        self._edit(desk, lane, rec, where, "running", status_line(f"🔁 aplicando · {short}", "reinicio ordenado…"))
-        try:
-            self._launch(argv, str(ROOT))
-        except Exception as exc:
-            log.warning("%s: no se pudo lanzar el reinicio ordenado: %s", tid, exc)
-            self._edit(desk, lane, rec, where, "blocked", status_line(
-                f"⛔ no se pudo aplicar · {short}", "detalle en el log", "puedes reintentar"))
-            return False
+        # Todo el registro ANTES de lanzar: el reinicio puede parar este proceso en cuanto arranca, y lo que quede
+        # después (estado, comentario, aviso, resumen fijado) no llegaría a hacerse.
         self._save(tid, status="applied")
         self._comment(lane, tid, f"{APPLIED_PREFIX} {rec.get('merge_sha') or '?'} · reinicio ordenado lanzado "
                       f"(`{' '.join(argv)}`)")
         self._edit(desk, lane, rec, where, "done", status_line(
             f"🔁 reinicio ordenado lanzado · {short}", "el runner se reinicia al terminar lo que tenga en curso"))
+        self.refresh_summary()
+        try:
+            self._launch(argv, str(ROOT))
+        except Exception as exc:
+            log.warning("%s: no se pudo lanzar el reinicio ordenado: %s", tid, exc)
+            self._save(tid, status="merged")
+            self._comment(lane, tid, f"{APPLIED_PREFIX}: FALLÓ el lanzamiento del reinicio ordenado; sigue sin aplicar")
+            self._edit(desk, lane, rec, where, "blocked", status_line(
+                f"⛔ no se pudo aplicar · {short}", "detalle en el log", "puedes reintentar"))
+            return False
         return True
 
     def _remote_sha(self, lane, branch: str) -> str | None:
@@ -1197,16 +1201,28 @@ def apply_available(kind: str, lanes_py: Path | None = None) -> bool:
     return bool(re.search(r"""["']restart["']""", src)) and "--drain" in src
 
 
+CREATE_BREAKAWAY_FROM_JOB = 0x01000000
+
+
 def launch_detached(argv: list[str], cwd: str) -> None:
     """Lanza y NO espera (el comando reinicia el proceso que lo lanza). Sin ventana, stdin/stdout cerrados; el
-    comando deja su propio log. Entorno heredado: es el mismo runner que se reinicia a sí mismo."""
+    comando deja su propio log. Entorno heredado: es el mismo runner que se reinicia a sí mismo.
+    El runner corre como tarea programada (install-service.ps1), que mete sus procesos en un job: se pide salir del
+    job (BREAKAWAY) para que parar la tarea no mate también al reinicio; si el job no lo permite (acceso denegado),
+    se lanza sin él. Aun así, `restart --drain` no debe depender de sobrevivir a que maten al runner."""
     flags = 0
     if sys.platform == "win32":
-        flags = (getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
-                 | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
+        flags = (getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
                  | getattr(subprocess, "DETACHED_PROCESS", 0x00000008))
-    subprocess.Popen(argv, cwd=cwd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                     creationflags=flags, close_fds=True)
+    kw = dict(cwd=cwd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, close_fds=True)
+    if not flags:
+        subprocess.Popen(argv, **kw)
+        return
+    try:
+        subprocess.Popen(argv, creationflags=flags | CREATE_BREAKAWAY_FROM_JOB, **kw)
+    except OSError as exc:  # el job del Programador de tareas no permite salir de él
+        log.info("reinicio sin BREAKAWAY_FROM_JOB (%s)", exc)
+        subprocess.Popen(argv, creationflags=flags, **kw)
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):

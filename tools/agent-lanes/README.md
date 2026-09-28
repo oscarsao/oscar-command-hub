@@ -88,7 +88,10 @@ Requiere preguntas con `action_id` en el schema y un tipo de botón nuevo; hasta
 Qué va aquí: fallos y mejoras de agent-lanes (runner, avisos, botones, integrador, brief, auditor), del monitor y del
 bot de Telegram, pedidos como tarjeta con `assignee: claude-hub` en el board `default`. Qué NO va: cambios en hooks
 de seguridad sin pedirlo expresamente, `.env`, `.state/`, workflows de GitHub, tareas programadas nuevas y cualquier
-`.ps1/.bat/.vbs` (el integrador bloquea ejecutables en el diff: esos cambios se hacen en una sesión con Oscar).
+ejecutable (`.bat .cmd .exe .com .ps1 .vbs .js .dll .scr .msi`) o `.py` con nombre de la librería estándar: el
+integrador bloquea el PR entero. Hoy eso deja fuera los instaladores (`install-service.ps1`, `instalar_auditor.ps1`,
+`brief/instalar-brief.ps1`, `brief/resumen_diario.vbs`, `tools/infra/instalar-panel-y-tunel.ps1`): se cambian en una
+sesión con Oscar. El monitor y el bot de Telegram (Python) sí entran.
 
 - Rol `roles/hub.md`: cambios mínimos, test obligatorio por cambio de comportamiento, suite completa en verde, sin
   tocar `contract/*guard*` ni `*worker-settings.json` salvo petición expresa y avisándolo en `for_oscar`.
@@ -103,7 +106,10 @@ de seguridad sin pedirlo expresamente, `.env`, `.state/`, workflows de GitHub, t
   y la saca del resumen fijado.
 - **Dependencias** (por eso aún no está activo):
   1. `lanes.py restart --drain` lo aporta `feat/plan-d-runtime`. Mientras `lanes.py` no lo tenga (se comprueba
-     leyendo el archivo, nunca ejecutándolo), no hay botón: el aviso dice que hay que reiniciar el runner.
+     leyendo el archivo, nunca ejecutándolo), no hay botón: el aviso dice que hay que reiniciar el runner. Se lanza
+     como HIJO del runner (sin esperar; se pide salir del job de la tarea programada y, si no se puede, se lanza sin
+     ello): `restart --drain` no debe depender de sobrevivir a que maten al runner (mejor: reiniciar la tarea
+     programada, que la relanza el Programador de tareas). El estado `APLICADO` se registra antes de lanzarlo.
   2. El avance del checkout raíz a `main` (fast-forward tras el merge) es parte de ese restart/deploy de HEAD; el
      integrador nunca hace pull en el checkout raíz.
   3. El coordinador añade `claude-hub` a `INTEGRATOR_LANES` en `agent-lanes/.env`.

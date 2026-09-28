@@ -75,12 +75,13 @@ MIGRATEAM_LANE = "claude-migrateam"
 ACTIVE = ("triage", "todo", "ready", "running", "blocked", "review", "scheduled")
 
 # Heurística de carril: palabras (sin tildes, minúsculas) que sugieren código o trabajo operativo.
-CODE_WORDS = ("codigo", "bug", "fix", "test", "endpoint", "componente", "refactor", "commit", "pull request", " pr ",
+# Se buscan como palabra entera (\b): "api" no casa con "rápido" ni "rama" con "programa".
+CODE_WORDS = ("codigo", "bug", "fix", "test", "tests", "endpoint", "componente", "refactor", "commit", "pull request", "pr",
               "rama", "migracion", "funcion", "backend", "frontend", "api", "script", "deploy", "repo", "pytest",
               "typescript", "python", "schema")
 CODE_FILE_RE = re.compile(r"\b[\w/-]+\.(py|ts|tsx|js|jsx|sql|yaml|yml|toml|json|md)\b")
 OPS_WORDS = ("vault", "obsidian", "disco", "calendario", "google drive", "drive", "clickup", "carpeta", "copiar",
-             "inventari", "tunel", "cloudflared", "acceso", "cuenta de", "invitar", "compartir", "buzon", "backup",
+             r"inventari\w*", "tunel", "cloudflared", r"accesos?", "cuenta de", "invitar", "compartir", "buzon", "backup",
              "correo", "gmail")
 ANSWER_RE = re.compile(r"^\s*(oscar\b|respuesta\b|decisi[oó]n de oscar|opci[oó]n\s*\d|s[ií],?\s+adelante|"
                        r"aprobad[oa]\b|ok de oscar|oscar (dice|responde|elige|prefiere|ha (respondido|elegido|decidido)))",
@@ -174,14 +175,21 @@ def check_duplicates(items: list[dict]) -> list[Finding]:
     return out
 
 
-def looks_ops(text: str) -> bool:
-    t = f" {norm(text)} "
-    return any(w in t for w in OPS_WORDS) and not looks_code(text)
+def _has_word(words, text: str) -> bool:
+    t = norm(text)
+    return any(re.search(rf"\b(?:{w})\b", t) for w in words)
+
+
+def has_ops_words(text: str) -> bool:
+    return _has_word(OPS_WORDS, text)
 
 
 def looks_code(text: str) -> bool:
-    t = f" {norm(text)} "
-    return any(w in t for w in CODE_WORDS) or bool(CODE_FILE_RE.search(text or ""))
+    return _has_word(CODE_WORDS, text) or bool(CODE_FILE_RE.search(text or ""))
+
+
+def looks_ops(text: str) -> bool:
+    return has_ops_words(text) and not looks_code(text)
 
 
 def check_lane_fit(items: list[dict], lanes: dict) -> list[Finding]:
@@ -196,7 +204,7 @@ def check_lane_fit(items: list[dict], lanes: dict) -> list[Finding]:
         text = f"{t.get('title') or ''}\n{t.get('body') or ''}"
         if lane.kind == "implement" and looks_ops(text):
             ops_in_code.append(t["id"])
-        elif lane.kind == "ops" and looks_code(text) and not any(w in f" {norm(text)} " for w in OPS_WORDS):
+        elif lane.kind == "ops" and looks_code(text) and not has_ops_words(text):
             code_in_ops.append(t["id"])
         if lane.board and it["board"] != lane.board:
             wrong_board.append(t["id"])
