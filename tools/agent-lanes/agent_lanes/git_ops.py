@@ -117,3 +117,25 @@ class GitOps:
         # -D is safe here: the exact same commit is on the remote, which is kept until the merge.
         cp = self._run(["git", "-C", lane.repo, "branch", "-D", branch], capture_output=True, text=True, timeout=60)
         return cp.returncode == 0, "limpio" if cp.returncode == 0 else cp.stderr.strip()[:200]
+
+
+def github_slug_problem(lane: Lane, run=_proc.run) -> str | None:
+    """Candado de repos: None si `git -C <repo> remote get-url <remote>` es el owner/repo de `lane.github` (https o
+    ssh, sin distinguir mayúsculas); si no, el motivo. Solo lectura. Un carril de código sin `github` no pasa."""
+    from .notices import github_repo_url  # import tardío: notices no depende de git_ops
+    if not lane.github:
+        return f"{lane.name}: falta `github: owner/repo` en lanes.yaml (candado de repos)"
+    if not lane.repo:
+        return f"{lane.name}: sin `repo` en lanes.yaml"
+    try:
+        cp = run(["git", "-C", lane.repo, "remote", "get-url", lane.remote], capture_output=True, text=True,
+                 encoding="utf-8", errors="replace", timeout=30)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return f"{lane.name}: no se pudo leer el remote {lane.remote} de {lane.repo} ({type(exc).__name__})"
+    url = github_repo_url(cp.stdout if cp.returncode == 0 else "")
+    actual = url.split("github.com/", 1)[1] if url else None
+    if not actual:
+        return f"{lane.name}: el remote {lane.remote} de {lane.repo} no es un repo de GitHub"
+    if actual.casefold() != lane.github.strip().strip("/").casefold():
+        return f"{lane.name}: {lane.repo} apunta a {actual}, no a {lane.github} (lanes.yaml)"
+    return None

@@ -32,15 +32,18 @@ WINDOW_MINUTES = 60
 DM_CLOSED_HINT = "Oscar debe mandar /start al bot de carriles para recibir los recordatorios en su DM"
 
 
-def reminder_text(n: int, oldest_hours: int, cards: int = 0) -> str:
-    """`n` preguntas de agentes (la más antigua hace `oldest_hours`) y `cards` tarjetas de decisión; un lado a 0
-    no se nombra."""
+def reminder_text(n: int, oldest_hours: int, cards: int = 0, stuck: int = 0) -> str:
+    """`n` preguntas de agentes (la más antigua hace `oldest_hours`), `stuck` tareas 🧊 atascadas en triage y `cards`
+    tarjetas de decisión; lo que está a 0 no se nombra."""
     parts = []
     if n:
         parts.append(("1 pregunta" if n == 1 else f"{n} preguntas") + f" de agentes (la más antigua hace {oldest_hours} h)")
+    if stuck:
+        parts.append(("1 tarea atascada" if stuck == 1 else f"{stuck} tareas atascadas") + " en triage")
     if cards:
         parts.append(("1 tarjeta" if cards == 1 else f"{cards} tarjetas") + " de decisión")
-    return f"Tienes {' y '.join(parts) or 'nada pendiente'} · /decisiones"
+    joined = ", ".join(parts[:-1]) + " y " + parts[-1] if len(parts) > 1 else "".join(parts)
+    return f"Tienes {joined or 'nada pendiente'} · /decisiones"
 
 
 def due_slot(now: datetime, sent: set[str], window_minutes: int = WINDOW_MINUTES) -> str | None:
@@ -64,13 +67,14 @@ def _dm_closed(exc: Exception) -> bool:
 class Reminders:
     def __init__(self, notifier, owner_id: str, pending: Callable[[], list], state_path: Path | str, *,
                  now: Callable[[], datetime] = lambda: datetime.now(MADRID), interval: float = 60,
-                 cards: Callable[[], list] | None = None):
+                 cards: Callable[[], list] | None = None, stuck: Callable[[], list] | None = None):
         """`pending()` -> preguntas de agentes con `.since` (la lista de /decisiones); `cards()` -> tarjetas de
-        decisión de Oscar (la segunda sección de /decisiones)."""
+        decisión de Oscar (la segunda sección de /decisiones); `stuck()` -> tareas 🧊 atascadas en triage."""
         self.notifier = notifier
         self.owner_id = str(owner_id)
         self.pending = pending
         self.cards = cards
+        self.stuck = stuck
         self.state_path = Path(state_path)
         self._now = now
         self.interval = interval
@@ -101,11 +105,17 @@ class Reminders:
                 cards = self.cards()
             except Exception as exc:  # sin tarjetas antes que sin recordatorio
                 log.warning("recordatorio: tarjetas de decisión no leídas: %s", exc)
-        if not pending and not cards:
+        stuck = []
+        if self.stuck:
+            try:
+                stuck = self.stuck()
+            except Exception as exc:
+                log.warning("recordatorio: tareas atascadas no leídas: %s", exc)
+        if not pending and not cards and not stuck:
             self._mark(key)  # nada que recordar: la franja queda hecha
             return None
         oldest = min((p.since for p in pending if getattr(p, "since", None)), default=None)
-        text = reminder_text(len(pending), hours_ago(oldest, now.timestamp()), len(cards))
+        text = reminder_text(len(pending), hours_ago(oldest, now.timestamp()), len(cards), len(stuck))
         try:
             self.notifier.send_to(self.owner_id, None, text, html=False)
         except Exception as exc:
@@ -118,7 +128,8 @@ class Reminders:
             log.warning("recordatorio %s falló (se reintenta en la próxima comprobación): %s", key, exc)
             return None
         self._mark(key)
-        log.info("recordatorio %s enviado: %d preguntas, %d tarjetas", key, len(pending), len(cards))
+        log.info("recordatorio %s enviado: %d preguntas, %d atascadas, %d tarjetas", key, len(pending), len(stuck),
+                 len(cards))
         return text
 
     def run(self) -> None:

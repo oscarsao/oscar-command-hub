@@ -58,6 +58,8 @@ class World:
         self.up_out = f"Build Logs: https://railway.com/project/{PROJECT}/service/{SERVICE}?id={NEW_DEP}&"
         self.up_rc = 0
         self.upped = False
+        self.not_ancestor: set[tuple[str, str]] = set()  # (viejo, nuevo) con merge-base --is-ancestor != 0
+        self.between: list[str] = []  # archivos de `git diff --name-only <fusión> <punta>`
 
     def argv(self, name):
         return [a for a, _ in self.calls if a and (a[0] == name or (a[0] == "git" and name in a))]
@@ -82,6 +84,12 @@ class World:
             return cp(0, (HEAD if ref.startswith("refs/integrator/") else self.base) + "\n")
         if "ls-remote" in args:
             return cp(0, f"{self.remote_base}\trefs/heads/master\n")
+        if "merge-base" in args:
+            return cp(1 if (args[-2], args[-1]) in self.not_ancestor else 0)
+        if "rev-list" in args:
+            return cp(0, "2\n")
+        if "diff" in args and "--name-only" in args and len(args[-1]) == 40 and len(args[-2]) == 40:
+            return cp(0, "\n".join(self.between) + "\n")
         if "worktree" in args and "add" in args:
             wt = Path(args[args.index("--detach") + 1])
             for name, src in self.alembic_files.items():
@@ -627,14 +635,97 @@ def test_deploy_refused_if_cli_not_linked_to_project(tmp_path):
     assert "no está enlazada" in tg.edits[-1]["text"] and buttons(tg.markups[-1]) == ["🚀 Desplegar"]
 
 
-def test_deploy_refused_if_master_moved_after_merge(tmp_path):
+def _worktree_sha(w):
+    return next(a[-1] for a, _ in w.calls if a and a[0] == "git" and "worktree" in a and "add" in a
+                and str(a[a.index("--detach") + 1]).replace("\\", "/").endswith("intdep-t_1"))
+
+
+def test_deploy_takes_the_tip_of_the_base_not_the_merge_of_the_card(tmp_path):
+    """28-09: 🚀 de a50b290 dejó fuera la fusión posterior 6f46b0d (/leads). Ahora se despliega la punta."""
     integ, w, h, tg, d, _ = make(tmp_path)
     integ.run_pass()
     press(d, tg)
-    w.base = BASE2  # otro commit en master desde la fusión
+    w.base = BASE2  # otra fusión en master después de la de esta ficha
+    press(d, tg)
+    assert _worktree_sha(w) == BASE2
+    assert "🚀 desplegado · ccccccc" in tg.edits[-1]["text"]
+    assert any(t.startswith(f"DESPLEGADO {BASE2} · railway deployment {NEW_DEP} SUCCESS") and MERGE[:12] in t
+               for _, t, _ in h.comments)
+    assert integ._state("t_1")["deployed_sha"] == BASE2
+
+
+def _merged_card(tmp_path, integ, tid="t_2", sha=BASE2, pr=8, migration=None):
+    integ._save(tid, status="merged", lane="claude-oscarhq", merge_sha=sha, pr=pr,
+                pr_url=f"https://github.com/{OHQ_SLUG}/pull/{pr}", title="Leads", migration=migration)
+    integ._notices.store.put(tid, {"chat_id": "-100", "thread_id": "398", "message_id": 900, "token": "tok2"})
+
+
+def test_deploy_marks_every_merged_card_contained_in_the_tip_as_deployed(tmp_path):
+    integ, w, h, tg, d, _ = make(tmp_path)
+    _merged_card(tmp_path, integ)
+    (tmp_path / "cb").mkdir(exist_ok=True)
+    (tmp_path / "cb" / "tok2.json").write_text("{}", encoding="utf-8")  # su 🚀 Desplegar pendiente
+    integ.run_pass()
+    press(d, tg)
+    w.base = BASE2
+    press(d, tg)
+    assert integ._state("t_2")["status"] == "deployed" and integ._state("t_2")["deployed_sha"] == BASE2
+    assert any(tid == "t_2" and t.startswith(f"DESPLEGADO {BASE2}") and "t_1" in t for tid, t, _ in h.comments)
+    assert any("🚀 desplegado · ccccccc" in e["text"] and "con el deploy de t_1" in e["text"] for e in tg.edits)
+    assert not (tmp_path / "cb" / "tok2.json").exists()  # botón retirado
+    assert "también PR #8" in tg.edits[-1]["text"]
+
+
+def test_merged_card_not_in_the_tip_is_left_alone(tmp_path):
+    integ, w, h, tg, d, _ = make(tmp_path)
+    _merged_card(tmp_path, integ, sha="e" * 40)
+    w.not_ancestor.add(("e" * 40, BASE2))
+    integ.run_pass()
+    press(d, tg)
+    w.base = BASE2
+    press(d, tg)
+    assert integ._state("t_2")["status"] == "merged"
+    assert "también PR" not in tg.edits[-1]["text"]
+
+
+def test_deploy_refused_if_the_tip_includes_a_merge_with_pending_migration(tmp_path):
+    integ, w, h, tg, d, _ = make(tmp_path)
+    _merged_card(tmp_path, integ, migration="supabase")
+    integ.run_pass()
+    press(d, tg)
+    w.base = BASE2
     press(d, tg)
     assert not [a for a in w.argv(RW) if a[1] == "up"]
-    assert "avanzó desde la fusión" in tg.edits[-1]["text"]
+    assert "PR #8 con migración" in tg.edits[-1]["text"]
+
+
+def test_deploy_refused_if_commits_after_the_merge_touch_migrations_or_infra(tmp_path):
+    integ, w, h, tg, d, _ = make(tmp_path)
+    integ.run_pass()
+    press(d, tg)
+    w.base = BASE2
+    w.between = ["supabase/migrations/20260928_x.sql"]
+    press(d, tg)
+    assert not [a for a in w.argv(RW) if a[1] == "up"]
+    assert "trae migración o infraestructura" in tg.edits[-1]["text"]
+
+
+def test_deploy_refused_if_the_base_no_longer_contains_the_merge(tmp_path):
+    integ, w, h, tg, d, _ = make(tmp_path)
+    integ.run_pass()
+    press(d, tg)
+    w.base = BASE2
+    w.not_ancestor.add((MERGE, BASE2))  # force-push / revert en master
+    press(d, tg)
+    assert not [a for a in w.argv(RW) if a[1] == "up"]
+    assert "ya no contiene esta fusión" in tg.edits[-1]["text"]
+
+
+def test_busy_reports_deploy_and_gates_locks(tmp_path):
+    integ, *_ = make(tmp_path)
+    assert integ.busy() == []
+    with integ._deploying:
+        assert integ.busy() == ["deploy en curso"]
 
 
 # --- MigraTeam: merge = deploy -------------------------------------------------------------------------

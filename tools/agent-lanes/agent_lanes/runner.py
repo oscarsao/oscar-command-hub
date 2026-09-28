@@ -90,8 +90,13 @@ class LaneRunner:
     def __init__(self, lane: Lane, *, hermes, git, worker, verifier, notify: Callable[[str], None],
                  clock: Callable[[], float] = time.monotonic, state_dir: Path = STATE_DIR,
                  pid_alive: Callable[[int], bool] = pid_alive, exclude: set[str] | None = None,
-                 messages: MessageStore | None = None, links: Callable | None = None, decisions=None):
+                 messages: MessageStore | None = None, links: Callable | None = None, decisions=None,
+                 repo_guard: Callable[[Lane], str | None] | None = None):
         self.lane = lane
+        # Candado de repos (git_ops.github_slug_problem): motivo por el que NO se reclama, o None. Solo carriles de
+        # código; el ERROR se registra una vez por arranque (este objeto vive lo que vive el runner).
+        self._repo_guard = repo_guard
+        self._repo_warned = False
         self._decisions = decisions  # DecisionDesk (botones) solo con CARRILES_BOT_TOKEN
         self.hermes = hermes
         self.git = git
@@ -172,6 +177,13 @@ class LaneRunner:
 
     def jobs(self) -> list[tuple[str, Callable[[], str]]]:
         """Work for one pass: up to max_parallel ready tasks, as (task_id, callable) for the Service."""
+        if self._repo_guard and self.lane.kind == "implement":
+            problem = self._repo_guard(self.lane)
+            if problem:
+                if not self._repo_warned:
+                    log.error("candado de repos: %s; el carril no reclama tareas", problem)
+                    self._repo_warned = True
+                return []
         ready = [t for t in self.hermes.list_ready(self.lane.name) if t["id"] not in self.exclude]
         return [(t["id"], lambda t=t: self.process(t)) for t in ready[: self.lane.max_parallel]]
 
@@ -207,15 +219,17 @@ class LaneRunner:
         if not self.hermes.claim(tid, lane.claim_ttl_seconds):
             log.info("%s: claim perdido (otro runner o ya no está ready)", tid)
             return "claim_lost"
-        self._drop_hermes_subs(tid)
         deadline = self.clock() + lane.max_runtime_seconds
         session_id = str(uuid.uuid4())
         state_path = self._state_path(tid)
+        # Estado justo tras el claim y antes de cualquier llamada lenta (notify-list de Hermes): sin él, `lanes.py
+        # status` veía la tarea en running sin PID y la daba por huérfana (incidente 27-09, tarjeta t_bdee05fe).
         self.state_dir.mkdir(parents=True, exist_ok=True)
         state_path.write_text(json.dumps({"task_id": tid, "lane": lane.name, "pid": os.getpid(),
                                           "session_id": session_id, "started": time.time()}), encoding="utf-8")
         self._active[tid] = task
         try:
+            self._drop_hermes_subs(tid)
             return self._work(task, tid, session_id, deadline)
         finally:
             self._active.pop(tid, None)
