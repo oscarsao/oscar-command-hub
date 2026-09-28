@@ -16,7 +16,8 @@ Ficha (HTML de Telegram, sin imágenes), primera línea en negrita y mayúsculas
     🚦 Listo para integrar PR #7 · pulsa para integrar
     🗂 Tarjeta · PR #7
 
-Riesgo por política del integrador (`risk` en lanes.yaml): 🟢 staging · 🟠 deploy manual con botón · 🔴 producción.
+Riesgo por política del integrador (`risk` en lanes.yaml): 🟢 staging · 🟠 deploy manual con botón · 🔴 producción ·
+⚙️ sistema (claude-hub: el propio agent-lanes; fusionar no despliega, [🔁 Aplicar] hace el reinicio ordenado).
 Sin `risk` explícito se asume lo peor: `on_merge` (el merge despliega) = 🔴 PRODUCCIÓN. ⏸ y ⛔ sustituyen al emoji.
 """
 from __future__ import annotations
@@ -47,7 +48,9 @@ class Risk:
 
 
 RISKS = {"staging": Risk("🟢", "STAGING"), "manual": Risk("🟠", "DEPLOY MANUAL"),
-         "production": Risk("🔴", "PRODUCCIÓN"), "none": Risk("🟢", "SIN DEPLOY")}
+         "production": Risk("🔴", "PRODUCCIÓN"), "none": Risk("🟢", "SIN DEPLOY"),
+         # claude-hub (plan D): el merge no despliega, pero cambia el código que ejecuta a los propios workers.
+         "system": Risk("⚙️", "SISTEMA")}
 WAITING, FAILED = "⏸", "⛔"
 
 
@@ -252,8 +255,12 @@ class PinnedSummary:
 
 
 def summary_state(status: str, *, deploy: str = "none", migration: str | None = None,
-                  problem: str | None = None) -> str | None:
-    """Estado legible de una entrada del integrador; None = ya no está pendiente (integrada, desplegada...)."""
+                  problem: str | None = None, apply: str = "") -> str | None:
+    """Estado legible de una entrada del integrador; None = ya no está pendiente (integrada, desplegada, aplicada...)."""
+    if status == "applied":
+        return None
+    if status == "merged" and apply:  # claude-hub: fusionado en main, falta el reinicio ordenado
+        return "🔁 fusionado, falta aplicar"
     if status == "offered":
         return "⏸ migración pendiente" if migration and deploy == "on_merge" else "🚦 listo, pulsa Fusionar"
     if status == "failed":

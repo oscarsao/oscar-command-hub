@@ -9,6 +9,7 @@ Contrato y arquitectura: `decisions/2026-09-27-arquitectura-carriles.md`. Config
 | Assignee | Para qué | Resultado |
 |---|---|---|
 | `claude-<repo>` (`claude-oscarhq`, `claude-migrateam`, `claude-scraper`, `claude-nextjobs`) | Código de ESE repo: bugfix, feature, spec, docs versionados | Rama `lane/<id>` empujada, `test_cmd` del carril, carril `review` y PR con [✅ Aprobar] |
+| `claude-hub` | El propio sistema (`oscar-command-hub`: agent-lanes, monitor, bot de Telegram): arreglos pedidos desde Telegram sin abrir Claude Code | Rama `lane/<id>` sobre `main`, suite de agent-lanes, `review`, ficha ⚙️ SISTEMA; tras fusionar, [🔁 Aplicar] |
 | `claude-ops` | Trabajo operativo sin repo: inventariar o copiar carpetas (vault/buzón del disco E:), leer calendario, Drive o ClickUp y proponer cambios, preparar accesos, planes e informes | Carpeta `C:/Users/oscar/dev/_lanes/ops/<id>` con evidencias; siempre a `review` con [✅ Validar / 🔁 Pedir cambios] |
 | `oscar` | Lo que exige a Oscar: firmar, pagar, decisiones de negocio, credenciales, ejecutar una acción externa ya aprobada (v1), cualquier cosa en producción | Lo hace Oscar (también es donde acaba el botón 🗄 Aparcar) |
 
@@ -122,6 +123,60 @@ Los enlaces `hermes kanban link <padre> <hija>` se ven también en Telegram:
 - `/tarea t_x` añade el árbol: padre(s), hermanas, la tarea (👉) e hijas, con estado y enlace al panel.
 - `/tareas` pone cada hija debajo de su padre cuando ambos salen en la lista.
 Las lecturas `show` se cachean (60 s, y se vacían en cada pasada del bucle; 30 s en los comandos).
+
+## Carril del sistema (`claude-hub`)
+
+Qué va aquí: fallos y mejoras de agent-lanes (runner, avisos, botones, integrador, brief, auditor), del monitor y del
+bot de Telegram, pedidos como tarjeta con `assignee: claude-hub` en el board `default`. Qué NO va: cambios en hooks
+de seguridad sin pedirlo expresamente, `.env`, `.state/`, workflows de GitHub, tareas programadas nuevas y cualquier
+ejecutable (`.bat .cmd .exe .com .ps1 .vbs .js .dll .scr .msi`) o `.py` con nombre de la librería estándar: el
+integrador bloquea el PR entero. Hoy eso deja fuera los instaladores (`install-service.ps1`, `instalar_auditor.ps1`,
+`brief/instalar-brief.ps1`, `brief/resumen_diario.vbs`, `tools/infra/instalar-panel-y-tunel.ps1`): se cambian en una
+sesión con Oscar. El monitor y el bot de Telegram (Python) sí entran.
+
+- Rol `roles/hub.md`: cambios mínimos, test obligatorio por cambio de comportamiento, suite completa en verde, sin
+  tocar `contract/*guard*` ni `*worker-settings.json` salvo petición expresa y avisándolo en `for_oscar`.
+- `test_cmd`: `checks.py` (diff --check + compilación) y `py -3.12 -m pytest tools/agent-lanes/tests -q` del
+  worktree del worker. Es código del worker ejecutado como Oscar (el runner no le pone entorno mínimo; el integrador
+  sí): lo mismo que ya puede hacer el worker con su propio pytest, pero conviene saberlo.
+- El hook que se aplica a un worker es el del checkout VIVO (`render_settings` usa el ROOT del runner), no el de su
+  worktree: un cambio en `contract/` no rige hasta fusionar y aplicar.
+- Integración (política `claude-hub` de `lanes.yaml`): `deploy: none` (fusionar en `main` no despliega), ficha
+  ⚙️ SISTEMA, aviso si toca `contract/` o `lanes.yaml`. Tras [🔀 Fusionar] sale [🔁 Aplicar (reinicio ordenado)], que
+  lanza sin esperar `py -3.12 lanes.py restart --drain` en el checkout vivo, comenta `APLICADO <sha>` en la tarjeta
+  y la saca del resumen fijado.
+- **Dependencias** (por eso aún no está activo):
+  1. `lanes.py restart --drain` lo aporta `feat/plan-d-runtime`. Mientras `lanes.py` no lo tenga (se comprueba
+     leyendo el archivo, nunca ejecutándolo), no hay botón: el aviso dice que hay que reiniciar el runner. Se lanza
+     como HIJO del runner (sin esperar; se pide salir del job de la tarea programada y, si no se puede, se lanza sin
+     ello): `restart --drain` no debe depender de sobrevivir a que maten al runner (mejor: reiniciar la tarea
+     programada, que la relanza el Programador de tareas). El estado `APLICADO` se registra antes de lanzarlo.
+  2. El avance del checkout raíz a `main` (fast-forward tras el merge) es parte de ese restart/deploy de HEAD; el
+     integrador nunca hace pull en el checkout raíz.
+  3. El coordinador añade `claude-hub` a `INTEGRATOR_LANES` en `agent-lanes/.env`.
+
+## Auditor diario (`auditor.py`)
+
+Determinista, sin LLM y de solo lectura. Lee los 4 boards de Hermes (`list --json --archived` y `show` solo donde
+hace falta), las ramas `lane/*` remotas de cada repo de carril, el compare de GitHub `master...develop` de MigraTeam,
+`%LOCALAPPDATA%/hermes/logs/errors.log` y `.state/runner.log`. Detecta: duplicados probables (títulos parecidos el
+mismo día), carril equivocado (heurística de palabras: código vs discos/calendario/accesos) o board equivocado,
+tarjetas en `triage`, bloqueos técnicos repetidos, `ready` sin assignee o con uno que no es carril/perfil de Hermes,
+tarjetas de Oscar sin etiqueta de decisión con más de 7 días, comentarios de Hermes con pinta de respuesta de Oscar
+sin el prefijo `RESPUESTA-OSCAR:` (el worker no los ve), ramas `lane/*` de tareas fusionadas/archivadas/inexistentes
+o done sin integrar, desfase develop↔master de MigraTeam y errores repetidos del último día agrupados por tipo
+("kanban_* task not found" = Hermes buscando en el board equivocado; "Unrecognized slash command" = comando al bot
+equivocado). Reglas y umbrales: docstring de `auditor.py`.
+
+Con hallazgos crea UNA tarjeta en `default` para `oscar`: `[DECISIÓN] Auditoría diaria <fecha>: N hallazgos`, con
+una línea por tipo (nº, 3 ids) y la acción SUGERIDA; nada se ejecuta solo. `--idempotency-key
+auditoria-diaria-<fecha>`: repetirlo el mismo día no duplica. Sin hallazgos no crea nada. Ventana: desde la ejecución
+anterior (el lunes, desde el viernes).
+
+- Probar: `py -3.12 auditor.py --dry-run` (desde un worktree, `--runner-log <checkout vivo>/tools/agent-lanes/.state/runner.log`:
+  un log que no se puede leer sale como hallazgo, nunca se omite en silencio).
+- Programarlo (L-V 07:40, `pyw`, sin ventana, log en `.state/auditor.log`): desde el checkout vivo,
+  `powershell -NoProfile -ExecutionPolicy Bypass -File tools\agent-lanes\instalar_auditor.ps1`. No está registrado.
 
 ## Otros
 - Tests: `cd tools/agent-lanes && py -3.12 -m pytest -q`.
