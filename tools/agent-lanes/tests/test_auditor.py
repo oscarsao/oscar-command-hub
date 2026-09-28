@@ -344,3 +344,32 @@ def test_profiles_parsed_from_hermes_table(monkeypatch):
              "  pildora-feedback deepseek running\r\n  nuevo  x  stopped\r\n")
     monkeypatch.setattr(A, "_run", lambda *a, **k: subprocess.CompletedProcess([], 0, table, ""))
     assert A.hermes_profiles(Path("hermes.exe")) >= {"default", "pildora-feedback", "nuevo"}
+
+
+def test_telegram_network_cuts_are_not_findings():
+    import auditor
+    assert auditor.hermes_error_type("WARNING", "[Telegram] Sticky Telegram path 1.2.3.4 failed; re-walking") is None
+
+
+def test_archive_previous_only_archives_older_audits(monkeypatch):
+    import auditor
+    from agent_lanes import hermes as hermes_mod
+    calls = []
+
+    class CP:
+        def __init__(self, out="", rc=0):
+            self.stdout, self.returncode, self.stderr = out, rc, ""
+
+    def fake_call(self, *args):
+        calls.append(args)
+        if args[0] == "list":
+            return CP(json.dumps([
+                {"id": "t_new", "title": "[DECISIÓN] Auditoría diaria 2026-09-29: 2 hallazgos", "status": "ready"},
+                {"id": "t_old", "title": "[DECISIÓN] Auditoría diaria 2026-09-28: 5 hallazgos", "status": "ready"},
+                {"id": "t_done", "title": "[DECISIÓN] Auditoría diaria 2026-09-25: 1 hallazgos", "status": "done"},
+                {"id": "t_otra", "title": "Otra cosa", "status": "ready"}]))
+        return CP()
+
+    monkeypatch.setattr(hermes_mod.HermesCLI, "_call", fake_call)
+    assert auditor.archive_previous("t_new") == ["t_old"]
+    assert ("archive", "t_old") in calls

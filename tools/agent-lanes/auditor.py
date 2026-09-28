@@ -352,7 +352,7 @@ def hermes_error_type(level: str, text: str) -> str | None:
     if "Tool loop warning" in text or "same_tool_failure" in text:
         return "Hermes en bucle repitiendo una herramienta que falla"
     if re.search(r"\[Telegram\].*(failed|ConnectError|stuck)", text):
-        return "Hermes: cortes de red con Telegram"
+        return None  # 28-09 (Oscar): cortes de red transitorios que Hermes recupera solo; solo meten ruido
     m = re.search(r"Tool (\w+) returned error", text)
     if m:
         return f"Hermes: la herramienta {m.group(1)} devuelve error"
@@ -585,6 +585,29 @@ def create_card(title: str, body: str, key: str) -> str:
         return (cp.stdout or "").strip()[:80]
 
 
+AUDIT_TITLE_PREFIX = "[DECISIÓN] Auditoría diaria"
+
+
+def archive_previous(new_id: str) -> list[str]:
+    """Archiva las auditorías anteriores aún abiertas: solo vale la del día (28-09, Oscar: sin acumular tarjetas)."""
+    from agent_lanes.hermes import HermesCLI
+    h = HermesCLI(CARD_BOARD, author="auditor")
+    cp = h._call("list", "--json")
+    try:
+        tasks = json.loads(cp.stdout or "[]") if cp.returncode == 0 else []
+    except json.JSONDecodeError:
+        tasks = []
+    done = []
+    for t in tasks:
+        if (t.get("id") != new_id and str(t.get("title") or "").startswith(AUDIT_TITLE_PREFIX)
+                and t.get("status") not in ("done", "archived")):
+            if h._call("archive", t["id"]).returncode == 0:
+                done.append(t["id"])
+    if done:
+        log.info("auditorías anteriores archivadas: %s", done)
+    return done
+
+
 def _print(text: str) -> None:
     if sys.stdout is None:  # pyw: sin consola
         return
@@ -620,6 +643,7 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         tid = create_card(title, body, f"auditoria-diaria-{day_of(now)}")
         log.info("tarjeta %s: %s", tid, title)
+        archive_previous(tid)
         _print(f"{tid}: {title}")
         return 0
     except Exception:
