@@ -53,6 +53,20 @@ Decidido por Oscar en la sesión de diseño con Claude. Complementa `2026-09-27-
 4. **Bot de roles:** en los temas donde Hermes es el principal, responde solo si se le menciona.
 5. **Permisos de Hermes:** hoy `TELEGRAM_ALLOWED_USERS` es solo Oscar. Si Hermes debe aceptar a Andrea, restringirlo al grupo de Marketing vía perfil. Pendiente: user_id de Andrea.
 
+## Actualización 2026-09-28: roles (decisión de Oscar)
+
+- **Gestión** (Oscar + María): asesores C-level por tema.
+  - General → CEO; Ventas → CSO; Marketing·Decisiones → CMO; Finanzas (t148) → CFO.
+  - Operaciones (t5 General, t230 MigraTeam, t231 Píldora) → Hermes.
+  - María trabaja desde aquí: escribe, no ejecuta, y sus ideas pasan por Oscar.
+- **Marketing** (Andrea): el **CMO en modo ejecución** en todos los temas, **a prueba**.
+  - Produce contenido, calendario y crews de contenido.
+  - Sin finanzas, clientes, código ni estrategia.
+  - Escala presupuesto y posicionamiento a Gestión·Marketing-Decisiones.
+  - Sustituye al COO en general, t7 y t54.
+  - Andrea tiene un bot dedicado, pendiente de decidir si sustituye al bot de roles aquí.
+- **DM** = solo Hermes. Los roles no van por DM.
+
 ## Pendiente de Oscar
 - Crear en Telegram los temas **Finanzas** (Gestión) y **Recursos** (Marketing). El `thread_id` se detecta con `TELEGRAM_TOPIC_DEBUG` o desde `state.db`.
 - Renombrar Marketing t7 a "Planificación y calendario" (opcional).
