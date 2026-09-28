@@ -1,1764 +1,1900 @@
 {
-  "version": 1,
-  "fecha": "2026-09-28",
-  "descripcion": "Reorganización del kanban de Hermes aprobada en bloque por Oscar. Lo aplica tools/agent-lanes/aplicar_reorganizacion.py (dry-run por defecto).",
-  "semantica_enlaces": "hermes kanban link <padre> <hijo>: el padre BLOQUEA al hijo (hijo ready -> todo; el Integrador no fusiona al hijo). Por eso cada épica es HIJA de sus tarjetas.",
-  "carril_tablero": {
-    "claude-oscarhq": "oscarhq",
-    "claude-scraper": "oscarhq",
-    "claude-ops": "oscarhq",
-    "claude-migrateam": "migrateam",
-    "claude-nextjobs": "default"
+ "version": 1,
+ "fecha": "2026-09-28",
+ "descripcion": "Reorganización del kanban de Hermes aprobada en bloque por Oscar. Lo aplica tools/agent-lanes/aplicar_reorganizacion.py (dry-run por defecto).",
+ "semantica_enlaces": "hermes kanban link <padre> <hijo>: el padre BLOQUEA al hijo (hijo ready -> todo; el Integrador no fusiona al hijo). Por eso cada épica es HIJA de sus tarjetas.",
+ "carril_tablero": {
+  "claude-oscarhq": "oscarhq",
+  "claude-scraper": "oscarhq",
+  "claude-ops": "oscarhq",
+  "claude-migrateam": "migrateam",
+  "claude-nextjobs": "default"
+ },
+ "epicas": {
+  "signal": {
+   "board": "oscarhq",
+   "reutiliza": "t_992e42ac",
+   "titulo": "[ÉPICA] Signal y outreach: captación → CRM → secuencias",
+   "prioridad": 9,
+   "idempotency_key": null
   },
-  "epicas": {
-    "signal": {
-      "board": "oscarhq",
-      "reutiliza": "t_992e42ac",
-      "titulo": "[ÉPICA] Signal y outreach: captación → CRM → secuencias",
-      "prioridad": 9,
-      "idempotency_key": null
-    },
-    "llc": {
-      "board": "oscarhq",
-      "reutiliza": "t_f90da954",
-      "titulo": "[ÉPICA] LLC y legal: Pildora Digital LLC (fiscal, firma; bloquea el contrato Multiverse)",
-      "prioridad": 8,
-      "idempotency_key": null
-    },
-    "mgnegocio": {
-      "board": "oscarhq",
-      "reutiliza": "t_55600b16",
-      "titulo": "[ÉPICA] MigraTeam negocio: ventas, legal y administración (ex MIGRATEAM-360)",
-      "prioridad": 6,
-      "idempotency_key": null
-    },
-    "ventas": {
-      "board": "oscarhq",
-      "reutiliza": "t_63a9b340",
-      "titulo": "[ÉPICA] Ventas Píldora: agencia de servicios digitales",
-      "prioridad": 7,
-      "idempotency_key": null
-    },
-    "plataforma": {
-      "board": "oscarhq",
-      "reutiliza": null,
-      "titulo": "[ÉPICA] Oscar HQ plataforma: crews, seguridad y deuda",
-      "prioridad": 7,
-      "idempotency_key": "reorg-20260928-plataforma"
-    },
-    "marketing": {
-      "board": "oscarhq",
-      "reutiliza": null,
-      "titulo": "[ÉPICA] Marketing: comandos de Telegram y trabajo con Andrea",
-      "prioridad": 6,
-      "idempotency_key": "reorg-20260928-marketing"
-    },
-    "ops": {
-      "board": "oscarhq",
-      "reutiliza": null,
-      "titulo": "[ÉPICA] Operaciones personales: PC, discos, calendario, ClickUp",
-      "prioridad": 3,
-      "idempotency_key": "reorg-20260928-ops"
-    },
-    "mgproducto": {
-      "board": "migrateam",
-      "reutiliza": null,
-      "titulo": "[ÉPICA] MigraTeam producto y cobro (España + Mosquera)",
-      "prioridad": 9,
-      "idempotency_key": "reorg-20260928-mgproducto"
-    },
-    "docketwise": {
-      "board": "migrateam",
-      "reutiliza": null,
-      "titulo": "[ÉPICA] Docketwise: MigraTeam para despachos de EEUU (familiar/humanitario)",
-      "prioridad": 7,
-      "idempotency_key": "reorg-20260928-docketwise"
-    },
-    "orquestacion": {
-      "board": "default",
-      "reutiliza": null,
-      "titulo": "[ÉPICA] Orquestación y agentes: carriles, Hermes y hub",
-      "prioridad": 8,
-      "idempotency_key": "reorg-20260928-orquestacion"
-    }
+  "llc": {
+   "board": "oscarhq",
+   "reutiliza": "t_f90da954",
+   "titulo": "[ÉPICA] LLC y legal: Pildora Digital LLC (fiscal, firma; bloquea el contrato Multiverse)",
+   "prioridad": 8,
+   "idempotency_key": null
   },
-  "acciones": [
-    {
-      "fase": 1,
-      "tipo": "crear_epica",
-      "epica": "plataforma",
-      "board": "oscarhq",
-      "titulo": "[ÉPICA] Oscar HQ plataforma: crews, seguridad y deuda",
-      "prioridad": 7,
-      "asignado": "oscar",
-      "idempotency_key": "reorg-20260928-plataforma",
-      "cuerpo": "Para Oscar: épica que agrupa 11 tarjetas. Agrupa el trabajo de código de oscar-hq (carril claude-oscarhq): seguridad (RLS, cifrado), crews programados y deuda.\n\n## Cómo funciona\nEsta épica es HIJA de sus tarjetas (`hermes kanban link <tarjeta> <épica>`): queda en `todo` y se despierta cuando todas terminan. Así no bloquea a ningún carril ni al Integrador (en Hermes el padre bloquea al hijo). Asignada a `oscar` para que ningún carril la reclame. NO es tarea ejecutable.\n\n## Tarjetas\n- t_39532b42 · Integrar rama rescatada rescue/triaje-h-batch-20260924 (H-094…H-119)\n- t_4880088a · Programar crews: sales_pipeline_review (lunes 8:00), content_creation semanal, demo_follow_up post-demo\n- t_49d9ad5c · Spec: programar sales_pipeline_review semanal + demo_follow_up post-demo con aprobación humana\n- t_a2972b36 · Spec: crews programados extra: digest semanal de Signal, KPIs de marketing semanal (analytics), SEO/GEO mensual (seo_geo)\n- t_dc43939b · Página de estado de carriles en app.pildoradigital.com (lee ohq_context_snapshots)\n- t_f371a1a8 · Spec: incident_response alimentado por alertas de Railway/Sentry\n- t_a383b0ca · Auditoría de negocio de las 46 páginas restantes del dashboard (de 85)\n- t_0077852a · Archivar crew fantasma output_compactor\n- t_1af88ebf · Spec: H-122 fusionar strategic_review + full_business_audit\n- t_c8b575a6 · Triar y corregir 10 hallazgos S pendientes (H-094,099,105,106,108,109,110,112,115,119)\n- t_3a4f024e · Auditoría de ramas lane/* fusionadas y worktrees huérfanos (sin borrar nada)\n\nOrigen: references/2026-09-28-plan-reorganizacion-kanban.md\n"
-    },
-    {
-      "fase": 1,
-      "tipo": "crear_epica",
-      "epica": "marketing",
-      "board": "oscarhq",
-      "titulo": "[ÉPICA] Marketing: comandos de Telegram y trabajo con Andrea",
-      "prioridad": 6,
-      "asignado": "oscar",
-      "idempotency_key": "reorg-20260928-marketing",
-      "cuerpo": "Para Oscar: épica que agrupa 2 tarjetas. Habilita a Andrea (CMO en modo ejecución) en el grupo de Marketing.\n\n## Cómo funciona\nEsta épica es HIJA de sus tarjetas (`hermes kanban link <tarjeta> <épica>`): queda en `todo` y se despierta cuando todas terminan. Así no bloquea a ningún carril ni al Integrador (en Hermes el padre bloquea al hijo). Asignada a `oscar` para que ningún carril la reclame. NO es tarea ejecutable.\n\n## Tarjetas\n- t_fccc736d · Comandos de marketing en Telegram con preguntas y crews (/post /reel /email /articulo /embudo)\n- t_6d85a746 · Accesos para Andrea: Drive, GitHub y Canva (marca Píldora)\n\nOrigen: references/2026-09-28-plan-reorganizacion-kanban.md\n"
-    },
-    {
-      "fase": 1,
-      "tipo": "crear_epica",
-      "epica": "ops",
-      "board": "oscarhq",
-      "titulo": "[ÉPICA] Operaciones personales: PC, discos, calendario, ClickUp",
-      "prioridad": 3,
-      "asignado": "oscar",
-      "idempotency_key": "reorg-20260928-ops",
-      "cuerpo": "Para Oscar: épica que agrupa 5 tarjetas. Trabajo del carril claude-ops (sin repo); importante pero no genera ingresos ni desbloquea clientes.\n\n## Cómo funciona\nEsta épica es HIJA de sus tarjetas (`hermes kanban link <tarjeta> <épica>`): queda en `todo` y se despierta cuando todas terminan. Así no bloquea a ningún carril ni al Integrador (en Hermes el padre bloquea al hijo). Asignada a `oscar` para que ningún carril la reclame. NO es tarea ejecutable.\n\n## Tarjetas\n- t_e8e76d7c · Migrar vault Obsidian de disco D: a local + túnel con URL propia\n- t_190f057a · Recuperar 'buzón' de agentes de disco E: (extraíble)\n- t_08f90331 · Calendario personal de Oscar organizado por áreas\n- t_6a2fdf4d · Definir y mejorar gestión de ClickUp\n- t_6b7b66ec · Organizar carpetas MigraTeam/Píldora (E: y local) y comparar por hash los backups de E:\n\nOrigen: references/2026-09-28-plan-reorganizacion-kanban.md\n"
-    },
-    {
-      "fase": 1,
-      "tipo": "crear_epica",
-      "epica": "mgproducto",
-      "board": "migrateam",
-      "titulo": "[ÉPICA] MigraTeam producto y cobro (España + Mosquera)",
-      "prioridad": 9,
-      "asignado": "oscar",
-      "idempotency_key": "reorg-20260928-mgproducto",
-      "cuerpo": "Para Oscar: épica que agrupa 6 tarjetas. Mosquera es el único cliente que paga; MigraTeam es la siguiente prioridad declarada tras Signal.\n\n## Cómo funciona\nEsta épica es HIJA de sus tarjetas (`hermes kanban link <tarjeta> <épica>`): queda en `todo` y se despierta cuando todas terminan. Así no bloquea a ningún carril ni al Integrador (en Hermes el padre bloquea al hijo). Asignada a `oscar` para que ningún carril la reclame. NO es tarea ejecutable.\n\n## Tarjetas\n- t_815b87e5 · [SEMANA] E2E de cobro Stripe con Mosquera (claves de test)\n- t_905e3371 · Spec (solo diseño): verificar en código los 12 puntos de correcciones de expediente/catálogo/cuestionarios (t_98f58389)\n- t_3db189f4 · Crear proyecto Sentry para el frontend de MigraTeam\n- t_775dd051 · Explicación de visados y procedimientos de extranjería (conocimiento, sin tocar la plataforma)\n- t_c6ecfad3 · Diagnosticar alerta de fuera de plazo que no salta + tipos 'pago matrícula'/'carta patrocinio' con caducidad\n- t_985109b9 · MigraTeam Fase 1: catálogo docs + formulario Estudios + antecedentes penales (spec t_98f58389)\n\nOrigen: references/2026-09-28-plan-reorganizacion-kanban.md\n"
-    },
-    {
-      "fase": 1,
-      "tipo": "crear_epica",
-      "epica": "docketwise",
-      "board": "migrateam",
-      "titulo": "[ÉPICA] Docketwise: MigraTeam para despachos de EEUU (familiar/humanitario)",
-      "prioridad": 7,
-      "asignado": "oscar",
-      "idempotency_key": "reorg-20260928-docketwise",
-      "cuerpo": "Para Oscar: épica que agrupa 3 tarjetas. Plan t_761326d7 aprobado; prioridad familiar/humanitario decidida por Oscar el 28-09.\n\n## Cómo funciona\nEsta épica es HIJA de sus tarjetas (`hermes kanban link <tarjeta> <épica>`): queda en `todo` y se despierta cuando todas terminan. Así no bloquea a ningún carril ni al Integrador (en Hermes el padre bloquea al hijo). Asignada a `oscar` para que ningún carril la reclame. NO es tarea ejecutable.\n\n## Tarjetas\n- t_c3e7b48d · Docketwise #1 · Spec: OCR de documentos de EEUU (I-94, EAD/I-766, I-797, Green Card/I-551)\n- t_addbf275 · Docketwise #3 · Spec: publicar el catálogo de EEUU ya construido (66 procedimientos)\n- t_dc1e9f0c · Docketwise #4 · Spec: alertas de plazos que se usen de verdad (flags de recordatorios)\n\nOrigen: references/2026-09-28-plan-reorganizacion-kanban.md\n"
-    },
-    {
-      "fase": 1,
-      "tipo": "crear_epica",
-      "epica": "orquestacion",
-      "board": "default",
-      "titulo": "[ÉPICA] Orquestación y agentes: carriles, Hermes y hub",
-      "prioridad": 8,
-      "asignado": "oscar",
-      "idempotency_key": "reorg-20260928-orquestacion",
-      "cuerpo": "Para Oscar: épica que agrupa 8 tarjetas. Criterio de salida del plan D: 3 días sin intervención. Miembros en oscarhq no enlazables (otro tablero): t_9ccfdf80, t_102f03b6.\n\n## Cómo funciona\nEsta épica es HIJA de sus tarjetas (`hermes kanban link <tarjeta> <épica>`): queda en `todo` y se despierta cuando todas terminan. Así no bloquea a ningún carril ni al Integrador (en Hermes el padre bloquea al hijo). Asignada a `oscar` para que ningún carril la reclame. NO es tarea ejecutable.\n\n## Tarjetas\n- t_bdee05fe · agent-lanes: reinicio ordenado (drain) + 'lanes status' sin falsos 'libre/huérfano'\n- t_9a2e17fb · agent-lanes: avisar también en el DM las tareas pedidas por DM + quitar suscripción de Hermes antes del claim\n- t_ebcee1f8 · Respaldo de modelo para Hermes (DeepSeek/OpenRouter) si se agota Claude Max\n- t_ad46ae34 · agent-lanes: presupuesto por TAREA (hoy max_budget_usd es por invocación: hasta 3× con resumes) + riesgo pytest/conftest\n- t_22de53c2 · Hermes: bug de clarify en temas de foro (la respuesta escrita se toma como timeout)\n- t_c0d5a0fd · Runner: t_0077852a (git worktree add falló) y t_c8b575a6 ('no tiene commits')\n- t_dc1b30fb · Espejo de solo lectura de las tareas de carriles en ClickUp\n- t_974c7bc4 · Hermes: consolidar USER.md (1366/1375 caracteres, error 'Memory exceed' a las 18:19)\n\nOrigen: references/2026-09-28-plan-reorganizacion-kanban.md\n"
-    },
-    {
-      "fase": 2,
-      "tipo": "titulo",
-      "board": "oscarhq",
-      "id": "t_992e42ac",
-      "desde": "[SCRAPER-CRM-LEADS] Verificar captacion activa y gestion real de leads",
-      "hacia": "[ÉPICA] Signal y outreach: captación → CRM → secuencias",
-      "motivo": "Reutilizar como épica 'signal'",
-      "requiere": "--con-unlink"
-    },
-    {
-      "fase": 2,
-      "tipo": "titulo",
-      "board": "oscarhq",
-      "id": "t_f90da954",
-      "desde": "[SEMANA] [LEGAL-LLC] Pildora Digital LLC — cumplimiento fiscal y legal (bloquea el contrato Multiverse)",
-      "hacia": "[ÉPICA] LLC y legal: Pildora Digital LLC (fiscal, firma; bloquea el contrato Multiverse)",
-      "motivo": "Reutilizar como épica 'llc'",
-      "requiere": "--con-unlink"
-    },
-    {
-      "fase": 2,
-      "tipo": "titulo",
-      "board": "oscarhq",
-      "id": "t_55600b16",
-      "desde": "[MIGRATEAM-360] Revision integral: producto, ventas, legal, admin, documentacion, marketing",
-      "hacia": "[ÉPICA] MigraTeam negocio: ventas, legal y administración (ex MIGRATEAM-360)",
-      "motivo": "Reutilizar como épica 'mgnegocio'",
-      "requiere": "--con-unlink"
-    },
-    {
-      "fase": 2,
-      "tipo": "titulo",
-      "board": "oscarhq",
-      "id": "t_63a9b340",
-      "desde": "[PILDORA-VENTAS] Agencia -- foco en venta de servicios digitales",
-      "hacia": "[ÉPICA] Ventas Píldora: agencia de servicios digitales",
-      "motivo": "Reutilizar como épica 'ventas'",
-      "requiere": "--con-unlink"
-    },
-    {
-      "fase": 2,
-      "tipo": "titulo",
-      "board": "oscarhq",
-      "id": "t_46aeb833",
-      "desde": "Confirmar con gestor/CPA obligaciones fiscales US de la LLC (Florida, federal, si Oscar reside fuera de US)",
-      "hacia": "[DECISIÓN] Confirmar con gestor/CPA obligaciones fiscales US de la LLC (Florida, federal, si Oscar reside fuera de US)",
-      "motivo": "Requiere gestor/CPA: solo Oscar."
-    },
-    {
-      "fase": 2,
-      "tipo": "titulo",
-      "board": "oscarhq",
-      "id": "t_f3211374",
-      "desde": "Confirmar situacion fiscal en Espana de Oscar por ingresos via LLC US (doble imposicion, modelo 720 si aplica)",
-      "hacia": "[DECISIÓN] Confirmar situacion fiscal en Espana de Oscar por ingresos via LLC US (doble imposicion, modelo 720 si aplica)",
-      "motivo": "Asesor fiscal en España: solo Oscar."
-    },
-    {
-      "fase": 2,
-      "tipo": "titulo",
-      "board": "oscarhq",
-      "id": "t_a80a33a4",
-      "desde": "Verificar estado de registered agent y annual report de Florida (evitar disolucion administrativa)",
-      "hacia": "[DECISIÓN] Verificar estado de registered agent y annual report de Florida (evitar disolucion administrativa)",
-      "motivo": "URGENTE (a verificar): si el annual report de Florida no se presentó, la disolución administrativa suele aplicarse a finales de septiembre. Comprobar hoy en sunbiz.org."
-    },
-    {
-      "fase": 2,
-      "tipo": "titulo",
-      "board": "oscarhq",
-      "id": "t_000ace0f",
-      "desde": "Definir circuito de firma: que puede firmar Oscar como Authorized Rep vs que requiere a Yajaira como Sole Member",
-      "hacia": "[DECISIÓN] Definir circuito de firma: que puede firmar Oscar como Authorized Rep vs que requiere a Yajaira como Sole Member",
-      "motivo": "Firma Authorized Rep vs Sole Member: bloquea contratos (Multiverse, Mosquera)."
-    },
-    {
-      "fase": 2,
-      "tipo": "titulo",
-      "board": "oscarhq",
-      "id": "t_8ce343e6",
-      "desde": "Producto: cerrar las 3 decisiones manuales pendientes (MOSQ-02 idioma email, CAT-05 categorias ES, MOSQ-01 limpieza datos)",
-      "hacia": "[DECISIÓN] MigraTeam MOSQ-01: limpieza de datos de Mosquera (MOSQ-02 y CAT-05 ya hechas en t_ba6bc31f)",
-      "motivo": "2 de las 3 decisiones ya hechas (t_ba6bc31f, done 25-09)."
-    },
-    {
-      "fase": 2,
-      "tipo": "titulo",
-      "board": "oscarhq",
-      "id": "t_f1203e25",
-      "desde": "Ventas: definir pipeline y estado real de leads/despachos (Mosquera y similares)",
-      "hacia": "[DECISIÓN] Ventas: definir pipeline y estado real de leads/despachos (Mosquera y similares)",
-      "motivo": "decision"
-    },
-    {
-      "fase": 2,
-      "tipo": "titulo",
-      "board": "oscarhq",
-      "id": "t_75e9bd0f",
-      "desde": "Legal: contrato/TOS de servicio para despachos, proteccion de datos de expedientes de clientes",
-      "hacia": "[DECISIÓN] Legal: contrato/TOS de servicio para despachos, proteccion de datos de expedientes de clientes",
-      "motivo": "Contrato/TOS y protección de datos: bloqueante legal antes de más despachos."
-    },
-    {
-      "fase": 2,
-      "tipo": "titulo",
-      "board": "oscarhq",
-      "id": "t_6ca8b65c",
-      "desde": "Administracion: facturacion, cobro, alta de clientes -- flujo operativo",
-      "hacia": "[DECISIÓN] Administracion: facturacion, cobro, alta de clientes -- flujo operativo",
-      "motivo": "Relacionada con t_815b87e5 (E2E Stripe) y t_db8507a0 (done)."
-    },
-    {
-      "fase": 2,
-      "tipo": "titulo",
-      "board": "oscarhq",
-      "id": "t_37ff8faf",
-      "desde": "Marketing: como se va a vender MigraTeam mas alla de Mosquera (posicionamiento, canal)",
-      "hacia": "[DECISIÓN] Marketing: como se va a vender MigraTeam mas alla de Mosquera (posicionamiento, canal)",
-      "motivo": "decision"
-    },
-    {
-      "fase": 2,
-      "tipo": "titulo",
-      "board": "oscarhq",
-      "id": "t_c3fde440",
-      "desde": "Definir oferta de servicios digitales a vender (que se vende exactamente, precios, paquetes)",
-      "hacia": "[DECISIÓN] Definir oferta de servicios digitales a vender (que se vende exactamente, precios, paquetes)",
-      "motivo": "Sin oferta no hay venta: primera pieza de la épica."
-    },
-    {
-      "fase": 2,
-      "tipo": "titulo",
-      "board": "oscarhq",
-      "id": "t_e7811e26",
-      "desde": "Pipeline de prospeccion activa: quien contacta, con que cadencia, que canal",
-      "hacia": "[DECISIÓN] Pipeline de prospeccion activa: quien contacta, con que cadencia, que canal",
-      "motivo": "decision"
-    },
-    {
-      "fase": 2,
-      "tipo": "titulo",
-      "board": "oscarhq",
-      "id": "t_b2bf3bdc",
-      "desde": "Definir cadencia de outreach real (email/otro canal) para los leads ya captados",
-      "hacia": "[DECISIÓN] Signal: cadencia y volumen diario del outreach (con cola de revisión)",
-      "motivo": "decision"
-    },
-    {
-      "fase": 2,
-      "tipo": "titulo",
-      "board": "default",
-      "id": "t_ebcee1f8",
-      "desde": "Respaldo de modelo para Hermes (DeepSeek/OpenRouter) si se agota Claude Max",
-      "hacia": "[DECISIÓN] Respaldo de modelo para Hermes (DeepSeek/OpenRouter) si se agota Claude Max",
-      "motivo": "Requiere crédito en OpenRouter: solo Oscar."
-    },
-    {
-      "fase": 2,
-      "tipo": "titulo",
-      "board": "default",
-      "id": "t_974c7bc4",
-      "desde": "Hermes: consolidar USER.md (1366/1375 caracteres, error 'Memory exceed' a las 18:19)",
-      "hacia": "[DECISIÓN] Hermes: consolidar USER.md (1366/1375 caracteres, error 'Memory exceed' a las 18:19)",
-      "motivo": "USER.md tiene datos personales: lo revisa Oscar. Hermes ya no puede escribir memoria."
-    },
-    {
-      "fase": 2,
-      "tipo": "titulo",
-      "board": "default",
-      "id": "t_11fd6811",
-      "desde": "Recordatorio: recargar fal.ai para reactivar el vídeo (video_production)",
-      "hacia": "[DECISIÓN] Recordatorio: recargar fal.ai para reactivar el vídeo (video_production)",
-      "motivo": "Recordatorio que solo puede hacer Oscar (recargar fal.ai)."
-    },
-    {
-      "fase": 2,
-      "tipo": "titulo",
-      "board": "default",
-      "id": "t_98f58389",
-      "desde": "MigraTeam — Consolidar spec de motor de fechas único (DeadlineAnchor/DeadlineRule) — pendiente aprobación",
-      "hacia": "[REF] MigraTeam — Spec motor de fechas único (DeadlineAnchor/DeadlineRule): consolidada en t_905e3371, Fase 1 en t_985109b9",
-      "motivo": "Ficha de referencia (lote cerrado 27-09). No se archiva: t_985109b9 la cita y aún no ha terminado."
-    },
-    {
-      "fase": 3,
-      "tipo": "prioridad",
-      "board": "oscarhq",
-      "id": "t_992e42ac",
-      "desde": 0,
-      "hacia": 9
-    },
-    {
-      "fase": 3,
-      "tipo": "prioridad",
-      "board": "oscarhq",
-      "id": "t_f90da954",
-      "desde": 0,
-      "hacia": 8
-    },
-    {
-      "fase": 3,
-      "tipo": "prioridad",
-      "board": "oscarhq",
-      "id": "t_55600b16",
-      "desde": 0,
-      "hacia": 6
-    },
-    {
-      "fase": 3,
-      "tipo": "prioridad",
-      "board": "oscarhq",
-      "id": "t_63a9b340",
-      "desde": 0,
-      "hacia": 7
-    },
-    {
-      "fase": 3,
-      "tipo": "prioridad",
-      "board": "oscarhq",
-      "id": "t_fccc736d",
-      "desde": 9,
-      "hacia": 8
-    },
-    {
-      "fase": 3,
-      "tipo": "prioridad",
-      "board": "oscarhq",
-      "id": "t_39532b42",
-      "desde": 7,
-      "hacia": 6
-    },
-    {
-      "fase": 3,
-      "tipo": "prioridad",
-      "board": "oscarhq",
-      "id": "t_4880088a",
-      "desde": 6,
-      "hacia": 5
-    },
-    {
-      "fase": 3,
-      "tipo": "prioridad",
-      "board": "oscarhq",
-      "id": "t_a2972b36",
-      "desde": 5,
-      "hacia": 4
-    },
-    {
-      "fase": 3,
-      "tipo": "prioridad",
-      "board": "oscarhq",
-      "id": "t_dc43939b",
-      "desde": 5,
-      "hacia": 4
-    },
-    {
-      "fase": 3,
-      "tipo": "prioridad",
-      "board": "oscarhq",
-      "id": "t_f371a1a8",
-      "desde": 4,
-      "hacia": 3
-    },
-    {
-      "fase": 3,
-      "tipo": "prioridad",
-      "board": "oscarhq",
-      "id": "t_35be06d8",
-      "desde": 3,
-      "hacia": 4
-    },
-    {
-      "fase": 3,
-      "tipo": "prioridad",
-      "board": "oscarhq",
-      "id": "t_a383b0ca",
-      "desde": 3,
-      "hacia": 2
-    },
-    {
-      "fase": 3,
-      "tipo": "prioridad",
-      "board": "oscarhq",
-      "id": "t_0077852a",
-      "desde": 3,
-      "hacia": 2
-    },
-    {
-      "fase": 3,
-      "tipo": "prioridad",
-      "board": "oscarhq",
-      "id": "t_0d94921e",
-      "desde": 0,
-      "hacia": 6
-    },
-    {
-      "fase": 3,
-      "tipo": "prioridad",
-      "board": "oscarhq",
-      "id": "t_46aeb833",
-      "desde": 0,
-      "hacia": 7
-    },
-    {
-      "fase": 3,
-      "tipo": "prioridad",
-      "board": "oscarhq",
-      "id": "t_f3211374",
-      "desde": 0,
-      "hacia": 6
-    },
-    {
-      "fase": 3,
-      "tipo": "prioridad",
-      "board": "oscarhq",
-      "id": "t_a80a33a4",
-      "desde": 0,
-      "hacia": 10
-    },
-    {
-      "fase": 3,
-      "tipo": "prioridad",
-      "board": "oscarhq",
-      "id": "t_000ace0f",
-      "desde": 0,
-      "hacia": 8
-    },
-    {
-      "fase": 3,
-      "tipo": "prioridad",
-      "board": "oscarhq",
-      "id": "t_8ce343e6",
-      "desde": 0,
-      "hacia": 3
-    },
-    {
-      "fase": 3,
-      "tipo": "prioridad",
-      "board": "oscarhq",
-      "id": "t_f1203e25",
-      "desde": 0,
-      "hacia": 5
-    },
-    {
-      "fase": 3,
-      "tipo": "prioridad",
-      "board": "oscarhq",
-      "id": "t_75e9bd0f",
-      "desde": 0,
-      "hacia": 6
-    },
-    {
-      "fase": 3,
-      "tipo": "prioridad",
-      "board": "oscarhq",
-      "id": "t_6ca8b65c",
-      "desde": 0,
-      "hacia": 4
-    },
-    {
-      "fase": 3,
-      "tipo": "prioridad",
-      "board": "oscarhq",
-      "id": "t_cb91e9fb",
-      "desde": 0,
-      "hacia": 2
-    },
-    {
-      "fase": 3,
-      "tipo": "prioridad",
-      "board": "oscarhq",
-      "id": "t_37ff8faf",
-      "desde": 0,
-      "hacia": 4
-    },
-    {
-      "fase": 3,
-      "tipo": "prioridad",
-      "board": "oscarhq",
-      "id": "t_c3fde440",
-      "desde": 0,
-      "hacia": 7
-    },
-    {
-      "fase": 3,
-      "tipo": "prioridad",
-      "board": "oscarhq",
-      "id": "t_e7811e26",
-      "desde": 0,
-      "hacia": 5
-    },
-    {
-      "fase": 3,
-      "tipo": "prioridad",
-      "board": "oscarhq",
-      "id": "t_7a0ba60a",
-      "desde": 0,
-      "hacia": 3
-    },
-    {
-      "fase": 3,
-      "tipo": "prioridad",
-      "board": "oscarhq",
-      "id": "t_9b90d162",
-      "desde": 0,
-      "hacia": 3
-    },
-    {
-      "fase": 3,
-      "tipo": "prioridad",
-      "board": "oscarhq",
-      "id": "t_eb0c3483",
-      "desde": 0,
-      "hacia": 4
-    },
-    {
-      "fase": 3,
-      "tipo": "prioridad",
-      "board": "oscarhq",
-      "id": "t_b2bf3bdc",
-      "desde": 0,
-      "hacia": 6
-    },
-    {
-      "fase": 3,
-      "tipo": "prioridad",
-      "board": "oscarhq",
-      "id": "t_7daeacc9",
-      "desde": 0,
-      "hacia": 2
-    },
-    {
-      "fase": 3,
-      "tipo": "prioridad",
-      "board": "oscarhq",
-      "id": "t_9ccfdf80",
-      "desde": 0,
-      "hacia": 3
-    },
-    {
-      "fase": 3,
-      "tipo": "prioridad",
-      "board": "oscarhq",
-      "id": "t_102f03b6",
-      "desde": 0,
-      "hacia": 1
-    },
-    {
-      "fase": 3,
-      "tipo": "prioridad",
-      "board": "oscarhq",
-      "id": "t_e8e76d7c",
-      "desde": 0,
-      "hacia": 3
-    },
-    {
-      "fase": 3,
-      "tipo": "prioridad",
-      "board": "oscarhq",
-      "id": "t_190f057a",
-      "desde": 0,
-      "hacia": 3
-    },
-    {
-      "fase": 3,
-      "tipo": "prioridad",
-      "board": "oscarhq",
-      "id": "t_08f90331",
-      "desde": 0,
-      "hacia": 4
-    },
-    {
-      "fase": 3,
-      "tipo": "prioridad",
-      "board": "oscarhq",
-      "id": "t_6d85a746",
-      "desde": 0,
-      "hacia": 6
-    },
-    {
-      "fase": 3,
-      "tipo": "prioridad",
-      "board": "oscarhq",
-      "id": "t_6a2fdf4d",
-      "desde": 0,
-      "hacia": 3
-    },
-    {
-      "fase": 3,
-      "tipo": "prioridad",
-      "board": "oscarhq",
-      "id": "t_3a4f024e",
-      "desde": 0,
-      "hacia": 3
-    },
-    {
-      "fase": 3,
-      "tipo": "prioridad",
-      "board": "migrateam",
-      "id": "t_c3e7b48d",
-      "desde": 8,
-      "hacia": 7
-    },
-    {
-      "fase": 3,
-      "tipo": "prioridad",
-      "board": "migrateam",
-      "id": "t_dc1e9f0c",
-      "desde": 6,
-      "hacia": 5
-    },
-    {
-      "fase": 3,
-      "tipo": "prioridad",
-      "board": "migrateam",
-      "id": "t_3db189f4",
-      "desde": 5,
-      "hacia": 4
-    },
-    {
-      "fase": 3,
-      "tipo": "prioridad",
-      "board": "migrateam",
-      "id": "t_775dd051",
-      "desde": 4,
-      "hacia": 3
-    },
-    {
-      "fase": 3,
-      "tipo": "prioridad",
-      "board": "migrateam",
-      "id": "t_c6ecfad3",
-      "desde": 0,
-      "hacia": 7
-    },
-    {
-      "fase": 3,
-      "tipo": "prioridad",
-      "board": "migrateam",
-      "id": "t_985109b9",
-      "desde": 0,
-      "hacia": 8
-    },
-    {
-      "fase": 3,
-      "tipo": "prioridad",
-      "board": "default",
-      "id": "t_bdee05fe",
-      "desde": 8,
-      "hacia": 7
-    },
-    {
-      "fase": 3,
-      "tipo": "prioridad",
-      "board": "default",
-      "id": "t_9a2e17fb",
-      "desde": 7,
-      "hacia": 4
-    },
-    {
-      "fase": 3,
-      "tipo": "prioridad",
-      "board": "default",
-      "id": "t_551843f3",
-      "desde": 6,
-      "hacia": 2
-    },
-    {
-      "fase": 3,
-      "tipo": "prioridad",
-      "board": "default",
-      "id": "t_6d1eb9e0",
-      "desde": 5,
-      "hacia": 2
-    },
-    {
-      "fase": 3,
-      "tipo": "prioridad",
-      "board": "default",
-      "id": "t_ebcee1f8",
-      "desde": 5,
-      "hacia": 3
-    },
-    {
-      "fase": 3,
-      "tipo": "prioridad",
-      "board": "default",
-      "id": "t_ad46ae34",
-      "desde": 5,
-      "hacia": 4
-    },
-    {
-      "fase": 3,
-      "tipo": "prioridad",
-      "board": "default",
-      "id": "t_22de53c2",
-      "desde": 5,
-      "hacia": 2
-    },
-    {
-      "fase": 3,
-      "tipo": "prioridad",
-      "board": "default",
-      "id": "t_c0d5a0fd",
-      "desde": 5,
-      "hacia": 4
-    },
-    {
-      "fase": 3,
-      "tipo": "prioridad",
-      "board": "default",
-      "id": "t_dc1b30fb",
-      "desde": 4,
-      "hacia": 2
-    },
-    {
-      "fase": 3,
-      "tipo": "prioridad",
-      "board": "default",
-      "id": "t_974c7bc4",
-      "desde": 4,
-      "hacia": 5
-    },
-    {
-      "fase": 3,
-      "tipo": "prioridad",
-      "board": "default",
-      "id": "t_11fd6811",
-      "desde": 3,
-      "hacia": 2
-    },
-    {
-      "fase": 3,
-      "tipo": "prioridad",
-      "board": "default",
-      "id": "t_98f58389",
-      "desde": 0,
-      "hacia": 1
-    },
-    {
-      "fase": 4,
-      "tipo": "desenlazar",
-      "board": "oscarhq",
-      "padre": "t_f90da954",
-      "hijo": "t_0d94921e",
-      "requiere": "--con-unlink",
-      "motivo": "El paraguas antiguo bloquea a su hija (en Hermes el padre bloquea al hijo)"
-    },
-    {
-      "fase": 4,
-      "tipo": "desenlazar",
-      "board": "oscarhq",
-      "padre": "t_f90da954",
-      "hijo": "t_46aeb833",
-      "requiere": "--con-unlink",
-      "motivo": "El paraguas antiguo bloquea a su hija (en Hermes el padre bloquea al hijo)"
-    },
-    {
-      "fase": 4,
-      "tipo": "desenlazar",
-      "board": "oscarhq",
-      "padre": "t_f90da954",
-      "hijo": "t_f3211374",
-      "requiere": "--con-unlink",
-      "motivo": "El paraguas antiguo bloquea a su hija (en Hermes el padre bloquea al hijo)"
-    },
-    {
-      "fase": 4,
-      "tipo": "desenlazar",
-      "board": "oscarhq",
-      "padre": "t_f90da954",
-      "hijo": "t_a80a33a4",
-      "requiere": "--con-unlink",
-      "motivo": "El paraguas antiguo bloquea a su hija (en Hermes el padre bloquea al hijo)"
-    },
-    {
-      "fase": 4,
-      "tipo": "desenlazar",
-      "board": "oscarhq",
-      "padre": "t_f90da954",
-      "hijo": "t_000ace0f",
-      "requiere": "--con-unlink",
-      "motivo": "El paraguas antiguo bloquea a su hija (en Hermes el padre bloquea al hijo)"
-    },
-    {
-      "fase": 4,
-      "tipo": "desenlazar",
-      "board": "oscarhq",
-      "padre": "t_55600b16",
-      "hijo": "t_8ce343e6",
-      "requiere": "--con-unlink",
-      "motivo": "El paraguas antiguo bloquea a su hija (en Hermes el padre bloquea al hijo)"
-    },
-    {
-      "fase": 4,
-      "tipo": "desenlazar",
-      "board": "oscarhq",
-      "padre": "t_55600b16",
-      "hijo": "t_f1203e25",
-      "requiere": "--con-unlink",
-      "motivo": "El paraguas antiguo bloquea a su hija (en Hermes el padre bloquea al hijo)"
-    },
-    {
-      "fase": 4,
-      "tipo": "desenlazar",
-      "board": "oscarhq",
-      "padre": "t_55600b16",
-      "hijo": "t_75e9bd0f",
-      "requiere": "--con-unlink",
-      "motivo": "El paraguas antiguo bloquea a su hija (en Hermes el padre bloquea al hijo)"
-    },
-    {
-      "fase": 4,
-      "tipo": "desenlazar",
-      "board": "oscarhq",
-      "padre": "t_55600b16",
-      "hijo": "t_6ca8b65c",
-      "requiere": "--con-unlink",
-      "motivo": "El paraguas antiguo bloquea a su hija (en Hermes el padre bloquea al hijo)"
-    },
-    {
-      "fase": 4,
-      "tipo": "desenlazar",
-      "board": "oscarhq",
-      "padre": "t_55600b16",
-      "hijo": "t_cb91e9fb",
-      "requiere": "--con-unlink",
-      "motivo": "El paraguas antiguo bloquea a su hija (en Hermes el padre bloquea al hijo)"
-    },
-    {
-      "fase": 4,
-      "tipo": "desenlazar",
-      "board": "oscarhq",
-      "padre": "t_55600b16",
-      "hijo": "t_37ff8faf",
-      "requiere": "--con-unlink",
-      "motivo": "El paraguas antiguo bloquea a su hija (en Hermes el padre bloquea al hijo)"
-    },
-    {
-      "fase": 4,
-      "tipo": "desenlazar",
-      "board": "oscarhq",
-      "padre": "t_63a9b340",
-      "hijo": "t_c3fde440",
-      "requiere": "--con-unlink",
-      "motivo": "El paraguas antiguo bloquea a su hija (en Hermes el padre bloquea al hijo)"
-    },
-    {
-      "fase": 4,
-      "tipo": "desenlazar",
-      "board": "oscarhq",
-      "padre": "t_63a9b340",
-      "hijo": "t_e7811e26",
-      "requiere": "--con-unlink",
-      "motivo": "El paraguas antiguo bloquea a su hija (en Hermes el padre bloquea al hijo)"
-    },
-    {
-      "fase": 4,
-      "tipo": "desenlazar",
-      "board": "oscarhq",
-      "padre": "t_63a9b340",
-      "hijo": "t_7a0ba60a",
-      "requiere": "--con-unlink",
-      "motivo": "El paraguas antiguo bloquea a su hija (en Hermes el padre bloquea al hijo)"
-    },
-    {
-      "fase": 4,
-      "tipo": "desenlazar",
-      "board": "oscarhq",
-      "padre": "t_63a9b340",
-      "hijo": "t_9b90d162",
-      "requiere": "--con-unlink",
-      "motivo": "El paraguas antiguo bloquea a su hija (en Hermes el padre bloquea al hijo)"
-    },
-    {
-      "fase": 4,
-      "tipo": "desenlazar",
-      "board": "oscarhq",
-      "padre": "t_992e42ac",
-      "hijo": "t_eb0c3483",
-      "requiere": "--con-unlink",
-      "motivo": "El paraguas antiguo bloquea a su hija (en Hermes el padre bloquea al hijo)"
-    },
-    {
-      "fase": 4,
-      "tipo": "desenlazar",
-      "board": "oscarhq",
-      "padre": "t_992e42ac",
-      "hijo": "t_b2bf3bdc",
-      "requiere": "--con-unlink",
-      "motivo": "El paraguas antiguo bloquea a su hija (en Hermes el padre bloquea al hijo)"
-    },
-    {
-      "fase": 5,
-      "tipo": "enlazar",
-      "board": "default",
-      "padre": "t_551843f3",
-      "hijo": "t_6d1eb9e0",
-      "motivo": "Dependencia real declarada en el cuerpo"
-    },
-    {
-      "fase": 6,
-      "tipo": "enlazar",
-      "board": "oscarhq",
-      "padre": "t_b889c49a",
-      "hijo": "t_992e42ac",
-      "motivo": "Tarjeta de la épica 'signal'",
-      "requiere": "--con-unlink"
-    },
-    {
-      "fase": 6,
-      "tipo": "enlazar",
-      "board": "oscarhq",
-      "padre": "t_fccc736d",
-      "hijo": "@epica:marketing",
-      "motivo": "Tarjeta de la épica 'marketing'",
-      "requiere": null
-    },
-    {
-      "fase": 6,
-      "tipo": "enlazar",
-      "board": "oscarhq",
-      "padre": "t_39532b42",
-      "hijo": "@epica:plataforma",
-      "motivo": "Tarjeta de la épica 'plataforma'",
-      "requiere": null
-    },
-    {
-      "fase": 6,
-      "tipo": "enlazar",
-      "board": "oscarhq",
-      "padre": "t_4880088a",
-      "hijo": "@epica:plataforma",
-      "motivo": "Tarjeta de la épica 'plataforma'",
-      "requiere": null
-    },
-    {
-      "fase": 6,
-      "tipo": "enlazar",
-      "board": "oscarhq",
-      "padre": "t_49d9ad5c",
-      "hijo": "@epica:plataforma",
-      "motivo": "Tarjeta de la épica 'plataforma'",
-      "requiere": null
-    },
-    {
-      "fase": 6,
-      "tipo": "enlazar",
-      "board": "oscarhq",
-      "padre": "t_a2972b36",
-      "hijo": "@epica:plataforma",
-      "motivo": "Tarjeta de la épica 'plataforma'",
-      "requiere": null
-    },
-    {
-      "fase": 6,
-      "tipo": "enlazar",
-      "board": "oscarhq",
-      "padre": "t_dc43939b",
-      "hijo": "@epica:plataforma",
-      "motivo": "Tarjeta de la épica 'plataforma'",
-      "requiere": null
-    },
-    {
-      "fase": 6,
-      "tipo": "enlazar",
-      "board": "oscarhq",
-      "padre": "t_f371a1a8",
-      "hijo": "@epica:plataforma",
-      "motivo": "Tarjeta de la épica 'plataforma'",
-      "requiere": null
-    },
-    {
-      "fase": 6,
-      "tipo": "enlazar",
-      "board": "oscarhq",
-      "padre": "t_35be06d8",
-      "hijo": "t_992e42ac",
-      "motivo": "Tarjeta de la épica 'signal'",
-      "requiere": "--con-unlink"
-    },
-    {
-      "fase": 6,
-      "tipo": "enlazar",
-      "board": "oscarhq",
-      "padre": "t_a383b0ca",
-      "hijo": "@epica:plataforma",
-      "motivo": "Tarjeta de la épica 'plataforma'",
-      "requiere": null
-    },
-    {
-      "fase": 6,
-      "tipo": "enlazar",
-      "board": "oscarhq",
-      "padre": "t_0077852a",
-      "hijo": "@epica:plataforma",
-      "motivo": "Tarjeta de la épica 'plataforma'",
-      "requiere": null
-    },
-    {
-      "fase": 6,
-      "tipo": "enlazar",
-      "board": "oscarhq",
-      "padre": "t_1af88ebf",
-      "hijo": "@epica:plataforma",
-      "motivo": "Tarjeta de la épica 'plataforma'",
-      "requiere": null
-    },
-    {
-      "fase": 6,
-      "tipo": "enlazar",
-      "board": "oscarhq",
-      "padre": "t_c8b575a6",
-      "hijo": "@epica:plataforma",
-      "motivo": "Tarjeta de la épica 'plataforma'",
-      "requiere": null
-    },
-    {
-      "fase": 6,
-      "tipo": "enlazar",
-      "board": "oscarhq",
-      "padre": "t_0d94921e",
-      "hijo": "t_f90da954",
-      "motivo": "Tarjeta de la épica 'llc'",
-      "requiere": "--con-unlink"
-    },
-    {
-      "fase": 6,
-      "tipo": "enlazar",
-      "board": "oscarhq",
-      "padre": "t_46aeb833",
-      "hijo": "t_f90da954",
-      "motivo": "Tarjeta de la épica 'llc'",
-      "requiere": "--con-unlink"
-    },
-    {
-      "fase": 6,
-      "tipo": "enlazar",
-      "board": "oscarhq",
-      "padre": "t_f3211374",
-      "hijo": "t_f90da954",
-      "motivo": "Tarjeta de la épica 'llc'",
-      "requiere": "--con-unlink"
-    },
-    {
-      "fase": 6,
-      "tipo": "enlazar",
-      "board": "oscarhq",
-      "padre": "t_a80a33a4",
-      "hijo": "t_f90da954",
-      "motivo": "Tarjeta de la épica 'llc'",
-      "requiere": "--con-unlink"
-    },
-    {
-      "fase": 6,
-      "tipo": "enlazar",
-      "board": "oscarhq",
-      "padre": "t_000ace0f",
-      "hijo": "t_f90da954",
-      "motivo": "Tarjeta de la épica 'llc'",
-      "requiere": "--con-unlink"
-    },
-    {
-      "fase": 6,
-      "tipo": "enlazar",
-      "board": "oscarhq",
-      "padre": "t_8ce343e6",
-      "hijo": "t_55600b16",
-      "motivo": "Tarjeta de la épica 'mgnegocio'",
-      "requiere": "--con-unlink"
-    },
-    {
-      "fase": 6,
-      "tipo": "enlazar",
-      "board": "oscarhq",
-      "padre": "t_f1203e25",
-      "hijo": "t_55600b16",
-      "motivo": "Tarjeta de la épica 'mgnegocio'",
-      "requiere": "--con-unlink"
-    },
-    {
-      "fase": 6,
-      "tipo": "enlazar",
-      "board": "oscarhq",
-      "padre": "t_75e9bd0f",
-      "hijo": "t_55600b16",
-      "motivo": "Tarjeta de la épica 'mgnegocio'",
-      "requiere": "--con-unlink"
-    },
-    {
-      "fase": 6,
-      "tipo": "enlazar",
-      "board": "oscarhq",
-      "padre": "t_6ca8b65c",
-      "hijo": "t_55600b16",
-      "motivo": "Tarjeta de la épica 'mgnegocio'",
-      "requiere": "--con-unlink"
-    },
-    {
-      "fase": 6,
-      "tipo": "enlazar",
-      "board": "oscarhq",
-      "padre": "t_cb91e9fb",
-      "hijo": "t_55600b16",
-      "motivo": "Tarjeta de la épica 'mgnegocio'",
-      "requiere": "--con-unlink"
-    },
-    {
-      "fase": 6,
-      "tipo": "enlazar",
-      "board": "oscarhq",
-      "padre": "t_37ff8faf",
-      "hijo": "t_55600b16",
-      "motivo": "Tarjeta de la épica 'mgnegocio'",
-      "requiere": "--con-unlink"
-    },
-    {
-      "fase": 6,
-      "tipo": "enlazar",
-      "board": "oscarhq",
-      "padre": "t_c3fde440",
-      "hijo": "t_63a9b340",
-      "motivo": "Tarjeta de la épica 'ventas'",
-      "requiere": "--con-unlink"
-    },
-    {
-      "fase": 6,
-      "tipo": "enlazar",
-      "board": "oscarhq",
-      "padre": "t_e7811e26",
-      "hijo": "t_63a9b340",
-      "motivo": "Tarjeta de la épica 'ventas'",
-      "requiere": "--con-unlink"
-    },
-    {
-      "fase": 6,
-      "tipo": "enlazar",
-      "board": "oscarhq",
-      "padre": "t_7a0ba60a",
-      "hijo": "t_63a9b340",
-      "motivo": "Tarjeta de la épica 'ventas'",
-      "requiere": "--con-unlink"
-    },
-    {
-      "fase": 6,
-      "tipo": "enlazar",
-      "board": "oscarhq",
-      "padre": "t_9b90d162",
-      "hijo": "t_63a9b340",
-      "motivo": "Tarjeta de la épica 'ventas'",
-      "requiere": "--con-unlink"
-    },
-    {
-      "fase": 6,
-      "tipo": "enlazar",
-      "board": "oscarhq",
-      "padre": "t_eb0c3483",
-      "hijo": "t_992e42ac",
-      "motivo": "Tarjeta de la épica 'signal'",
-      "requiere": "--con-unlink"
-    },
-    {
-      "fase": 6,
-      "tipo": "enlazar",
-      "board": "oscarhq",
-      "padre": "t_b2bf3bdc",
-      "hijo": "t_992e42ac",
-      "motivo": "Tarjeta de la épica 'signal'",
-      "requiere": "--con-unlink"
-    },
-    {
-      "fase": 6,
-      "tipo": "enlazar",
-      "board": "oscarhq",
-      "padre": "t_e8e76d7c",
-      "hijo": "@epica:ops",
-      "motivo": "Tarjeta de la épica 'ops'",
-      "requiere": null
-    },
-    {
-      "fase": 6,
-      "tipo": "enlazar",
-      "board": "oscarhq",
-      "padre": "t_190f057a",
-      "hijo": "@epica:ops",
-      "motivo": "Tarjeta de la épica 'ops'",
-      "requiere": null
-    },
-    {
-      "fase": 6,
-      "tipo": "enlazar",
-      "board": "oscarhq",
-      "padre": "t_08f90331",
-      "hijo": "@epica:ops",
-      "motivo": "Tarjeta de la épica 'ops'",
-      "requiere": null
-    },
-    {
-      "fase": 6,
-      "tipo": "enlazar",
-      "board": "oscarhq",
-      "padre": "t_6d85a746",
-      "hijo": "@epica:marketing",
-      "motivo": "Tarjeta de la épica 'marketing'",
-      "requiere": null
-    },
-    {
-      "fase": 6,
-      "tipo": "enlazar",
-      "board": "oscarhq",
-      "padre": "t_6a2fdf4d",
-      "hijo": "@epica:ops",
-      "motivo": "Tarjeta de la épica 'ops'",
-      "requiere": null
-    },
-    {
-      "fase": 6,
-      "tipo": "enlazar",
-      "board": "oscarhq",
-      "padre": "t_3a4f024e",
-      "hijo": "@epica:plataforma",
-      "motivo": "Tarjeta de la épica 'plataforma'",
-      "requiere": null
-    },
-    {
-      "fase": 6,
-      "tipo": "enlazar",
-      "board": "migrateam",
-      "padre": "t_815b87e5",
-      "hijo": "@epica:mgproducto",
-      "motivo": "Tarjeta de la épica 'mgproducto'",
-      "requiere": null
-    },
-    {
-      "fase": 6,
-      "tipo": "enlazar",
-      "board": "migrateam",
-      "padre": "t_905e3371",
-      "hijo": "@epica:mgproducto",
-      "motivo": "Tarjeta de la épica 'mgproducto'",
-      "requiere": null
-    },
-    {
-      "fase": 6,
-      "tipo": "enlazar",
-      "board": "migrateam",
-      "padre": "t_c3e7b48d",
-      "hijo": "@epica:docketwise",
-      "motivo": "Tarjeta de la épica 'docketwise'",
-      "requiere": null
-    },
-    {
-      "fase": 6,
-      "tipo": "enlazar",
-      "board": "migrateam",
-      "padre": "t_addbf275",
-      "hijo": "@epica:docketwise",
-      "motivo": "Tarjeta de la épica 'docketwise'",
-      "requiere": null
-    },
-    {
-      "fase": 6,
-      "tipo": "enlazar",
-      "board": "migrateam",
-      "padre": "t_dc1e9f0c",
-      "hijo": "@epica:docketwise",
-      "motivo": "Tarjeta de la épica 'docketwise'",
-      "requiere": null
-    },
-    {
-      "fase": 6,
-      "tipo": "enlazar",
-      "board": "migrateam",
-      "padre": "t_3db189f4",
-      "hijo": "@epica:mgproducto",
-      "motivo": "Tarjeta de la épica 'mgproducto'",
-      "requiere": null
-    },
-    {
-      "fase": 6,
-      "tipo": "enlazar",
-      "board": "migrateam",
-      "padre": "t_775dd051",
-      "hijo": "@epica:mgproducto",
-      "motivo": "Tarjeta de la épica 'mgproducto'",
-      "requiere": null
-    },
-    {
-      "fase": 6,
-      "tipo": "enlazar",
-      "board": "migrateam",
-      "padre": "t_c6ecfad3",
-      "hijo": "@epica:mgproducto",
-      "motivo": "Tarjeta de la épica 'mgproducto'",
-      "requiere": null
-    },
-    {
-      "fase": 6,
-      "tipo": "enlazar",
-      "board": "migrateam",
-      "padre": "t_985109b9",
-      "hijo": "@epica:mgproducto",
-      "motivo": "Tarjeta de la épica 'mgproducto'",
-      "requiere": null
-    },
-    {
-      "fase": 6,
-      "tipo": "enlazar",
-      "board": "default",
-      "padre": "t_bdee05fe",
-      "hijo": "@epica:orquestacion",
-      "motivo": "Tarjeta de la épica 'orquestacion'",
-      "requiere": null
-    },
-    {
-      "fase": 6,
-      "tipo": "enlazar",
-      "board": "default",
-      "padre": "t_9a2e17fb",
-      "hijo": "@epica:orquestacion",
-      "motivo": "Tarjeta de la épica 'orquestacion'",
-      "requiere": null
-    },
-    {
-      "fase": 6,
-      "tipo": "enlazar",
-      "board": "default",
-      "padre": "t_ebcee1f8",
-      "hijo": "@epica:orquestacion",
-      "motivo": "Tarjeta de la épica 'orquestacion'",
-      "requiere": null
-    },
-    {
-      "fase": 6,
-      "tipo": "enlazar",
-      "board": "default",
-      "padre": "t_ad46ae34",
-      "hijo": "@epica:orquestacion",
-      "motivo": "Tarjeta de la épica 'orquestacion'",
-      "requiere": null
-    },
-    {
-      "fase": 6,
-      "tipo": "enlazar",
-      "board": "default",
-      "padre": "t_22de53c2",
-      "hijo": "@epica:orquestacion",
-      "motivo": "Tarjeta de la épica 'orquestacion'",
-      "requiere": null
-    },
-    {
-      "fase": 6,
-      "tipo": "enlazar",
-      "board": "default",
-      "padre": "t_c0d5a0fd",
-      "hijo": "@epica:orquestacion",
-      "motivo": "Tarjeta de la épica 'orquestacion'",
-      "requiere": null
-    },
-    {
-      "fase": 6,
-      "tipo": "enlazar",
-      "board": "default",
-      "padre": "t_dc1b30fb",
-      "hijo": "@epica:orquestacion",
-      "motivo": "Tarjeta de la épica 'orquestacion'",
-      "requiere": null
-    },
-    {
-      "fase": 6,
-      "tipo": "enlazar",
-      "board": "default",
-      "padre": "t_974c7bc4",
-      "hijo": "@epica:orquestacion",
-      "motivo": "Tarjeta de la épica 'orquestacion'",
-      "requiere": null
-    },
-    {
-      "fase": 7,
-      "tipo": "asignar",
-      "board": "oscarhq",
-      "id": "t_992e42ac",
-      "desde": null,
-      "hacia": "oscar",
-      "lanza_trabajo": false,
-      "motivo": "Dueño de la épica",
-      "requiere": "--con-unlink"
-    },
-    {
-      "fase": 7,
-      "tipo": "asignar",
-      "board": "oscarhq",
-      "id": "t_55600b16",
-      "desde": null,
-      "hacia": "oscar",
-      "lanza_trabajo": false,
-      "motivo": "Dueño de la épica",
-      "requiere": "--con-unlink"
-    },
-    {
-      "fase": 7,
-      "tipo": "asignar",
-      "board": "oscarhq",
-      "id": "t_63a9b340",
-      "desde": null,
-      "hacia": "oscar",
-      "lanza_trabajo": false,
-      "motivo": "Dueño de la épica",
-      "requiere": "--con-unlink"
-    },
-    {
-      "fase": 7,
-      "tipo": "asignar",
-      "board": "oscarhq",
-      "id": "t_35be06d8",
-      "desde": null,
-      "hacia": "claude-scraper",
-      "lanza_trabajo": true,
-      "motivo": "Código del Scraper (Signal Engine). Spec-Lite primero: el cuerpo ya lo exige."
-    },
-    {
-      "fase": 7,
-      "tipo": "asignar",
-      "board": "oscarhq",
-      "id": "t_a383b0ca",
-      "desde": null,
-      "hacia": "claude-oscarhq",
-      "lanza_trabajo": true,
-      "motivo": "Auditoría de solo lectura del dashboard de oscar-hq."
-    },
-    {
-      "fase": 7,
-      "tipo": "asignar",
-      "board": "oscarhq",
-      "id": "t_0d94921e",
-      "desde": null,
-      "hacia": "claude-ops",
-      "lanza_trabajo": true,
-      "motivo": "Operativo sin repo (carpetas en E:). Solo arranca si se aprueba desenlazar (P1)."
-    },
-    {
-      "fase": 7,
-      "tipo": "asignar",
-      "board": "oscarhq",
-      "id": "t_46aeb833",
-      "desde": null,
-      "hacia": "oscar",
-      "lanza_trabajo": false,
-      "motivo": "Requiere gestor/CPA: solo Oscar."
-    },
-    {
-      "fase": 7,
-      "tipo": "asignar",
-      "board": "oscarhq",
-      "id": "t_f3211374",
-      "desde": null,
-      "hacia": "oscar",
-      "lanza_trabajo": false,
-      "motivo": "Asesor fiscal en España: solo Oscar."
-    },
-    {
-      "fase": 7,
-      "tipo": "asignar",
-      "board": "oscarhq",
-      "id": "t_a80a33a4",
-      "desde": null,
-      "hacia": "oscar",
-      "lanza_trabajo": false,
-      "motivo": "URGENTE (a verificar): si el annual report de Florida no se presentó, la disolución administrativa suele aplicarse a finales de septiembre. Comprobar hoy en sunbiz.org."
-    },
-    {
-      "fase": 7,
-      "tipo": "asignar",
-      "board": "oscarhq",
-      "id": "t_000ace0f",
-      "desde": null,
-      "hacia": "oscar",
-      "lanza_trabajo": false,
-      "motivo": "Firma Authorized Rep vs Sole Member: bloquea contratos (Multiverse, Mosquera)."
-    },
-    {
-      "fase": 7,
-      "tipo": "asignar",
-      "board": "oscarhq",
-      "id": "t_8ce343e6",
-      "desde": null,
-      "hacia": "oscar",
-      "lanza_trabajo": false,
-      "motivo": "2 de las 3 decisiones ya hechas (t_ba6bc31f, done 25-09)."
-    },
-    {
-      "fase": 7,
-      "tipo": "asignar",
-      "board": "oscarhq",
-      "id": "t_f1203e25",
-      "desde": null,
-      "hacia": "oscar",
-      "lanza_trabajo": false,
-      "motivo": ""
-    },
-    {
-      "fase": 7,
-      "tipo": "asignar",
-      "board": "oscarhq",
-      "id": "t_75e9bd0f",
-      "desde": null,
-      "hacia": "oscar",
-      "lanza_trabajo": false,
-      "motivo": "Contrato/TOS y protección de datos: bloqueante legal antes de más despachos."
-    },
-    {
-      "fase": 7,
-      "tipo": "asignar",
-      "board": "oscarhq",
-      "id": "t_6ca8b65c",
-      "desde": null,
-      "hacia": "oscar",
-      "lanza_trabajo": false,
-      "motivo": "Relacionada con t_815b87e5 (E2E Stripe) y t_db8507a0 (done)."
-    },
-    {
-      "fase": 7,
-      "tipo": "asignar",
-      "board": "oscarhq",
-      "id": "t_37ff8faf",
-      "desde": null,
-      "hacia": "oscar",
-      "lanza_trabajo": false,
-      "motivo": ""
-    },
-    {
-      "fase": 7,
-      "tipo": "asignar",
-      "board": "oscarhq",
-      "id": "t_c3fde440",
-      "desde": null,
-      "hacia": "oscar",
-      "lanza_trabajo": false,
-      "motivo": "Sin oferta no hay venta: primera pieza de la épica."
-    },
-    {
-      "fase": 7,
-      "tipo": "asignar",
-      "board": "oscarhq",
-      "id": "t_e7811e26",
-      "desde": null,
-      "hacia": "oscar",
-      "lanza_trabajo": false,
-      "motivo": ""
-    },
-    {
-      "fase": 7,
-      "tipo": "asignar",
-      "board": "oscarhq",
-      "id": "t_7a0ba60a",
-      "desde": null,
-      "hacia": "claude-ops",
-      "lanza_trabajo": true,
-      "motivo": "Leer docs de E:/Pildora Digital 2026/Multiverse y resumirlos: operativo."
-    },
-    {
-      "fase": 7,
-      "tipo": "asignar",
-      "board": "oscarhq",
-      "id": "t_eb0c3483",
-      "desde": null,
-      "hacia": "claude-scraper",
-      "lanza_trabajo": true,
-      "motivo": "Auditoría de solo lectura del Scraper (t_9947adb1 dejó pendiente el reproceso de personas)."
-    },
-    {
-      "fase": 7,
-      "tipo": "asignar",
-      "board": "oscarhq",
-      "id": "t_b2bf3bdc",
-      "desde": null,
-      "hacia": "oscar",
-      "lanza_trabajo": false,
-      "motivo": ""
-    },
-    {
-      "fase": 7,
-      "tipo": "asignar",
-      "board": "migrateam",
-      "id": "t_3db189f4",
-      "desde": null,
-      "hacia": "claude-migrateam",
-      "lanza_trabajo": true,
-      "motivo": "Código del frontend; el DSN en Vercel lo pone Oscar (el carril termina en needs_input)."
-    },
-    {
-      "fase": 8,
-      "tipo": "recrear",
-      "board": "personal",
-      "id": "t_6b7b66ec",
-      "board_destino": "oscarhq",
-      "titulo": "Organizar carpetas MigraTeam/Píldora (E: y local) y comparar por hash los backups de E:",
-      "asignado": "claude-ops",
-      "prioridad": 3,
-      "epica": "ops",
-      "idempotency_key": "reorg-20260928-move-t_6b7b66ec",
-      "cuerpo": "Recreada desde t_6b7b66ec (tablero personal) en la reorganización del 28-09: el carril claude-ops solo lee el tablero oscarhq.\n\nPendiente desde el 26-09. Primero inventario y propuesta; mover o borrar solo con OK.",
-      "lanza_trabajo": true,
-      "motivo": "Operativo; claude-ops solo lee el tablero oscarhq. Se recrea allí y se archiva la original."
-    },
-    {
-      "fase": 9,
-      "tipo": "archivar",
-      "board": "oscarhq",
-      "id": "t_2a58b9e1",
-      "desde_estado": "ready",
-      "motivo": "Sustituida por t_3a4f024e (comentario del coordinador 28-09 12:58)."
-    },
-    {
-      "fase": 9,
-      "tipo": "archivar",
-      "board": "oscarhq",
-      "id": "t_55ac04d8",
-      "desde_estado": "todo",
-      "motivo": "Respondida: comentario de t_992e42ac (24-09): 8 secuencias en pausa, 0 matrículas; PR #12."
-    },
-    {
-      "fase": 9,
-      "tipo": "archivar",
-      "board": "oscarhq",
-      "id": "t_275db333",
-      "desde_estado": "todo",
-      "motivo": "Hecha: PR #12 (sync Scraper→CRM cada 15 min) fusionado el 24-09."
-    },
-    {
-      "fase": 9,
-      "tipo": "archivar",
-      "board": "oscarhq",
-      "id": "t_2f07828a",
-      "desde_estado": "ready",
-      "motivo": "PR #11 fusionado; su propio comentario la da por cerrada; sustituida por la auditoría de crews del 27-09 (t_dbd74152 y sus tarjetas)."
-    },
-    {
-      "fase": 9,
-      "tipo": "archivar",
-      "board": "oscarhq",
-      "id": "t_70c748be",
-      "desde_estado": "ready",
-      "motivo": "Hecha: comentario de cierre W1b (hub 87a83b4/9dfe9fc/28ca285, 127 tests)."
-    },
-    {
-      "fase": 9,
-      "tipo": "archivar",
-      "board": "oscarhq",
-      "id": "t_6ded7e3e",
-      "desde_estado": "ready",
-      "motivo": "Hecha: W3b en hub 1f5cf8d + addendum 0d383f9."
-    },
-    {
-      "fase": 9,
-      "tipo": "archivar",
-      "board": "oscarhq",
-      "id": "t_d2fccb2a",
-      "desde_estado": "ready",
-      "motivo": "Hecha: W4 fusionado en oscar-hq (#37 32f11427, #39 51449e7d). Comandos de Gestión pendientes: P12."
-    },
-    {
-      "fase": 9,
-      "tipo": "archivar",
-      "board": "oscarhq",
-      "id": "t_c70e4221",
-      "desde_estado": "triage",
-      "motivo": "Sustituida por t_1411984a (done); comentario del coordinador 28-09."
-    },
-    {
-      "fase": 9,
-      "tipo": "archivar",
-      "board": "migrateam",
-      "id": "t_53c184e6",
-      "desde_estado": "ready",
-      "motivo": "Sustituida por t_c6ecfad3 (creada al aprobarla Oscar el 28-09, cita sus comentarios)."
-    },
-    {
-      "fase": 9,
-      "tipo": "archivar",
-      "board": "default",
-      "id": "t_ba5085cc",
-      "desde_estado": "ready",
-      "motivo": "Duplicado de t_c70e4221 (Hermes buscó solo en default)."
-    },
-    {
-      "fase": 9,
-      "tipo": "archivar",
-      "board": "default",
-      "id": "t_1a5138f2",
-      "desde_estado": "ready",
-      "motivo": "Hecha: integrador en hub 78c59c3 + endurecido 6938e82 (security-auditor)."
-    },
-    {
-      "fase": 9,
-      "tipo": "archivar",
-      "board": "default",
-      "id": "t_631cf0bc",
-      "desde_estado": "ready",
-      "motivo": "Hecha: hub 331bd3b (brief_diario.py) y t_ffaf1078 la da por cubierta."
-    },
-    {
-      "fase": 9,
-      "tipo": "archivar",
-      "board": "default",
-      "id": "t_ffaf1078",
-      "desde_estado": "ready",
-      "motivo": "Auditoría cerrada: repartida en t_102f03b6, t_e8e76d7c, t_190f057a, t_08f90331, t_6d85a746, t_32f2b188, t_a0790dfc, t_6a2fdf4d. El punto #2 no tiene tarjeta: P14."
-    }
-  ],
-  "done_antiguas_14d": []
+  "mgnegocio": {
+   "board": "oscarhq",
+   "reutiliza": "t_55600b16",
+   "titulo": "[ÉPICA] MigraTeam negocio: ventas, legal y administración (ex MIGRATEAM-360)",
+   "prioridad": 6,
+   "idempotency_key": null
+  },
+  "ventas": {
+   "board": "oscarhq",
+   "reutiliza": "t_63a9b340",
+   "titulo": "[ÉPICA] Ventas Píldora: agencia de servicios digitales",
+   "prioridad": 7,
+   "idempotency_key": null
+  },
+  "plataforma": {
+   "board": "oscarhq",
+   "reutiliza": null,
+   "titulo": "[ÉPICA] Oscar HQ plataforma: crews, seguridad y deuda",
+   "prioridad": 7,
+   "idempotency_key": "reorg-20260928-plataforma"
+  },
+  "marketing": {
+   "board": "oscarhq",
+   "reutiliza": null,
+   "titulo": "[ÉPICA] Marketing: comandos de Telegram y trabajo con Andrea",
+   "prioridad": 6,
+   "idempotency_key": "reorg-20260928-marketing"
+  },
+  "ops": {
+   "board": "oscarhq",
+   "reutiliza": null,
+   "titulo": "[ÉPICA] Operaciones personales: PC, discos, calendario, ClickUp",
+   "prioridad": 3,
+   "idempotency_key": "reorg-20260928-ops"
+  },
+  "mgproducto": {
+   "board": "migrateam",
+   "reutiliza": null,
+   "titulo": "[ÉPICA] MigraTeam producto y cobro (España + Mosquera)",
+   "prioridad": 9,
+   "idempotency_key": "reorg-20260928-mgproducto"
+  },
+  "docketwise": {
+   "board": "migrateam",
+   "reutiliza": null,
+   "titulo": "[ÉPICA] Docketwise: MigraTeam para despachos de EEUU (familiar/humanitario)",
+   "prioridad": 7,
+   "idempotency_key": "reorg-20260928-docketwise"
+  },
+  "orquestacion": {
+   "board": "default",
+   "reutiliza": null,
+   "titulo": "[ÉPICA] Orquestación y agentes: carriles, Hermes y hub",
+   "prioridad": 8,
+   "idempotency_key": "reorg-20260928-orquestacion"
+  }
+ },
+ "acciones": [
+  {
+   "fase": 1,
+   "tipo": "crear_epica",
+   "epica": "plataforma",
+   "board": "oscarhq",
+   "titulo": "[ÉPICA] Oscar HQ plataforma: crews, seguridad y deuda",
+   "prioridad": 7,
+   "asignado": "oscar",
+   "idempotency_key": "reorg-20260928-plataforma",
+   "cuerpo": "Para Oscar: épica que agrupa 11 tarjetas. Agrupa el trabajo de código de oscar-hq (carril claude-oscarhq): seguridad (RLS, cifrado), crews programados y deuda.\n\n## Cómo funciona\nEsta épica es HIJA de sus tarjetas (`hermes kanban link <tarjeta> <épica>`): queda en `todo` y se despierta cuando todas terminan. Así no bloquea a ningún carril ni al Integrador (en Hermes el padre bloquea al hijo). Asignada a `oscar` para que ningún carril la reclame. NO es tarea ejecutable.\n\n## Tarjetas\n- t_39532b42 · Integrar rama rescatada rescue/triaje-h-batch-20260924 (H-094…H-119)\n- t_4880088a · Programar crews: sales_pipeline_review (lunes 8:00), content_creation semanal, demo_follow_up post-demo\n- t_49d9ad5c · Spec: programar sales_pipeline_review semanal + demo_follow_up post-demo con aprobación humana\n- t_a2972b36 · Spec: crews programados extra: digest semanal de Signal, KPIs de marketing semanal (analytics), SEO/GEO mensual (seo_geo)\n- t_dc43939b · Página de estado de carriles en app.pildoradigital.com (lee ohq_context_snapshots)\n- t_f371a1a8 · Spec: incident_response alimentado por alertas de Railway/Sentry\n- t_a383b0ca · Auditoría de negocio de las 46 páginas restantes del dashboard (de 85)\n- t_0077852a · Archivar crew fantasma output_compactor\n- t_1af88ebf · Spec: H-122 fusionar strategic_review + full_business_audit\n- t_c8b575a6 · Triar y corregir 10 hallazgos S pendientes (H-094,099,105,106,108,109,110,112,115,119)\n- t_3a4f024e · Auditoría de ramas lane/* fusionadas y worktrees huérfanos (sin borrar nada)\n\nOrigen: references/2026-09-28-plan-reorganizacion-kanban.md\n"
+  },
+  {
+   "fase": 1,
+   "tipo": "crear_epica",
+   "epica": "marketing",
+   "board": "oscarhq",
+   "titulo": "[ÉPICA] Marketing: comandos de Telegram y trabajo con Andrea",
+   "prioridad": 6,
+   "asignado": "oscar",
+   "idempotency_key": "reorg-20260928-marketing",
+   "cuerpo": "Para Oscar: épica que agrupa 2 tarjetas. Habilita a Andrea (CMO en modo ejecución) en el grupo de Marketing.\n\n## Cómo funciona\nEsta épica es HIJA de sus tarjetas (`hermes kanban link <tarjeta> <épica>`): queda en `todo` y se despierta cuando todas terminan. Así no bloquea a ningún carril ni al Integrador (en Hermes el padre bloquea al hijo). Asignada a `oscar` para que ningún carril la reclame. NO es tarea ejecutable.\n\n## Tarjetas\n- t_fccc736d · Comandos de marketing en Telegram con preguntas y crews (/post /reel /email /articulo /embudo)\n- t_6d85a746 · Accesos para Andrea: Drive, GitHub y Canva (marca Píldora)\n\nOrigen: references/2026-09-28-plan-reorganizacion-kanban.md\n"
+  },
+  {
+   "fase": 1,
+   "tipo": "crear_epica",
+   "epica": "ops",
+   "board": "oscarhq",
+   "titulo": "[ÉPICA] Operaciones personales: PC, discos, calendario, ClickUp",
+   "prioridad": 3,
+   "asignado": "oscar",
+   "idempotency_key": "reorg-20260928-ops",
+   "cuerpo": "Para Oscar: épica que agrupa 5 tarjetas. Trabajo del carril claude-ops (sin repo); importante pero no genera ingresos ni desbloquea clientes.\n\n## Cómo funciona\nEsta épica es HIJA de sus tarjetas (`hermes kanban link <tarjeta> <épica>`): queda en `todo` y se despierta cuando todas terminan. Así no bloquea a ningún carril ni al Integrador (en Hermes el padre bloquea al hijo). Asignada a `oscar` para que ningún carril la reclame. NO es tarea ejecutable.\n\n## Tarjetas\n- t_e8e76d7c · Migrar vault Obsidian de disco D: a local + túnel con URL propia\n- t_190f057a · Recuperar 'buzón' de agentes de disco E: (extraíble)\n- t_08f90331 · Calendario personal de Oscar organizado por áreas\n- t_6a2fdf4d · Definir y mejorar gestión de ClickUp\n- t_6b7b66ec · Organizar carpetas MigraTeam/Píldora (E: y local) y comparar por hash los backups de E:\n\nOrigen: references/2026-09-28-plan-reorganizacion-kanban.md\n"
+  },
+  {
+   "fase": 1,
+   "tipo": "crear_epica",
+   "epica": "mgproducto",
+   "board": "migrateam",
+   "titulo": "[ÉPICA] MigraTeam producto y cobro (España + Mosquera)",
+   "prioridad": 9,
+   "asignado": "oscar",
+   "idempotency_key": "reorg-20260928-mgproducto",
+   "cuerpo": "Para Oscar: épica que agrupa 6 tarjetas. Mosquera es el único cliente que paga; MigraTeam es la siguiente prioridad declarada tras Signal.\n\n## Cómo funciona\nEsta épica es HIJA de sus tarjetas (`hermes kanban link <tarjeta> <épica>`): queda en `todo` y se despierta cuando todas terminan. Así no bloquea a ningún carril ni al Integrador (en Hermes el padre bloquea al hijo). Asignada a `oscar` para que ningún carril la reclame. NO es tarea ejecutable.\n\n## Tarjetas\n- t_815b87e5 · [SEMANA] E2E de cobro Stripe con Mosquera (claves de test)\n- t_905e3371 · Spec (solo diseño): verificar en código los 12 puntos de correcciones de expediente/catálogo/cuestionarios (t_98f58389)\n- t_3db189f4 · Crear proyecto Sentry para el frontend de MigraTeam\n- t_775dd051 · Explicación de visados y procedimientos de extranjería (conocimiento, sin tocar la plataforma)\n- t_c6ecfad3 · Diagnosticar alerta de fuera de plazo que no salta + tipos 'pago matrícula'/'carta patrocinio' con caducidad\n- t_985109b9 · MigraTeam Fase 1: catálogo docs + formulario Estudios + antecedentes penales (spec t_98f58389)\n\nOrigen: references/2026-09-28-plan-reorganizacion-kanban.md\n"
+  },
+  {
+   "fase": 1,
+   "tipo": "crear_epica",
+   "epica": "docketwise",
+   "board": "migrateam",
+   "titulo": "[ÉPICA] Docketwise: MigraTeam para despachos de EEUU (familiar/humanitario)",
+   "prioridad": 7,
+   "asignado": "oscar",
+   "idempotency_key": "reorg-20260928-docketwise",
+   "cuerpo": "Para Oscar: épica que agrupa 3 tarjetas. Plan t_761326d7 aprobado; prioridad familiar/humanitario decidida por Oscar el 28-09.\n\n## Cómo funciona\nEsta épica es HIJA de sus tarjetas (`hermes kanban link <tarjeta> <épica>`): queda en `todo` y se despierta cuando todas terminan. Así no bloquea a ningún carril ni al Integrador (en Hermes el padre bloquea al hijo). Asignada a `oscar` para que ningún carril la reclame. NO es tarea ejecutable.\n\n## Tarjetas\n- t_c3e7b48d · Docketwise #1 · Spec: OCR de documentos de EEUU (I-94, EAD/I-766, I-797, Green Card/I-551)\n- t_addbf275 · Docketwise #3 · Spec: publicar el catálogo de EEUU ya construido (66 procedimientos)\n- t_dc1e9f0c · Docketwise #4 · Spec: alertas de plazos que se usen de verdad (flags de recordatorios)\n\nOrigen: references/2026-09-28-plan-reorganizacion-kanban.md\n"
+  },
+  {
+   "fase": 1,
+   "tipo": "crear_epica",
+   "epica": "orquestacion",
+   "board": "default",
+   "titulo": "[ÉPICA] Orquestación y agentes: carriles, Hermes y hub",
+   "prioridad": 8,
+   "asignado": "oscar",
+   "idempotency_key": "reorg-20260928-orquestacion",
+   "cuerpo": "Para Oscar: épica que agrupa 8 tarjetas. Criterio de salida del plan D: 3 días sin intervención. Miembros en oscarhq no enlazables (otro tablero): t_9ccfdf80, t_102f03b6.\n\n## Cómo funciona\nEsta épica es HIJA de sus tarjetas (`hermes kanban link <tarjeta> <épica>`): queda en `todo` y se despierta cuando todas terminan. Así no bloquea a ningún carril ni al Integrador (en Hermes el padre bloquea al hijo). Asignada a `oscar` para que ningún carril la reclame. NO es tarea ejecutable.\n\n## Tarjetas\n- t_bdee05fe · agent-lanes: reinicio ordenado (drain) + 'lanes status' sin falsos 'libre/huérfano'\n- t_9a2e17fb · agent-lanes: avisar también en el DM las tareas pedidas por DM + quitar suscripción de Hermes antes del claim\n- t_ebcee1f8 · Respaldo de modelo para Hermes (DeepSeek/OpenRouter) si se agota Claude Max\n- t_ad46ae34 · agent-lanes: presupuesto por TAREA (hoy max_budget_usd es por invocación: hasta 3× con resumes) + riesgo pytest/conftest\n- t_22de53c2 · Hermes: bug de clarify en temas de foro (la respuesta escrita se toma como timeout)\n- t_c0d5a0fd · Runner: t_0077852a (git worktree add falló) y t_c8b575a6 ('no tiene commits')\n- t_dc1b30fb · Espejo de solo lectura de las tareas de carriles en ClickUp\n- t_974c7bc4 · Hermes: consolidar USER.md (1366/1375 caracteres, error 'Memory exceed' a las 18:19)\n\nOrigen: references/2026-09-28-plan-reorganizacion-kanban.md\n"
+  },
+  {
+   "fase": 2,
+   "tipo": "titulo",
+   "board": "oscarhq",
+   "id": "t_992e42ac",
+   "desde": "[SCRAPER-CRM-LEADS] Verificar captacion activa y gestion real de leads",
+   "hacia": "[ÉPICA] Signal y outreach: captación → CRM → secuencias",
+   "motivo": "Reutilizar como épica 'signal'",
+   "requiere": "--con-unlink"
+  },
+  {
+   "fase": 2,
+   "tipo": "titulo",
+   "board": "oscarhq",
+   "id": "t_f90da954",
+   "desde": "[SEMANA] [LEGAL-LLC] Pildora Digital LLC — cumplimiento fiscal y legal (bloquea el contrato Multiverse)",
+   "hacia": "[ÉPICA] LLC y legal: Pildora Digital LLC (fiscal, firma; bloquea el contrato Multiverse)",
+   "motivo": "Reutilizar como épica 'llc'",
+   "requiere": "--con-unlink"
+  },
+  {
+   "fase": 2,
+   "tipo": "titulo",
+   "board": "oscarhq",
+   "id": "t_55600b16",
+   "desde": "[MIGRATEAM-360] Revision integral: producto, ventas, legal, admin, documentacion, marketing",
+   "hacia": "[ÉPICA] MigraTeam negocio: ventas, legal y administración (ex MIGRATEAM-360)",
+   "motivo": "Reutilizar como épica 'mgnegocio'",
+   "requiere": "--con-unlink"
+  },
+  {
+   "fase": 2,
+   "tipo": "titulo",
+   "board": "oscarhq",
+   "id": "t_63a9b340",
+   "desde": "[PILDORA-VENTAS] Agencia -- foco en venta de servicios digitales",
+   "hacia": "[ÉPICA] Ventas Píldora: agencia de servicios digitales",
+   "motivo": "Reutilizar como épica 'ventas'",
+   "requiere": "--con-unlink"
+  },
+  {
+   "fase": 2,
+   "tipo": "titulo",
+   "board": "oscarhq",
+   "id": "t_46aeb833",
+   "desde": "Confirmar con gestor/CPA obligaciones fiscales US de la LLC (Florida, federal, si Oscar reside fuera de US)",
+   "hacia": "[DECISIÓN] Confirmar con gestor/CPA obligaciones fiscales US de la LLC (Florida, federal, si Oscar reside fuera de US)",
+   "motivo": "Requiere gestor/CPA: solo Oscar."
+  },
+  {
+   "fase": 2,
+   "tipo": "titulo",
+   "board": "oscarhq",
+   "id": "t_f3211374",
+   "desde": "Confirmar situacion fiscal en Espana de Oscar por ingresos via LLC US (doble imposicion, modelo 720 si aplica)",
+   "hacia": "[DECISIÓN] Confirmar situacion fiscal en Espana de Oscar por ingresos via LLC US (doble imposicion, modelo 720 si aplica)",
+   "motivo": "Asesor fiscal en España: solo Oscar."
+  },
+  {
+   "fase": 2,
+   "tipo": "titulo",
+   "board": "oscarhq",
+   "id": "t_a80a33a4",
+   "desde": "Verificar estado de registered agent y annual report de Florida (evitar disolucion administrativa)",
+   "hacia": "[DECISIÓN] Verificar estado de registered agent y annual report de Florida (evitar disolucion administrativa)",
+   "motivo": "URGENTE (a verificar): si el annual report de Florida no se presentó, la disolución administrativa suele aplicarse a finales de septiembre. Comprobar hoy en sunbiz.org."
+  },
+  {
+   "fase": 2,
+   "tipo": "titulo",
+   "board": "oscarhq",
+   "id": "t_000ace0f",
+   "desde": "Definir circuito de firma: que puede firmar Oscar como Authorized Rep vs que requiere a Yajaira como Sole Member",
+   "hacia": "[DECISIÓN] Definir circuito de firma: que puede firmar Oscar como Authorized Rep vs que requiere a Yajaira como Sole Member",
+   "motivo": "Firma Authorized Rep vs Sole Member: bloquea contratos (Multiverse, Mosquera)."
+  },
+  {
+   "fase": 2,
+   "tipo": "titulo",
+   "board": "oscarhq",
+   "id": "t_8ce343e6",
+   "desde": "Producto: cerrar las 3 decisiones manuales pendientes (MOSQ-02 idioma email, CAT-05 categorias ES, MOSQ-01 limpieza datos)",
+   "hacia": "[DECISIÓN] MigraTeam MOSQ-01: limpieza de datos de Mosquera (MOSQ-02 y CAT-05 ya hechas en t_ba6bc31f)",
+   "motivo": "2 de las 3 decisiones ya hechas (t_ba6bc31f, done 25-09)."
+  },
+  {
+   "fase": 2,
+   "tipo": "titulo",
+   "board": "oscarhq",
+   "id": "t_f1203e25",
+   "desde": "Ventas: definir pipeline y estado real de leads/despachos (Mosquera y similares)",
+   "hacia": "[DECISIÓN] Ventas: definir pipeline y estado real de leads/despachos (Mosquera y similares)",
+   "motivo": "decision"
+  },
+  {
+   "fase": 2,
+   "tipo": "titulo",
+   "board": "oscarhq",
+   "id": "t_75e9bd0f",
+   "desde": "Legal: contrato/TOS de servicio para despachos, proteccion de datos de expedientes de clientes",
+   "hacia": "[DECISIÓN] Legal: contrato/TOS de servicio para despachos, proteccion de datos de expedientes de clientes",
+   "motivo": "Contrato/TOS y protección de datos: bloqueante legal antes de más despachos."
+  },
+  {
+   "fase": 2,
+   "tipo": "titulo",
+   "board": "oscarhq",
+   "id": "t_6ca8b65c",
+   "desde": "Administracion: facturacion, cobro, alta de clientes -- flujo operativo",
+   "hacia": "[DECISIÓN] Administracion: facturacion, cobro, alta de clientes -- flujo operativo",
+   "motivo": "Relacionada con t_815b87e5 (E2E Stripe) y t_db8507a0 (done)."
+  },
+  {
+   "fase": 2,
+   "tipo": "titulo",
+   "board": "oscarhq",
+   "id": "t_37ff8faf",
+   "desde": "Marketing: como se va a vender MigraTeam mas alla de Mosquera (posicionamiento, canal)",
+   "hacia": "[DECISIÓN] Marketing: como se va a vender MigraTeam mas alla de Mosquera (posicionamiento, canal)",
+   "motivo": "decision"
+  },
+  {
+   "fase": 2,
+   "tipo": "titulo",
+   "board": "oscarhq",
+   "id": "t_c3fde440",
+   "desde": "Definir oferta de servicios digitales a vender (que se vende exactamente, precios, paquetes)",
+   "hacia": "[DECISIÓN] Definir oferta de servicios digitales a vender (que se vende exactamente, precios, paquetes)",
+   "motivo": "Sin oferta no hay venta: primera pieza de la épica."
+  },
+  {
+   "fase": 2,
+   "tipo": "titulo",
+   "board": "oscarhq",
+   "id": "t_e7811e26",
+   "desde": "Pipeline de prospeccion activa: quien contacta, con que cadencia, que canal",
+   "hacia": "[DECISIÓN] Pipeline de prospeccion activa: quien contacta, con que cadencia, que canal",
+   "motivo": "decision"
+  },
+  {
+   "fase": 2,
+   "tipo": "titulo",
+   "board": "oscarhq",
+   "id": "t_b2bf3bdc",
+   "desde": "Definir cadencia de outreach real (email/otro canal) para los leads ya captados",
+   "hacia": "[DECISIÓN] Signal: cadencia y volumen diario del outreach (con cola de revisión)",
+   "motivo": "decision"
+  },
+  {
+   "fase": 2,
+   "tipo": "titulo",
+   "board": "default",
+   "id": "t_ebcee1f8",
+   "desde": "Respaldo de modelo para Hermes (DeepSeek/OpenRouter) si se agota Claude Max",
+   "hacia": "[DECISIÓN] Respaldo de modelo para Hermes (DeepSeek/OpenRouter) si se agota Claude Max",
+   "motivo": "Requiere crédito en OpenRouter: solo Oscar."
+  },
+  {
+   "fase": 2,
+   "tipo": "titulo",
+   "board": "default",
+   "id": "t_974c7bc4",
+   "desde": "Hermes: consolidar USER.md (1366/1375 caracteres, error 'Memory exceed' a las 18:19)",
+   "hacia": "[DECISIÓN] Hermes: consolidar USER.md (1366/1375 caracteres, error 'Memory exceed' a las 18:19)",
+   "motivo": "USER.md tiene datos personales: lo revisa Oscar. Hermes ya no puede escribir memoria."
+  },
+  {
+   "fase": 2,
+   "tipo": "titulo",
+   "board": "default",
+   "id": "t_11fd6811",
+   "desde": "Recordatorio: recargar fal.ai para reactivar el vídeo (video_production)",
+   "hacia": "[DECISIÓN] Recordatorio: recargar fal.ai para reactivar el vídeo (video_production)",
+   "motivo": "Recordatorio que solo puede hacer Oscar (recargar fal.ai)."
+  },
+  {
+   "fase": 2,
+   "tipo": "titulo",
+   "board": "default",
+   "id": "t_98f58389",
+   "desde": "MigraTeam — Consolidar spec de motor de fechas único (DeadlineAnchor/DeadlineRule) — pendiente aprobación",
+   "hacia": "[REF] MigraTeam — Spec motor de fechas único (DeadlineAnchor/DeadlineRule): consolidada en t_905e3371, Fase 1 en t_985109b9",
+   "motivo": "Ficha de referencia (lote cerrado 27-09). No se archiva: t_985109b9 la cita y aún no ha terminado."
+  },
+  {
+   "fase": 3,
+   "tipo": "prioridad",
+   "board": "oscarhq",
+   "id": "t_992e42ac",
+   "desde": 0,
+   "hacia": 9
+  },
+  {
+   "fase": 3,
+   "tipo": "prioridad",
+   "board": "oscarhq",
+   "id": "t_f90da954",
+   "desde": 0,
+   "hacia": 8
+  },
+  {
+   "fase": 3,
+   "tipo": "prioridad",
+   "board": "oscarhq",
+   "id": "t_55600b16",
+   "desde": 0,
+   "hacia": 6
+  },
+  {
+   "fase": 3,
+   "tipo": "prioridad",
+   "board": "oscarhq",
+   "id": "t_63a9b340",
+   "desde": 0,
+   "hacia": 7
+  },
+  {
+   "fase": 3,
+   "tipo": "prioridad",
+   "board": "oscarhq",
+   "id": "t_fccc736d",
+   "desde": 9,
+   "hacia": 8
+  },
+  {
+   "fase": 3,
+   "tipo": "prioridad",
+   "board": "oscarhq",
+   "id": "t_39532b42",
+   "desde": 7,
+   "hacia": 6
+  },
+  {
+   "fase": 3,
+   "tipo": "prioridad",
+   "board": "oscarhq",
+   "id": "t_4880088a",
+   "desde": 6,
+   "hacia": 5
+  },
+  {
+   "fase": 3,
+   "tipo": "prioridad",
+   "board": "oscarhq",
+   "id": "t_a2972b36",
+   "desde": 5,
+   "hacia": 4
+  },
+  {
+   "fase": 3,
+   "tipo": "prioridad",
+   "board": "oscarhq",
+   "id": "t_dc43939b",
+   "desde": 5,
+   "hacia": 4
+  },
+  {
+   "fase": 3,
+   "tipo": "prioridad",
+   "board": "oscarhq",
+   "id": "t_f371a1a8",
+   "desde": 4,
+   "hacia": 3
+  },
+  {
+   "fase": 3,
+   "tipo": "prioridad",
+   "board": "oscarhq",
+   "id": "t_35be06d8",
+   "desde": 3,
+   "hacia": 4
+  },
+  {
+   "fase": 3,
+   "tipo": "prioridad",
+   "board": "oscarhq",
+   "id": "t_a383b0ca",
+   "desde": 3,
+   "hacia": 2
+  },
+  {
+   "fase": 3,
+   "tipo": "prioridad",
+   "board": "oscarhq",
+   "id": "t_0077852a",
+   "desde": 3,
+   "hacia": 2
+  },
+  {
+   "fase": 3,
+   "tipo": "prioridad",
+   "board": "oscarhq",
+   "id": "t_0d94921e",
+   "desde": 0,
+   "hacia": 6
+  },
+  {
+   "fase": 3,
+   "tipo": "prioridad",
+   "board": "oscarhq",
+   "id": "t_46aeb833",
+   "desde": 0,
+   "hacia": 7
+  },
+  {
+   "fase": 3,
+   "tipo": "prioridad",
+   "board": "oscarhq",
+   "id": "t_f3211374",
+   "desde": 0,
+   "hacia": 6
+  },
+  {
+   "fase": 3,
+   "tipo": "prioridad",
+   "board": "oscarhq",
+   "id": "t_a80a33a4",
+   "desde": 0,
+   "hacia": 10
+  },
+  {
+   "fase": 3,
+   "tipo": "prioridad",
+   "board": "oscarhq",
+   "id": "t_000ace0f",
+   "desde": 0,
+   "hacia": 8
+  },
+  {
+   "fase": 3,
+   "tipo": "prioridad",
+   "board": "oscarhq",
+   "id": "t_8ce343e6",
+   "desde": 0,
+   "hacia": 3
+  },
+  {
+   "fase": 3,
+   "tipo": "prioridad",
+   "board": "oscarhq",
+   "id": "t_f1203e25",
+   "desde": 0,
+   "hacia": 5
+  },
+  {
+   "fase": 3,
+   "tipo": "prioridad",
+   "board": "oscarhq",
+   "id": "t_75e9bd0f",
+   "desde": 0,
+   "hacia": 6
+  },
+  {
+   "fase": 3,
+   "tipo": "prioridad",
+   "board": "oscarhq",
+   "id": "t_6ca8b65c",
+   "desde": 0,
+   "hacia": 4
+  },
+  {
+   "fase": 3,
+   "tipo": "prioridad",
+   "board": "oscarhq",
+   "id": "t_cb91e9fb",
+   "desde": 0,
+   "hacia": 2
+  },
+  {
+   "fase": 3,
+   "tipo": "prioridad",
+   "board": "oscarhq",
+   "id": "t_37ff8faf",
+   "desde": 0,
+   "hacia": 4
+  },
+  {
+   "fase": 3,
+   "tipo": "prioridad",
+   "board": "oscarhq",
+   "id": "t_c3fde440",
+   "desde": 0,
+   "hacia": 7
+  },
+  {
+   "fase": 3,
+   "tipo": "prioridad",
+   "board": "oscarhq",
+   "id": "t_e7811e26",
+   "desde": 0,
+   "hacia": 5
+  },
+  {
+   "fase": 3,
+   "tipo": "prioridad",
+   "board": "oscarhq",
+   "id": "t_7a0ba60a",
+   "desde": 0,
+   "hacia": 3
+  },
+  {
+   "fase": 3,
+   "tipo": "prioridad",
+   "board": "oscarhq",
+   "id": "t_9b90d162",
+   "desde": 0,
+   "hacia": 3
+  },
+  {
+   "fase": 3,
+   "tipo": "prioridad",
+   "board": "oscarhq",
+   "id": "t_eb0c3483",
+   "desde": 0,
+   "hacia": 4
+  },
+  {
+   "fase": 3,
+   "tipo": "prioridad",
+   "board": "oscarhq",
+   "id": "t_b2bf3bdc",
+   "desde": 0,
+   "hacia": 6
+  },
+  {
+   "fase": 3,
+   "tipo": "prioridad",
+   "board": "oscarhq",
+   "id": "t_7daeacc9",
+   "desde": 0,
+   "hacia": 2
+  },
+  {
+   "fase": 3,
+   "tipo": "prioridad",
+   "board": "oscarhq",
+   "id": "t_9ccfdf80",
+   "desde": 0,
+   "hacia": 3
+  },
+  {
+   "fase": 3,
+   "tipo": "prioridad",
+   "board": "oscarhq",
+   "id": "t_102f03b6",
+   "desde": 0,
+   "hacia": 1
+  },
+  {
+   "fase": 3,
+   "tipo": "prioridad",
+   "board": "oscarhq",
+   "id": "t_e8e76d7c",
+   "desde": 0,
+   "hacia": 3
+  },
+  {
+   "fase": 3,
+   "tipo": "prioridad",
+   "board": "oscarhq",
+   "id": "t_190f057a",
+   "desde": 0,
+   "hacia": 3
+  },
+  {
+   "fase": 3,
+   "tipo": "prioridad",
+   "board": "oscarhq",
+   "id": "t_08f90331",
+   "desde": 0,
+   "hacia": 4
+  },
+  {
+   "fase": 3,
+   "tipo": "prioridad",
+   "board": "oscarhq",
+   "id": "t_6d85a746",
+   "desde": 0,
+   "hacia": 6
+  },
+  {
+   "fase": 3,
+   "tipo": "prioridad",
+   "board": "oscarhq",
+   "id": "t_6a2fdf4d",
+   "desde": 0,
+   "hacia": 3
+  },
+  {
+   "fase": 3,
+   "tipo": "prioridad",
+   "board": "oscarhq",
+   "id": "t_3a4f024e",
+   "desde": 0,
+   "hacia": 3
+  },
+  {
+   "fase": 3,
+   "tipo": "prioridad",
+   "board": "migrateam",
+   "id": "t_c3e7b48d",
+   "desde": 8,
+   "hacia": 7
+  },
+  {
+   "fase": 3,
+   "tipo": "prioridad",
+   "board": "migrateam",
+   "id": "t_dc1e9f0c",
+   "desde": 6,
+   "hacia": 5
+  },
+  {
+   "fase": 3,
+   "tipo": "prioridad",
+   "board": "migrateam",
+   "id": "t_3db189f4",
+   "desde": 5,
+   "hacia": 4
+  },
+  {
+   "fase": 3,
+   "tipo": "prioridad",
+   "board": "migrateam",
+   "id": "t_775dd051",
+   "desde": 4,
+   "hacia": 3
+  },
+  {
+   "fase": 3,
+   "tipo": "prioridad",
+   "board": "migrateam",
+   "id": "t_c6ecfad3",
+   "desde": 0,
+   "hacia": 7
+  },
+  {
+   "fase": 3,
+   "tipo": "prioridad",
+   "board": "migrateam",
+   "id": "t_985109b9",
+   "desde": 0,
+   "hacia": 8
+  },
+  {
+   "fase": 3,
+   "tipo": "prioridad",
+   "board": "default",
+   "id": "t_bdee05fe",
+   "desde": 8,
+   "hacia": 7
+  },
+  {
+   "fase": 3,
+   "tipo": "prioridad",
+   "board": "default",
+   "id": "t_9a2e17fb",
+   "desde": 7,
+   "hacia": 4
+  },
+  {
+   "fase": 3,
+   "tipo": "prioridad",
+   "board": "default",
+   "id": "t_551843f3",
+   "desde": 6,
+   "hacia": 2
+  },
+  {
+   "fase": 3,
+   "tipo": "prioridad",
+   "board": "default",
+   "id": "t_6d1eb9e0",
+   "desde": 5,
+   "hacia": 2
+  },
+  {
+   "fase": 3,
+   "tipo": "prioridad",
+   "board": "default",
+   "id": "t_ebcee1f8",
+   "desde": 5,
+   "hacia": 3
+  },
+  {
+   "fase": 3,
+   "tipo": "prioridad",
+   "board": "default",
+   "id": "t_ad46ae34",
+   "desde": 5,
+   "hacia": 4
+  },
+  {
+   "fase": 3,
+   "tipo": "prioridad",
+   "board": "default",
+   "id": "t_22de53c2",
+   "desde": 5,
+   "hacia": 2
+  },
+  {
+   "fase": 3,
+   "tipo": "prioridad",
+   "board": "default",
+   "id": "t_c0d5a0fd",
+   "desde": 5,
+   "hacia": 4
+  },
+  {
+   "fase": 3,
+   "tipo": "prioridad",
+   "board": "default",
+   "id": "t_dc1b30fb",
+   "desde": 4,
+   "hacia": 2
+  },
+  {
+   "fase": 3,
+   "tipo": "prioridad",
+   "board": "default",
+   "id": "t_974c7bc4",
+   "desde": 4,
+   "hacia": 5
+  },
+  {
+   "fase": 3,
+   "tipo": "prioridad",
+   "board": "default",
+   "id": "t_11fd6811",
+   "desde": 3,
+   "hacia": 2
+  },
+  {
+   "fase": 3,
+   "tipo": "prioridad",
+   "board": "default",
+   "id": "t_98f58389",
+   "desde": 0,
+   "hacia": 1
+  },
+  {
+   "fase": 4,
+   "tipo": "desenlazar",
+   "board": "oscarhq",
+   "padre": "t_f90da954",
+   "hijo": "t_0d94921e",
+   "requiere": "--con-unlink",
+   "motivo": "El paraguas antiguo bloquea a su hija (en Hermes el padre bloquea al hijo)"
+  },
+  {
+   "fase": 4,
+   "tipo": "desenlazar",
+   "board": "oscarhq",
+   "padre": "t_f90da954",
+   "hijo": "t_46aeb833",
+   "requiere": "--con-unlink",
+   "motivo": "El paraguas antiguo bloquea a su hija (en Hermes el padre bloquea al hijo)"
+  },
+  {
+   "fase": 4,
+   "tipo": "desenlazar",
+   "board": "oscarhq",
+   "padre": "t_f90da954",
+   "hijo": "t_f3211374",
+   "requiere": "--con-unlink",
+   "motivo": "El paraguas antiguo bloquea a su hija (en Hermes el padre bloquea al hijo)"
+  },
+  {
+   "fase": 4,
+   "tipo": "desenlazar",
+   "board": "oscarhq",
+   "padre": "t_f90da954",
+   "hijo": "t_a80a33a4",
+   "requiere": "--con-unlink",
+   "motivo": "El paraguas antiguo bloquea a su hija (en Hermes el padre bloquea al hijo)"
+  },
+  {
+   "fase": 4,
+   "tipo": "desenlazar",
+   "board": "oscarhq",
+   "padre": "t_f90da954",
+   "hijo": "t_000ace0f",
+   "requiere": "--con-unlink",
+   "motivo": "El paraguas antiguo bloquea a su hija (en Hermes el padre bloquea al hijo)"
+  },
+  {
+   "fase": 4,
+   "tipo": "desenlazar",
+   "board": "oscarhq",
+   "padre": "t_55600b16",
+   "hijo": "t_8ce343e6",
+   "requiere": "--con-unlink",
+   "motivo": "El paraguas antiguo bloquea a su hija (en Hermes el padre bloquea al hijo)"
+  },
+  {
+   "fase": 4,
+   "tipo": "desenlazar",
+   "board": "oscarhq",
+   "padre": "t_55600b16",
+   "hijo": "t_f1203e25",
+   "requiere": "--con-unlink",
+   "motivo": "El paraguas antiguo bloquea a su hija (en Hermes el padre bloquea al hijo)"
+  },
+  {
+   "fase": 4,
+   "tipo": "desenlazar",
+   "board": "oscarhq",
+   "padre": "t_55600b16",
+   "hijo": "t_75e9bd0f",
+   "requiere": "--con-unlink",
+   "motivo": "El paraguas antiguo bloquea a su hija (en Hermes el padre bloquea al hijo)"
+  },
+  {
+   "fase": 4,
+   "tipo": "desenlazar",
+   "board": "oscarhq",
+   "padre": "t_55600b16",
+   "hijo": "t_6ca8b65c",
+   "requiere": "--con-unlink",
+   "motivo": "El paraguas antiguo bloquea a su hija (en Hermes el padre bloquea al hijo)"
+  },
+  {
+   "fase": 4,
+   "tipo": "desenlazar",
+   "board": "oscarhq",
+   "padre": "t_55600b16",
+   "hijo": "t_cb91e9fb",
+   "requiere": "--con-unlink",
+   "motivo": "El paraguas antiguo bloquea a su hija (en Hermes el padre bloquea al hijo)"
+  },
+  {
+   "fase": 4,
+   "tipo": "desenlazar",
+   "board": "oscarhq",
+   "padre": "t_55600b16",
+   "hijo": "t_37ff8faf",
+   "requiere": "--con-unlink",
+   "motivo": "El paraguas antiguo bloquea a su hija (en Hermes el padre bloquea al hijo)"
+  },
+  {
+   "fase": 4,
+   "tipo": "desenlazar",
+   "board": "oscarhq",
+   "padre": "t_63a9b340",
+   "hijo": "t_c3fde440",
+   "requiere": "--con-unlink",
+   "motivo": "El paraguas antiguo bloquea a su hija (en Hermes el padre bloquea al hijo)"
+  },
+  {
+   "fase": 4,
+   "tipo": "desenlazar",
+   "board": "oscarhq",
+   "padre": "t_63a9b340",
+   "hijo": "t_e7811e26",
+   "requiere": "--con-unlink",
+   "motivo": "El paraguas antiguo bloquea a su hija (en Hermes el padre bloquea al hijo)"
+  },
+  {
+   "fase": 4,
+   "tipo": "desenlazar",
+   "board": "oscarhq",
+   "padre": "t_63a9b340",
+   "hijo": "t_7a0ba60a",
+   "requiere": "--con-unlink",
+   "motivo": "El paraguas antiguo bloquea a su hija (en Hermes el padre bloquea al hijo)"
+  },
+  {
+   "fase": 4,
+   "tipo": "desenlazar",
+   "board": "oscarhq",
+   "padre": "t_63a9b340",
+   "hijo": "t_9b90d162",
+   "requiere": "--con-unlink",
+   "motivo": "El paraguas antiguo bloquea a su hija (en Hermes el padre bloquea al hijo)"
+  },
+  {
+   "fase": 4,
+   "tipo": "desenlazar",
+   "board": "oscarhq",
+   "padre": "t_992e42ac",
+   "hijo": "t_eb0c3483",
+   "requiere": "--con-unlink",
+   "motivo": "El paraguas antiguo bloquea a su hija (en Hermes el padre bloquea al hijo)"
+  },
+  {
+   "fase": 4,
+   "tipo": "desenlazar",
+   "board": "oscarhq",
+   "padre": "t_992e42ac",
+   "hijo": "t_b2bf3bdc",
+   "requiere": "--con-unlink",
+   "motivo": "El paraguas antiguo bloquea a su hija (en Hermes el padre bloquea al hijo)"
+  },
+  {
+   "fase": 5,
+   "tipo": "enlazar",
+   "board": "default",
+   "padre": "t_551843f3",
+   "hijo": "t_6d1eb9e0",
+   "motivo": "Dependencia real declarada en el cuerpo"
+  },
+  {
+   "fase": 6,
+   "tipo": "enlazar",
+   "board": "oscarhq",
+   "padre": "t_b889c49a",
+   "hijo": "t_992e42ac",
+   "motivo": "Tarjeta de la épica 'signal'",
+   "requiere": "--con-unlink"
+  },
+  {
+   "fase": 6,
+   "tipo": "enlazar",
+   "board": "oscarhq",
+   "padre": "t_fccc736d",
+   "hijo": "@epica:marketing",
+   "motivo": "Tarjeta de la épica 'marketing'",
+   "requiere": null
+  },
+  {
+   "fase": 6,
+   "tipo": "enlazar",
+   "board": "oscarhq",
+   "padre": "t_39532b42",
+   "hijo": "@epica:plataforma",
+   "motivo": "Tarjeta de la épica 'plataforma'",
+   "requiere": null
+  },
+  {
+   "fase": 6,
+   "tipo": "enlazar",
+   "board": "oscarhq",
+   "padre": "t_4880088a",
+   "hijo": "@epica:plataforma",
+   "motivo": "Tarjeta de la épica 'plataforma'",
+   "requiere": null
+  },
+  {
+   "fase": 6,
+   "tipo": "enlazar",
+   "board": "oscarhq",
+   "padre": "t_49d9ad5c",
+   "hijo": "@epica:plataforma",
+   "motivo": "Tarjeta de la épica 'plataforma'",
+   "requiere": null
+  },
+  {
+   "fase": 6,
+   "tipo": "enlazar",
+   "board": "oscarhq",
+   "padre": "t_a2972b36",
+   "hijo": "@epica:plataforma",
+   "motivo": "Tarjeta de la épica 'plataforma'",
+   "requiere": null
+  },
+  {
+   "fase": 6,
+   "tipo": "enlazar",
+   "board": "oscarhq",
+   "padre": "t_dc43939b",
+   "hijo": "@epica:plataforma",
+   "motivo": "Tarjeta de la épica 'plataforma'",
+   "requiere": null
+  },
+  {
+   "fase": 6,
+   "tipo": "enlazar",
+   "board": "oscarhq",
+   "padre": "t_f371a1a8",
+   "hijo": "@epica:plataforma",
+   "motivo": "Tarjeta de la épica 'plataforma'",
+   "requiere": null
+  },
+  {
+   "fase": 6,
+   "tipo": "enlazar",
+   "board": "oscarhq",
+   "padre": "t_35be06d8",
+   "hijo": "t_992e42ac",
+   "motivo": "Tarjeta de la épica 'signal'",
+   "requiere": "--con-unlink"
+  },
+  {
+   "fase": 6,
+   "tipo": "enlazar",
+   "board": "oscarhq",
+   "padre": "t_a383b0ca",
+   "hijo": "@epica:plataforma",
+   "motivo": "Tarjeta de la épica 'plataforma'",
+   "requiere": null
+  },
+  {
+   "fase": 6,
+   "tipo": "enlazar",
+   "board": "oscarhq",
+   "padre": "t_0077852a",
+   "hijo": "@epica:plataforma",
+   "motivo": "Tarjeta de la épica 'plataforma'",
+   "requiere": null
+  },
+  {
+   "fase": 6,
+   "tipo": "enlazar",
+   "board": "oscarhq",
+   "padre": "t_1af88ebf",
+   "hijo": "@epica:plataforma",
+   "motivo": "Tarjeta de la épica 'plataforma'",
+   "requiere": null
+  },
+  {
+   "fase": 6,
+   "tipo": "enlazar",
+   "board": "oscarhq",
+   "padre": "t_c8b575a6",
+   "hijo": "@epica:plataforma",
+   "motivo": "Tarjeta de la épica 'plataforma'",
+   "requiere": null
+  },
+  {
+   "fase": 6,
+   "tipo": "enlazar",
+   "board": "oscarhq",
+   "padre": "t_0d94921e",
+   "hijo": "t_f90da954",
+   "motivo": "Tarjeta de la épica 'llc'",
+   "requiere": "--con-unlink"
+  },
+  {
+   "fase": 6,
+   "tipo": "enlazar",
+   "board": "oscarhq",
+   "padre": "t_46aeb833",
+   "hijo": "t_f90da954",
+   "motivo": "Tarjeta de la épica 'llc'",
+   "requiere": "--con-unlink"
+  },
+  {
+   "fase": 6,
+   "tipo": "enlazar",
+   "board": "oscarhq",
+   "padre": "t_f3211374",
+   "hijo": "t_f90da954",
+   "motivo": "Tarjeta de la épica 'llc'",
+   "requiere": "--con-unlink"
+  },
+  {
+   "fase": 6,
+   "tipo": "enlazar",
+   "board": "oscarhq",
+   "padre": "t_a80a33a4",
+   "hijo": "t_f90da954",
+   "motivo": "Tarjeta de la épica 'llc'",
+   "requiere": "--con-unlink"
+  },
+  {
+   "fase": 6,
+   "tipo": "enlazar",
+   "board": "oscarhq",
+   "padre": "t_000ace0f",
+   "hijo": "t_f90da954",
+   "motivo": "Tarjeta de la épica 'llc'",
+   "requiere": "--con-unlink"
+  },
+  {
+   "fase": 6,
+   "tipo": "enlazar",
+   "board": "oscarhq",
+   "padre": "t_8ce343e6",
+   "hijo": "t_55600b16",
+   "motivo": "Tarjeta de la épica 'mgnegocio'",
+   "requiere": "--con-unlink"
+  },
+  {
+   "fase": 6,
+   "tipo": "enlazar",
+   "board": "oscarhq",
+   "padre": "t_f1203e25",
+   "hijo": "t_55600b16",
+   "motivo": "Tarjeta de la épica 'mgnegocio'",
+   "requiere": "--con-unlink"
+  },
+  {
+   "fase": 6,
+   "tipo": "enlazar",
+   "board": "oscarhq",
+   "padre": "t_75e9bd0f",
+   "hijo": "t_55600b16",
+   "motivo": "Tarjeta de la épica 'mgnegocio'",
+   "requiere": "--con-unlink"
+  },
+  {
+   "fase": 6,
+   "tipo": "enlazar",
+   "board": "oscarhq",
+   "padre": "t_6ca8b65c",
+   "hijo": "t_55600b16",
+   "motivo": "Tarjeta de la épica 'mgnegocio'",
+   "requiere": "--con-unlink"
+  },
+  {
+   "fase": 6,
+   "tipo": "enlazar",
+   "board": "oscarhq",
+   "padre": "t_cb91e9fb",
+   "hijo": "t_55600b16",
+   "motivo": "Tarjeta de la épica 'mgnegocio'",
+   "requiere": "--con-unlink"
+  },
+  {
+   "fase": 6,
+   "tipo": "enlazar",
+   "board": "oscarhq",
+   "padre": "t_37ff8faf",
+   "hijo": "t_55600b16",
+   "motivo": "Tarjeta de la épica 'mgnegocio'",
+   "requiere": "--con-unlink"
+  },
+  {
+   "fase": 6,
+   "tipo": "enlazar",
+   "board": "oscarhq",
+   "padre": "t_c3fde440",
+   "hijo": "t_63a9b340",
+   "motivo": "Tarjeta de la épica 'ventas'",
+   "requiere": "--con-unlink"
+  },
+  {
+   "fase": 6,
+   "tipo": "enlazar",
+   "board": "oscarhq",
+   "padre": "t_e7811e26",
+   "hijo": "t_63a9b340",
+   "motivo": "Tarjeta de la épica 'ventas'",
+   "requiere": "--con-unlink"
+  },
+  {
+   "fase": 6,
+   "tipo": "enlazar",
+   "board": "oscarhq",
+   "padre": "t_7a0ba60a",
+   "hijo": "t_63a9b340",
+   "motivo": "Tarjeta de la épica 'ventas'",
+   "requiere": "--con-unlink"
+  },
+  {
+   "fase": 6,
+   "tipo": "enlazar",
+   "board": "oscarhq",
+   "padre": "t_9b90d162",
+   "hijo": "t_63a9b340",
+   "motivo": "Tarjeta de la épica 'ventas'",
+   "requiere": "--con-unlink"
+  },
+  {
+   "fase": 6,
+   "tipo": "enlazar",
+   "board": "oscarhq",
+   "padre": "t_eb0c3483",
+   "hijo": "t_992e42ac",
+   "motivo": "Tarjeta de la épica 'signal'",
+   "requiere": "--con-unlink"
+  },
+  {
+   "fase": 6,
+   "tipo": "enlazar",
+   "board": "oscarhq",
+   "padre": "t_b2bf3bdc",
+   "hijo": "t_992e42ac",
+   "motivo": "Tarjeta de la épica 'signal'",
+   "requiere": "--con-unlink"
+  },
+  {
+   "fase": 6,
+   "tipo": "enlazar",
+   "board": "oscarhq",
+   "padre": "t_e8e76d7c",
+   "hijo": "@epica:ops",
+   "motivo": "Tarjeta de la épica 'ops'",
+   "requiere": null
+  },
+  {
+   "fase": 6,
+   "tipo": "enlazar",
+   "board": "oscarhq",
+   "padre": "t_190f057a",
+   "hijo": "@epica:ops",
+   "motivo": "Tarjeta de la épica 'ops'",
+   "requiere": null
+  },
+  {
+   "fase": 6,
+   "tipo": "enlazar",
+   "board": "oscarhq",
+   "padre": "t_08f90331",
+   "hijo": "@epica:ops",
+   "motivo": "Tarjeta de la épica 'ops'",
+   "requiere": null
+  },
+  {
+   "fase": 6,
+   "tipo": "enlazar",
+   "board": "oscarhq",
+   "padre": "t_6d85a746",
+   "hijo": "@epica:marketing",
+   "motivo": "Tarjeta de la épica 'marketing'",
+   "requiere": null
+  },
+  {
+   "fase": 6,
+   "tipo": "enlazar",
+   "board": "oscarhq",
+   "padre": "t_6a2fdf4d",
+   "hijo": "@epica:ops",
+   "motivo": "Tarjeta de la épica 'ops'",
+   "requiere": null
+  },
+  {
+   "fase": 6,
+   "tipo": "enlazar",
+   "board": "oscarhq",
+   "padre": "t_3a4f024e",
+   "hijo": "@epica:plataforma",
+   "motivo": "Tarjeta de la épica 'plataforma'",
+   "requiere": null
+  },
+  {
+   "fase": 6,
+   "tipo": "enlazar",
+   "board": "migrateam",
+   "padre": "t_815b87e5",
+   "hijo": "@epica:mgproducto",
+   "motivo": "Tarjeta de la épica 'mgproducto'",
+   "requiere": null
+  },
+  {
+   "fase": 6,
+   "tipo": "enlazar",
+   "board": "migrateam",
+   "padre": "t_905e3371",
+   "hijo": "@epica:mgproducto",
+   "motivo": "Tarjeta de la épica 'mgproducto'",
+   "requiere": null
+  },
+  {
+   "fase": 6,
+   "tipo": "enlazar",
+   "board": "migrateam",
+   "padre": "t_c3e7b48d",
+   "hijo": "@epica:docketwise",
+   "motivo": "Tarjeta de la épica 'docketwise'",
+   "requiere": null
+  },
+  {
+   "fase": 6,
+   "tipo": "enlazar",
+   "board": "migrateam",
+   "padre": "t_addbf275",
+   "hijo": "@epica:docketwise",
+   "motivo": "Tarjeta de la épica 'docketwise'",
+   "requiere": null
+  },
+  {
+   "fase": 6,
+   "tipo": "enlazar",
+   "board": "migrateam",
+   "padre": "t_dc1e9f0c",
+   "hijo": "@epica:docketwise",
+   "motivo": "Tarjeta de la épica 'docketwise'",
+   "requiere": null
+  },
+  {
+   "fase": 6,
+   "tipo": "enlazar",
+   "board": "migrateam",
+   "padre": "t_3db189f4",
+   "hijo": "@epica:mgproducto",
+   "motivo": "Tarjeta de la épica 'mgproducto'",
+   "requiere": null
+  },
+  {
+   "fase": 6,
+   "tipo": "enlazar",
+   "board": "migrateam",
+   "padre": "t_775dd051",
+   "hijo": "@epica:mgproducto",
+   "motivo": "Tarjeta de la épica 'mgproducto'",
+   "requiere": null
+  },
+  {
+   "fase": 6,
+   "tipo": "enlazar",
+   "board": "migrateam",
+   "padre": "t_c6ecfad3",
+   "hijo": "@epica:mgproducto",
+   "motivo": "Tarjeta de la épica 'mgproducto'",
+   "requiere": null
+  },
+  {
+   "fase": 6,
+   "tipo": "enlazar",
+   "board": "migrateam",
+   "padre": "t_985109b9",
+   "hijo": "@epica:mgproducto",
+   "motivo": "Tarjeta de la épica 'mgproducto'",
+   "requiere": null
+  },
+  {
+   "fase": 6,
+   "tipo": "enlazar",
+   "board": "default",
+   "padre": "t_bdee05fe",
+   "hijo": "@epica:orquestacion",
+   "motivo": "Tarjeta de la épica 'orquestacion'",
+   "requiere": null
+  },
+  {
+   "fase": 6,
+   "tipo": "enlazar",
+   "board": "default",
+   "padre": "t_9a2e17fb",
+   "hijo": "@epica:orquestacion",
+   "motivo": "Tarjeta de la épica 'orquestacion'",
+   "requiere": null
+  },
+  {
+   "fase": 6,
+   "tipo": "enlazar",
+   "board": "default",
+   "padre": "t_ebcee1f8",
+   "hijo": "@epica:orquestacion",
+   "motivo": "Tarjeta de la épica 'orquestacion'",
+   "requiere": null
+  },
+  {
+   "fase": 6,
+   "tipo": "enlazar",
+   "board": "default",
+   "padre": "t_ad46ae34",
+   "hijo": "@epica:orquestacion",
+   "motivo": "Tarjeta de la épica 'orquestacion'",
+   "requiere": null
+  },
+  {
+   "fase": 6,
+   "tipo": "enlazar",
+   "board": "default",
+   "padre": "t_22de53c2",
+   "hijo": "@epica:orquestacion",
+   "motivo": "Tarjeta de la épica 'orquestacion'",
+   "requiere": null
+  },
+  {
+   "fase": 6,
+   "tipo": "enlazar",
+   "board": "default",
+   "padre": "t_c0d5a0fd",
+   "hijo": "@epica:orquestacion",
+   "motivo": "Tarjeta de la épica 'orquestacion'",
+   "requiere": null
+  },
+  {
+   "fase": 6,
+   "tipo": "enlazar",
+   "board": "default",
+   "padre": "t_dc1b30fb",
+   "hijo": "@epica:orquestacion",
+   "motivo": "Tarjeta de la épica 'orquestacion'",
+   "requiere": null
+  },
+  {
+   "fase": 6,
+   "tipo": "enlazar",
+   "board": "default",
+   "padre": "t_974c7bc4",
+   "hijo": "@epica:orquestacion",
+   "motivo": "Tarjeta de la épica 'orquestacion'",
+   "requiere": null
+  },
+  {
+   "fase": 7,
+   "tipo": "asignar",
+   "board": "oscarhq",
+   "id": "t_992e42ac",
+   "desde": null,
+   "hacia": "oscar",
+   "lanza_trabajo": false,
+   "motivo": "Dueño de la épica",
+   "requiere": "--con-unlink"
+  },
+  {
+   "fase": 7,
+   "tipo": "asignar",
+   "board": "oscarhq",
+   "id": "t_55600b16",
+   "desde": null,
+   "hacia": "oscar",
+   "lanza_trabajo": false,
+   "motivo": "Dueño de la épica",
+   "requiere": "--con-unlink"
+  },
+  {
+   "fase": 7,
+   "tipo": "asignar",
+   "board": "oscarhq",
+   "id": "t_63a9b340",
+   "desde": null,
+   "hacia": "oscar",
+   "lanza_trabajo": false,
+   "motivo": "Dueño de la épica",
+   "requiere": "--con-unlink"
+  },
+  {
+   "fase": 7,
+   "tipo": "asignar",
+   "board": "oscarhq",
+   "id": "t_35be06d8",
+   "desde": null,
+   "hacia": "claude-scraper",
+   "lanza_trabajo": true,
+   "motivo": "Código del Scraper (Signal Engine). Spec-Lite primero: el cuerpo ya lo exige."
+  },
+  {
+   "fase": 7,
+   "tipo": "asignar",
+   "board": "oscarhq",
+   "id": "t_a383b0ca",
+   "desde": null,
+   "hacia": "claude-oscarhq",
+   "lanza_trabajo": true,
+   "motivo": "Auditoría de solo lectura del dashboard de oscar-hq."
+  },
+  {
+   "fase": 7,
+   "tipo": "asignar",
+   "board": "oscarhq",
+   "id": "t_0d94921e",
+   "desde": null,
+   "hacia": "claude-ops",
+   "lanza_trabajo": true,
+   "motivo": "Operativo sin repo (carpetas en E:). Solo arranca si se aprueba desenlazar (P1)."
+  },
+  {
+   "fase": 7,
+   "tipo": "asignar",
+   "board": "oscarhq",
+   "id": "t_46aeb833",
+   "desde": null,
+   "hacia": "oscar",
+   "lanza_trabajo": false,
+   "motivo": "Requiere gestor/CPA: solo Oscar."
+  },
+  {
+   "fase": 7,
+   "tipo": "asignar",
+   "board": "oscarhq",
+   "id": "t_f3211374",
+   "desde": null,
+   "hacia": "oscar",
+   "lanza_trabajo": false,
+   "motivo": "Asesor fiscal en España: solo Oscar."
+  },
+  {
+   "fase": 7,
+   "tipo": "asignar",
+   "board": "oscarhq",
+   "id": "t_a80a33a4",
+   "desde": null,
+   "hacia": "oscar",
+   "lanza_trabajo": false,
+   "motivo": "URGENTE (a verificar): si el annual report de Florida no se presentó, la disolución administrativa suele aplicarse a finales de septiembre. Comprobar hoy en sunbiz.org."
+  },
+  {
+   "fase": 7,
+   "tipo": "asignar",
+   "board": "oscarhq",
+   "id": "t_000ace0f",
+   "desde": null,
+   "hacia": "oscar",
+   "lanza_trabajo": false,
+   "motivo": "Firma Authorized Rep vs Sole Member: bloquea contratos (Multiverse, Mosquera)."
+  },
+  {
+   "fase": 7,
+   "tipo": "asignar",
+   "board": "oscarhq",
+   "id": "t_8ce343e6",
+   "desde": null,
+   "hacia": "oscar",
+   "lanza_trabajo": false,
+   "motivo": "2 de las 3 decisiones ya hechas (t_ba6bc31f, done 25-09)."
+  },
+  {
+   "fase": 7,
+   "tipo": "asignar",
+   "board": "oscarhq",
+   "id": "t_f1203e25",
+   "desde": null,
+   "hacia": "oscar",
+   "lanza_trabajo": false,
+   "motivo": ""
+  },
+  {
+   "fase": 7,
+   "tipo": "asignar",
+   "board": "oscarhq",
+   "id": "t_75e9bd0f",
+   "desde": null,
+   "hacia": "oscar",
+   "lanza_trabajo": false,
+   "motivo": "Contrato/TOS y protección de datos: bloqueante legal antes de más despachos."
+  },
+  {
+   "fase": 7,
+   "tipo": "asignar",
+   "board": "oscarhq",
+   "id": "t_6ca8b65c",
+   "desde": null,
+   "hacia": "oscar",
+   "lanza_trabajo": false,
+   "motivo": "Relacionada con t_815b87e5 (E2E Stripe) y t_db8507a0 (done)."
+  },
+  {
+   "fase": 7,
+   "tipo": "asignar",
+   "board": "oscarhq",
+   "id": "t_37ff8faf",
+   "desde": null,
+   "hacia": "oscar",
+   "lanza_trabajo": false,
+   "motivo": ""
+  },
+  {
+   "fase": 7,
+   "tipo": "asignar",
+   "board": "oscarhq",
+   "id": "t_c3fde440",
+   "desde": null,
+   "hacia": "oscar",
+   "lanza_trabajo": false,
+   "motivo": "Sin oferta no hay venta: primera pieza de la épica."
+  },
+  {
+   "fase": 7,
+   "tipo": "asignar",
+   "board": "oscarhq",
+   "id": "t_e7811e26",
+   "desde": null,
+   "hacia": "oscar",
+   "lanza_trabajo": false,
+   "motivo": ""
+  },
+  {
+   "fase": 7,
+   "tipo": "asignar",
+   "board": "oscarhq",
+   "id": "t_7a0ba60a",
+   "desde": null,
+   "hacia": "claude-ops",
+   "lanza_trabajo": true,
+   "motivo": "Leer docs de E:/Pildora Digital 2026/Multiverse y resumirlos: operativo."
+  },
+  {
+   "fase": 7,
+   "tipo": "asignar",
+   "board": "oscarhq",
+   "id": "t_eb0c3483",
+   "desde": null,
+   "hacia": "claude-scraper",
+   "lanza_trabajo": true,
+   "motivo": "Auditoría de solo lectura del Scraper (t_9947adb1 dejó pendiente el reproceso de personas)."
+  },
+  {
+   "fase": 7,
+   "tipo": "asignar",
+   "board": "oscarhq",
+   "id": "t_b2bf3bdc",
+   "desde": null,
+   "hacia": "oscar",
+   "lanza_trabajo": false,
+   "motivo": ""
+  },
+  {
+   "fase": 7,
+   "tipo": "asignar",
+   "board": "migrateam",
+   "id": "t_3db189f4",
+   "desde": null,
+   "hacia": "claude-migrateam",
+   "lanza_trabajo": true,
+   "motivo": "Código del frontend; el DSN en Vercel lo pone Oscar (el carril termina en needs_input)."
+  },
+  {
+   "fase": 8,
+   "tipo": "recrear",
+   "board": "personal",
+   "id": "t_6b7b66ec",
+   "board_destino": "oscarhq",
+   "titulo": "Organizar carpetas MigraTeam/Píldora (E: y local) y comparar por hash los backups de E:",
+   "asignado": "claude-ops",
+   "prioridad": 3,
+   "epica": "ops",
+   "idempotency_key": "reorg-20260928-move-t_6b7b66ec",
+   "cuerpo": "Recreada desde t_6b7b66ec (tablero personal) en la reorganización del 28-09: el carril claude-ops solo lee el tablero oscarhq.\n\nPendiente desde el 26-09. Primero inventario y propuesta; mover o borrar solo con OK.",
+   "lanza_trabajo": true,
+   "motivo": "Operativo; claude-ops solo lee el tablero oscarhq. Se recrea allí y se archiva la original."
+  },
+  {
+   "fase": 9,
+   "tipo": "archivar",
+   "board": "oscarhq",
+   "id": "t_2a58b9e1",
+   "desde_estado": "ready",
+   "motivo": "Sustituida por t_3a4f024e (comentario del coordinador 28-09 12:58)."
+  },
+  {
+   "fase": 9,
+   "tipo": "archivar",
+   "board": "oscarhq",
+   "id": "t_55ac04d8",
+   "desde_estado": "todo",
+   "motivo": "Respondida: comentario de t_992e42ac (24-09): 8 secuencias en pausa, 0 matrículas; PR #12."
+  },
+  {
+   "fase": 9,
+   "tipo": "archivar",
+   "board": "oscarhq",
+   "id": "t_275db333",
+   "desde_estado": "todo",
+   "motivo": "Hecha: PR #12 (sync Scraper→CRM cada 15 min) fusionado el 24-09."
+  },
+  {
+   "fase": 9,
+   "tipo": "archivar",
+   "board": "oscarhq",
+   "id": "t_2f07828a",
+   "desde_estado": "ready",
+   "motivo": "PR #11 fusionado; su propio comentario la da por cerrada; sustituida por la auditoría de crews del 27-09 (t_dbd74152 y sus tarjetas)."
+  },
+  {
+   "fase": 9,
+   "tipo": "archivar",
+   "board": "oscarhq",
+   "id": "t_70c748be",
+   "desde_estado": "ready",
+   "motivo": "Hecha: comentario de cierre W1b (hub 87a83b4/9dfe9fc/28ca285, 127 tests)."
+  },
+  {
+   "fase": 9,
+   "tipo": "archivar",
+   "board": "oscarhq",
+   "id": "t_6ded7e3e",
+   "desde_estado": "ready",
+   "motivo": "Hecha: W3b en hub 1f5cf8d + addendum 0d383f9."
+  },
+  {
+   "fase": 9,
+   "tipo": "archivar",
+   "board": "oscarhq",
+   "id": "t_d2fccb2a",
+   "desde_estado": "ready",
+   "motivo": "Hecha: W4 fusionado en oscar-hq (#37 32f11427, #39 51449e7d). Comandos de Gestión pendientes: P12."
+  },
+  {
+   "fase": 9,
+   "tipo": "archivar",
+   "board": "oscarhq",
+   "id": "t_c70e4221",
+   "desde_estado": "triage",
+   "motivo": "Sustituida por t_1411984a (done); comentario del coordinador 28-09."
+  },
+  {
+   "fase": 9,
+   "tipo": "archivar",
+   "board": "migrateam",
+   "id": "t_53c184e6",
+   "desde_estado": "ready",
+   "motivo": "Sustituida por t_c6ecfad3 (creada al aprobarla Oscar el 28-09, cita sus comentarios)."
+  },
+  {
+   "fase": 9,
+   "tipo": "archivar",
+   "board": "default",
+   "id": "t_ba5085cc",
+   "desde_estado": "ready",
+   "motivo": "Duplicado de t_c70e4221 (Hermes buscó solo en default)."
+  },
+  {
+   "fase": 9,
+   "tipo": "archivar",
+   "board": "default",
+   "id": "t_1a5138f2",
+   "desde_estado": "ready",
+   "motivo": "Hecha: integrador en hub 78c59c3 + endurecido 6938e82 (security-auditor)."
+  },
+  {
+   "fase": 9,
+   "tipo": "archivar",
+   "board": "default",
+   "id": "t_631cf0bc",
+   "desde_estado": "ready",
+   "motivo": "Hecha: hub 331bd3b (brief_diario.py) y t_ffaf1078 la da por cubierta."
+  },
+  {
+   "fase": 9,
+   "tipo": "archivar",
+   "board": "default",
+   "id": "t_ffaf1078",
+   "desde_estado": "ready",
+   "motivo": "Auditoría cerrada: repartida en t_102f03b6, t_e8e76d7c, t_190f057a, t_08f90331, t_6d85a746, t_32f2b188, t_a0790dfc, t_6a2fdf4d. El punto #2 no tiene tarjeta: P14."
+  },
+  {
+   "fase": 7,
+   "tipo": "asignar",
+   "board": "oscarhq",
+   "id": "t_39532b42",
+   "desde": null,
+   "hacia": "claude-oscarhq",
+   "lanza_trabajo": true,
+   "motivo": "Respuesta de Oscar 28-09 (P2-A): integrar la rama rescatada en un PR agrupado"
+  },
+  {
+   "fase": 9,
+   "tipo": "archivar",
+   "board": "oscarhq",
+   "id": "t_c8b575a6",
+   "desde_estado": "blocked",
+   "motivo": "Respuesta de Oscar 28-09 (P2-A): sustituida por t_39532b42 (el trabajo ya está en rescue/triaje-h-batch-20260924)"
+  },
+  {
+   "fase": 5,
+   "tipo": "enlazar",
+   "board": "oscarhq",
+   "padre": "t_49d9ad5c",
+   "hijo": "t_4880088a",
+   "motivo": "Respuesta de Oscar 28-09 (P4-A): la programación espera a la spec"
+  },
+  {
+   "fase": 8,
+   "tipo": "recrear",
+   "board": "default",
+   "id": "t_f22e073f",
+   "board_destino": "migrateam",
+   "titulo": "Spec-Lite: variantes de audiencia por país de residencia y consulado (sustituye el árbol t_f22e073f)",
+   "asignado": "claude-migrateam",
+   "prioridad": 4,
+   "epica": "mgproducto",
+   "idempotency_key": "reorg-20260928-p5-audiencia",
+   "lanza_trabajo": true,
+   "motivo": "Respuesta de Oscar 28-09 (P5-A)",
+   "cuerpo": "Para Oscar: diseño (solo spec) de cómo MigraTeam ajusta contenido y plantillas por país de residencia y por consulado, además de por nacionalidad. No implementa nada hasta tu OK.\n\n## Objetivo\nSpec-Lite (`specs/`) que unifique lo que pedían 6 tarjetas del board default generadas por el auto-decomposer (t_f22e073f, t_07ceb685, t_17214b1e, t_4de85509, t_af191449, t_f91fe646): ISO-2 de nacionalidad, eje consulado, eje país de residencia, prioridad entre los 3 ejes y el editor del catálogo con sus tipos TS.\n\n## Criterios\n- Verifica en el código de develop qué existe hoy (audience matching, overrides del catálogo) antes de proponer.\n- Propón modelo de datos, orden de resolución entre ejes y migración necesaria (sin crearla).\n- Devuelve needs_input con 2-4 opciones y recomendada para lo que decida Oscar.\n\n## Fuera de alcance\nImplementar, migraciones, producción.\n\n## Modo OASP\nSpec-Lite. Test focalizado: ninguno (solo documento)."
+  },
+  {
+   "fase": 9,
+   "tipo": "archivar",
+   "board": "default",
+   "id": "t_07ceb685",
+   "desde_estado": null,
+   "motivo": "Respuesta de Oscar 28-09 (P5-A): absorbida por la Spec-Lite recreada en migrateam"
+  },
+  {
+   "fase": 9,
+   "tipo": "archivar",
+   "board": "default",
+   "id": "t_17214b1e",
+   "desde_estado": null,
+   "motivo": "Respuesta de Oscar 28-09 (P5-A): absorbida por la Spec-Lite recreada en migrateam"
+  },
+  {
+   "fase": 9,
+   "tipo": "archivar",
+   "board": "default",
+   "id": "t_4de85509",
+   "desde_estado": null,
+   "motivo": "Respuesta de Oscar 28-09 (P5-A): absorbida por la Spec-Lite recreada en migrateam"
+  },
+  {
+   "fase": 9,
+   "tipo": "archivar",
+   "board": "default",
+   "id": "t_af191449",
+   "desde_estado": null,
+   "motivo": "Respuesta de Oscar 28-09 (P5-A): absorbida por la Spec-Lite recreada en migrateam"
+  },
+  {
+   "fase": 9,
+   "tipo": "archivar",
+   "board": "default",
+   "id": "t_f91fe646",
+   "desde_estado": null,
+   "motivo": "Respuesta de Oscar 28-09 (P5-A): absorbida por la Spec-Lite recreada en migrateam"
+  },
+  {
+   "fase": 7,
+   "tipo": "asignar",
+   "board": "migrateam",
+   "id": "t_775dd051",
+   "desde": null,
+   "hacia": "claude-migrateam",
+   "lanza_trabajo": true,
+   "motivo": "Respuesta de Oscar 28-09 (P7-A): entregar en docs/kb/ del repo"
+  },
+  {
+   "fase": 9,
+   "tipo": "archivar",
+   "board": "oscarhq",
+   "id": "t_cb91e9fb",
+   "desde_estado": null,
+   "motivo": "Respuesta de Oscar 28-09 (P8-A): superada por t_761326d7 y t_905e3371"
+  },
+  {
+   "fase": 7,
+   "tipo": "asignar",
+   "board": "oscarhq",
+   "id": "t_9b90d162",
+   "desde": null,
+   "hacia": "claude-ops",
+   "lanza_trabajo": true,
+   "motivo": "Respuesta de Oscar 28-09 (P9-A): borrador con la plantilla de propuesta-comercial, para revisión de Oscar"
+  },
+  {
+   "fase": 2,
+   "tipo": "titulo",
+   "board": "oscarhq",
+   "id": "t_7daeacc9",
+   "desde": "[PILDORA-HANDBOOK] Cerrar drift handbook <-> oscar-hq",
+   "hacia": "[DECISIÓN] Handbook ↔ oscar-hq: sincronizar a mano (opción A de SSOT)",
+   "motivo": "Respuesta de Oscar 28-09 (P10-A)"
+  },
+  {
+   "fase": 7,
+   "tipo": "asignar",
+   "board": "oscarhq",
+   "id": "t_7daeacc9",
+   "desde": null,
+   "hacia": "oscar",
+   "lanza_trabajo": false,
+   "motivo": "Respuesta de Oscar 28-09 (P10-A)"
+  },
+  {
+   "fase": 9,
+   "tipo": "archivar",
+   "board": "oscarhq",
+   "id": "t_b889c49a",
+   "desde_estado": "ready",
+   "motivo": "Respuesta de Oscar 28-09 (P11-B): Signal ya activado en producción (variables puestas en Railway el 28-09)"
+  }
+ ],
+ "done_antiguas_14d": []
 }
