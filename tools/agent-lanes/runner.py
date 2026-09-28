@@ -134,7 +134,7 @@ def main(argv: list[str] | None = None) -> int:
         if decisions:
             decisions.integrator = integrator
         log.info("integrador activo: %s", list(integrator.settings.policies))
-    service = Service(runners, max_workers=args.max_workers or settings["max_workers"])
+    service = Service(runners, max_workers=args.max_workers or settings["max_workers"], busy_path=drain.BUSY_FILE)
     interval = args.interval or settings["interval_seconds"]
     log.info("runner: carriles=%s max_workers=%s interval=%ss", list(selected), service.max_workers, interval)
 

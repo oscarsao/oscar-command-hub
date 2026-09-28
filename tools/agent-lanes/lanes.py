@@ -80,7 +80,7 @@ LOCK = ROOT / ".state" / "runner.lock"
 
 
 def runner_line() -> str:
-    return _runner_line(LOCK, pid_alive, drain.active())
+    return _runner_line(LOCK, pid_alive, drain.active(), drain.BUSY_FILE)
 
 
 def restart(argv: list[str]) -> int:

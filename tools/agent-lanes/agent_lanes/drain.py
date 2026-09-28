@@ -33,6 +33,7 @@ STATE = ROOT / ".state"
 DRAIN_FILE = STATE / "drain.json"
 ACK_FILE = STATE / "drain_ack.json"
 LOCK_FILE = STATE / "runner.lock"
+BUSY_FILE = STATE / "busy.json"  # lo escribe Service mientras dura una pasada con trabajo (review incluido)
 MAX_AGE_SECONDS = 2 * 3600
 TASK_NAME = "agent-lanes runner"
 SCHTASKS = "schtasks"
@@ -176,8 +177,9 @@ class Restarter:
             pid = runner_pid(self.lock_file)
             return bool(pid) and pid != old and self.pid_alive(pid)
 
-        if not self._wait(started, 90):
-            self.out("la tarea se lanzó, pero no veo un runner nuevo en 90 s: mira .state/runner.log")
+        # El runner coge el lock tras el test de contrato de hermes (~16 llamadas a la CLI): margen amplio.
+        if not self._wait(started, 180):
+            self.out("la tarea se lanzó, pero no veo un runner nuevo en 180 s: mira .state/runner.log")
             return 1
         self.out(f"runner reiniciado (pid {runner_pid(self.lock_file)})")
         return 0

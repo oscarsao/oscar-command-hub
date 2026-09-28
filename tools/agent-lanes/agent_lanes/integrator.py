@@ -313,6 +313,8 @@ class Integrator:
         self._out = out
         self._lock = threading.Lock()  # worktrees temporales y fetch: una operación git a la vez
         self._deploying = threading.Lock()  # un deploy a la vez (dos 🚀 seguidos no encadenan dos `railway up`)
+        self._inflight = 0  # botones de Oscar en marcha (merge, deploy, verificación de /health)
+        self._inflight_lock = threading.Lock()
         self._last_pass: float | None = None
         self._now = now  # reloj de pared: antigüedad del resumen fijado (self._clock es monotónico)
         # Resumen fijado del tema de Integración: se edita en cada pasada (y tras cada botón) si cambia.
@@ -839,9 +841,13 @@ class Integrator:
 
     def on_button(self, action: str, rec: dict, where: dict, desk) -> bool:
         """True = acción terminada (bien o mal, con su aviso). False = no se hizo nada: vuelven los botones."""
+        with self._inflight_lock:  # busy(): un reinicio ordenado no corta un merge ni la verificación del deploy
+            self._inflight += 1
         try:
             return self._on_button(action, rec, where, desk)
         finally:
+            with self._inflight_lock:
+                self._inflight -= 1
             self.refresh_summary()  # fusionado/desplegado: el fijado no espera a la próxima pasada
 
     def _on_button(self, action: str, rec: dict, where: dict, desk) -> bool:
@@ -1060,6 +1066,8 @@ class Integrator:
     def busy(self) -> list[str]:
         """Lo que un reinicio ordenado (drain) debe esperar fuera del pool de workers: deploy o gates en marcha."""
         out = []
+        if self._inflight:
+            out.append("acción de Oscar en marcha (fusión/deploy)")
         if self._deploying.locked():
             out.append("deploy en curso")
         if self._lock.locked():

@@ -417,6 +417,28 @@ def test_restart_requires_drain_flag():
         lanes.restart([])
 
 
+def test_service_marks_busy_during_a_pass_including_review(tmp_path):
+    from agent_lanes.service import Service
+    busy = tmp_path / "busy.json"
+    seen = {}
+
+    class Review:
+        lane = SimpleNamespace(name="review")
+
+        def jobs(self):
+            def job():
+                seen["busy"] = json.loads(busy.read_text(encoding="utf-8"))
+                return "done"
+            return [("t_rev", job)]
+    assert Service([Review()], busy_path=busy).run_pass() == {"t_rev": "done"}
+    assert seen["busy"]["jobs"] == [{"task": "t_rev", "lane": "review"}] and seen["busy"]["pid"] == os.getpid()
+    assert not busy.exists()
+    (tmp_path / "runner.lock").write_text(json.dumps({"pid": os.getpid()}), encoding="utf-8")
+    busy.write_text(json.dumps(seen["busy"]), encoding="utf-8")
+    line = runner_line(tmp_path / "runner.lock", lambda p: True, None, busy)
+    assert line.endswith("· en marcha: t_rev (review)")
+
+
 def test_runner_line_shows_drain(tmp_path):
     (tmp_path / "runner.lock").write_text(json.dumps({"pid": 7}), encoding="utf-8")
     line = runner_line(tmp_path / "runner.lock", lambda p: True, {"since": time.time()})

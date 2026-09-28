@@ -350,7 +350,7 @@ class CommandCenter:
         mig = self.lanes.get(health.MIGRATEAM_LANE)
         now = self._now()
         return health.build(
-            runner=lambda: runner_line(lock, pid_alive, drain.active()),
+            runner=lambda: runner_line(lock, pid_alive, drain.active(), drain.BUSY_FILE),
             rows=lambda: lane_rows(self.lanes, hermes_for=self.hermes_for, state_dir=STATE_DIR, pid_alive=pid_alive,
                                    runner_is_alive=runner_alive(lock, pid_alive)),
             gateway=lambda: health.gateway_line(health.HERMES_GATEWAY_STATE, pid_alive, now),

@@ -728,6 +728,23 @@ def test_busy_reports_deploy_and_gates_locks(tmp_path):
         assert integ.busy() == ["deploy en curso"]
 
 
+def test_busy_while_a_merge_button_runs(tmp_path):
+    """Un reinicio ordenado no puede cortar `gh pr merge` (fuera de _lock y _deploying) ni el sondeo de /health."""
+    integ, w, h, tg, d, _ = make(tmp_path)
+    integ.run_pass()
+    seen = []
+    orig = w._gh
+
+    def gh(args):
+        if args[1:3] == ["pr", "merge"]:
+            seen.append(integ.busy())
+        return orig(args)
+    w._gh = gh
+    press(d, tg)
+    assert seen and "acción de Oscar en marcha (fusión/deploy)" in seen[0]
+    assert integ.busy() == []
+
+
 # --- MigraTeam: merge = deploy -------------------------------------------------------------------------
 
 def test_migrateam_merge_and_verify_health_commit(tmp_path):

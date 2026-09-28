@@ -23,13 +23,22 @@ def _when(ts) -> str:
         return "?"
 
 
-def runner_line(lock: Path, pid_alive: Callable[[int], bool], drain: dict | None = None) -> str:
-    """Estado del runner-servicio desde .state/runner.lock (+ drenaje en curso, si lo hay)."""
+def runner_line(lock: Path, pid_alive: Callable[[int], bool], drain: dict | None = None,
+                busy: Path | None = None) -> str:
+    """Estado del runner-servicio desde .state/runner.lock (+ workers de la pasada en curso, incluido el carril
+    review, desde .state/busy.json; + drenaje en curso, si lo hay)."""
     try:
         pid = int(json.loads(Path(lock).read_text(encoding="utf-8"))["pid"])
     except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError):
         return "runner: no arrancado (sin .state/runner.lock)"
-    line = f"runner: {'VIVO' if pid_alive(pid) else 'PARADO'} (pid {pid})"
+    alive = pid_alive(pid)
+    line = f"runner: {'VIVO' if alive else 'PARADO'} (pid {pid})"
+    try:
+        b = json.loads(Path(busy).read_text(encoding="utf-8")) if busy else {}
+    except (OSError, ValueError):
+        b = {}
+    if alive and b.get("pid") == pid and b.get("jobs"):
+        line += " · en marcha: " + ", ".join(f"{j.get('task')} ({j.get('lane')})" for j in b["jobs"][:4])
     if drain:
         line += f" · drenando desde {_when(drain.get('since'))} (no reclama)"
     return line
