@@ -27,7 +27,8 @@ from typing import Callable
 from . import proc as _proc
 from .config import ROOT
 from .hermes import ANSWER_PREFIX, OSCAR_AUTHOR, REVIEW_AUTHOR
-from .notices import card_url, normalize_questions, render, truncate
+from .explain import explain as _explain
+from .notices import card_url, normalize_questions, render, truncate, with_default_options
 from .review import CHANGES_PREFIX
 
 log = logging.getLogger("agent_lanes")
@@ -43,23 +44,32 @@ PARK_PROFILE = "oscar"
 PR_FOOTER = "🤖 Generated with [Claude Code](https://claude.com/claude-code)"
 
 APPROVE, CHANGES, PARK, RETRY, OPTION, OTHER = "approve", "changes", "park", "retry", "option", "other"
+EXPLAIN = "explain"        # 💬 Explícame más: responde con una explicación llana; no consume el teclado
 ACCEPT_ALL = "accept_all"  # cabecera de /decisiones: aplica la opción recomendada en todas las que la tienen
 REPLY_ACTIONS = (CHANGES, OTHER)  # piden texto a Oscar con force_reply
+EXPLAIN_BUTTON = {"text": "💬 Explícame más", "action": EXPLAIN}
+DEFAULT_OPTION_LABELS = ("✅ Sí, adelante", "❌ No")  # botones de una pregunta sin opciones (DEFAULT_OPTIONS)
+EXPLAIN_FAILED = "💬 No pude generar la explicación ahora; mira la tarjeta o responde con ✍️"
 
 
-def keyboard_spec(state: str, *, block_kind: str | None = None, questions=None) -> list[list[dict]] | None:
+def keyboard_spec(state: str, *, block_kind: str | None = None, questions=None,
+                  yes_no: bool = True) -> list[list[dict]] | None:
     """Botones por estado: filas de {text, action, index}. None = aviso sin botones (en curso, en review...)."""
     park = {"text": "🗄 Aparcar", "action": PARK}
     if state == "done":
         return [[{"text": "✅ Aprobar", "action": APPROVE}, {"text": "🔁 Pedir cambios", "action": CHANGES}, park]]
     if state == "needs_input":
         rows = []
-        qs = normalize_questions(questions)
-        if qs and qs[0]["options"]:  # botones solo para la primera pregunta; el resto con ✍️
+        # Una pregunta sin opciones recibe [✅ Sí, adelante] [❌ No]: siempre se puede decidir con un toque.
+        qs = with_default_options(questions, yes_no)
+        if qs and qs[0].get("default_options"):
+            rows.append([{"text": label, "action": OPTION, "index": i} for i, label in enumerate(DEFAULT_OPTION_LABELS)])
+        elif qs and qs[0]["options"]:  # botones solo para la primera pregunta; el resto con ✍️
             for i, opt in enumerate(qs[0]["options"]):
                 star = "⭐ " if i == qs[0]["recommended"] else ""
                 rows.append([{"text": f"{star}{i + 1}) {opt}", "action": OPTION, "index": i}])
         rows.append([{"text": "✍️ Otra respuesta", "action": OTHER}, park])
+        rows.append([dict(EXPLAIN_BUTTON)])
         return rows
     if state == "blocked" and block_kind == "transient":
         return [[{"text": "🔄 Reintentar", "action": RETRY}, park]]
@@ -167,7 +177,7 @@ class DecisionDesk:
     def __init__(self, notifier, store: CallbackStore, *, lanes: dict, hermes_for: Callable[[str], object],
                  links=None, owner_id: str = OWNER_TELEGRAM_ID, runner=_proc.run, gh_exe: str = GH_EXE,
                  spawn: Callable[[Callable[[], None]], None] = _spawn, now: Callable[[], datetime] = datetime.now,
-                 messages=None):
+                 messages=None, explainer: Callable[[dict], str | None] | None = None):
         self.notifier = notifier
         self.store = store
         self.lanes = lanes
@@ -181,36 +191,41 @@ class DecisionDesk:
         self.integrator = None  # carril Integrador (INTEGRATOR_ENABLED): botones int_* de fusionar/desplegar
         self.messages = messages  # MessageStore: todas las copias de cada aviso (sincronización tema <-> DM)
         self.commands = None      # CommandCenter: /hoy, /decisiones, /aprobar, /tareas, /tarea
+        # 💬 Explícame más: rec -> texto llano (claude -p --model haiku sin herramientas); inyectable en tests.
+        self.explainer = explainer or (lambda rec: _explain(rec, runner=self._run))
 
     # --- teclados -------------------------------------------------------------------------------------
 
     def markup(self, state: str, *, task: dict, lane, block_kind: str | None = None, questions=None,
-               summary: str | None = None, changed_files=None) -> dict | None:
-        spec = keyboard_spec(state, block_kind=block_kind, questions=questions)
+               summary: str | None = None, changed_files=None, for_oscar: str | None = None,
+               yes_no: bool = True) -> dict | None:
+        """`yes_no=False`: escalada de review (sin [✅ Sí, adelante] [❌ No] por defecto)."""
+        spec = keyboard_spec(state, block_kind=block_kind, questions=questions, yes_no=yes_no)
         if not spec:
             return None
-        qs = normalize_questions(questions)
+        qs = with_default_options(questions, yes_no)
         rec = {"task_id": task["id"], "board": lane.board, "lane": lane.name, "title": task.get("title") or "",
                "body": (task.get("body") or "")[:4000], "question": qs[0] if qs else None,
                "summary": (summary or "")[:1500], "changed_files": list(changed_files or [])[:50],
-               "n_questions": len(qs)}
+               "n_questions": len(qs), "questions": qs[:5],
+               **({"for_oscar": str(for_oscar)[:600]} if for_oscar else {})}
         # ✍️ con varias preguntas y sin opción elegida: el texto libre responde a todas.
         if len(qs) > 1:
             rec["other_label"] = "todas las preguntas"
         return self.store.issue(rec, spec)[1]
 
     @staticmethod
-    def member(task: dict, lane, questions=None) -> dict:
+    def member(task: dict, lane, questions=None, yes_no: bool = True) -> dict:
         """Registro mínimo de una tarea dentro de un teclado de grupo o de "aceptar todo"."""
-        qs = normalize_questions(questions)
+        qs = with_default_options(questions, yes_no)
         return {"task_id": task["id"], "board": lane.board, "lane": lane.name, "title": task.get("title") or "",
                 "body": (task.get("body") or "")[:1500], "question": qs[0] if qs else None,
                 "questions": qs, "n_questions": len(qs)}
 
-    def group_markup(self, members: list[dict], questions) -> dict | None:
+    def group_markup(self, members: list[dict], questions, yes_no: bool = True) -> dict | None:
         """Una tarjeta para la misma pregunta en varias tareas: la respuesta se aplica a todas."""
-        spec = keyboard_spec("needs_input", questions=questions)
-        qs = normalize_questions(questions)
+        spec = keyboard_spec("needs_input", questions=questions, yes_no=yes_no)
+        qs = with_default_options(questions, yes_no)
         rec = {**members[0], "group": members, "question": qs[0] if qs else None, "n_questions": len(qs)}
         if len(qs) > 1:
             rec["other_label"] = "todas las preguntas"
@@ -252,6 +267,10 @@ class DecisionDesk:
             return
         button = buttons[int(n)]
         where = self._where(cq.get("message") or {})
+        if button["action"] == EXPLAIN:  # no consume el teclado: los demás botones siguen valiendo
+            answer(cq.get("id"), "Te lo explico en un momento")
+            self._spawn(lambda: self._explain(rec, where))
+            return
         if button["action"] in REPLY_ACTIONS:
             answer(cq.get("id"), "Responde al mensaje que te envío")
             self._spawn(lambda: self._ask(token, rec, button, where))
@@ -443,7 +462,8 @@ class DecisionDesk:
             return False
         rest = {**rec, "question": {"question": "resto de preguntas", "options": [], "recommended": None},
                 "n_questions": 1, "other_label": "resto de preguntas"}
-        spec = [[{"text": "✍️ Otra respuesta", "action": OTHER}, {"text": "🗄 Aparcar", "action": PARK}]]
+        spec = [[{"text": "✍️ Otra respuesta", "action": OTHER}, {"text": "🗄 Aparcar", "action": PARK}],
+                [dict(EXPLAIN_BUTTON)]]
         _, markup = self.store.issue(rest, spec)
         self._edit(rest, where, "needs_input", f"💬 1ª: {truncate(answer, 80)} · responde el resto con ✍️",
                    markup=markup)
@@ -531,6 +551,20 @@ class DecisionDesk:
             self._edit(rec, where, "answered", "💬 respuesta anotada · no se pudo desbloquear (mira la tarjeta)")
         return True
 
+    def _explain(self, rec: dict, where: dict) -> None:
+        """💬 Explícame más: explicación llana como respuesta al aviso pulsado, en el mismo chat/tema."""
+        try:
+            text = self.explainer(rec)  # en un grupo, rec = primer miembro + la pregunta compartida
+        except Exception as exc:
+            log.warning("%s: explicación fallida: %s", rec.get("task_id"), exc)
+            text = None
+        body = f"💬 {rec.get('task_id')} · {text}" if text else EXPLAIN_FAILED
+        try:
+            self.notifier.send_to(where["chat_id"], where["thread_id"], body, html=False,
+                                  reply_to=where.get("message_id"))
+        except Exception as exc:
+            log.warning("%s: no se pudo enviar la explicación: %s", rec.get("task_id"), exc)
+
     def _ask(self, token: str, rec: dict, button: dict, where: dict) -> None:
         tid = rec["task_id"]
         if button["action"] == CHANGES:
@@ -585,7 +619,7 @@ class DecisionDesk:
         lane = self._lane(rec)
         links = self.links(lane, rec["task_id"], changed_files=rec.get("changed_files")) if (self.links and lane) else []
         text = render(state, rec["task_id"], rec.get("title"), rec["lane"], status, [*links, *extra_links],
-                      body=rec.get("body"))
+                      body=rec.get("body"), for_oscar=rec.get("for_oscar"))
         extra = {"reply_markup": markup} if markup else {}
         seen = set()
         if where:

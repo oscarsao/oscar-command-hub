@@ -13,7 +13,7 @@ import pytest
 
 from agent_lanes import notices, telegram
 from agent_lanes.config import ROOT, Lane
-from agent_lanes.decisions import (APPROVE, CHANGES, NOT_OWNER, OPTION, OTHER, PARK, RETRY, CallbackStore,
+from agent_lanes.decisions import (APPROVE, CHANGES, EXPLAIN, NOT_OWNER, OPTION, OTHER, PARK, RETRY, CallbackStore,
                                    DecisionDesk, UpdatePoller, keyboard_spec)
 from agent_lanes.git_ops import GitOps
 from agent_lanes.hermes import OSCAR_AUTHOR, REVIEW_AUTHOR, HermesCLI
@@ -122,7 +122,8 @@ def test_keyboard_per_state():
     for state, kind in (("running", None), ("review", None), ("changes", None), ("blocked", "needs_input"),
                         ("blocked", "capability")):
         assert keyboard_spec(state, block_kind=kind) is None
-    assert _actions(keyboard_spec("needs_input", questions=["¿libre?"])) == [[OTHER, PARK]]
+    # Sin opciones: [✅ Sí, adelante] [❌ No] por defecto (28-09), y siempre [💬 Explícame más].
+    assert _actions(keyboard_spec("needs_input", questions=["¿libre?"])) == [[OPTION, OPTION], [OTHER, PARK], [EXPLAIN]]
 
 
 def test_needs_input_buttons_only_for_first_question_with_star():
@@ -131,7 +132,7 @@ def test_needs_input_buttons_only_for_first_question_with_star():
     spec = keyboard_spec("needs_input", questions=qs)
     assert [r[0]["text"] for r in spec[:3]] == ["1) Supabase", "⭐ 2) SQLite", "3) Postgres propio"]
     assert [r[0]["index"] for r in spec[:3]] == [0, 1, 2]
-    assert _actions(spec)[3] == [OTHER, PARK] and len(spec) == 4
+    assert _actions(spec)[3] == [OTHER, PARK] and _actions(spec)[4] == [EXPLAIN] and len(spec) == 5
 
 
 def test_questions_are_normalised_retrocompatibly():
@@ -161,7 +162,7 @@ def test_callback_data_is_short_and_persisted_without_the_text(tmp_path):
     q = {"question": "¿Qué opción " + "larga " * 40 + "?", "options": ["ó" * 40, "b", "c", "d"], "recommended": 0}
     markup = desk.markup("needs_input", task={"id": "t_1", "title": "T", "body": BODY}, lane=LANE, questions=[q])
     datas = [b["callback_data"] for row in markup["inline_keyboard"] for b in row]
-    assert len(datas) == 6 and all(len(d.encode()) <= 64 for d in datas)
+    assert len(datas) == 7 and all(len(d.encode()) <= 64 for d in datas)
     assert all("ó" not in d for d in datas)
     token = datas[0].split(":")[0]
     assert len({d.split(":")[0] for d in datas}) == 1
@@ -386,7 +387,8 @@ def test_several_questions_option_answers_first_and_keeps_free_reply_for_the_res
     edit = tg.edits[-1]
     assert "💬 1ª: Supabase · responde el resto con ✍️" in edit["text"]
     rest = edit["markup"]
-    assert [b["text"] for row in rest["inline_keyboard"] for b in row] == ["✍️ Otra respuesta", "🗄 Aparcar"]
+    assert [b["text"] for row in rest["inline_keyboard"] for b in row] == ["✍️ Otra respuesta", "🗄 Aparcar",
+                                                                          "💬 Explícame más"]
     _press(desk, rest, 0, cid="cq2")
     _reply(desk, 501, "Redis")
     assert h.calls[1:] == [("comment", "t_1", "Respuesta de Oscar: resto de preguntas → Redis", OSCAR_AUTHOR),
@@ -396,7 +398,7 @@ def test_several_questions_option_answers_first_and_keeps_free_reply_for_the_res
 def test_free_reply_with_several_questions_answers_all(tmp_path):
     desk, tg, h = _desk(tmp_path)
     markup = desk.markup("needs_input", task={"id": "t_1", "title": "T"}, lane=LANE, questions=["¿A?", "¿B?"])
-    _press(desk, markup, 0)
+    _press(desk, markup, 2)  # 0 y 1 son [✅ Sí, adelante] [❌ No] de la 1ª pregunta; 2 = ✍️ Otra respuesta
     _reply(desk, 501, "A sí, B no")
     assert h.calls[0][2] == "Respuesta de Oscar: todas las preguntas → A sí, B no" and h.calls[1] == ("unblock", "t_1")
 
@@ -436,7 +438,7 @@ def test_request_changes_on_done_task_is_annotated_when_reopen_fails(tmp_path):
 def test_other_answer_via_force_reply(tmp_path):
     desk, tg, h = _desk(tmp_path)
     markup = desk.markup("needs_input", task={"id": "t_1", "title": "T"}, lane=LANE, questions=["¿Qué nombre?"])
-    _press(desk, markup, 0)
+    _press(desk, markup, 2)  # ✍️ Otra respuesta, tras [✅ Sí, adelante] [❌ No]
     assert tg.sent[-1]["text"].startswith("Tu respuesta para t_1:") and "¿Qué nombre?" in tg.sent[-1]["text"]
     _reply(desk, 501, "Carriles")
     assert h.calls == [("comment", "t_1", "Respuesta de Oscar: ¿Qué nombre? → Carriles", OSCAR_AUTHOR),
@@ -477,7 +479,7 @@ def test_runner_needs_input_alert_carries_buttons_when_desk_is_active(tmp_path):
     LaneRunner(LANE, hermes=h, git=FakeGit(), worker=FakeWorker([out]), verifier=FakeVerifier(), notify=n,
                decisions=desk).run_once()
     texts = [b["text"] for row in n.markups[-1]["inline_keyboard"] for b in row]
-    assert texts == ["1) A", "⭐ 2) B", "✍️ Otra respuesta", "🗄 Aparcar"]
+    assert texts == ["1) A", "⭐ 2) B", "✍️ Otra respuesta", "🗄 Aparcar", "💬 Explícame más"]
     assert "responde con un botón" in n.msgs[-1]
     block = [c for c in h.calls if c[0] == "block"][0]
     assert "¿A o B? [1) A / 2) B (recomendada)]" in block[3]  # la tarjeta ve las opciones (dicts no rompen)
@@ -623,9 +625,12 @@ SCHEMA = json.loads((ROOT / "contract" / "result.schema.json").read_text(encodin
 
 @pytest.mark.parametrize("questions,valid", [
     ([], True),
-    (["¿A?"], True),
     ([{"question": "¿A?", "options": ["x", "y"], "recommended": 0}], True),
-    ([{"question": "¿A?", "options": ["x", "y", "z", "w"]}, "¿libre?"], True),
+    ([{"question": "¿A?", "options": ["x", "y", "z", "w"], "recommended": 3}], True),
+    # 28-09: toda pregunta lleva 2-4 opciones y una recomendada (Oscar decide con un toque). Las preguntas sueltas
+    # de workers viejos se siguen aceptando al leerlas (normalize_questions + [✅ Sí, adelante] [❌ No]).
+    (["¿A?"], False),
+    ([{"question": "¿A?", "options": ["x", "y", "z", "w"]}], False),
     ([{"question": "¿A?", "options": ["solo"]}], False),
     ([{"question": "¿A?", "options": ["a", "b", "c", "d", "e"]}], False),
     ([{"question": "¿A?", "options": ["x" * 41, "y"]}], False),

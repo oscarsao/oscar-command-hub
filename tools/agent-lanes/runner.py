@@ -98,7 +98,7 @@ def main(argv: list[str] | None = None) -> int:
         decisions.commands = commands
         log.info("comandos del bot registrados en: %s", register_commands(notify))
         UpdatePoller(notify, decisions, TG_OFFSET).start()
-        Reminders(notify, owner, commands.pending_decisions, REMINDERS_STATE).start()
+        Reminders(notify, owner, commands.pending_decisions, REMINDERS_STATE, cards=commands.decision_cards).start()
         log.info("bot de carriles activo (id %s, @%s): avisos con botones, comandos, escucha y recordatorios",
                  notify.bot_id, username)
     else:

@@ -33,6 +33,23 @@ QUESTION_MAX_CHARS = 280   # cada viñeta; 5 x 280 < límite de Telegram (4096) 
 BRANDS = {"claude-migrateam": "MigraTeam", "claude-oscarhq": "Píldora", "claude-scraper": "Píldora",
           "claude-nextjobs": "NextJobs"}
 OASP_MODES = ("Fast-Track", "Spec-Lite", "Pitch", "CTO-360")
+FOR_OSCAR_MAX = 300  # `for_oscar` del worker: 1-2 frases llanas que sustituyen al "Qué:" técnico del aviso
+# Opciones por defecto de una pregunta que llega sin `options` (p. ej. "¿Doy luz verde a la spec?"): Oscar debe
+# poder decidir con un toque. La respuesta vuelve al worker como si fuera una opción del contrato.
+DEFAULT_OPTIONS = ("Sí, adelante", "No")
+
+# Tarjetas de decisión de Oscar (no son tareas de carril): asignadas a `oscar`, en ready/blocked y con una de estas
+# etiquetas en el título. La misma regla para el resumen de las 8:00, /decisiones y los recordatorios.
+OSCAR_ASSIGNEE = "oscar"
+DECISION_TAGS = ("[DECISIÓN", "[SEMANA", "· DECISIÓN]", "[IDEA")
+DECISION_CARD_STATUSES = ("ready", "blocked")
+BOARD_BRANDS = {"migrateam": "MigraTeam", "oscarhq": "Píldora"}  # marca de una tarjeta de Oscar según su tablero
+
+
+def is_decision_card(task: dict | None) -> bool:
+    t = task or {}
+    return (t.get("assignee") == OSCAR_ASSIGNEE and t.get("status") in DECISION_CARD_STATUSES
+            and any(tag in (t.get("title") or "") for tag in DECISION_TAGS))
 
 
 def truncate(text, n: int) -> str:
@@ -106,6 +123,18 @@ def decision_since(task: dict | None, detail: dict | None = None) -> float | Non
 
 def hours_ago(since: float | None, now: float) -> int:
     return max(0, int((now - since) // 3600)) if since else 0
+
+
+def with_default_options(questions, yes_no: bool = True) -> list[dict]:
+    """Preguntas normalizadas; la que llega sin opciones recibe DEFAULT_OPTIONS (sin recomendada) y la marca
+    `default_options` para que los botones digan [✅ Sí, adelante] [❌ No]. `yes_no=False` (escaladas de review, donde
+    las "preguntas" son cambios pedidos y "Sí" sería ambiguo): sin opciones por defecto."""
+    out = []
+    for q in normalize_questions(questions):
+        if not q["options"] and yes_no:
+            q = {**q, "options": list(DEFAULT_OPTIONS), "recommended": None, "default_options": True}
+        out.append(q)
+    return out
 
 
 def question_text(q: dict) -> str:
@@ -275,19 +304,22 @@ def context_line(lane: str, body: str | None) -> str:
 
 def render(state: str, task_id: str, title: str | None, lane: str, status: str,
            links: list[tuple[str, str]] | None = None, bullets: list[str] | None = None, *,
-           body: str | None = None) -> str:
+           body: str | None = None, for_oscar: str | None = None) -> str:
     """HTML (parse_mode=HTML). Unas 5 líneas, más las viñetas de needs_input:
 
         <emoji> t_xxx · <título ≤60>
         <Marca> · <carril> · <modo OASP si aparece en el cuerpo>
-        Qué: <sección ## Objetivo, ≤200>
+        Qué: <sección ## Objetivo, ≤200>   (o "Para ti: <for_oscar>" si el worker lo explicó en llano)
         <estado> · N archivos · tests OK · 1,9 $
         🗂 Tarjeta · 📄 Spec/pitch · 🔀 Cambios
     """
     e = html.escape
     head = [f"{EMOJI.get(state, '•')} {e(task_id)} · {e(truncate(title, TITLE_MAX))}", e(context_line(lane, body))]
-    what = objective(body)
-    if what:
+    plain = truncate(for_oscar, FOR_OSCAR_MAX) if for_oscar else ""
+    what = None if plain else objective(body)
+    if plain:
+        head.append("Para ti: " + e(plain))
+    elif what:
         head.append("Qué: " + e(what))
     head.append(e(status))
     tail = []
@@ -382,7 +414,8 @@ class TaskNotices:
 
     def publish(self, tid: str, text: str, target=None, lane_target=None, *, alert: bool = False,
                 reply_markup: dict | None = None, mirror_to: str | None = None) -> None:
-        """`mirror_to`: chat (DM de Oscar) que recibe además una copia del aviso, con los mismos botones."""
+        """`mirror_to`: chat (DM de Oscar) que recibe además una copia del aviso, con los mismos botones. Si el aviso
+        principal ya cayó en ese chat, no se duplica."""
         rec = self.store.get(tid)
         bot = getattr(self.notifier, "bot_id", None)
         # Un bot solo edita/borra sus propios mensajes: si el aviso anterior es de otro bot (se pasó a
@@ -423,7 +456,7 @@ class TaskNotices:
                     pass
             mirrors = []
         self.store.put(tid, {**sent, **({"mirrors": mirrors} if mirrors else {})})
-        if alert and mirror_to and hasattr(self.notifier, "send_to"):
+        if alert and mirror_to and hasattr(self.notifier, "send_to") and str(sent.get("chat_id")) != str(mirror_to):
             try:
                 copy = self.notifier.send_to(str(mirror_to), None, text, **extra)
             except Exception as exc:  # DM sin /start ("chat not found", 403): no rompe el aviso del tema

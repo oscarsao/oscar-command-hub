@@ -36,7 +36,7 @@ from .notices import (
     test_label,
 )
 from .review import ReviewRunner, implementation_metadata
-from .runner import LaneRunner
+from .runner import FOR_OSCAR_PREFIX, LaneRunner
 from .telegram import resolve_target, telegram_target
 
 log = logging.getLogger("agent_lanes")
@@ -102,6 +102,17 @@ def _question(line: str) -> dict:
     return {"question": m.group(1), "options": options, "recommended": recommended}
 
 
+def split_for_oscar(reason: str | None) -> tuple[str, str | None]:
+    """(motivo sin la línea "Para Oscar: …", texto de esa línea o None). La escribe runner._block."""
+    keep, plain = [], None
+    for line in (reason or "").splitlines():
+        if line.strip().startswith(FOR_OSCAR_PREFIX):
+            plain = line.strip()[len(FOR_OSCAR_PREFIX):].strip() or None
+        else:
+            keep.append(line)
+    return "\n".join(keep), plain
+
+
 def parse_questions(reason: str | None) -> list[dict]:
     """Preguntas desde el motivo del bloqueo: una por viñeta `- `; sin viñetas, el motivo entero es la pregunta."""
     lines = (reason or "").strip().splitlines()
@@ -124,6 +135,8 @@ class Pending:
     changed_files: list[str] | None = None
     summary: str | None = None
     since: float | None = None  # desde cuándo espera a Oscar (último blocked, o completed_at si está lista)
+    for_oscar: str | None = None  # explicación llana del worker (sustituye al "Qué:" técnico del aviso)
+    yes_no: bool = True  # False en escaladas de review: sin [✅ Sí, adelante] [❌ No] por defecto
 
 
 def _last_block(show: dict) -> dict | None:
@@ -206,11 +219,16 @@ class Renotifier:
             return Pending(tid, lane, "blocked", task, status, block_kind="transient",
                            since=decision_since(task, show))
         meta = (runs[-1].get("metadata") if runs else None) or {}
+        if not isinstance(meta, dict):
+            meta = {}
+        reason, plain = split_for_oscar(reason)
         questions = normalize_questions(meta.get("questions")) or parse_questions(reason)
         m = _ROUNDS_RE.match(reason.strip())
         public = f"{m.group(1)}ª petición de cambios: decides tú" if m else "necesita tu decisión"
         return Pending(tid, lane, "needs_input", task, status_line(public, NEEDS_HINT),
-                       bullets=questions_block(questions), questions=questions, since=decision_since(task, show))
+                       bullets=questions_block(questions), questions=questions, since=decision_since(task, show),
+                       summary=(runs[-1].get("summary") if runs else None), for_oscar=plain or meta.get("for_oscar"),
+                       yes_no=not m)
 
     def _plan_done(self, lane: Lane, show: dict) -> Pending | None:
         task = show["task"]
@@ -234,7 +252,8 @@ class Renotifier:
         status = status_line("review aprobada", files_label(len(changed)), test_label(meta.get("runner_test_exit")),
                              money(cost), "lista para merge")
         return Pending(tid, lane, "done", task, status, changed_files=changed,
-                       summary=review.get("summary") or meta.get("summary"), since=task.get("completed_at"))
+                       summary=review.get("summary") or meta.get("summary"), since=task.get("completed_at"),
+                       for_oscar=meta.get("for_oscar"))
 
     # --- envío --------------------------------------------------------------------------------------
 
@@ -262,7 +281,7 @@ class Renotifier:
                                 allowed_chats=getattr(self.notifier, "allowed_chats", set()),
                                 generic_origins=getattr(self.notifier, "generic_origins", set()))
         chat, thread = target or (getattr(self.notifier, "chat_id", None), getattr(self.notifier, "thread_id", None))
-        spec = keyboard_spec(p.state, block_kind=p.block_kind, questions=p.questions) or []
+        spec = keyboard_spec(p.state, block_kind=p.block_kind, questions=p.questions, yes_no=p.yes_no) or []
         buttons = " | ".join(b["text"] for row in spec for b in row)
         self.out(f"[dry-run] {p.tid} · {p.lane.name} · {EMOJI[p.state]} {p.block_kind or p.state} → "
                  f"chat {chat} tema {thread or 0}\n    {p.status}\n"
@@ -278,12 +297,13 @@ class Renotifier:
                                   verifier=None, notify=self.notifier, messages=self.messages, links=self.links,
                                   decisions=self.desk)
                 rr.notify("done", {**p.task, "assignee": p.lane.name}, p.status, alert=True,
-                          changed_files=p.changed_files, buttons=True, summary=p.summary)
+                          changed_files=p.changed_files, buttons=True, summary=p.summary, for_oscar=p.for_oscar)
             else:
                 lr = LaneRunner(p.lane, hermes=self.hermes_for(p.lane.board), git=None, worker=None, verifier=None,
                                 notify=self.notifier, messages=self.messages, links=self.links, decisions=self.desk)
                 lr.notify(p.state, p.tid, p.task, p.status, alert=True, bullets=p.bullets, buttons=True,
-                          block_kind=p.block_kind, questions=p.questions, changed_files=p.changed_files)
+                          block_kind=p.block_kind, questions=p.questions, changed_files=p.changed_files,
+                          summary=p.summary, for_oscar=p.for_oscar, yes_no=p.yes_no)
         except Exception as exc:
             log.warning("%s: renotify falló: %s", p.tid, exc)
         new = self.messages.get(p.tid)

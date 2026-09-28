@@ -4,7 +4,8 @@ Deterministas (sin LLM) y solo para Oscar; a cualquier otro: "Solo Oscar". Funci
 también como /cmd@<bot>. Un /cmd@otro_bot (p. ej. el de Hermes) se ignora.
 
     /hoy                 el resumen de las 8:00 bajo demanda (brief/brief_diario.py, mismo render y datos)
-    /decisiones          bandeja: cabecera con [✅ Aceptar todo lo recomendado] + una tarjeta por tarea en needs_input
+    /decisiones          bandeja: cabecera con [✅ Aceptar todo lo recomendado] + una tarjeta por tarea en needs_input,
+                         y "📌 Tus tarjetas de decisión" (asignadas a oscar con [DECISIÓN…]/[SEMANA…]/[IDEA…])
     /aprobar             tareas listas para integrar con [✅ Aprobar] [🔁 Pedir cambios] [🗄 Aparcar]
     /tareas [marca]      en curso y en cola por carril (migrateam | pildora | nextjobs), un solo mensaje
     /tarea t_xxx         ficha de la tarea con los botones de su estado
@@ -25,7 +26,8 @@ from typing import Callable
 
 from .decisions import OWNER_TELEGRAM_ID
 from .deps import dependency_order, pending_parents, waiting_line
-from .notices import (BRANDS, TEXT_MAX, card_url, hours_ago, markup_token, normalize_questions, render,
+from .notices import (BOARD_BRANDS, BRANDS, DECISION_CARD_STATUSES, OSCAR_ASSIGNEE, TEXT_MAX, card_url,
+                      decision_since, hours_ago, is_decision_card, markup_token, normalize_questions, render,
                       status_line, truncate)
 
 log = logging.getLogger("agent_lanes")
@@ -46,6 +48,8 @@ STATUS_TEXT = {"running": ("running", "en curso"), "ready": ("ready", "en cola")
                "done": ("done", "terminada"), "blocked": ("blocked", "bloqueada"), "todo": ("todo", "pendiente"),
                "triage": ("triage", "en triage"), "archived": ("archived", "archivada")}
 MAX_CARDS = 20       # tarjetas por /decisiones o /aprobar (el resto se cuenta en la cabecera)
+CARD_TITLE_MAX = 60  # título de una tarjeta de decisión de Oscar en /decisiones
+EXTRA_BOARDS = ("default",)  # además de los tableros de los carriles: donde viven muchas tarjetas de Oscar
 READY_PER_LANE = 8   # tareas en cola listadas por carril en /tareas
 
 _CMD_RE = re.compile(r"^/([A-Za-z0-9_]+)(?:@([A-Za-z0-9_]+))?(?:\s+(.*))?$", re.S)
@@ -188,6 +192,28 @@ class CommandCenter:
         found = [p for p in self.renotifier().collect(statuses=("blocked",)) if p.state == "needs_input"]
         return sorted(self._filter(found, brand), key=lambda p: (p.since or 0, p.tid))
 
+    def decision_cards(self, brand: str | None = None) -> list[dict]:
+        """Tarjetas de decisión de Oscar (no son de carril): asignadas a `oscar`, en ready/blocked y con etiqueta
+        [DECISIÓN…]/[SEMANA…]/[IDEA…] en el título, en los tableros de los carriles + default. Más antigua primero.
+        [{board, task, since}]. Con `brand` (tema de una marca), solo las de su tablero (default = "Otros")."""
+        boards = dict.fromkeys([l.board for l in self.lanes.values() if l.board] + list(EXTRA_BOARDS))
+        found: dict[str, dict] = {}
+        for board in boards:
+            if brand and BOARD_BRANDS.get(board, "Otros") != brand:
+                continue
+            h = self.hermes_for(board)
+            for status in DECISION_CARD_STATUSES:
+                try:
+                    tasks = h.list_status(OSCAR_ASSIGNEE, status)
+                except Exception as exc:  # un tablero ilegible no vacía la bandeja
+                    log.warning("tarjetas de Oscar en %s (%s) no leídas: %s", board, status, exc)
+                    continue
+                for t in tasks:
+                    t = {"assignee": OSCAR_ASSIGNEE, "status": status, **t}
+                    if t.get("id") and t["id"] not in found and is_decision_card(t):
+                        found[t["id"]] = {"board": board, "task": t, "since": decision_since(t)}
+        return sorted(found.values(), key=lambda c: (c["since"] or 0, c["task"]["id"]))
+
     def ready_to_approve(self, brand: str | None = None) -> list:
         found = [p for p in self.renotifier().collect(statuses=("done",)) if p.state == "done"]
         return sorted(self._filter(found, brand), key=lambda p: (p.since or 0, p.tid))
@@ -215,10 +241,35 @@ class CommandCenter:
     def cmd_decisiones(self, where, args: str, brand: str | None) -> None:
         now = self._now()
         pendings = self.pending_decisions(brand)
+        cards = self.decision_cards(brand)
         scope = f" · {brand}" if brand else ""
-        if not pendings:
+        if not pendings and not cards:
             self._send(where, f"Nada pendiente de ti{scope} 🎉", html=False)
             return
+        if pendings:
+            self._agent_questions(where, pendings, now, scope)
+        if cards:
+            self._send(where, self.cards_text(cards, now, scope))
+
+    def cards_text(self, cards: list[dict], now: float, scope: str = "") -> str:
+        """Un mensaje HTML con las tarjetas de decisión de Oscar (sin botones en v1). Nunca corta el HTML: si no
+        cabe, quita líneas y lo dice."""
+        e = html.escape
+        head = f"📌 <b>Tus tarjetas de decisión ({len(cards)})</b>{e(scope)}"
+        lines = []
+        for c in cards:
+            t = c["task"]
+            url = card_url(self.base_url, c["board"], t["id"])
+            ref = f'<a href="{e(url, quote=True)}">{e(t["id"])}</a>' if url else f"<code>{e(t['id'])}</code>"
+            lines.append(f"• {ref} · {e(truncate(t.get('title'), CARD_TITLE_MAX))} · hace {hours_ago(c['since'], now)} h")
+        shown = len(lines)
+        while shown and len("\n".join([head, *lines[:shown], "  +000 más en el panel"])) > TEXT_MAX:
+            shown -= 1
+        more = [f"  +{len(lines) - shown} más en el panel"] if shown < len(lines) else []
+        return "\n".join([head, *lines[:shown], *more])
+
+    def _agent_questions(self, where, pendings: list, now: float, scope: str) -> None:
+        """Preguntas de los agentes (tareas de carril en needs_input): cabecera + una tarjeta con botones por tarea."""
         groups = group_pending(pendings)
         eligible = [p for p in pendings if fully_recommended(p.questions)]
         head = (f"❓ {_plural(len(pendings), 'decisión', 'decisiones')} · la más antigua hace "
@@ -245,8 +296,11 @@ class CommandCenter:
     def _decision_card(self, where, p, now: float) -> None:
         status = status_line("necesita tu decisión", f"hace {hours_ago(p.since, now)} h")
         text = render("needs_input", p.tid, p.task.get("title"), p.lane.name, status,
-                      self._links_for(p.lane, p.tid), p.bullets, body=p.task.get("body"))
-        markup = self.desk.markup("needs_input", task=p.task, lane=p.lane, questions=p.questions)
+                      self._links_for(p.lane, p.tid), p.bullets, body=p.task.get("body"),
+                      for_oscar=getattr(p, "for_oscar", None))
+        markup = self.desk.markup("needs_input", task=p.task, lane=p.lane, questions=p.questions,
+                                  summary=p.summary, for_oscar=getattr(p, "for_oscar", None),
+                                  yes_no=getattr(p, "yes_no", True))
         self._mirror(p.tid, self._send(where, text, markup=markup), markup)
 
     def _group_card(self, where, group: list, now: float) -> None:
@@ -261,8 +315,9 @@ class CommandCenter:
         text = "\n".join(lines)
         if len(text) > TEXT_MAX:
             text = text[:TEXT_MAX]
-        members = [self.desk.member(p.task, p.lane, p.questions) for p in group]
-        markup = self.desk.group_markup(members, group[0].questions)
+        yes_no = all(getattr(p, "yes_no", True) for p in group)
+        members = [self.desk.member(p.task, p.lane, p.questions, yes_no) for p in group]
+        markup = self.desk.group_markup(members, group[0].questions, yes_no)
         self._send(where, text, markup=markup)
 
     # --- /aprobar -------------------------------------------------------------------------------------
@@ -288,11 +343,12 @@ class CommandCenter:
         self._send(where, head, html=False)
         for p in ready[:MAX_CARDS]:
             text = render("done", p.tid, p.task.get("title"), p.lane.name, p.status,
-                          self._links_for(p.lane, p.tid, p.changed_files), body=p.task.get("body"))
+                          self._links_for(p.lane, p.tid, p.changed_files), body=p.task.get("body"),
+                          for_oscar=p.for_oscar)
             if waits[p.tid]:
                 text += "\n" + html.escape(waiting_line(waits[p.tid])) + " · puedes aprobarla, pero no se fusionará antes"
             markup = self.desk.markup("done", task=p.task, lane=p.lane, summary=p.summary,
-                                      changed_files=p.changed_files)
+                                      changed_files=p.changed_files, for_oscar=p.for_oscar)
             self._mirror(p.tid, self._send(where, text, markup=markup), markup)
 
     # --- /tareas --------------------------------------------------------------------------------------
@@ -372,9 +428,11 @@ class CommandCenter:
             p = plan(lane, show)
             if p:
                 text = render(p.state, tid, task.get("title"), lane.name, p.status,
-                              self._links_for(lane, tid, p.changed_files), p.bullets, body=task.get("body"))
+                              self._links_for(lane, tid, p.changed_files), p.bullets, body=task.get("body"),
+                              for_oscar=p.for_oscar)
                 markup = self.desk.markup(p.state, task=task, lane=lane, block_kind=p.block_kind,
-                                          questions=p.questions, summary=p.summary, changed_files=p.changed_files)
+                                          questions=p.questions, summary=p.summary, changed_files=p.changed_files,
+                                          for_oscar=p.for_oscar, yes_no=p.yes_no)
                 return text, markup
         state, label = STATUS_TEXT.get(status, (status or "?", status or "?"))
         lane_name = lane.name if lane else (task.get("assignee") or board)

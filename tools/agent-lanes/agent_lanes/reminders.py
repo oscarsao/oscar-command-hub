@@ -1,8 +1,10 @@
 """Recordatorios de decisiones pendientes: lunes a viernes a las 13:00 y a las 18:00 (hora de Madrid).
 
 Corre en un hilo propio del runner-servicio: el bucle principal puede quedarse horas dentro de una pasada (un worker
-dura hasta 2 h) y se comería la franja. SOLO si hay decisiones pendientes, un mensaje corto al DM de Oscar con el bot
-de carriles: "Tienes N decisiones (la más antigua hace X h) · /decisiones".
+dura hasta 2 h) y se comería la franja. SOLO si hay algo pendiente, un mensaje corto al DM de Oscar con el bot de
+carriles que cuenta las dos cosas de /decisiones: las preguntas de los agentes (tareas de carril en needs_input) y sus
+tarjetas de decisión (asignadas a oscar con [DECISIÓN…]/[SEMANA…]/[IDEA…]):
+"Tienes N preguntas de agentes (la más antigua hace X h) y M tarjetas de decisión · /decisiones".
 
 La franja enviada se guarda en .state/reminders.json: un reinicio no la repite. Si el runner arranca tarde, la
 franja se recupera durante WINDOW_MINUTES.
@@ -30,9 +32,15 @@ WINDOW_MINUTES = 60
 DM_CLOSED_HINT = "Oscar debe mandar /start al bot de carriles para recibir los recordatorios en su DM"
 
 
-def reminder_text(n: int, oldest_hours: int) -> str:
-    what = "1 decisión" if n == 1 else f"{n} decisiones"
-    return f"Tienes {what} (la más antigua hace {oldest_hours} h) · /decisiones"
+def reminder_text(n: int, oldest_hours: int, cards: int = 0) -> str:
+    """`n` preguntas de agentes (la más antigua hace `oldest_hours`) y `cards` tarjetas de decisión; un lado a 0
+    no se nombra."""
+    parts = []
+    if n:
+        parts.append(("1 pregunta" if n == 1 else f"{n} preguntas") + f" de agentes (la más antigua hace {oldest_hours} h)")
+    if cards:
+        parts.append(("1 tarjeta" if cards == 1 else f"{cards} tarjetas") + " de decisión")
+    return f"Tienes {' y '.join(parts) or 'nada pendiente'} · /decisiones"
 
 
 def due_slot(now: datetime, sent: set[str], window_minutes: int = WINDOW_MINUTES) -> str | None:
@@ -55,11 +63,14 @@ def _dm_closed(exc: Exception) -> bool:
 
 class Reminders:
     def __init__(self, notifier, owner_id: str, pending: Callable[[], list], state_path: Path | str, *,
-                 now: Callable[[], datetime] = lambda: datetime.now(MADRID), interval: float = 60):
-        """`pending()` -> decisiones pendientes con `.since` (la lista de /decisiones)."""
+                 now: Callable[[], datetime] = lambda: datetime.now(MADRID), interval: float = 60,
+                 cards: Callable[[], list] | None = None):
+        """`pending()` -> preguntas de agentes con `.since` (la lista de /decisiones); `cards()` -> tarjetas de
+        decisión de Oscar (la segunda sección de /decisiones)."""
         self.notifier = notifier
         self.owner_id = str(owner_id)
         self.pending = pending
+        self.cards = cards
         self.state_path = Path(state_path)
         self._now = now
         self.interval = interval
@@ -84,11 +95,17 @@ class Reminders:
         if not key:
             return None
         pending = self.pending()
-        if not pending:
+        cards = []
+        if self.cards:
+            try:
+                cards = self.cards()
+            except Exception as exc:  # sin tarjetas antes que sin recordatorio
+                log.warning("recordatorio: tarjetas de decisión no leídas: %s", exc)
+        if not pending and not cards:
             self._mark(key)  # nada que recordar: la franja queda hecha
             return None
         oldest = min((p.since for p in pending if getattr(p, "since", None)), default=None)
-        text = reminder_text(len(pending), hours_ago(oldest, now.timestamp()))
+        text = reminder_text(len(pending), hours_ago(oldest, now.timestamp()), len(cards))
         try:
             self.notifier.send_to(self.owner_id, None, text, html=False)
         except Exception as exc:
@@ -101,7 +118,7 @@ class Reminders:
             log.warning("recordatorio %s falló (se reintenta en la próxima comprobación): %s", key, exc)
             return None
         self._mark(key)
-        log.info("recordatorio %s enviado: %d decisiones", key, len(pending))
+        log.info("recordatorio %s enviado: %d preguntas, %d tarjetas", key, len(pending), len(cards))
         return text
 
     def run(self) -> None:

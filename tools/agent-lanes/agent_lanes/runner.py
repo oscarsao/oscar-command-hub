@@ -67,11 +67,21 @@ class Heartbeat:
         self._thread.join(timeout=5)
 
 
-def dm_mirror(decisions, target, alert: bool) -> str | None:
-    """Chat del DM de Oscar si la tarea se pidió desde su DM (Origen-Telegram chat=<owner>) y el aviso es de alerta
-    (❓ ✅ ⛔): recibe también una copia con el bot de carriles. El tema de la marca sigue recibiendo el suyo."""
+FOR_OSCAR_PREFIX = "Para Oscar:"  # línea del motivo del bloqueo con el `for_oscar` del worker (la lee renotify)
+
+
+def dm_mirror(decisions, target, alert: bool, state: str | None = None) -> str | None:
+    """Chat del DM de Oscar que recibe una copia del aviso (bandeja única de decisiones), con el bot de carriles:
+
+    - toda decisión (❓ needs_input), venga del tema que venga;
+    - cualquier alerta (❓ ✅ ⛔) de una tarea pedida desde su DM (Origen-Telegram chat=<owner>).
+
+    Lo que no es decisión (inicio, fin, técnico) de una tarea pedida desde un tema sigue solo en el tema.
+    TaskNotices no manda la copia si el aviso principal ya cayó en el DM (sin duplicados)."""
     owner = str(getattr(decisions, "owner_id", "") or "")
-    if alert and owner and target and str(target[0]) == owner:
+    if not (alert and owner):
+        return None
+    if state == "needs_input" or (target and str(target[0]) == owner):
         return owner
     return None
 
@@ -97,22 +107,25 @@ class LaneRunner:
 
     def notify(self, state: str, tid: str, task: dict | None, status: str, *, alert: bool = False,
                bullets: list[str] | None = None, branch_link: bool = True, changed_files=None,
-               buttons: bool = False, block_kind: str | None = None, questions=None) -> None:
+               buttons: bool = False, block_kind: str | None = None, questions=None, summary: str | None = None,
+               for_oscar: str | None = None, yes_no: bool = True) -> None:
         """Estado de la tarea en su único mensaje. `status` es texto público: nunca rutas, stderr ni trazas.
-        `buttons`: añade los botones de decisión del estado (si hay bot de carriles)."""
+        `buttons`: añade los botones de decisión del estado (si hay bot de carriles). `for_oscar`: explicación llana
+        del worker, sustituye al "Qué:" técnico; `summary`: último resumen del worker (lo usa 💬 Explícame más)."""
         task = {"id": tid, **(task or {})}
         # Origen-Telegram routes the notice back to that topic (contract with W3b); lane.telegram is the fallback.
         target = telegram_target(task.get("body"))
-        mirror = dm_mirror(self._decisions, target, alert)
+        mirror = dm_mirror(self._decisions, target, alert, state)
         for attempt in (1, 2):  # un aviso que falla (red, Telegram) se reintenta UNA vez
             try:
                 links = self._links(self.lane, tid, branch=branch_link, changed_files=changed_files) if self._links else []
                 text = render(state, tid, task.get("title"), self.lane.name, status, links, bullets,
-                              body=task.get("body"))
+                              body=task.get("body"), for_oscar=for_oscar)
                 markup = None
                 if buttons and self._decisions:
                     markup = self._decisions.markup(state, task=task, lane=self.lane, block_kind=block_kind,
-                                                    questions=questions, changed_files=changed_files)
+                                                    questions=questions, changed_files=changed_files,
+                                                    summary=summary, for_oscar=for_oscar, yes_no=yes_no)
                 self._notices.publish(tid, text, target, self.lane.telegram, alert=alert, reply_markup=markup,
                                       **({"mirror_to": mirror} if mirror else {}))
                 return
@@ -167,8 +180,10 @@ class LaneRunner:
         return {tid: job() for tid, job in self.jobs()}
 
     def _block(self, tid: str, kind: str, reason: str, task: dict | None = None, *, public: str,
-               questions: list | None = None) -> str:
+               questions: list | None = None, summary: str | None = None, for_oscar: str | None = None) -> str:
         """`reason` (detalle técnico) va a la tarjeta y al log; a Telegram solo `public` (+ preguntas si needs_input)."""
+        if for_oscar:  # también a la tarjeta: renotify y /decisiones lo recuperan del motivo del bloqueo
+            reason = f"{reason}\n{FOR_OSCAR_PREFIX} {' '.join(str(for_oscar).split())}"
         log.warning("%s bloqueada (%s): %s", tid, kind, reason)
         blocked = self.hermes.block(tid, kind, reason[:1500])
         if not blocked:
@@ -179,7 +194,8 @@ class LaneRunner:
             hint = "responde con un botón o en la tarjeta" if (blocked and self._decisions) else \
                 "responde en este hilo o a Hermes"
             self.notify("needs_input", tid, task, status_line(public, hint), alert=True,
-                        bullets=questions_block(questions), buttons=bool(blocked), questions=questions)
+                        bullets=questions_block(questions), buttons=bool(blocked), questions=questions,
+                        summary=summary, for_oscar=for_oscar)
         else:
             self.notify("blocked", tid, task, status_line("bloqueada", public, "detalle en la tarjeta"), alert=True,
                         buttons=bool(blocked), block_kind=kind)
@@ -241,7 +257,8 @@ class LaneRunner:
                 asked = normalize_questions(result.get("questions")) or normalize_questions([result.get("summary", "")])
                 detail = "\n".join(f"- {question_text(q)}" for q in asked) or result.get("summary", "")
                 return self._block(tid, "needs_input", f"El worker necesita decisión:\n{detail}", task,
-                                   public="necesita tu decisión", questions=asked)
+                                   public="necesita tu decisión", questions=asked, summary=result.get("summary"),
+                                   for_oscar=result.get("for_oscar"))
             if result["status"] != "done":
                 return self._block(tid, "transient", f"worker status={result['status']}: {result.get('summary', '')}",
                                    task, public="el worker no pudo completarla")
@@ -255,7 +272,7 @@ class LaneRunner:
                 "lane": lane.name, "session_id": session_id, "worktree": cwd, "resumes": resumes,
                 "cost_usd": outcome.cost_usd, "verified": True, "test_cmd": lane.test_cmd,
                 "runner_test_exit": check.test_exit, **{k: result.get(k) for k in (
-                    "branch", "head_sha", "changed_files", "tests", "next_steps", "risks")},
+                    "branch", "head_sha", "changed_files", "tests", "next_steps", "risks", "for_oscar")},
             }
             ok, err = self.hermes.request_review(tid, result.get("summary", "")[:1500], metadata)
             if not ok:
@@ -264,5 +281,5 @@ class LaneRunner:
             # El resumen completo queda en la tarjeta (request-review); aquí solo la línea de estado.
             self.notify("review", tid, task, status_line(
                 "en review", files_label(len(result.get("changed_files") or [])), test_label(check.test_exit),
-                money(outcome.cost_usd)), changed_files=result.get("changed_files"))
+                money(outcome.cost_usd)), changed_files=result.get("changed_files"), for_oscar=result.get("for_oscar"))
             return "review"
