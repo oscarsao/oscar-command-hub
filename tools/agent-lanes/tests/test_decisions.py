@@ -371,10 +371,34 @@ def test_retry_edits_before_unblocking(tmp_path):
 def test_option_comments_answer_and_unblocks(tmp_path):
     desk, tg, h = _desk(tmp_path)
     q = {"question": "¿Qué BD?", "options": ["Supabase", "SQLite"], "recommended": 0}
-    markup = desk.markup("needs_input", task={"id": "t_1", "title": "T"}, lane=LANE, questions=[q, "¿otra?"])
+    markup = desk.markup("needs_input", task={"id": "t_1", "title": "T"}, lane=LANE, questions=[q])
     _press(desk, markup, 1)
     assert h.calls == [("comment", "t_1", "Respuesta de Oscar: ¿Qué BD? → SQLite", OSCAR_AUTHOR), ("unblock", "t_1")]
-    assert "💬 respondida: SQLite" in tg.edits[-1]["text"]
+    assert "💬 respondida: SQLite" in tg.edits[-1]["text"] and tg.edits[-1]["markup"] is None
+
+
+def test_several_questions_option_answers_first_and_keeps_free_reply_for_the_rest(tmp_path):
+    desk, tg, h = _desk(tmp_path)
+    q = {"question": "¿Qué BD?", "options": ["Supabase", "SQLite"], "recommended": 0}
+    markup = desk.markup("needs_input", task={"id": "t_1", "title": "T"}, lane=LANE, questions=[q, "¿Y la cola?"])
+    _press(desk, markup, 0)
+    assert h.calls == [("comment", "t_1", "Respuesta de Oscar: ¿Qué BD? → Supabase", OSCAR_AUTHOR)]  # sin unblock
+    edit = tg.edits[-1]
+    assert "💬 1ª: Supabase · responde el resto con ✍️" in edit["text"]
+    rest = edit["markup"]
+    assert [b["text"] for row in rest["inline_keyboard"] for b in row] == ["✍️ Otra respuesta", "🗄 Aparcar"]
+    _press(desk, rest, 0, cid="cq2")
+    _reply(desk, 501, "Redis")
+    assert h.calls[1:] == [("comment", "t_1", "Respuesta de Oscar: resto de preguntas → Redis", OSCAR_AUTHOR),
+                           ("unblock", "t_1")]
+
+
+def test_free_reply_with_several_questions_answers_all(tmp_path):
+    desk, tg, h = _desk(tmp_path)
+    markup = desk.markup("needs_input", task={"id": "t_1", "title": "T"}, lane=LANE, questions=["¿A?", "¿B?"])
+    _press(desk, markup, 0)
+    _reply(desk, 501, "A sí, B no")
+    assert h.calls[0][2] == "Respuesta de Oscar: todas las preguntas → A sí, B no" and h.calls[1] == ("unblock", "t_1")
 
 
 # --- 6. force_reply ------------------------------------------------------------------------------------

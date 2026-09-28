@@ -183,7 +183,11 @@ class DecisionDesk:
         qs = normalize_questions(questions)
         rec = {"task_id": task["id"], "board": lane.board, "lane": lane.name, "title": task.get("title") or "",
                "body": (task.get("body") or "")[:4000], "question": qs[0] if qs else None,
-               "summary": (summary or "")[:1500], "changed_files": list(changed_files or [])[:50]}
+               "summary": (summary or "")[:1500], "changed_files": list(changed_files or [])[:50],
+               "n_questions": len(qs)}
+        # ✍️ con varias preguntas y sin opción elegida: el texto libre responde a todas.
+        if len(qs) > 1:
+            rec["other_label"] = "todas las preguntas"
         return self.store.issue(rec, spec)[1]
 
     # --- entrada: updates de getUpdates ---------------------------------------------------------------
@@ -284,8 +288,25 @@ class DecisionDesk:
             idx = button.get("index")
             if not isinstance(idx, int) or not 0 <= idx < len(opts):
                 return False
+            if (rec.get("n_questions") or 1) > 1:
+                return self._answer_first_of_many(rec, where, q.get("question") or "", opts[idx])
             return self._answer(rec, where, q.get("question") or "", opts[idx])
         return False
+
+    def _answer_first_of_many(self, rec: dict, where: dict, question: str, answer: str) -> bool:
+        """Varias preguntas: la opción responde la 1ª SIN desbloquear (retomar con media respuesta haría que el
+        worker volviera a bloquearse, y Hermes manda a triage los bloqueos repetidos). Queda ✍️ para el resto."""
+        tid, h = rec["task_id"], self._hermes(rec)
+        if not h.comment(tid, f"{ANSWER_PREFIX} {question} → {answer}"[:3000], author=OSCAR_AUTHOR):
+            self._edit(rec, where, "blocked", "no se pudo guardar la respuesta en la tarjeta")
+            return False
+        rest = {**rec, "question": {"question": "resto de preguntas", "options": [], "recommended": None},
+                "n_questions": 1, "other_label": "resto de preguntas"}
+        spec = [[{"text": "✍️ Otra respuesta", "action": OTHER}, {"text": "🗄 Aparcar", "action": PARK}]]
+        _, markup = self.store.issue(rest, spec)
+        self._edit(rest, where, "needs_input", f"💬 1ª: {truncate(answer, 80)} · responde el resto con ✍️",
+                   markup=markup)
+        return True
 
     def _approve(self, rec: dict, where: dict) -> bool:
         lane, tid = self._lane(rec), rec["task_id"]
@@ -374,7 +395,9 @@ class DecisionDesk:
         try:
             sent = self.notifier.send_to(where["chat_id"], where["thread_id"], prompt, html=False,
                                          reply_to=where["message_id"],
-                                         reply_markup={"force_reply": True, "selective": True,
+                                         # selective=False: con True Telegram lo muestra al autor del mensaje
+                                         # citado, que es el propio bot. Solo Oscar cuenta: se filtra por from.id.
+                                         reply_markup={"force_reply": True, "selective": False,
                                                        "input_field_placeholder": "Escribe aquí"})
         except Exception as exc:
             log.warning("%s: no se pudo pedir la respuesta: %s", tid, exc)
@@ -386,7 +409,7 @@ class DecisionDesk:
     def _apply_reply(self, rec: dict, button: dict, where: dict, text: str) -> bool:
         tid, h = rec["task_id"], self._hermes(rec)
         if button["action"] == OTHER:
-            q = (rec.get("question") or {}).get("question") or "pregunta del worker"
+            q = rec.get("other_label") or (rec.get("question") or {}).get("question") or "pregunta del worker"
             return self._answer(rec, where, q, text)
         # Pedir cambios: igual que el carril review (comentario CAMBIOS de REVIEW_AUTHOR + reopen-review).
         body = f"{CHANGES_PREFIX} pedidos por Oscar desde Telegram:\n- {text}"
