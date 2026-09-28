@@ -108,7 +108,10 @@ def normalize_questions(questions) -> list[dict]:
         else:
             text, opts, rec = str(q or "").strip(), [], None
         if text:
-            out.append({"question": text, "options": opts, "recommended": rec})
+            item = {"question": text, "options": opts, "recommended": rec}
+            if isinstance(q, dict) and q.get("default_options") and opts:
+                item["default_options"] = True  # ya pasó por with_default_options (rec de un teclado guardado)
+            out.append(item)
     return out
 
 
@@ -389,6 +392,20 @@ class MessageStore:
                           if (str(m.get("chat_id")), m.get("message_id")) != (mirror["chat_id"], mirror["message_id"])]
         rec["mirrors"].append(mirror)
         rec["mirrors"] = rec["mirrors"][-10:]
+        self.put(tid, rec)
+
+    def set_token(self, tid: str, token: str) -> None:
+        """Teclado vigente de TODAS las copias (tras editar la tarjeta a la siguiente pregunta): así retirar los
+        botones de la tarea (respuesta vía Hermes, autocuración) retira también el teclado nuevo."""
+        rec = self.get(tid)
+        if not rec:
+            return
+        rec = dict(rec)
+        if rec.get("message_id"):
+            rec["token"] = token
+        rec["mirrors"] = [{**m, "token": token} for m in rec.get("mirrors") or ()]
+        if not rec["mirrors"]:
+            rec.pop("mirrors")
         self.put(tid, rec)
 
     def all_messages(self, tid: str) -> list[dict]:

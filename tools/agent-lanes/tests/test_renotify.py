@@ -110,7 +110,9 @@ def test_needs_input_is_resent_with_buttons_and_questions_from_the_block_reason(
     assert (sent, failed) == (["t_c3"], [])
     [msg] = bot.sent
     assert msg["text"].startswith("❓ t_c3") and "necesita tu decisión" in msg["text"]
-    assert "• ¿Añadir el code I-797?" in msg["text"] and "• ¿Apruebas la spec?" in msg["text"]
+    # varias preguntas: en secuencia, solo la pregunta en curso ("Pregunta 1/3"); las siguientes salen al responder
+    assert "Pregunta 1/3" in msg["text"] and "• ¿Opción A o B para los códigos? (A recomendada)" in msg["text"]
+    assert "¿Añadir el code I-797?" not in msg["text"] and "¿Apruebas la spec?" not in msg["text"]
     # preguntas sin opciones: [✅ Sí, adelante] [❌ No] por defecto
     assert texts(msg["markup"]) == ["✅ Sí, adelante", "❌ No", "✍️ Otra respuesta", "🗄 Aparcar", "💬 Explícame más"]
     assert msg["lane_target"] == ("-1003530490339", "230") and msg["silent"] is False

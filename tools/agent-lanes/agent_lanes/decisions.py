@@ -26,9 +26,10 @@ from typing import Callable
 
 from . import proc as _proc
 from .config import ROOT
-from .hermes import ANSWER_PREFIX, OSCAR_AUTHOR, REVIEW_AUTHOR
+from .hermes import ANSWER_PREFIX, OSCAR_AUTHOR, REVIEW_AUTHOR, answer_progress, resume
 from .explain import explain as _explain
-from .notices import card_url, normalize_questions, render, truncate, with_default_options
+from .notices import (card_url, normalize_questions, questions_block, render, status_line, truncate,
+                      with_default_options)
 from .review import CHANGES_PREFIX
 
 log = logging.getLogger("agent_lanes")
@@ -49,13 +50,15 @@ ACCEPT_ALL = "accept_all"  # cabecera de /decisiones: aplica la opción recomend
 REPLY_ACTIONS = (CHANGES, OTHER)  # piden texto a Oscar con force_reply
 EXPLAIN_BUTTON = {"text": "💬 Explícame más", "action": EXPLAIN}
 DEFAULT_OPTION_LABELS = ("✅ Sí, adelante", "❌ No")  # botones de una pregunta sin opciones (DEFAULT_OPTIONS)
+ALL_LABEL = "todas las preguntas"  # ✍️ de una escalada de review (= hermes.LEGACY_ALL_LABELS)
 EXPLAIN_FAILED = "💬 No pude generar la explicación ahora; mira la tarjeta o responde con ✍️"
 
 
 def keyboard_spec(state: str, *, block_kind: str | None = None, questions=None,
-                  yes_no: bool = True, ops: bool = False) -> list[list[dict]] | None:
+                  yes_no: bool = True, ops: bool = False, index: int = 0) -> list[list[dict]] | None:
     """Botones por estado: filas de {text, action, index}. None = aviso sin botones (en curso, en review...).
-    `ops`: el carril ops no tiene carril review ni PR; su review la valida Oscar directamente."""
+    `ops`: el carril ops no tiene carril review ni PR; su review la valida Oscar directamente.
+    `index`: pregunta en curso (con varias preguntas van en secuencia: una por paso, en la misma tarjeta)."""
     park = {"text": "🗄 Aparcar", "action": PARK}
     if state == "review" and ops:
         return [[{"text": "✅ Validar", "action": APPROVE}, {"text": "🔁 Pedir cambios", "action": CHANGES}, park]]
@@ -65,11 +68,12 @@ def keyboard_spec(state: str, *, block_kind: str | None = None, questions=None,
         rows = []
         # Una pregunta sin opciones recibe [✅ Sí, adelante] [❌ No]: siempre se puede decidir con un toque.
         qs = with_default_options(questions, yes_no)
-        if qs and qs[0].get("default_options"):
+        q = qs[min(max(index, 0), len(qs) - 1)] if qs else None
+        if q and q.get("default_options"):
             rows.append([{"text": label, "action": OPTION, "index": i} for i, label in enumerate(DEFAULT_OPTION_LABELS)])
-        elif qs and qs[0]["options"]:  # botones solo para la primera pregunta; el resto con ✍️
-            for i, opt in enumerate(qs[0]["options"]):
-                star = "⭐ " if i == qs[0]["recommended"] else ""
+        elif q and q["options"]:  # botones de la pregunta en curso; la siguiente sale al responderla
+            for i, opt in enumerate(q["options"]):
+                star = "⭐ " if i == q["recommended"] else ""
                 rows.append([{"text": f"{star}{i + 1}) {opt}", "action": OPTION, "index": i}])
         rows.append([{"text": "✍️ Otra respuesta", "action": OTHER}, park])
         rows.append([dict(EXPLAIN_BUTTON)])
@@ -79,6 +83,14 @@ def keyboard_spec(state: str, *, block_kind: str | None = None, questions=None,
     if state == "stuck":  # 🧊 en triage por bloqueo repetido (block_loop_detected): unblock no vale, _retry lo saca
         return [[{"text": "🔄 Reintentar", "action": RETRY}, park]]
     return None
+
+
+def _clamp(index, qs) -> int:
+    try:
+        i = int(index or 0)
+    except (TypeError, ValueError):
+        i = 0
+    return min(max(i, 0), max(len(qs) - 1, 0))
 
 
 class CallbackStore:
@@ -204,39 +216,50 @@ class DecisionDesk:
 
     def markup(self, state: str, *, task: dict, lane, block_kind: str | None = None, questions=None,
                summary: str | None = None, changed_files=None, for_oscar: str | None = None,
-               yes_no: bool = True) -> dict | None:
-        """`yes_no=False`: escalada de review (sin [✅ Sí, adelante] [❌ No] por defecto)."""
+               yes_no: bool = True, q_index: int = 0) -> dict | None:
+        """`yes_no=False`: escalada de review (sin [✅ Sí, adelante] [❌ No] por defecto). `q_index`: pregunta en curso
+        (las anteriores ya están respondidas en el kanban; ver renotify._plan_blocked)."""
+        qs = with_default_options(questions, yes_no)
+        q_index = _clamp(q_index, qs)
         spec = keyboard_spec(state, block_kind=block_kind, questions=questions, yes_no=yes_no,
-                             ops=getattr(lane, "kind", "") == "ops")
+                             ops=getattr(lane, "kind", "") == "ops", index=q_index)
         if not spec:
             return None
-        qs = with_default_options(questions, yes_no)
+        # ✍️ responde SOLO la pregunta en curso (antes, con varias, valía para "todas las preguntas" y Oscar no lo
+        # veía: volvía a contestar la 1ª).
         rec = {"task_id": task["id"], "board": lane.board, "lane": lane.name, "title": task.get("title") or "",
-               "body": (task.get("body") or "")[:4000], "question": qs[0] if qs else None,
+               "body": (task.get("body") or "")[:4000], "question": qs[q_index] if qs else None,
                "summary": (summary or "")[:1500], "changed_files": list(changed_files or [])[:50],
-               "n_questions": len(qs), "questions": qs[:5],
+               "n_questions": len(qs), "questions": qs, "q_index": q_index,
                **({"for_oscar": str(for_oscar)[:600]} if for_oscar else {})}
-        # ✍️ con varias preguntas y sin opción elegida: el texto libre responde a todas.
-        if len(qs) > 1:
-            rec["other_label"] = "todas las preguntas"
+        if len(qs) > 1 and not yes_no:
+            # Escalada de review: las "preguntas" son cambios pedidos, no decisiones en secuencia; ✍️ las responde
+            # todas a la vez (answer_progress la cuenta como todas respondidas).
+            rec["other_label"] = ALL_LABEL
         return self.store.issue(rec, spec)[1]
 
     @staticmethod
-    def member(task: dict, lane, questions=None, yes_no: bool = True) -> dict:
+    def member(task: dict, lane, questions=None, yes_no: bool = True, q_index: int = 0) -> dict:
         """Registro mínimo de una tarea dentro de un teclado de grupo o de "aceptar todo"."""
         qs = with_default_options(questions, yes_no)
+        q_index = _clamp(q_index, qs)
         return {"task_id": task["id"], "board": lane.board, "lane": lane.name, "title": task.get("title") or "",
-                "body": (task.get("body") or "")[:1500], "question": qs[0] if qs else None,
-                "questions": qs, "n_questions": len(qs)}
+                "body": (task.get("body") or "")[:1500], "question": qs[q_index] if qs else None,
+                "questions": qs, "n_questions": len(qs), "q_index": q_index}
 
-    def group_markup(self, members: list[dict], questions, yes_no: bool = True) -> dict | None:
+    def group_markup(self, members: list[dict], questions, yes_no: bool = True, q_index: int = 0) -> dict | None:
         """Una tarjeta para la misma pregunta en varias tareas: la respuesta se aplica a todas."""
-        spec = keyboard_spec("needs_input", questions=questions, yes_no=yes_no)
+        return self.store.issue(*self._group_rec(members, questions, yes_no, q_index))[1]
+
+    @staticmethod
+    def _group_rec(members: list[dict], questions, yes_no: bool, q_index: int) -> tuple[dict, list]:
         qs = with_default_options(questions, yes_no)
-        rec = {**members[0], "group": members, "question": qs[0] if qs else None, "n_questions": len(qs)}
-        if len(qs) > 1:
-            rec["other_label"] = "todas las preguntas"
-        return self.store.issue(rec, spec)[1]
+        q_index = _clamp(q_index, qs)
+        spec = keyboard_spec("needs_input", questions=questions, yes_no=yes_no, index=q_index)
+        rec = {**members[0], "group": members, "question": qs[q_index] if qs else None, "questions": qs,
+               "n_questions": len(qs), "q_index": q_index, "yes_no": yes_no,
+               **({"other_label": ALL_LABEL} if len(qs) > 1 and not yes_no else {})}
+        return rec, spec
 
     def accept_all_markup(self, members: list[dict]) -> dict:
         """[✅ Aceptar todo lo recomendado] sobre `members` (se filtran al pulsar: recomendada en TODAS sus preguntas)."""
@@ -350,17 +373,38 @@ class DecisionDesk:
 
     def _still_pending(self, rec: dict) -> bool:
         """¿Sigue bloqueada esperando a Oscar? (grupo y "aceptar todo": no responder dos veces)."""
+        return self._pending_show(rec) is not None
+
+    def _pending_show(self, rec: dict) -> dict | None:
+        """`show` de la tarea si sigue bloqueada esperando a Oscar ({} si el kanban no se puede consultar: fakes);
+        None si ya no espera decisión."""
         h = self._hermes(rec)
         if not hasattr(h, "show"):
-            return True
+            return {}
         try:
             show = h.show(rec["task_id"])
         except Exception:
-            return False
+            return None
         if (show.get("task") or {}).get("status") != "blocked":
-            return False
+            return None
         kinds = [(e.get("payload") or {}).get("kind") for e in show.get("events") or () if e.get("kind") == "blocked"]
-        return not kinds or kinds[-1] == "needs_input"
+        return show if (not kinds or kinds[-1] == "needs_input") else None
+
+    def _progress(self, rec: dict, current: int) -> tuple[dict[int, str], int | None]:
+        """Respuestas de la ronda según el kanban (+ la que se acaba de anotar) y la siguiente pendiente. Sin `show`
+        legible (fakes, error de la CLI) se avanza en orden desde la pregunta en curso."""
+        qs = normalize_questions(rec.get("questions") or ([rec["question"]] if rec.get("question") else []))
+        answers: dict[int, str] | None = None
+        h = self._hermes(rec)
+        if hasattr(h, "show"):
+            try:
+                answers = answer_progress(h.show(rec["task_id"]), qs)[0]
+            except Exception as exc:
+                log.info("%s: progreso de respuestas no leído: %s", rec.get("task_id"), exc)
+        if answers is None:
+            answers = {i: "" for i in range(current)}
+        answers.setdefault(current, "")
+        return answers, next((i for i in range(len(qs)) if i not in answers), None)
 
     def _hermes(self, rec: dict):
         return self.hermes_for(rec["board"])
@@ -387,36 +431,51 @@ class DecisionDesk:
         return False
 
     def _option_answer(self, rec: dict, where, idx) -> bool:
+        return self._option_step(rec, where, idx)[0]
+
+    def _option_step(self, rec: dict, where, idx) -> tuple[bool, int | None]:
+        """(ok, siguiente pregunta pendiente o None si ya no queda ninguna)."""
         q = rec.get("question") or {}
         opts = q.get("options") or []
         if not isinstance(idx, int) or not 0 <= idx < len(opts):
-            return False
+            return False, None
         if (rec.get("n_questions") or 1) > 1:
-            return self._answer_first_of_many(rec, where, q.get("question") or "", opts[idx])
-        return self._answer(rec, where, q.get("question") or "", opts[idx])
+            return self._answer_step(rec, where, opts[idx])
+        return self._answer(rec, where, q.get("question") or "", opts[idx]), None
 
     def _group_act(self, rec: dict, button: dict, where: dict, text: str | None = None) -> bool:
         """Misma pregunta en varias tareas: la decisión se aplica a cada una que siga pendiente."""
         action, done, skipped = button["action"], [], []
         if action not in (OPTION, OTHER, PARK) or (action == OTHER and text is None):
             return False
+        nexts, advanced = set(), []
         for m in rec["group"]:
             if not self._still_pending(m):
                 skipped.append(m["task_id"])
                 continue
+            nxt = None
             if action == OPTION:
-                ok = self._option_answer(m, None, button.get("index"))
+                ok, nxt = self._option_step(m, None, button.get("index"))
+            elif action == OTHER and (m.get("n_questions") or 1) > 1 and not rec.get("other_label"):
+                ok, nxt = self._answer_step(m, None, text)
             elif action == OTHER:
                 label = rec.get("other_label") or (m.get("question") or {}).get("question") or "pregunta del worker"
                 ok = self._answer(m, None, label, text)
             else:
                 ok = self._park(m, None)
             (done if ok else skipped).append(m["task_id"])
-            if ok:
+            if not ok:
+                continue
+            nexts.add(nxt)
+            if nxt is None:
                 self._retire(m)
+            else:  # sigue en secuencia: sus copias ya muestran la siguiente pregunta (teclado nuevo)
+                advanced.append({**m, "q_index": nxt, "question": (m.get("questions") or [None] * (nxt + 1))[nxt]})
         if not done:
             self._edit_text(where, "❓ Nada aplicado: " + (", ".join(skipped) or "-") + " ya no esperaba(n) decisión")
             return False
+        if advanced and len(advanced) == len(done) and len(nexts) == 1:
+            return self._group_next(rec, where, advanced, nexts.pop(), button, text)
         answer = ""
         if action == OPTION:
             opts = (rec.get("question") or {}).get("options") or []
@@ -430,24 +489,28 @@ class DecisionDesk:
         return True
 
     def _accept_all(self, rec: dict, where: dict) -> bool:
-        """Cada tarea con recomendada en TODAS sus preguntas: un comentario "Respuesta de Oscar" por pregunta y un
-        único unblock (lo mismo que pulsar la opción ⭐). Una tarea con alguna pregunta sin recomendada queda intacta:
-        desbloquear con media respuesta haría que el worker se volviera a bloquear. Las ya decididas se saltan."""
+        """Cada tarea con recomendada en TODAS sus preguntas PENDIENTES: un comentario "Respuesta de Oscar" por
+        pregunta pendiente (las que Oscar ya contestó no se pisan) y un único desbloqueo (lo mismo que pulsar la
+        opción ⭐). Una tarea con alguna pendiente sin recomendada queda intacta: desbloquear con media respuesta haría
+        que el worker se volviera a bloquear. Las ya decididas se saltan."""
         done, skipped, failed = [], [], []
         for m in rec.get("accept_all") or ():
             qs = normalize_questions(m.get("questions"))
-            if not qs or any(q["recommended"] is None for q in qs) or not self._still_pending(m):
+            show = self._pending_show(m) if qs else None
+            answered = answer_progress(show, qs)[0] if show else {}
+            todo = [q for i, q in enumerate(qs) if i not in answered]
+            if show is None or any(q["recommended"] is None for q in todo):
                 skipped.append(m["task_id"])
                 continue
             h, tid = self._hermes(m), m["task_id"]
             if not all(h.comment(tid, f"{ANSWER_PREFIX} {q['question']} → {q['options'][q['recommended']]}"[:3000],
-                                 author=OSCAR_AUTHOR) for q in qs):
+                                 author=OSCAR_AUTHOR) for q in todo):
                 failed.append(tid)
                 self._edit(m, None, "blocked", "no se pudo guardar la respuesta en la tarjeta")
                 continue
-            answers = " · ".join(truncate(q["options"][q["recommended"]], 40) for q in qs)
+            answers = " · ".join(truncate(q["options"][q["recommended"]], 40) for q in todo)
             self._edit(m, None, "answered", f"💬 respondida (lo recomendado): {truncate(answers, 120)}")
-            if not h.unblock(tid):
+            if not self._resume(h, tid):  # en triage (bloqueo repetido) unblock falla: requeue_triage
                 self._edit(m, None, "answered", "💬 respuesta anotada · no se pudo desbloquear (mira la tarjeta)")
             done.append(tid)
             self._retire(m)
@@ -460,21 +523,76 @@ class DecisionDesk:
         self._edit_text(where, " · ".join(parts))
         return bool(done) or not failed
 
-    def _answer_first_of_many(self, rec: dict, where: dict, question: str, answer: str) -> bool:
-        """Varias preguntas: la opción responde la 1ª SIN desbloquear (retomar con media respuesta haría que el
-        worker volviera a bloquearse, y Hermes manda a triage los bloqueos repetidos). Queda ✍️ para el resto."""
+    def _answer_step(self, rec: dict, where: dict | None, answer: str) -> tuple[bool, int | None]:
+        """Varias preguntas, EN SECUENCIA: anota la respuesta a la pregunta en curso y, si queda alguna pendiente
+        (según el kanban), la MISMA tarjeta y sus copias (tema, DM, bandeja) pasan a la siguiente con sus botones
+        ("Pregunta 2/3"). Con la última, desbloquea una sola vez (retomar con media respuesta haría que el worker
+        volviera a bloquearse, y Hermes manda a triage los bloqueos repetidos). (ok, siguiente índice o None)."""
         tid, h = rec["task_id"], self._hermes(rec)
-        if not h.comment(tid, f"{ANSWER_PREFIX} {question} → {answer}"[:3000], author=OSCAR_AUTHOR):
+        q = rec.get("question") or {}
+        cur = _clamp(rec.get("q_index"), rec.get("questions") or [None])
+        if not h.comment(tid, f"{ANSWER_PREFIX} {q.get('question') or ''} → {answer}"[:3000], author=OSCAR_AUTHOR):
             self._edit(rec, where, "blocked", "no se pudo guardar la respuesta en la tarjeta")
-            return False
-        rest = {**rec, "question": {"question": "resto de preguntas", "options": [], "recommended": None},
-                "n_questions": 1, "other_label": "resto de preguntas"}
-        spec = [[{"text": "✍️ Otra respuesta", "action": OTHER}, {"text": "🗄 Aparcar", "action": PARK}],
-                [dict(EXPLAIN_BUTTON)]]
-        _, markup = self.store.issue(rest, spec)
-        self._edit(rest, where, "needs_input", f"💬 1ª: {truncate(answer, 80)} · responde el resto con ✍️",
-                   markup=markup)
+            return False, None
+        _, nxt = self._progress(rec, cur)
+        qs = rec.get("questions") or []
+        total = rec.get("n_questions") or len(qs) or 1
+        if nxt is None:
+            self._edit(rec, where, "answered", f"💬 respondida ({total}/{total}): {truncate(answer, 100)}")
+            if not self._resume(h, tid) and self._stuck(rec):
+                self._edit(rec, where, "answered", "💬 respuesta anotada · no se pudo desbloquear (mira la tarjeta)")
+            return True, None
+        step = {**rec, "q_index": nxt, "question": qs[nxt]}
+        token, markup = self.store.issue(step, keyboard_spec("needs_input", questions=qs, index=nxt))
+        status = status_line(f"💬 {cur + 1}ª: {truncate(answer, 60)}", f"Pregunta {nxt + 1}/{total}",
+                             "responde con un botón")
+        self._edit(step, where, "needs_input", status, markup=markup, bullets=questions_block(qs[nxt:nxt + 1]))
+        if self.messages:  # las copias llevan ya el teclado nuevo: que retirarlas lo retire también
+            try:
+                self.messages.set_token(tid, token)
+            except Exception as exc:
+                log.info("%s: no se pudo registrar el teclado nuevo: %s", tid, exc)
+        return True, nxt
+
+    def _group_next(self, rec: dict, where: dict | None, members: list[dict], nxt: int, button: dict,
+                    text: str | None) -> bool:
+        """Tarjeta de grupo con varias preguntas: respondida la pregunta en curso en todas sus tareas, la misma tarjeta
+        pasa a la siguiente ("Pregunta k/N") con sus botones."""
+        qs = rec.get("questions") or []
+        total = rec.get("n_questions") or len(qs) or 1
+        _, markup = self.store.issue(*self._group_rec(members, qs, rec.get("yes_no", True), nxt))
+        if button["action"] == OPTION:
+            opts = (rec.get("question") or {}).get("options") or []
+            idx = button.get("index")
+            answer = truncate(opts[idx], 60) if isinstance(idx, int) and 0 <= idx < len(opts) else ""
+        else:
+            answer = truncate(text or "", 60)
+        cur = _clamp(rec.get("q_index"), qs)
+        lines = [f"💬 {cur + 1}ª respondida en {len(members)} tareas ({', '.join(m['task_id'] for m in members)}): "
+                 f"{answer}", f"❓ Pregunta {nxt + 1}/{total} · la respuesta se aplica a todas",
+                 *questions_block(qs[nxt:nxt + 1])]
+        if where:
+            self.notifier.edit(where["chat_id"], where["message_id"], "\n".join(lines), html=False,
+                               reply_markup=markup)
         return True
+
+    def _resume(self, h, tid: str) -> str | None:
+        """Devuelve la tarea al carril: `unblock`; si falla porque Hermes la pasó a triage (bloqueo repetido,
+        block_loop_detected), `requeue_triage` la saca sin reescribirla. Estado resultante, o None si fallan ambas."""
+        status = resume(h, tid)
+        if status and status != "ready":
+            log.info("%s: unblock falló; sacada de triage sin reescribirla (queda en %s)", tid, status)
+        return status
+
+    def _stuck(self, rec: dict) -> bool:
+        """Tras un desbloqueo fallido: ¿sigue parada (blocked/triage)? Si otra vía ya la devolvió al carril (la
+        autocuración, una respuesta vía Hermes), no hay error que enseñar. Sin `show` legible: sí (se avisa)."""
+        h = self._hermes(rec)
+        try:
+            status = (h.show(rec["task_id"]).get("task") or {}).get("status")
+        except Exception:
+            return True
+        return status in ("blocked", "triage", None)
 
     def _approve(self, rec: dict, where: dict) -> bool:
         lane, tid = self._lane(rec), rec["task_id"]
@@ -560,12 +678,9 @@ class DecisionDesk:
         # Se edita ANTES de desbloquear: el runner puede cogerla enseguida y su "▶️ en curso" debe quedar encima.
         self._edit(rec, where, "requeued", "🔄 reencolada")
         h, tid = self._hermes(rec), rec["task_id"]
-        if h.unblock(tid):
-            return True
-        # Bloqueada dos veces por lo mismo, Hermes la pasa a triage y `unblock` falla: se saca de triage sin
+        # Bloqueada dos veces por lo mismo, Hermes la pasa a triage y `unblock` falla: _resume la saca de triage sin
         # reescribirla (también desde un aviso ⛔ antiguo de cuando aún estaba bloqueada).
-        requeue = getattr(h, "requeue_triage", None)
-        status = requeue(tid) if requeue else None
+        status = self._resume(h, tid)
         if status:
             if status != "ready":
                 self._edit(rec, where, "requeued", f"🔄 sacada de triage · queda en {status} (espera a otra tarea)")
@@ -579,7 +694,7 @@ class DecisionDesk:
             self._edit(rec, where, "blocked", "no se pudo guardar la respuesta en la tarjeta")
             return False
         self._edit(rec, where, "answered", f"💬 respondida: {truncate(answer, 120)}")
-        if not h.unblock(tid):
+        if not self._resume(h, tid) and self._stuck(rec):  # en triage (bloqueo repetido): requeue_triage
             self._edit(rec, where, "answered", "💬 respuesta anotada · no se pudo desbloquear (mira la tarjeta)")
         return True
 
@@ -610,7 +725,9 @@ class DecisionDesk:
             prompt = f"¿Qué cambio pides para {tid}?"
         else:
             q = (rec.get("question") or {}).get("question") or rec.get("summary") or ""
-            prompt = f"Tu respuesta para {tid}:" + (f"\n{truncate(q, 300)}" if q else "")
+            n = rec.get("n_questions") or 1
+            step = f" (Pregunta {(rec.get('q_index') or 0) + 1}/{n})" if n > 1 and not rec.get("other_label") else ""
+            prompt = f"Tu respuesta para {tid}{step}:" + (f"\n{truncate(q, 300)}" if q else "")
         try:
             sent = self.notifier.send_to(where["chat_id"], where["thread_id"], prompt, html=False,
                                          reply_to=where["message_id"],
@@ -630,6 +747,8 @@ class DecisionDesk:
             return self._group_act(rec, button, where, text)
         tid, h = rec["task_id"], self._hermes(rec)
         if button["action"] == OTHER:
+            if (rec.get("n_questions") or 1) > 1 and not rec.get("other_label"):  # en secuencia: la pregunta en curso
+                return self._answer_step(rec, where, text)[0]
             q = rec.get("other_label") or (rec.get("question") or {}).get("question") or "pregunta del worker"
             return self._answer(rec, where, q, text)
         # Pedir cambios: igual que el carril review (comentario CAMBIOS de REVIEW_AUTHOR + reopen-review).
@@ -646,7 +765,7 @@ class DecisionDesk:
     # --- mensaje --------------------------------------------------------------------------------------
 
     def _edit(self, rec: dict, where: dict | None, state: str | None, status: str | None, *, extra_links=(),
-              markup: dict | None = None, keep_text: bool = False) -> None:
+              markup: dict | None = None, keep_text: bool = False, bullets=None) -> None:
         """Edita el mensaje pulsado (`where`) y TODAS las demás copias del aviso de la tarea (tema, DM, bandeja):
         una decisión tomada en cualquiera se ve en todas. `where` None = solo las copias (grupo, aceptar todo)."""
         if keep_text:  # solo devolver los botones
@@ -658,7 +777,7 @@ class DecisionDesk:
         lane = self._lane(rec)
         links = self.links(lane, rec["task_id"], changed_files=rec.get("changed_files")) if (self.links and lane) else []
         tree = self.tree(rec.get("board"), rec["task_id"]) if self.tree else None
-        text = render(state, rec["task_id"], rec.get("title"), rec["lane"], status, [*links, *extra_links],
+        text = render(state, rec["task_id"], rec.get("title"), rec["lane"], status, [*links, *extra_links], bullets,
                       body=rec.get("body"), for_oscar=rec.get("for_oscar"), tree=tree)
         extra = {"reply_markup": markup} if markup else {}
         seen = set()

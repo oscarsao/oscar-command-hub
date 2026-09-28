@@ -54,7 +54,9 @@ def test_worker_dict_questions_block_and_notify_without_crashing():
     assert r.run_once() == {"t_dc1e9f0c": "blocked:needs_input"}
     [block] = [c for c in h.calls if c[0] == "block"]
     assert "- ¿Apruebas este diseño" in block[3] and "(recomendada)" in block[3] and "{'question'" not in block[3]
-    assert "• ¿Umbral de &#x27;demasiadas vencidas" in n.msgs[-1]  # HTML escapado
+    # varias preguntas: van en secuencia; el aviso enseña la 1ª ("Pregunta 1/3"), no todas a la vez
+    assert "Pregunta 1/3" in n.msgs[-1] and "• ¿Apruebas este diseño" in n.msgs[-1]
+    assert "Umbral" not in n.msgs[-1]
 
 
 def test_review_escalation_with_dict_changes_does_not_crash():
