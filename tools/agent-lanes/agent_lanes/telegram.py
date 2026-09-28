@@ -192,6 +192,28 @@ class TelegramNotifier:
         result = self._api("getUpdates", payload, timeout=timeout + 15)
         return result if isinstance(result, list) else []
 
+    def get_me(self) -> dict:
+        """getMe: {id, username, ...} del bot (para aceptar /cmd@<username> en los grupos)."""
+        return self._api("getMe", {}) if self._token else {}
+
+    def get_chat(self, chat_id) -> dict:
+        """getChat: sirve para saber si Oscar abrió el DM con el bot ("chat not found" si no le mandó /start)."""
+        return self._api("getChat", {"chat_id": chat_id})
+
+    def set_my_commands(self, commands: list[tuple[str, str]], scope: str = "default") -> bool:
+        """setMyCommands para un scope (default, all_private_chats, all_group_chats)."""
+        if not self._token:
+            return False
+        self._api("setMyCommands", {"commands": [{"command": c, "description": d} for c, d in commands],
+                                    "scope": {"type": scope}})
+        return True
+
+    def get_my_commands(self, scope: str = "default") -> list[dict]:
+        if not self._token:
+            return []
+        result = self._api("getMyCommands", {"scope": {"type": scope}})
+        return result if isinstance(result, list) else []
+
     def __call__(self, text: str, target: tuple[str, str] | None = None,
                  lane_target: tuple[str, str] | None = None) -> None:
         """Compat: envío de texto plano."""

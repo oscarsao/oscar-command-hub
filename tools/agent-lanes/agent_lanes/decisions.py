@@ -43,6 +43,7 @@ PARK_PROFILE = "oscar"
 PR_FOOTER = "🤖 Generated with [Claude Code](https://claude.com/claude-code)"
 
 APPROVE, CHANGES, PARK, RETRY, OPTION, OTHER = "approve", "changes", "park", "retry", "option", "other"
+ACCEPT_ALL = "accept_all"  # cabecera de /decisiones: aplica la opción recomendada en todas las que la tienen
 REPLY_ACTIONS = (CHANGES, OTHER)  # piden texto a Oscar con force_reply
 
 
@@ -165,7 +166,8 @@ class DecisionDesk:
 
     def __init__(self, notifier, store: CallbackStore, *, lanes: dict, hermes_for: Callable[[str], object],
                  links=None, owner_id: str = OWNER_TELEGRAM_ID, runner=_proc.run, gh_exe: str = GH_EXE,
-                 spawn: Callable[[Callable[[], None]], None] = _spawn, now: Callable[[], datetime] = datetime.now):
+                 spawn: Callable[[Callable[[], None]], None] = _spawn, now: Callable[[], datetime] = datetime.now,
+                 messages=None):
         self.notifier = notifier
         self.store = store
         self.lanes = lanes
@@ -177,6 +179,8 @@ class DecisionDesk:
         self._spawn = spawn
         self._now = now
         self.integrator = None  # carril Integrador (INTEGRATOR_ENABLED): botones int_* de fusionar/desplegar
+        self.messages = messages  # MessageStore: todas las copias de cada aviso (sincronización tema <-> DM)
+        self.commands = None      # CommandCenter: /hoy, /decisiones, /aprobar, /tareas, /tarea
 
     # --- teclados -------------------------------------------------------------------------------------
 
@@ -195,13 +199,40 @@ class DecisionDesk:
             rec["other_label"] = "todas las preguntas"
         return self.store.issue(rec, spec)[1]
 
+    @staticmethod
+    def member(task: dict, lane, questions=None) -> dict:
+        """Registro mínimo de una tarea dentro de un teclado de grupo o de "aceptar todo"."""
+        qs = normalize_questions(questions)
+        return {"task_id": task["id"], "board": lane.board, "lane": lane.name, "title": task.get("title") or "",
+                "body": (task.get("body") or "")[:1500], "question": qs[0] if qs else None,
+                "questions": qs, "n_questions": len(qs)}
+
+    def group_markup(self, members: list[dict], questions) -> dict | None:
+        """Una tarjeta para la misma pregunta en varias tareas: la respuesta se aplica a todas."""
+        spec = keyboard_spec("needs_input", questions=questions)
+        qs = normalize_questions(questions)
+        rec = {**members[0], "group": members, "question": qs[0] if qs else None, "n_questions": len(qs)}
+        if len(qs) > 1:
+            rec["other_label"] = "todas las preguntas"
+        return self.store.issue(rec, spec)[1]
+
+    def accept_all_markup(self, members: list[dict]) -> dict:
+        """[✅ Aceptar todo lo recomendado] sobre `members` (se filtran al pulsar: recomendada en TODAS sus preguntas)."""
+        rec = {"task_id": "bandeja", "board": "", "lane": "", "accept_all": members}
+        return self.store.issue(rec, [[{"text": "✅ Aceptar todo lo recomendado", "action": ACCEPT_ALL}]])[1]
+
     # --- entrada: updates de getUpdates ---------------------------------------------------------------
 
     def handle_update(self, update: dict) -> None:
         if update.get("callback_query"):
             self._callback(update["callback_query"])
         elif update.get("message"):
-            self._reply(update["message"])
+            msg = update["message"]
+            if self.commands and (msg.get("text") or "").startswith("/"):
+                # Los comandos llaman a la CLI de hermes (segundos): fuera del hilo de escucha.
+                self._spawn(lambda: self.commands.handle(msg) or self._reply(msg))
+                return
+            self._reply(msg)
 
     @staticmethod
     def _where(msg: dict) -> dict:
@@ -261,6 +292,8 @@ class DecisionDesk:
             log.warning("%s: la decisión de Oscar falló: %s", rec.get("task_id"), exc)
             self._edit(rec, where, "blocked", "no se pudo aplicar la decisión; detalle en el log")
             ok = False
+        if ok:
+            self._retire(rec, token)
         if not ok:
             self.store.restore(token)
             try:
@@ -273,6 +306,34 @@ class DecisionDesk:
             except Exception:
                 pass
 
+    def _retire(self, rec: dict, pressed: str | None = None) -> None:
+        """Tras una decisión: los botones de las OTRAS copias (tema, DM, bandeja) dejan de valer."""
+        if not self.messages:
+            return
+        for m in self._members(rec):
+            for msg in self.messages.all_messages(m["task_id"]):
+                tok = msg.get("token")
+                if tok and tok != pressed:
+                    self.store.consume(tok)
+
+    @staticmethod
+    def _members(rec: dict) -> list[dict]:
+        return list(rec.get("group") or rec.get("accept_all") or [rec])
+
+    def _still_pending(self, rec: dict) -> bool:
+        """¿Sigue bloqueada esperando a Oscar? (grupo y "aceptar todo": no responder dos veces)."""
+        h = self._hermes(rec)
+        if not hasattr(h, "show"):
+            return True
+        try:
+            show = h.show(rec["task_id"])
+        except Exception:
+            return False
+        if (show.get("task") or {}).get("status") != "blocked":
+            return False
+        kinds = [(e.get("payload") or {}).get("kind") for e in show.get("events") or () if e.get("kind") == "blocked"]
+        return not kinds or kinds[-1] == "needs_input"
+
     def _hermes(self, rec: dict):
         return self.hermes_for(rec["board"])
 
@@ -283,6 +344,10 @@ class DecisionDesk:
         action = button["action"]
         if action.startswith("int_"):  # 🔀 Fusionar / 🚀 Desplegar: solo con el Integrador activo
             return bool(self.integrator) and self.integrator.on_button(action, rec, where, self)
+        if action == ACCEPT_ALL:
+            return self._accept_all(rec, where)
+        if rec.get("group"):
+            return self._group_act(rec, button, where)
         if action == APPROVE:
             return self._approve(rec, where)
         if action == PARK:
@@ -290,15 +355,82 @@ class DecisionDesk:
         if action == RETRY:
             return self._retry(rec, where)
         if action == OPTION:
-            q = rec.get("question") or {}
-            opts = q.get("options") or []
-            idx = button.get("index")
-            if not isinstance(idx, int) or not 0 <= idx < len(opts):
-                return False
-            if (rec.get("n_questions") or 1) > 1:
-                return self._answer_first_of_many(rec, where, q.get("question") or "", opts[idx])
-            return self._answer(rec, where, q.get("question") or "", opts[idx])
+            return self._option_answer(rec, where, button.get("index"))
         return False
+
+    def _option_answer(self, rec: dict, where, idx) -> bool:
+        q = rec.get("question") or {}
+        opts = q.get("options") or []
+        if not isinstance(idx, int) or not 0 <= idx < len(opts):
+            return False
+        if (rec.get("n_questions") or 1) > 1:
+            return self._answer_first_of_many(rec, where, q.get("question") or "", opts[idx])
+        return self._answer(rec, where, q.get("question") or "", opts[idx])
+
+    def _group_act(self, rec: dict, button: dict, where: dict, text: str | None = None) -> bool:
+        """Misma pregunta en varias tareas: la decisión se aplica a cada una que siga pendiente."""
+        action, done, skipped = button["action"], [], []
+        if action not in (OPTION, OTHER, PARK) or (action == OTHER and text is None):
+            return False
+        for m in rec["group"]:
+            if not self._still_pending(m):
+                skipped.append(m["task_id"])
+                continue
+            if action == OPTION:
+                ok = self._option_answer(m, None, button.get("index"))
+            elif action == OTHER:
+                label = rec.get("other_label") or (m.get("question") or {}).get("question") or "pregunta del worker"
+                ok = self._answer(m, None, label, text)
+            else:
+                ok = self._park(m, None)
+            (done if ok else skipped).append(m["task_id"])
+            if ok:
+                self._retire(m)
+        if not done:
+            self._edit_text(where, "❓ Nada aplicado: " + (", ".join(skipped) or "-") + " ya no esperaba(n) decisión")
+            return False
+        answer = ""
+        if action == OPTION:
+            opts = (rec.get("question") or {}).get("options") or []
+            idx = button.get("index")
+            answer = f": {truncate(opts[idx], 80)}" if isinstance(idx, int) and 0 <= idx < len(opts) else ""
+        elif text:
+            answer = f": {truncate(text, 80)}"
+        verb = "aparcada" if action == PARK else "respondida"
+        self._edit_text(where, f"💬 {verb} en {len(done)} tarea{'s' if len(done) != 1 else ''} ({', '.join(done)})"
+                        + answer + (f" · sin tocar: {', '.join(skipped)}" if skipped else ""))
+        return True
+
+    def _accept_all(self, rec: dict, where: dict) -> bool:
+        """Cada tarea con recomendada en TODAS sus preguntas: un comentario "Respuesta de Oscar" por pregunta y un
+        único unblock (lo mismo que pulsar la opción ⭐). Una tarea con alguna pregunta sin recomendada queda intacta:
+        desbloquear con media respuesta haría que el worker se volviera a bloquear. Las ya decididas se saltan."""
+        done, skipped, failed = [], [], []
+        for m in rec.get("accept_all") or ():
+            qs = normalize_questions(m.get("questions"))
+            if not qs or any(q["recommended"] is None for q in qs) or not self._still_pending(m):
+                skipped.append(m["task_id"])
+                continue
+            h, tid = self._hermes(m), m["task_id"]
+            if not all(h.comment(tid, f"{ANSWER_PREFIX} {q['question']} → {q['options'][q['recommended']]}"[:3000],
+                                 author=OSCAR_AUTHOR) for q in qs):
+                failed.append(tid)
+                self._edit(m, None, "blocked", "no se pudo guardar la respuesta en la tarjeta")
+                continue
+            answers = " · ".join(truncate(q["options"][q["recommended"]], 40) for q in qs)
+            self._edit(m, None, "answered", f"💬 respondida (lo recomendado): {truncate(answers, 120)}")
+            if not h.unblock(tid):
+                self._edit(m, None, "answered", "💬 respuesta anotada · no se pudo desbloquear (mira la tarjeta)")
+            done.append(tid)
+            self._retire(m)
+        parts = [f"✅ Aplicado lo recomendado en {len(done)} tarea{'s' if len(done) != 1 else ''}"
+                 + (f" ({', '.join(done)})" if done else "")]
+        if skipped:
+            parts.append(f"sin tocar: {', '.join(skipped)}")
+        if failed:
+            parts.append(f"fallaron: {', '.join(failed)}")
+        self._edit_text(where, " · ".join(parts))
+        return bool(done) or not failed
 
     def _answer_first_of_many(self, rec: dict, where: dict, question: str, answer: str) -> bool:
         """Varias preguntas: la opción responde la 1ª SIN desbloquear (retomar con media respuesta haría que el
@@ -419,6 +551,8 @@ class DecisionDesk:
                                  {"token": token, "rec": rec, "button": button, "where": where})
 
     def _apply_reply(self, rec: dict, button: dict, where: dict, text: str) -> bool:
+        if rec.get("group"):
+            return self._group_act(rec, button, where, text)
         tid, h = rec["task_id"], self._hermes(rec)
         if button["action"] == OTHER:
             q = rec.get("other_label") or (rec.get("question") or {}).get("question") or "pregunta del worker"
@@ -436,16 +570,39 @@ class DecisionDesk:
 
     # --- mensaje --------------------------------------------------------------------------------------
 
-    def _edit(self, rec: dict, where: dict, state: str | None, status: str | None, *, extra_links=(),
+    def _edit(self, rec: dict, where: dict | None, state: str | None, status: str | None, *, extra_links=(),
               markup: dict | None = None, keep_text: bool = False) -> None:
+        """Edita el mensaje pulsado (`where`) y TODAS las demás copias del aviso de la tarea (tema, DM, bandeja):
+        una decisión tomada en cualquiera se ve en todas. `where` None = solo las copias (grupo, aceptar todo)."""
         if keep_text:  # solo devolver los botones
             self.notifier.edit_markup(where["chat_id"], where["message_id"], markup)
+            return
+        if rec.get("group") or rec.get("accept_all"):  # tarjeta de grupo / cabecera: texto propio, sin copias
+            self._edit_text(where, status or "")
             return
         lane = self._lane(rec)
         links = self.links(lane, rec["task_id"], changed_files=rec.get("changed_files")) if (self.links and lane) else []
         text = render(state, rec["task_id"], rec.get("title"), rec["lane"], status, [*links, *extra_links],
                       body=rec.get("body"))
-        self.notifier.edit(where["chat_id"], where["message_id"], text, **({"reply_markup": markup} if markup else {}))
+        extra = {"reply_markup": markup} if markup else {}
+        seen = set()
+        if where:
+            self.notifier.edit(where["chat_id"], where["message_id"], text, **extra)
+            seen.add((str(where["chat_id"]), str(where["message_id"])))
+        for msg in (self.messages.all_messages(rec["task_id"]) if self.messages else ()):
+            key = (str(msg["chat_id"]), str(msg["message_id"]))
+            if key in seen:
+                continue
+            seen.add(key)
+            try:
+                self.notifier.edit(msg["chat_id"], msg["message_id"], text, **extra)
+            except Exception as exc:
+                log.info("%s: no se pudo sincronizar la copia %s: %s", rec["task_id"], msg["message_id"], exc)
+
+    def _edit_text(self, where: dict | None, text: str) -> None:
+        """Texto plano en un mensaje concreto (cabecera de la bandeja, tarjeta de grupo), sin botones."""
+        if where:
+            self.notifier.edit(where["chat_id"], where["message_id"], text, html=False)
 
     def _cleanup_messages(self, chat_id, message_ids) -> None:
         """Borra la pregunta force_reply y la respuesta de Oscar: el hilo no acumula mensajes (requiere admin)."""

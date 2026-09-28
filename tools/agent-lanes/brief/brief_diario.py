@@ -23,7 +23,7 @@ from pathlib import Path
 if __package__ in (None, ""):  # ejecutado como script: agent-lanes/ al path para importar agent_lanes
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from agent_lanes.notices import BRANDS, card_url, money, truncate  # noqa: E402
+from agent_lanes.notices import BRANDS, card_url, decision_since, money, truncate  # noqa: E402
 
 log = logging.getLogger("brief_diario")
 
@@ -100,11 +100,11 @@ def classify(items: list[dict], now: float) -> dict:
         it = {**it, "brand": brand(it["board"], assignee)}
         kind = block_kind(d) if status == "blocked" else None
         if status == "blocked" and kind == "needs_input":
-            decide.append({**it, "why": "needs_input"})
+            decide.append({**it, "why": "needs_input", "since": decision_since(t, d)})
         elif assignee == OSCAR and status in ("ready", "blocked"):
             # Solo lo marcado como decisión o de la semana pide atención hoy; el resto es su backlog.
             if any(tag in (t.get("title") or "") for tag in DECISION_TAGS):
-                decide.append({**it, "why": "oscar"})
+                decide.append({**it, "why": "oscar", "since": decision_since(t, d)})
             else:
                 backlog.append(it)
         elif status == "blocked":  # transient o sin kind conocido
@@ -142,6 +142,12 @@ def task_link(it: dict, base_url: str | None) -> str:
     return f'<a href="{html.escape(url, quote=True)}">{tid}</a>' if url else f"<code>{tid}</code>"
 
 
+def waiting_tag(it: dict, now: float) -> str:
+    """" ⏰ >24h" si la decisión lleva más de un día esperando (solo en la línea de la tarea)."""
+    since = it.get("since")
+    return " ⏰ >24h" if since and now - since > DAY else ""
+
+
 def _line(it: dict, base_url: str | None, tag: str = "") -> str:
     title = html.escape(truncate(it["task"].get("title"), TITLE_MAX))
     return f"• {task_link(it, base_url)} <i>{it['brand']}</i>{tag} · {title}"
@@ -151,12 +157,15 @@ def _more(n: int) -> list[str]:
     return [f"  +{n} más"] if n > 0 else []
 
 
-def _render(sec: dict, lanes: list[dict], now: float, base_url: str | None, caps: tuple, prueba: bool) -> str:
+def _render(sec: dict, lanes: list[dict], now: float, base_url: str | None, caps: tuple, prueba: bool,
+            scope: str | None = None) -> str:
     c_dec, c_int, c_err, c_ids = caps
-    out = [f"☀️ <b>Buenos días · {fecha(now)}</b>" + (" (prueba)" if prueba else "")]
+    out = [f"☀️ <b>Buenos días · {fecha(now)}</b>" + (f" · {html.escape(scope)}" if scope else "")
+           + (" (prueba)" if prueba else "")]
     if sec["decide"]:
         out.append(f"\n❓ <b>Esperan tu decisión ({len(sec['decide'])})</b>")
-        out += [_line(i, base_url, " ❓" if i["why"] == "needs_input" else "") for i in sec["decide"][:c_dec]]
+        out += [_line(i, base_url, (" ❓" if i["why"] == "needs_input" else "") + waiting_tag(i, now))
+                for i in sec["decide"][:c_dec]]
         out += _more(len(sec["decide"]) - c_dec)
     else:
         out.append("\nNada pendiente de ti 🎉")
@@ -194,16 +203,26 @@ def n_lines(text: str) -> int:
     return len([ln for ln in text.split("\n") if ln.strip()])
 
 
-def render(sec: dict, lanes: list[dict], now: float, base_url: str | None = None, *, prueba: bool = False) -> str:
+def render(sec: dict, lanes: list[dict], now: float, base_url: str | None = None, *, prueba: bool = False,
+           scope: str | None = None) -> str:
     """El primer nivel de CAPS que cabe en MAX_LINES líneas con texto y TEXT_MAX caracteres."""
     text = ""
     for caps in CAPS:
-        text = _render(sec, lanes, now, base_url, caps, prueba)
+        text = _render(sec, lanes, now, base_url, caps, prueba, scope)
         if n_lines(text) <= MAX_LINES and len(text) <= TEXT_MAX:
             return text
     if len(text) > TEXT_MAX:  # último recurso: sin enlaces (nunca cortar el HTML a medias)
-        text = _render(sec, lanes, now, None, CAPS[-1], prueba)
+        text = _render(sec, lanes, now, None, CAPS[-1], prueba, scope)
     return text
+
+
+def compose(items: list[dict], lane_rows: list[dict], now: float, base_url: str | None = None, *,
+            brand_name: str | None = None, prueba: bool = False) -> str:
+    """Resumen completo; con `brand_name` (/hoy en el tema de una marca) solo esa marca y sus carriles."""
+    if brand_name:
+        items = [it for it in items if brand(it["board"], it["task"].get("assignee")) == brand_name]
+        lane_rows = [r for r in lane_rows if BRANDS.get(r["lane"]) == brand_name]
+    return render(classify(items, now), lane_rows, now, base_url, prueba=prueba, scope=brand_name)
 
 
 # --- IO: hermes -------------------------------------------------------------------------------------
@@ -266,15 +285,18 @@ def lane_status(lists: dict[str, list[dict]]) -> list[dict]:
 
 # --- main -------------------------------------------------------------------------------------------
 
-def build(now: float | None = None, *, prueba: bool = False) -> str:
+def build(now: float | None = None, *, prueba: bool = False, hermes_for=None, brand_name: str | None = None) -> str:
+    """El resumen de las 8:00. Lo reutiliza /hoy del bot de carriles (con su `hermes_for` y la marca del tema)."""
     from agent_lanes.config import load_env, load_lanes, load_telegram_settings
     from agent_lanes.hermes import HermesCLI
     now = time.time() if now is None else now
-    cache: dict[str, HermesCLI] = {}
+    if hermes_for is None:
+        cache: dict[str, HermesCLI] = {}
+        hermes_for = lambda b: cache.setdefault(b, HermesCLI(b))  # noqa: E731
     lane_names = {n for n, l in load_lanes().items() if l.kind == "implement"}
-    items, lists = collect(lambda b: cache.setdefault(b, HermesCLI(b)), lane_names=lane_names, now=now)
+    items, lists = collect(hermes_for, lane_names=lane_names, now=now)
     base = load_env().get("KANBAN_BASE_URL") or load_telegram_settings()["kanban_base_url"]
-    return render(classify(items, now), lane_status(lists), now, base, prueba=prueba)
+    return compose(items, lane_status(lists), now, base, brand_name=brand_name, prueba=prueba)
 
 
 def notifiers() -> list:

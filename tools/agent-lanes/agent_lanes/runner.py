@@ -67,6 +67,15 @@ class Heartbeat:
         self._thread.join(timeout=5)
 
 
+def dm_mirror(decisions, target, alert: bool) -> str | None:
+    """Chat del DM de Oscar si la tarea se pidió desde su DM (Origen-Telegram chat=<owner>) y el aviso es de alerta
+    (❓ ✅ ⛔): recibe también una copia con el bot de carriles. El tema de la marca sigue recibiendo el suyo."""
+    owner = str(getattr(decisions, "owner_id", "") or "")
+    if alert and owner and target and str(target[0]) == owner:
+        return owner
+    return None
+
+
 class LaneRunner:
     def __init__(self, lane: Lane, *, hermes, git, worker, verifier, notify: Callable[[str], None],
                  clock: Callable[[], float] = time.monotonic, state_dir: Path = STATE_DIR,
@@ -94,16 +103,21 @@ class LaneRunner:
         task = {"id": tid, **(task or {})}
         # Origen-Telegram routes the notice back to that topic (contract with W3b); lane.telegram is the fallback.
         target = telegram_target(task.get("body"))
-        try:
-            links = self._links(self.lane, tid, branch=branch_link, changed_files=changed_files) if self._links else []
-            text = render(state, tid, task.get("title"), self.lane.name, status, links, bullets, body=task.get("body"))
-            markup = None
-            if buttons and self._decisions:
-                markup = self._decisions.markup(state, task=task, lane=self.lane, block_kind=block_kind,
-                                                questions=questions, changed_files=changed_files)
-            self._notices.publish(tid, text, target, self.lane.telegram, alert=alert, reply_markup=markup)
-        except Exception as exc:
-            log.warning("aviso a Telegram falló: %s", exc)
+        mirror = dm_mirror(self._decisions, target, alert)
+        for attempt in (1, 2):  # un aviso que falla (red, Telegram) se reintenta UNA vez
+            try:
+                links = self._links(self.lane, tid, branch=branch_link, changed_files=changed_files) if self._links else []
+                text = render(state, tid, task.get("title"), self.lane.name, status, links, bullets,
+                              body=task.get("body"))
+                markup = None
+                if buttons and self._decisions:
+                    markup = self._decisions.markup(state, task=task, lane=self.lane, block_kind=block_kind,
+                                                    questions=questions, changed_files=changed_files)
+                self._notices.publish(tid, text, target, self.lane.telegram, alert=alert, reply_markup=markup,
+                                      **({"mirror_to": mirror} if mirror else {}))
+                return
+            except Exception as exc:
+                log.warning("aviso a Telegram falló (intento %d/2): %s", attempt, exc)
 
     def _drop_hermes_subs(self, tid: str) -> None:
         """Hermes suscribe el hilo de origen al crear la tarea desde Telegram; su notificador duplicaría los avisos."""

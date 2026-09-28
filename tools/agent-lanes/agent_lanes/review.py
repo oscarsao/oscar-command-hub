@@ -18,6 +18,7 @@ from .config import ROOT, Lane
 from .hermes import REVIEW_AUTHOR
 from .notices import (MessageStore, TaskNotices, files_label, money, questions_block, render, status_line,
                       test_label)
+from .runner import dm_mirror
 from .telegram import telegram_target
 from .worker import WorkerOutcome, render_settings, run_claude
 
@@ -104,21 +105,25 @@ class ReviewRunner:
                bullets: list[str] | None = None, changed_files=None, buttons: bool = False,
                block_kind: str | None = None, questions=None, summary: str | None = None) -> None:
         """Edita el mensaje único de la tarea (o envía uno nuevo si `alert`). `status` es texto público."""
-        try:
-            # Reviewed lane's destination (brand topic), else the review lane's own, else the .env default.
-            reviewed = self.lanes.get(task.get("assignee"))
-            lane_target = (reviewed.telegram if reviewed else None) or self.lane.telegram
-            name = reviewed.name if reviewed else self.lane.name
-            links = self._links(reviewed, task["id"], changed_files=changed_files) if (self._links and reviewed) else []
-            text = render(state, task["id"], task.get("title"), name, status, links, bullets, body=task.get("body"))
-            markup = None
-            if buttons and self._decisions and reviewed:
-                markup = self._decisions.markup(state, task=task, lane=reviewed, block_kind=block_kind,
-                                                questions=questions, summary=summary, changed_files=changed_files)
-            self._notices.publish(task["id"], text, telegram_target(task.get("body")), lane_target, alert=alert,
-                                  reply_markup=markup)
-        except Exception as exc:
-            log.warning("aviso a Telegram falló: %s", exc)
+        target = telegram_target(task.get("body"))
+        mirror = dm_mirror(self._decisions, target, alert)
+        for attempt in (1, 2):  # un aviso que falla se reintenta UNA vez
+            try:
+                # Reviewed lane's destination (brand topic), else the review lane's own, else the .env default.
+                reviewed = self.lanes.get(task.get("assignee"))
+                lane_target = (reviewed.telegram if reviewed else None) or self.lane.telegram
+                name = reviewed.name if reviewed else self.lane.name
+                links = self._links(reviewed, task["id"], changed_files=changed_files) if (self._links and reviewed) else []
+                text = render(state, task["id"], task.get("title"), name, status, links, bullets, body=task.get("body"))
+                markup = None
+                if buttons and self._decisions and reviewed:
+                    markup = self._decisions.markup(state, task=task, lane=reviewed, block_kind=block_kind,
+                                                    questions=questions, summary=summary, changed_files=changed_files)
+                self._notices.publish(task["id"], text, target, lane_target, alert=alert, reply_markup=markup,
+                                      **({"mirror_to": mirror} if mirror else {}))
+                return
+            except Exception as exc:
+                log.warning("aviso a Telegram falló (intento %d/2): %s", attempt, exc)
 
     def jobs(self) -> list[tuple[str, Callable[[], str]]]:
         found = []

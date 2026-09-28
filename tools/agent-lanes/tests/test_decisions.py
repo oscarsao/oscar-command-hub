@@ -646,6 +646,14 @@ def test_roles_ask_for_short_options_with_recommendation():
         assert "2-4 opciones cortas y marca la recomendada" in (ROOT / role).read_text(encoding="utf-8")
 
 
+def test_roles_escalate_only_business_decisions():
+    for role in ("roles/implementador.md", "roles/revisor.md"):
+        text = (ROOT / role).read_text(encoding="utf-8")
+        assert "decisiones TÉCNICAS o de implementación en las que ya tengas una opción recomendada NO se escalan" in text
+        assert "Solo pregunta a Oscar decisiones de NEGOCIO o de producto" in text
+        assert "UNA" in text and "no 5 preguntas sueltas" in text
+
+
 # --- 10. Telegram: límites, primitivas y escucha ----------------------------------------------------------
 
 def test_rendered_text_never_exceeds_telegram_limit():

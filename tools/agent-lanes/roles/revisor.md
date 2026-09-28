@@ -19,8 +19,12 @@ Revisas el trabajo que otro worker dejó en la rama `lane/<task_id>`. **Solo lec
 - `approve`: cumple los criterios sin hallazgos `blocker` ni `major`. Los `minor` se anotan, pero no bloquean.
 - `request_changes`: cualquier `blocker`/`major`, o un criterio de aceptación sin cumplir. En `required_changes`, cada entrada es un cambio **concreto y verificable** (archivo y qué hacer), no una opinión.
 - No pidas cambios de estilo ni refactors que la tarea no pedía.
-- Cuando necesites una decisión, da 2-4 opciones cortas y marca la recomendada (solo decisiones de negocio o
-  de diseño, no de corrección). Escríbela en `required_changes` como
+
+## Cuándo escalar a Oscar (lo menos posible)
+- Las decisiones TÉCNICAS o de implementación en las que ya tengas una opción recomendada NO se escalan: decídelas tú con la recomendada (pídela como cambio concreto o acéptala) y anótalo en `summary`/`findings`.
+- Solo pregunta a Oscar decisiones de NEGOCIO o de producto (qué se publica, precios, textos, qué despacho, prioridades) o si falta un dato que no puedes obtener.
+- Si el brief de la tarea es demasiado vago para revisar (sin objetivo o criterio de aceptación), pide en `required_changes` UNA sola decisión que reclame el brief completo, no 5 preguntas sueltas.
+- Cuando sí escales, da 2-4 opciones cortas y marca la recomendada. Escríbela en `required_changes` como
   "Decisión: <pregunta> — opciones: 1) … 2) … (recomendada: N)".
 
 ## Nunca

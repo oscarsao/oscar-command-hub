@@ -35,8 +35,12 @@ BRANDS = {"claude-migrateam": "MigraTeam", "claude-oscarhq": "Píldora", "claude
 OASP_MODES = ("Fast-Track", "Spec-Lite", "Pitch", "CTO-360")
 
 
-def truncate(text: str | None, n: int) -> str:
-    s = " ".join((text or "").split())
+def truncate(text, n: int) -> str:
+    """Una línea de como mucho n caracteres. Tolera valores que no son texto (p. ej. una pregunta del worker que
+    llega como objeto {question, options, recommended}: el 28-09 un dict aquí tumbó el aviso con .split)."""
+    if isinstance(text, dict) and "question" in text:
+        text = text.get("question")
+    s = " ".join(("" if text is None else str(text)).split())
     return s if len(s) <= n else s[: n - 1].rstrip() + "…"
 
 
@@ -71,6 +75,8 @@ def normalize_questions(questions) -> list[dict]:
     recommended}]. Retrocompatible: un string es una pregunta sin opciones. Unas opciones fuera de contrato
     (no 2-4 textos) se descartan y la pregunta queda para responder con texto libre."""
     out = []
+    if isinstance(questions, (str, dict)):  # una sola pregunta suelta en vez de una lista
+        questions = [questions]
     for q in questions or ():
         if isinstance(q, dict):
             text = str(q.get("question") or "").strip()
@@ -86,6 +92,20 @@ def normalize_questions(questions) -> list[dict]:
         if text:
             out.append({"question": text, "options": opts, "recommended": rec})
     return out
+
+
+def decision_since(task: dict | None, detail: dict | None = None) -> float | None:
+    """Desde cuándo espera la decisión: created_at del último evento `blocked` (show --json) o, sin él, el de la
+    tarea. La usan el resumen de las 8:00 (⏰ >24h), /decisiones y los recordatorios."""
+    for ev in reversed((detail or {}).get("events") or ()):
+        if ev.get("kind") == "blocked" and ev.get("created_at"):
+            return float(ev["created_at"])
+    ts = (task or {}).get("created_at")
+    return float(ts) if isinstance(ts, (int, float)) and ts else None
+
+
+def hours_ago(since: float | None, now: float) -> int:
+    return max(0, int((now - since) // 3600)) if since else 0
 
 
 def question_text(q: dict) -> str:
@@ -319,24 +339,65 @@ class MessageStore:
         with self._lock:
             self._path(tid).unlink(missing_ok=True)
 
+    # Espejos: otras copias del aviso de la tarea (tarjeta de /decisiones, /aprobar o /tarea, aviso en el DM de
+    # Oscar). Una decisión tomada en cualquiera edita todas y retira sus botones. Registro principal intacto
+    # ({chat_id, thread_id, message_id, bot, token}); las copias van en "mirrors".
+
+    def add_mirror(self, tid: str, sent: dict | None, *, token: str | None = None, bot: str | None = None) -> None:
+        if not sent or not sent.get("message_id"):
+            return
+        mirror = {"chat_id": str(sent["chat_id"]), "thread_id": str(sent.get("thread_id") or "0"),
+                  "message_id": sent["message_id"], **({"token": token} if token else {}),
+                  **({"bot": str(bot)} if bot else {})}
+        rec = dict(self.get(tid) or {})
+        rec["mirrors"] = [m for m in rec.get("mirrors") or ()
+                          if (str(m.get("chat_id")), m.get("message_id")) != (mirror["chat_id"], mirror["message_id"])]
+        rec["mirrors"].append(mirror)
+        rec["mirrors"] = rec["mirrors"][-10:]
+        self.put(tid, rec)
+
+    def all_messages(self, tid: str) -> list[dict]:
+        """Aviso principal + espejos de una tarea."""
+        rec = self.get(tid) or {}
+        out = [rec] if rec.get("message_id") else []
+        return out + [m for m in rec.get("mirrors") or () if m.get("message_id")]
+
+
+def markup_token(markup: dict | None) -> str | None:
+    """Token de un teclado de decisiones (callback_data "<token>:<n>"); None si no hay botones."""
+    for row in (markup or {}).get("inline_keyboard") or ():
+        for b in row:
+            data = b.get("callback_data") or ""
+            if ":" in data:
+                return data.split(":", 1)[0]
+    return None
+
 
 class TaskNotices:
-    """Publica el estado de una tarea en su único mensaje."""
+    """Publica el estado de una tarea en su único mensaje (y en sus espejos)."""
 
     def __init__(self, notifier, store: MessageStore | None = None):
         self.notifier = notifier
         self.store = store or MessageStore()
 
     def publish(self, tid: str, text: str, target=None, lane_target=None, *, alert: bool = False,
-                reply_markup: dict | None = None) -> None:
+                reply_markup: dict | None = None, mirror_to: str | None = None) -> None:
+        """`mirror_to`: chat (DM de Oscar) que recibe además una copia del aviso, con los mismos botones."""
         rec = self.store.get(tid)
         bot = getattr(self.notifier, "bot_id", None)
         # Un bot solo edita/borra sus propios mensajes: si el aviso anterior es de otro bot (se pasó a
         # CARRILES_BOT_TOKEN), se envía uno nuevo y el viejo se deja como está.
         mine = bool(rec) and (not rec.get("bot") or not bot or str(rec.get("bot")) == str(bot))
         extra = {"reply_markup": reply_markup} if reply_markup is not None else {}
+        mirrors = [m for m in (rec or {}).get("mirrors") or ()
+                   if not m.get("bot") or not bot or str(m.get("bot")) == str(bot)]
         if rec and mine and not alert:
             if self.notifier.edit(rec["chat_id"], rec["message_id"], text, **extra):
+                for m in mirrors:  # las copias siguen el estado de la tarea (sin notificar)
+                    try:
+                        self.notifier.edit(m["chat_id"], m["message_id"], text, **extra)
+                    except Exception as exc:
+                        log.info("%s: no se pudo editar la copia %s: %s", tid, m.get("message_id"), exc)
                 return
             log.info("%s: no se pudo editar el mensaje %s; envío uno nuevo", tid, rec["message_id"])
         sent = self.notifier.send(text, target, lane_target, silent=not alert, **extra)
@@ -344,9 +405,28 @@ class TaskNotices:
             return
         if bot:
             sent = {**sent, "bot": str(bot)}
+        token = markup_token(reply_markup)
+        if token:
+            sent["token"] = token
         if rec and mine and alert:  # el aviso nuevo sustituye al mensaje de progreso: un mensaje por tarea
             try:
                 self.notifier.delete(rec["chat_id"], rec["message_id"])
             except Exception as exc:
                 log.info("%s: no se pudo borrar el mensaje anterior: %s", tid, exc)
-        self.store.put(tid, sent)
+        if alert:
+            # Copias de la decisión anterior: se quedan como historial pero sin botones (su token ya no vale).
+            for m in mirrors:
+                try:
+                    if hasattr(self.notifier, "edit_markup"):
+                        self.notifier.edit_markup(m["chat_id"], m["message_id"], None)
+                except Exception:
+                    pass
+            mirrors = []
+        self.store.put(tid, {**sent, **({"mirrors": mirrors} if mirrors else {})})
+        if alert and mirror_to and hasattr(self.notifier, "send_to"):
+            try:
+                copy = self.notifier.send_to(str(mirror_to), None, text, **extra)
+            except Exception as exc:  # DM sin /start ("chat not found", 403): no rompe el aviso del tema
+                log.info("%s: no se pudo enviar la copia al DM: %s", tid, exc)
+                return
+            self.store.add_mirror(tid, copy, token=token, bot=bot)

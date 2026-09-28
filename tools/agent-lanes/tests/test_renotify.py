@@ -115,8 +115,9 @@ def test_needs_input_is_resent_with_buttons_and_questions_from_the_block_reason(
     assert msg["lane_target"] == ("-1003530490339", "230") and msg["silent"] is False
     # nunca se edita ni se borra el mensaje del bot de Hermes; el almacén apunta al mensaje nuevo
     assert bot.edits == [] and bot.deleted == []
-    assert messages.get("t_c3") == {"chat_id": "-1003530490339", "thread_id": "230", "message_id": 1001,
-                                    "bot": "999"}
+    stored = messages.get("t_c3")
+    assert stored.pop("token") == msg["markup"]["inline_keyboard"][0][0]["callback_data"].split(":")[0]
+    assert stored == {"chat_id": "-1003530490339", "thread_id": "230", "message_id": 1001, "bot": "999"}
     [cb] = list((tmp_path / "callbacks").glob("*.json"))
     rec = json.loads(cb.read_text(encoding="utf-8"))
     assert (rec["task_id"], rec["board"], rec["lane"], rec["n_questions"]) == ("t_c3", "migrateam",

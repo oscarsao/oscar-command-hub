@@ -27,6 +27,7 @@ from .decisions import keyboard_spec
 from .hermes import OSCAR_AUTHOR
 from .notices import (
     MessageStore,
+    decision_since,
     files_label,
     money,
     normalize_questions,
@@ -122,6 +123,7 @@ class Pending:
     block_kind: str | None = None
     changed_files: list[str] | None = None
     summary: str | None = None
+    since: float | None = None  # desde cuándo espera a Oscar (último blocked, o completed_at si está lista)
 
 
 def _last_block(show: dict) -> dict | None:
@@ -163,7 +165,9 @@ class Renotifier:
 
     # --- qué hay pendiente --------------------------------------------------------------------------
 
-    def collect(self, *, lane: str | None = None, task: str | None = None) -> list[Pending]:
+    def collect(self, *, lane: str | None = None, task: str | None = None,
+                statuses: tuple[str, ...] = ("blocked", "done")) -> list[Pending]:
+        """`statuses`: ("blocked",) para la bandeja y los recordatorios (sin el git ls-remote de las done)."""
         impl = {n: l for n, l in self.lanes.items() if l.kind == "implement"}
         if lane and lane not in impl:
             raise SystemExit(f"'{lane}' no es un carril de código de lanes.yaml ({', '.join(impl)})")
@@ -173,6 +177,8 @@ class Renotifier:
                 continue
             h = self.hermes_for(ln.board)
             for status, plan in (("blocked", self._plan_blocked), ("done", self._plan_done)):
+                if status not in statuses:
+                    continue
                 for t in h.list_status(name, status):
                     if task and t["id"] != task:
                         continue
@@ -197,13 +203,14 @@ class Renotifier:
         reason = block.get("reason") or (runs[-1].get("summary") if runs else "") or ""
         if kind == "transient":
             status = status_line("bloqueada", public_reason(reason), "detalle en la tarjeta")
-            return Pending(tid, lane, "blocked", task, status, block_kind="transient")
+            return Pending(tid, lane, "blocked", task, status, block_kind="transient",
+                           since=decision_since(task, show))
         meta = (runs[-1].get("metadata") if runs else None) or {}
         questions = normalize_questions(meta.get("questions")) or parse_questions(reason)
         m = _ROUNDS_RE.match(reason.strip())
         public = f"{m.group(1)}ª petición de cambios: decides tú" if m else "necesita tu decisión"
         return Pending(tid, lane, "needs_input", task, status_line(public, NEEDS_HINT),
-                       bullets=questions_block(questions), questions=questions)
+                       bullets=questions_block(questions), questions=questions, since=decision_since(task, show))
 
     def _plan_done(self, lane: Lane, show: dict) -> Pending | None:
         task = show["task"]
@@ -227,7 +234,7 @@ class Renotifier:
         status = status_line("review aprobada", files_label(len(changed)), test_label(meta.get("runner_test_exit")),
                              money(cost), "lista para merge")
         return Pending(tid, lane, "done", task, status, changed_files=changed,
-                       summary=review.get("summary") or meta.get("summary"))
+                       summary=review.get("summary") or meta.get("summary"), since=task.get("completed_at"))
 
     # --- envío --------------------------------------------------------------------------------------
 

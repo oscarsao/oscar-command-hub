@@ -14,7 +14,9 @@ import time
 from logging.handlers import RotatingFileHandler
 
 from agent_lanes.config import ROOT, load_env, load_lanes, load_runner_settings, load_telegram_settings
+from agent_lanes.commands import CommandCenter, register_commands
 from agent_lanes.decisions import CALLBACKS_DIR, OWNER_TELEGRAM_ID, CallbackStore, DecisionDesk, UpdatePoller
+from agent_lanes.reminders import Reminders
 from agent_lanes.git_ops import GitOps
 from agent_lanes.hermes import HermesCLI
 from agent_lanes.integrator import build_integrator
@@ -28,6 +30,7 @@ from agent_lanes.worker import ClaudeWorker
 
 LOCK = ROOT / ".state" / "runner.lock"
 TG_OFFSET = ROOT / ".state" / "tg_offset"      # offset de getUpdates del bot de carriles
+REMINDERS_STATE = ROOT / ".state" / "reminders.json"  # franjas 13:00/18:00 ya enviadas
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -81,10 +84,23 @@ def main(argv: list[str] | None = None) -> int:
     links = LinkBuilder(env.get("KANBAN_BASE_URL") or tg_settings["kanban_base_url"])
     decisions = None
     if lanes_bot and notify.enabled and not args.once:
+        owner = env.get("OWNER_TELEGRAM_ID") or OWNER_TELEGRAM_ID
         decisions = DecisionDesk(notify, CallbackStore(CALLBACKS_DIR), lanes=all_lanes, hermes_for=hermes_for,
-                                 links=links, owner_id=env.get("OWNER_TELEGRAM_ID") or OWNER_TELEGRAM_ID)
+                                 links=links, owner_id=owner, messages=messages)
+        username = None
+        try:
+            username = notify.get_me().get("username")
+        except Exception as exc:
+            log.warning("getMe falló (los comandos con @sufijo no se reconocerán): %s", exc)
+        commands = CommandCenter(notify, decisions, lanes=all_lanes, hermes_for=hermes_for, messages=messages,
+                                 links=links, generic_origins=tg_settings["generic_origins"], bot_username=username,
+                                 owner_id=owner)
+        decisions.commands = commands
+        log.info("comandos del bot registrados en: %s", register_commands(notify))
         UpdatePoller(notify, decisions, TG_OFFSET).start()
-        log.info("bot de carriles activo (id %s): avisos con botones y escucha de decisiones", notify.bot_id)
+        Reminders(notify, owner, commands.pending_decisions, REMINDERS_STATE).start()
+        log.info("bot de carriles activo (id %s, @%s): avisos con botones, comandos, escucha y recordatorios",
+                 notify.bot_id, username)
     else:
         log.info("sin bot de carriles: avisos con el bot de Hermes, sin botones")
     git = GitOps()
