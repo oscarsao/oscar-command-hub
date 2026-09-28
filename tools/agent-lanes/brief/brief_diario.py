@@ -23,7 +23,9 @@ from pathlib import Path
 if __package__ in (None, ""):  # ejecutado como script: agent-lanes/ al path para importar agent_lanes
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from agent_lanes.notices import BRANDS, card_url, decision_since, money, truncate  # noqa: E402
+from agent_lanes.notices import (BOARD_BRANDS, BRANDS, DECISION_TAGS, card_url, decision_since,  # noqa: E402,F401
+                                 is_decision_card, money, truncate)
+from agent_lanes.notices import OSCAR_ASSIGNEE as OSCAR  # noqa: E402
 
 log = logging.getLogger("brief_diario")
 
@@ -33,10 +35,8 @@ DAY = 24 * 3600
 TEXT_MAX = 4000   # Telegram admite 4096; send_to corta en 4096 y partiría el HTML
 MAX_LINES = 30
 TITLE_MAX = 48
-BOARD_BRANDS = {"migrateam": "MigraTeam", "oscarhq": "Píldora"}
 BRAND_ORDER = ("MigraTeam", "Píldora", "NextJobs", "Otros")
-OSCAR = "oscar"
-DECISION_TAGS = ("[DECISIÓN", "[SEMANA", "· DECISIÓN]", "[IDEA")
+# DECISION_TAGS, BOARD_BRANDS y OSCAR viven en agent_lanes.notices: la misma regla para /decisiones y recordatorios.
 # (decisión, integrar, error, ids por marca en "hecho ayer"): de más generoso a más compacto
 CAPS = ((8, 4, 4, 8), (8, 3, 3, 6), (6, 2, 2, 5), (5, 2, 2, 4), (4, 1, 1, 3), (3, 1, 1, 2))
 DIAS = ("lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo")
@@ -103,7 +103,7 @@ def classify(items: list[dict], now: float) -> dict:
             decide.append({**it, "why": "needs_input", "since": decision_since(t, d)})
         elif assignee == OSCAR and status in ("ready", "blocked"):
             # Solo lo marcado como decisión o de la semana pide atención hoy; el resto es su backlog.
-            if any(tag in (t.get("title") or "") for tag in DECISION_TAGS):
+            if is_decision_card(t):
                 decide.append({**it, "why": "oscar", "since": decision_since(t, d)})
             else:
                 backlog.append(it)

@@ -103,10 +103,11 @@ class ReviewRunner:
 
     def notify(self, state: str, task: dict, status: str, *, alert: bool = False,
                bullets: list[str] | None = None, changed_files=None, buttons: bool = False,
-               block_kind: str | None = None, questions=None, summary: str | None = None) -> None:
+               block_kind: str | None = None, questions=None, summary: str | None = None,
+               for_oscar: str | None = None) -> None:
         """Edita el mensaje único de la tarea (o envía uno nuevo si `alert`). `status` es texto público."""
         target = telegram_target(task.get("body"))
-        mirror = dm_mirror(self._decisions, target, alert)
+        mirror = dm_mirror(self._decisions, target, alert, state)
         for attempt in (1, 2):  # un aviso que falla se reintenta UNA vez
             try:
                 # Reviewed lane's destination (brand topic), else the review lane's own, else the .env default.
@@ -114,11 +115,13 @@ class ReviewRunner:
                 lane_target = (reviewed.telegram if reviewed else None) or self.lane.telegram
                 name = reviewed.name if reviewed else self.lane.name
                 links = self._links(reviewed, task["id"], changed_files=changed_files) if (self._links and reviewed) else []
-                text = render(state, task["id"], task.get("title"), name, status, links, bullets, body=task.get("body"))
+                text = render(state, task["id"], task.get("title"), name, status, links, bullets, body=task.get("body"),
+                              for_oscar=for_oscar)
                 markup = None
                 if buttons and self._decisions and reviewed:
                     markup = self._decisions.markup(state, task=task, lane=reviewed, block_kind=block_kind,
-                                                    questions=questions, summary=summary, changed_files=changed_files)
+                                                    questions=questions, summary=summary, changed_files=changed_files,
+                                                    for_oscar=for_oscar)
                 self._notices.publish(task["id"], text, target, lane_target, alert=alert, reply_markup=markup,
                                       **({"mirror_to": mirror} if mirror else {}))
                 return
@@ -197,7 +200,7 @@ class ReviewRunner:
                 test_label(check.test_exit), money(cost), "lista para merge",
                 None if cleaned else "limpieza local pendiente"), alert=True,
                 changed_files=meta.get("changed_files"), buttons=True,
-                summary=verdict.get("summary") or meta.get("summary"))
+                summary=verdict.get("summary") or meta.get("summary"), for_oscar=meta.get("for_oscar"))
             return "done"
 
         changes = verdict.get("required_changes") or [verdict.get("summary", "")]

@@ -21,21 +21,17 @@
     "questions": {
       "type": "array",
       "items": {
-        "anyOf": [
-          {"type": "string"},
-          {
-            "type": "object",
-            "additionalProperties": false,
-            "required": ["question", "options"],
-            "properties": {
-              "question": {"type": "string"},
-              "options": {"type": "array", "minItems": 2, "maxItems": 4, "items": {"type": "string", "maxLength": 40}},
-              "recommended": {"type": "integer", "minimum": 0, "maximum": 3}
-            }
-          }
-        ]
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["question", "options", "recommended"],
+        "properties": {
+          "question": {"type": "string"},
+          "options": {"type": "array", "minItems": 2, "maxItems": 4, "items": {"type": "string", "maxLength": 40}},
+          "recommended": {"type": "integer", "minimum": 0, "maximum": 3}
+        }
       }
     },
+    "for_oscar": {"type": "string", "maxLength": 300},
     "next_steps": {"type": "array", "items": {"type": "string"}},
     "risks": {"type": "array", "items": {"type": "string"}}
   }

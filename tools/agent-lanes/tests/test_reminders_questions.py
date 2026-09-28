@@ -168,8 +168,8 @@ def test_reminder_only_when_there_are_pending_decisions(tmp_path):
     now_ts = clock[0].timestamp()
     pending = [SimpleNamespace(since=now_ts - 5 * 3600), SimpleNamespace(since=now_ts - 3600)]
     rem = _reminders(tmp_path, bot, pending, clock)
-    assert rem.tick() == "Tienes 2 decisiones (la más antigua hace 5 h) · /decisiones"
-    assert bot.sent == [(OSCAR, "Tienes 2 decisiones (la más antigua hace 5 h) · /decisiones", False)]
+    assert rem.tick() == "Tienes 2 preguntas de agentes (la más antigua hace 5 h) · /decisiones"
+    assert bot.sent == [(OSCAR, "Tienes 2 preguntas de agentes (la más antigua hace 5 h) · /decisiones", False)]
     assert rem.tick() is None and len(bot.sent) == 1  # una vez por franja
     clock[0] = at(28, 15, 0)
     assert rem.tick() is None  # fuera de franja
@@ -179,7 +179,7 @@ def test_reminder_only_when_there_are_pending_decisions(tmp_path):
 
 
 def test_reminder_text_singular():
-    assert reminder_text(1, 26) == "Tienes 1 decisión (la más antigua hace 26 h) · /decisiones"
+    assert reminder_text(1, 26) == "Tienes 1 pregunta de agentes (la más antigua hace 26 h) · /decisiones"
 
 
 def test_closed_dm_is_logged_once(tmp_path, caplog):
@@ -201,7 +201,7 @@ def test_network_error_retries_the_same_slot(tmp_path):
     assert rem.tick() is None
     bot.error = None
     clock[0] = at(28, 13, 1)
-    assert rem.tick().startswith("Tienes 1 decisión")
+    assert rem.tick().startswith("Tienes 1 pregunta de agentes")
 
 
 # --- ⏰ >24h en el resumen de las 8:00 -------------------------------------------------------------------------

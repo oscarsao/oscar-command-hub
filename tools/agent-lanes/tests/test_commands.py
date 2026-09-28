@@ -200,7 +200,7 @@ def test_decisiones_header_and_one_card_per_task_with_buttons(tmp_path):
     assert "1 con opción recomendada" in head["text"]
     assert texts(head["markup"]) == ["✅ Aceptar todo lo recomendado"]
     assert [c["text"].split("\n")[0].split(" · ")[0] for c in cards] == ["❓ t_aaaaaaa1", "❓ t_bbbbbbb2"]
-    assert texts(cards[0]["markup"]) == ["⭐ 1) Sí", "2) No", "✍️ Otra respuesta", "🗄 Aparcar"]
+    assert texts(cards[0]["markup"]) == ["⭐ 1) Sí", "2) No", "✍️ Otra respuesta", "🗄 Aparcar", "💬 Explícame más"]
     assert "hace 30 h" in cards[0]["text"]
     # cada tarjeta queda como copia del aviso de su tarea (sincronización)
     assert messages.all_messages("t_aaaaaaa1")[0]["message_id"] == cards[0]["message_id"]
