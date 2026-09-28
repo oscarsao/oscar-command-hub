@@ -37,8 +37,8 @@ def item(board, t, detail=None):
 
 SAMPLE = [
     item("oscarhq", task("t_need", "blocked", "claude-oscarhq", 6, "¿Qué marca?"), blocked_detail("needs_input")),
-    item("migrateam", task("t_osc1", "ready", "oscar", 10, "Firmar DPA")),
-    item("default", task("t_osc2", "blocked", "oscar", 1, "Revisar contrato"), {"events": [], "comments": []}),
+    item("migrateam", task("t_osc1", "ready", "oscar", 10, "[DECISIÓN] Firmar DPA")),
+    item("default", task("t_osc2", "blocked", "oscar", 1, "[SEMANA] Revisar contrato"), {"events": [], "comments": []}),
     item("oscarhq", task("t_err", "blocked", "claude-oscarhq", 5, "Runner caído"), blocked_detail("transient")),
     item("oscarhq", task("t_ok", "done", "claude-oscarhq", 7, "Archivar crews", completed_at=NOW - 3600),
          approved_detail(cost=0.5, ended_at=NOW - 3600)),
@@ -129,7 +129,7 @@ def test_limits_with_oversized_input():
 
 
 def test_decide_capped_at_8_with_more_line():
-    many = [item("migrateam", task(f"t_{n}", "ready", "oscar", n)) for n in range(12)]
+    many = [item("migrateam", task(f"t_{n}", "ready", "oscar", n, f"[DECISIÓN] d{n}")) for n in range(12)]
     text = render(classify(many, NOW), [], NOW, BASE)
     assert text.count("• ") == 8 and "+4 más" in text
     assert text.index("t_11") < text.index("t_10")  # prioridad 11 antes que 10
@@ -185,3 +185,11 @@ def test_lists_hermes_adapter():
                      task("t_3", "ready", "l"), task("t_4", "done", "otro")])
     assert [t["id"] for t in h.list_status("l", "done", sort="completed-desc")] == ["t_2", "t_1"]
     assert [t["id"] for t in h.list_status("l", "ready")] == ["t_3"]
+
+
+def test_untagged_oscar_cards_go_to_backlog_not_decisions():
+    now = NOW
+    items = [item("default", task("t_bk1", "ready", "oscar", 5, "Organizar carpetas")),
+             item("default", task("t_dec", "ready", "oscar", 1, "[DECISIÓN] Kill-switch"))]
+    sec = classify(items, now)
+    assert [i["task"]["id"] for i in sec["decide"]] == ["t_dec"] and sec["backlog"] == 1

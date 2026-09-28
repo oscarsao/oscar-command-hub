@@ -36,6 +36,7 @@ TITLE_MAX = 48
 BOARD_BRANDS = {"migrateam": "MigraTeam", "oscarhq": "Píldora"}
 BRAND_ORDER = ("MigraTeam", "Píldora", "NextJobs", "Otros")
 OSCAR = "oscar"
+DECISION_TAGS = ("[DECISIÓN", "[SEMANA", "· DECISIÓN]", "[IDEA")
 # (decisión, integrar, error, ids por marca en "hecho ayer"): de más generoso a más compacto
 CAPS = ((8, 4, 4, 8), (8, 3, 3, 6), (6, 2, 2, 5), (5, 2, 2, 4), (4, 1, 1, 3), (3, 1, 1, 2))
 DIAS = ("lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo")
@@ -91,7 +92,7 @@ def _prio(item: dict) -> tuple:
 def classify(items: list[dict], now: float) -> dict:
     """items: [{"board", "task" (de list --json), "detail" (show --json o None)}] -> secciones."""
     since = now - DAY
-    decide, integrate, errors, done = [], [], [], []
+    decide, integrate, errors, done, backlog = [], [], [], [], []
     cost = 0.0
     for it in items:
         t, d = it["task"], it.get("detail")
@@ -101,7 +102,11 @@ def classify(items: list[dict], now: float) -> dict:
         if status == "blocked" and kind == "needs_input":
             decide.append({**it, "why": "needs_input"})
         elif assignee == OSCAR and status in ("ready", "blocked"):
-            decide.append({**it, "why": "oscar"})
+            # Solo lo marcado como decisión o de la semana pide atención hoy; el resto es su backlog.
+            if any(tag in (t.get("title") or "") for tag in DECISION_TAGS):
+                decide.append({**it, "why": "oscar"})
+            else:
+                backlog.append(it)
         elif status == "blocked":  # transient o sin kind conocido
             errors.append(it)
         if status in ("done", "review") and not _comments_start(d, "INTEGRADO"):
@@ -120,7 +125,7 @@ def classify(items: list[dict], now: float) -> dict:
     by_brand: dict[str, list] = {}
     for it in sorted(done, key=lambda i: -(i["task"].get("completed_at") or 0)):
         by_brand.setdefault(it["brand"], []).append(it)
-    return {"decide": decide, "integrate": integrate, "errors": errors,
+    return {"decide": decide, "integrate": integrate, "errors": errors, "backlog": len(backlog),
             "done": {b: by_brand[b] for b in BRAND_ORDER if b in by_brand}, "cost": cost}
 
 
@@ -155,6 +160,8 @@ def _render(sec: dict, lanes: list[dict], now: float, base_url: str | None, caps
         out += _more(len(sec["decide"]) - c_dec)
     else:
         out.append("\nNada pendiente de ti 🎉")
+    if sec.get("backlog"):
+        out.append(f"📋 Tu backlog: {sec['backlog']} tarjetas sin urgencia (en el panel)")
     if sec["integrate"]:
         out.append(f"\n✅ <b>Listas para integrar ({len(sec['integrate'])})</b>")
         out += [_line(i, base_url, " · PR aprobado" if i["why"] == "pr" else "") for i in sec["integrate"][:c_int]]
