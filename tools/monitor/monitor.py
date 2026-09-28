@@ -123,6 +123,24 @@ class Monitor:
         psutil.cpu_percent(None)
 
     # --- alertas --------------------------------------------------------------------------------------
+    def condition(self, key: str, active: bool, text: str, fix: str, *, min_hits: int = 3, every: float = 1800) -> None:
+        """Estado persistente (runner/Hermes/servicio caído): alerta solo si dura `min_hits` lecturas seguidas, con
+        qué hacer, y avisa cuando se resuelve. 28-09: un reinicio de 20 s del runner mandó "NO está vivo" sin más."""
+        conds = self.__dict__.setdefault("_conds", {})
+        c = conds.setdefault(key, {"hits": 0, "since": 0.0, "alerted": False})
+        if active:
+            c["hits"] += 1
+            c["since"] = c["since"] or time.time()
+            if c["hits"] >= min_hits:
+                self.alert("ALTA", f"{text}\n👉 Qué hacer: {fix}", key, every=every)
+                c["alerted"] = True
+            return
+        if c["alerted"]:
+            mins = max(1, round((time.time() - c["since"]) / 60))
+            self._seen.pop(key, None)
+            self.alert("RESUELTO", f"✅ Resuelto: {text.split(chr(10))[0]} (duró ~{mins} min)", key + "-ok", every=0)
+        conds[key] = {"hits": 0, "since": 0.0, "alerted": False}
+
     def alert(self, level: str, text: str, key: str | None = None, every: float = 600) -> None:
         key = key or text
         t = time.time()
@@ -134,7 +152,7 @@ class Monitor:
             return
         with ALERTS_LOG.open("a", encoding="utf-8", newline="\n") as f:
             f.write(f"{datetime.now():%Y-%m-%d %H:%M:%S} {level} {text}\n")
-        if level == "ALTA" and self.push:
+        if level in ("ALTA", "RESUELTO") and self.push:
             self.push(text)
 
     # --- PC -------------------------------------------------------------------------------------------
@@ -201,12 +219,17 @@ class Monitor:
             self.lanes_text = (cp.stdout or cp.stderr).strip()
         except Exception as exc:
             self.lanes_text = f"lanes.py status falló: {exc}"
-        if "VIVO" not in self.lanes_text:
-            self.alert("ALTA", "El runner de carriles NO está vivo", "runner-dead", every=900)
-        # Un "huérfano" dura unos segundos mientras un carril coge tarea: solo alerta si persiste en 2 lecturas (≥15 s).
-        self._orphan_hits = (getattr(self, "_orphan_hits", 0) + 1) if "huérfano" in self.lanes_text else 0
-        if self._orphan_hits >= 2:
-            self.alert("ALTA", "Hay un worker huérfano en los carriles (persistente)", "orphan", every=900)
+        # Un reinicio (ordenado o no) deja el runner ~20 s sin proceso: 3 lecturas (~45 s) y nunca durante un drenaje.
+        draining = (LANES / ".state" / "drain.json").exists()
+        self.condition("runner-dead", "VIVO" not in self.lanes_text and not draining,
+                       "El runner de carriles lleva más de un minuto parado: no se reclaman tareas (quedan en cola, "
+                       "no se pierde nada).",
+                       "espera 2-3 min por si es un reinicio; si sigue, en el PC: Programador de tareas → "
+                       "'agent-lanes runner' → Ejecutar. /salud (bot de Trabajos) te dice el estado.")
+        self.condition("orphan", "huérfano" in self.lanes_text,
+                       "Hay un worker funcionando sin runner que lo vigile.",
+                       "normalmente se resuelve solo al terminar la tarea; si pasa de 30 min, avísame en la "
+                       "sesión de Claude Code o mira /salud.", min_hits=4)
 
     def refresh_health(self) -> None:
         """Solo el servicio headless consulta (cada 5 min) y deja el resultado en .state/health.json; la ventana lo
@@ -234,8 +257,17 @@ class Monitor:
             ok = 200 <= code < 400 or (name == "Panel kanban" and code in (302, 401, 403))
             limited = code == 429  # vivo pero limitando peticiones: no es una caída
             self.health[name] = f"{'✅' if ok else ('🟡' if limited else '❌')} {code or 'sin respuesta'}"
-            if not ok and not limited:
-                self.alert("ALTA", f"{name} no responde bien ({code or 'sin respuesta'})", f"health-{name}", every=600)
+            fixes = {"Oscar HQ": "mira el último deploy en railway.app → Oscar HQ → Deployments (si falló, "
+                                 "pulsa Redeploy del anterior) y dime qué ves.",
+                     "MigraTeam": "¡producción! mira railway.app → MigraTeam → Deployments y los logs; si es un "
+                                  "deploy reciente, avísame para revertirlo.",
+                     "Panel kanban": "el túnel de Cloudflare o el dashboard de Hermes: en el PC, servicios → "
+                                     "'cloudflared' → Reiniciar, o tarea 'Hermes Dashboard' → Ejecutar.",
+                     "Dashboard local": "Programador de tareas → 'Hermes Dashboard' → Ejecutar."}
+            # Consulta cada 5 min: 2 lecturas seguidas (~5-10 min) antes de avisar.
+            self.condition(f"health-{name}", not ok and not limited,
+                           f"{name} no responde bien ({code or 'sin respuesta'}).",
+                           fixes.get(name, "revisa /salud."), min_hits=2)
         try:
             shared.write_text(json.dumps(self.health, ensure_ascii=False), encoding="utf-8")
         except OSError:
@@ -277,9 +309,11 @@ class Monitor:
             age = time.time() - datetime.fromisoformat(st["updated_at"]).timestamp()
         except Exception:
             pass
-        if not alive:
-            self.alert("ALTA", f"Gateway de Hermes caído (estado {st.get('gateway_state', '?')})", "gw-dead", every=600)
-        elif age is not None and age > 300:
+        self.condition("gw-dead", not alive,
+                       f"Hermes está caído (estado {st.get('gateway_state', '?')}): no responderá en Telegram.",
+                       "en el PC abre una terminal y ejecuta `hermes gateway restart`; los botones del bot de "
+                       "Trabajos siguen funcionando mientras tanto.", min_hits=3)
+        if alive and age is not None and age > 300:
             self.alert("MEDIA", f"Estado de Hermes sin actualizar desde hace {age / 60:.0f} min", "gw-hb", every=900)
         agents = st.get("active_agents")
         return (f"{'✅ vivo' if alive else '❌ caído'} pid {pid or '?'} · agentes activos {agents if agents is not None else '?'}"
