@@ -113,8 +113,9 @@ def risks_from_files(policy, files) -> list[str]:
 def render_ficha(*, risk: Risk, phase: str, tid: str, title: str | None, repo: str, base: str, status: str,
                  pr: int | None = None, override: str | None = None, for_oscar: str | None = None,
                  gates=(), risks=(), deploy: str | None = None, deps=(),
-                 links: list[tuple[str, str]] | None = None) -> str:
-    """Ficha compacta en HTML. Todo el texto variable se escapa; si no cabe, se recortan listas, nunca el HTML."""
+                 links: list[tuple[str, str]] | None = None, tree=()) -> str:
+    """Ficha compacta en HTML. Todo el texto variable se escapa; si no cabe, se recortan listas, nunca el HTML.
+    `tree`: líneas 🔗/↳ de deps.tree_lines (sin ⏸: los padres pendientes ya van en "Depende de")."""
     e = html.escape
     plain = truncate(for_oscar, FOR_OSCAR_MAX) if for_oscar else truncate(title, FOR_OSCAR_MAX)
     head = [f"<b>{e(header(risk, phase, pr=pr, override=override))}</b>",
@@ -136,6 +137,7 @@ def render_ficha(*, risk: Risk, phase: str, tid: str, title: str | None, repo: s
             out.append("Deploy: " + e(deploy))
         if deps:
             out.append("Depende de: " + e(" · ".join(deps)))
+        out += [e(truncate(line, 300)) for line in (tree or ())[:3]]
         return out
 
     while len("\n".join(head + body() + tail)) > TEXT_MAX and (gates or risks or deps):

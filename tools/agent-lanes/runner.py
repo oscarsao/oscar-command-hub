@@ -16,6 +16,8 @@ from logging.handlers import RotatingFileHandler
 from agent_lanes.config import ROOT, load_env, load_lanes, load_runner_settings, load_telegram_settings
 from agent_lanes.commands import CommandCenter, register_commands
 from agent_lanes.decisions import CALLBACKS_DIR, OWNER_TELEGRAM_ID, CallbackStore, DecisionDesk, UpdatePoller
+from agent_lanes.deps import ShowCache, TreeReader
+from agent_lanes.hermes_answers import HermesAnswers
 from agent_lanes.reminders import Reminders
 from agent_lanes.git_ops import GitOps
 from agent_lanes.hermes import HermesCLI
@@ -105,16 +107,24 @@ def main(argv: list[str] | None = None) -> int:
                  notify.bot_id, username)
     else:
         log.info("sin bot de carriles: avisos con el bot de Hermes, sin botones")
+    # Árbol padre/hijas en los avisos: lecturas `show` cacheadas (60 s y vaciadas en cada pasada del bucle).
+    shows = ShowCache(ttl=60)
+    tree = TreeReader(hermes_for, shows)
+    if decisions:
+        decisions.tree = tree
+    if not args.once:  # RESPUESTA-OSCAR vía Hermes: hilo propio (el bucle puede esperar horas a un worker)
+        HermesAnswers(all_lanes, hermes_for=hermes_for, desk=decisions).start()
     git = GitOps()
     impl = {n: l for n, l in selected.items() if l.kind == "implement"}
     runners: list = [LaneRunner(l, hermes=hermes_for(l.board), git=git, worker=ClaudeWorker(), verifier=verify,
                                 notify=notify, exclude=set(args.exclude), messages=messages, links=links,
-                                decisions=decisions)
+                                decisions=decisions, tree=tree)
                      for l in impl.values()]
     # Carril ops: sin repo. Carpeta de trabajo por tarea + verificación por evidencias; siempre acaba en review para
     # Oscar (no está en `review.reviews`, y sweep_done no lo toca: el workspace se conserva).
     runners += [LaneRunner(l, hermes=hermes_for(l.board), git=OpsWorkspace(), worker=ClaudeWorker(), verifier=verify_ops,
-                           notify=notify, exclude=set(args.exclude), messages=messages, links=links, decisions=decisions)
+                           notify=notify, exclude=set(args.exclude), messages=messages, links=links, decisions=decisions,
+                           tree=tree)
                 for l in selected.values() if l.kind == "ops"]
     # Tema de Integración (integration_telegram): la tarjeta done con ✅ Aprobar va allí aunque el integrador esté apagado.
     integration = (IntegrationRoute(tg_settings["integration"], load_integrator_settings(env=env, lane_filter=False).policies)
@@ -123,11 +133,12 @@ def main(argv: list[str] | None = None) -> int:
         if lane.kind == "review":
             runners.append(ReviewRunner(lane, all_lanes, hermes_for=hermes_for, git=git, reviewer=ClaudeReviewer(),
                                         verifier=verify, notify=notify, messages=messages, links=links,
-                                        decisions=decisions, integration=integration))
+                                        decisions=decisions, integration=integration, tree=tree))
     # Carril Integrador: solo con INTEGRATOR_ENABLED. Sin bot de carriles corre los gates y avisa sin botones.
     integrator = build_integrator(env, all_lanes, hermes_for=hermes_for, links=links, notifier=notify,
                                   messages=messages, desk=decisions)
     if integrator:
+        integrator.tree = tree
         if decisions:
             decisions.integrator = integrator
         log.info("integrador activo: %s", list(integrator.settings.policies))
@@ -140,6 +151,7 @@ def main(argv: list[str] | None = None) -> int:
         if isinstance(r, LaneRunner) and (orphans := r.reconcile()):
             log.warning("reconciliación %s: bloqueadas por runner reiniciado: %s", r.lane.name, orphans)
     while True:
+        shows.clear()
         for lane in impl.values():
             try:
                 if cleaned := sweep_done(lane, hermes_for(lane.board), git):

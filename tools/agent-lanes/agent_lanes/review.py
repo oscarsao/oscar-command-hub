@@ -91,8 +91,9 @@ class ReviewRunner:
     def __init__(self, review_lane: Lane, lanes: dict[str, Lane], *, hermes_for: Callable[[str], object], git,
                  reviewer, verifier, notify, clock: Callable[[], float] = time.monotonic,
                  messages: MessageStore | None = None, links: Callable | None = None, decisions=None,
-                 integration=None):
+                 integration=None, tree: Callable | None = None):
         self.lane = review_lane
+        self._tree = tree  # deps.TreeReader: líneas 🔗/⏸/↳ en los avisos; None = sin árbol
         # IntegrationRoute (tema de Integración): la tarjeta done con ✅ Aprobar va allí como ficha + copia en el DM.
         self._integration = integration
         self._decisions = decisions  # DecisionDesk (botones) solo con CARRILES_BOT_TOKEN
@@ -120,11 +121,14 @@ class ReviewRunner:
                 name = reviewed.name if reviewed else self.lane.name
                 links = self._links(reviewed, task["id"], changed_files=changed_files) if (self._links and reviewed) else []
                 integ = self._integration if (state == "done" and reviewed) else None
+                # La ficha de Integración ya lista los padres pendientes en "Depende de": sin ⏸ repetido.
+                tree = (self._tree(reviewed.board, task["id"], with_waiting=not integ)
+                        if (self._tree and reviewed) else None)
                 if integ:
-                    text = self._ficha(reviewed, task, status, links, changed_files, for_oscar, test_exit, deps)
+                    text = self._ficha(reviewed, task, status, links, changed_files, for_oscar, test_exit, deps, tree)
                 else:
                     text = render(state, task["id"], task.get("title"), name, status, links, bullets,
-                                  body=task.get("body"), for_oscar=for_oscar)
+                                  body=task.get("body"), for_oscar=for_oscar, tree=tree)
                 markup = None
                 if buttons and self._decisions and reviewed:
                     markup = self._decisions.markup(state, task=task, lane=reviewed, block_kind=block_kind,
@@ -143,7 +147,8 @@ class ReviewRunner:
             except Exception as exc:
                 log.warning("aviso a Telegram falló (intento %d/2): %s", attempt, exc)
 
-    def _ficha(self, lane: Lane, task: dict, status: str, links, changed_files, for_oscar, test_exit, deps) -> str:
+    def _ficha(self, lane: Lane, task: dict, status: str, links, changed_files, for_oscar, test_exit, deps,
+               tree=None) -> str:
         """Ficha de la tarjeta done (antes del PR): riesgos deducidos de los archivos, ya que aún no hay gates."""
         policy = self._integration.policies.get(lane.name)
         gates = ["✔ revisión aprobada"]
@@ -151,7 +156,8 @@ class ReviewRunner:
             gates.append("✔ tests OK" if test_exit == 0 else f"⛔ tests exit {test_exit}")
         return render_ficha(risk=risk_of(policy), phase="PARA APROBAR", tid=task["id"], title=task.get("title"),
                             repo=repo_name(lane), base=lane.base, status=status, for_oscar=for_oscar, gates=gates,
-                            risks=risks_from_files(policy, changed_files), deps=deps or (), links=links)
+                            risks=risks_from_files(policy, changed_files), deps=deps or (), links=links,
+                            tree=tree)
 
     def _deps(self, h, tid: str, show: dict) -> list[str]:
         """Dependencias sin integrar (enlaces padre del kanban), solo si hay tema de Integración. Nunca lanza."""

@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from . import proc as _proc
 from .config import Lane
 from .decisions import keyboard_spec
-from .hermes import OSCAR_AUTHOR
+from .hermes import OSCAR_AUTHOR, pending_hermes_answer
 from .notices import (
     MessageStore,
     decision_since,
@@ -213,6 +213,9 @@ class Renotifier:
         kind = (block or {}).get("kind")
         if kind not in ("needs_input", "transient"):
             self.out(f"{tid}: se salta (bloqueo de tipo {kind or 'desconocido'})")
+            return None
+        if pending_hermes_answer(show):  # ya respondida vía Hermes: el vigilante la desbloquea en su próxima vuelta
+            self.out(f"{tid}: se salta (respondida vía Hermes, pendiente de desbloqueo)")
             return None
         runs = show.get("runs") or []
         reason = block.get("reason") or (runs[-1].get("summary") if runs else "") or ""

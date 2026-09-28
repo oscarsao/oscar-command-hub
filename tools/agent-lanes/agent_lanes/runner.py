@@ -90,8 +90,10 @@ class LaneRunner:
     def __init__(self, lane: Lane, *, hermes, git, worker, verifier, notify: Callable[[str], None],
                  clock: Callable[[], float] = time.monotonic, state_dir: Path = STATE_DIR,
                  pid_alive: Callable[[int], bool] = pid_alive, exclude: set[str] | None = None,
-                 messages: MessageStore | None = None, links: Callable | None = None, decisions=None):
+                 messages: MessageStore | None = None, links: Callable | None = None, decisions=None,
+                 tree: Callable | None = None):
         self.lane = lane
+        self._tree = tree  # deps.TreeReader: líneas 🔗/⏸/↳ (padre e hijas) en cada aviso; None = sin árbol
         self._decisions = decisions  # DecisionDesk (botones) solo con CARRILES_BOT_TOKEN
         self.hermes = hermes
         self.git = git
@@ -119,8 +121,9 @@ class LaneRunner:
         for attempt in (1, 2):  # un aviso que falla (red, Telegram) se reintenta UNA vez
             try:
                 links = self._links(self.lane, tid, branch=branch_link, changed_files=changed_files) if self._links else []
+                tree = self._tree(self.lane.board, tid) if self._tree else None
                 text = render(state, tid, task.get("title"), self.lane.name, status, links, bullets,
-                              body=task.get("body"), for_oscar=for_oscar)
+                              body=task.get("body"), for_oscar=for_oscar, tree=tree)
                 markup = None
                 if buttons and self._decisions:
                     markup = self._decisions.markup(state, task=task, lane=self.lane, block_kind=block_kind,

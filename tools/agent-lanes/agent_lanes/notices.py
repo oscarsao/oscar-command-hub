@@ -305,13 +305,14 @@ def context_line(lane: str, body: str | None) -> str:
 
 def render(state: str, task_id: str, title: str | None, lane: str, status: str,
            links: list[tuple[str, str]] | None = None, bullets: list[str] | None = None, *,
-           body: str | None = None, for_oscar: str | None = None) -> str:
-    """HTML (parse_mode=HTML). Unas 5 líneas, más las viñetas de needs_input:
+           body: str | None = None, for_oscar: str | None = None, tree: list[str] | None = None) -> str:
+    """HTML (parse_mode=HTML). Unas 5 líneas, más el árbol (padre/hijas) y las viñetas de needs_input:
 
         <emoji> t_xxx · <título ≤60>
         <Marca> · <carril> · <modo OASP si aparece en el cuerpo>
         Qué: <sección ## Objetivo, ≤200>   (o "Para ti: <for_oscar>" si el worker lo explicó en llano)
         <estado> · N archivos · tests OK · 1,9 $
+        🔗 Parte de: t_x · … / ⏸ Depende de: … / ↳ N subtareas: …   (`tree`, texto plano: deps.tree_lines)
         🗂 Tarjeta · 📄 Spec/pitch · 🔀 Cambios
     """
     e = html.escape
@@ -323,6 +324,7 @@ def render(state: str, task_id: str, title: str | None, lane: str, status: str,
     elif what:
         head.append("Qué: " + e(what))
     head.append(e(status))
+    head += [e(truncate(line, 300)) for line in (tree or ())[:4]]
     tail = []
     if links:
         tail.append(" · ".join(f'<a href="{e(url, quote=True)}">{e(label)}</a>' for label, url in links))
