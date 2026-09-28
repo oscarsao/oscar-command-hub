@@ -78,9 +78,39 @@ class Tail:
         return data.decode("utf-8", "replace").splitlines()
 
 
+OWNER_DM = "6744452215"
+
+
+def dm_pusher():
+    """Envía alertas ALTA al DM de Oscar con el bot de Trabajos (token de agent-lanes/.env, nunca se imprime)."""
+    token = ""
+    try:
+        for line in (LANES / ".env").read_text(encoding="utf-8").splitlines():
+            if line.startswith("CARRILES_BOT_TOKEN="):
+                token = line.split("=", 1)[1].strip()
+    except OSError:
+        pass
+    if not token:
+        return None
+
+    def push(text: str) -> None:
+        import json
+        body = json.dumps({"chat_id": OWNER_DM, "text": "🚨 Monitor: " + text[:900],
+                           "disable_web_page_preview": True}).encode()
+        req = urllib.request.Request(f"https://api.telegram.org/bot{token}/sendMessage", data=body,
+                                     headers={"Content-Type": "application/json"})
+        try:
+            urllib.request.urlopen(req, timeout=15).read()
+        except Exception:
+            pass  # sin red: queda en alerts.log
+
+    return push
+
+
 class Monitor:
-    def __init__(self):
+    def __init__(self, *, write_log: bool = False, push=None):
         STATE.mkdir(exist_ok=True)
+        self.write_log, self.push = write_log, push
         self.alerts: deque[tuple[str, str, str]] = deque(maxlen=14)  # (hora, nivel, texto)
         self._seen: dict[str, float] = {}
         self.cpu_hist: deque[float] = deque(maxlen=5)
@@ -100,8 +130,12 @@ class Monitor:
             return
         self._seen[key] = t
         self.alerts.appendleft((now_s(), level, text))
+        if not self.write_log:  # la ventana solo muestra; el servicio headless registra y avisa
+            return
         with ALERTS_LOG.open("a", encoding="utf-8", newline="\n") as f:
             f.write(f"{datetime.now():%Y-%m-%d %H:%M:%S} {level} {text}\n")
+        if level == "ALTA" and self.push:
+            self.push(text)
 
     # --- PC -------------------------------------------------------------------------------------------
     def pc(self) -> Panel:
@@ -349,7 +383,11 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--once", action="store_true")
     ap.add_argument("--interval", type=float, default=3.0)
+    ap.add_argument("--headless", action="store_true",
+                    help="servicio sin ventana: registra alertas en .state/alerts.log y manda las ALTA al DM")
     a = ap.parse_args()
+    if a.headless:
+        return run_headless()
     mon = Monitor()
     mon.alert("INFO", "Monitor arrancado", every=0)
     if a.once:
@@ -364,6 +402,28 @@ def main() -> int:
         except KeyboardInterrupt:
             pass
     return 0
+
+
+def run_headless(interval: float = 15.0) -> int:
+    """Una sola instancia (pid en .state/headless.pid). Las comprobaciones son las mismas que pinta la ventana."""
+    STATE.mkdir(exist_ok=True)
+    pidf = STATE / "headless.pid"
+    try:
+        old = int(pidf.read_text().strip())
+        if old != os.getpid() and psutil.pid_exists(old) and "python" in psutil.Process(old).name().lower():
+            return 0  # ya hay uno vivo
+    except (OSError, ValueError, psutil.Error):
+        pass
+    pidf.write_text(str(os.getpid()))
+    mon = Monitor(write_log=True, push=dm_pusher())
+    mon.alert("INFO", "Monitor headless arrancado", every=0)
+    while True:
+        for step in (mon.pc, mon.system, mon.chats, mon.alerts_panel):
+            try:
+                step()
+            except Exception as exc:  # una comprobación rota no para las demás
+                mon.alert("MEDIA", f"monitor: fallo en {step.__name__}: {exc}", f"self-{step.__name__}", every=3600)
+        time.sleep(interval)
 
 
 if __name__ == "__main__":
