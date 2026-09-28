@@ -58,7 +58,9 @@ def main(argv: list[str]) -> int:
         return 2
     base, rest = argv[0], argv[1:]
     failures = []
-    dc = _git("diff", "--check", f"{base}...HEAD")
+    # cr-at-eol: un archivo CRLF versionado así (lanes.yaml, config.py, runner.py del hub) no es "trailing
+    # whitespace"; sin esto, todo cambio del carril claude-hub a esos archivos fallaba el gate (28-09).
+    dc = _git("-c", "core.whitespace=cr-at-eol", "diff", "--check", f"{base}...HEAD")
     if dc.returncode != 0:
         failures.append(f"git diff --check:\n{dc.stdout.strip()[-1500:]}")
     names = _git("diff", "--name-only", "--diff-filter=ACMR", f"{base}...HEAD", "--", "*.py").stdout.split()
