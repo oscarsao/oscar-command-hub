@@ -111,6 +111,13 @@ def test_repeated_technical_blocks_not_needs_input():
     assert A.check_repeated_blocks(items)[0].ids == ["t_cccccc03"]
 
 
+def test_block_loop_detected_counts_as_repeated():
+    ev = [{"kind": "blocked", "payload": {"kind": "transient", "recurrences": 1}}, {"kind": "unblocked", "payload": {}},
+          {"kind": "block_loop_detected", "payload": {"kind": "transient", "recurrences": 3}}]
+    assert A.transient_blocks({"events": ev}) == 3
+    assert A.check_repeated_blocks([it("t_cccccc07", status="triage", events=ev)])[0].ids == ["t_cccccc07"]
+
+
 def test_ready_without_or_with_unknown_assignee():
     items = [it("t_dddddd01", assignee=None), it("t_dddddd02", assignee="codex"), it("t_dddddd03", assignee="codex"),
              it("t_dddddd04", assignee="claude-oscarhq"), it("t_dddddd05", assignee="default"),

@@ -214,8 +214,13 @@ def check_triage(items: list[dict]) -> list[Finding]:
 
 
 def transient_blocks(detail: dict | None) -> int:
-    return sum(1 for e in (detail or {}).get("events") or ()
-               if e.get("kind") == "blocked" and (e.get("payload") or {}).get("kind") != "needs_input")
+    """Bloqueos que no son preguntas a Oscar. Hermes registra la repetición como `block_loop_detected` (y pasa la
+    tarjeta a triage) con `recurrences`: se toma el mayor de los dos recuentos."""
+    evs = [e for e in (detail or {}).get("events") or ()
+           if e.get("kind") in ("blocked", "block_loop_detected")
+           and (e.get("payload") or {}).get("kind") != "needs_input"]
+    recurrences = max((int((e.get("payload") or {}).get("recurrences") or 0) for e in evs), default=0)
+    return max(len(evs), recurrences)
 
 
 def check_repeated_blocks(items: list[dict]) -> list[Finding]:
