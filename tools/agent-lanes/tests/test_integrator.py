@@ -852,3 +852,13 @@ def test_second_deploy_while_one_runs_is_refused(tmp_path):
 def test_integrator_lanes_filter_limits_policies():
     s = load_integrator_settings(env={"INTEGRATOR_LANES": "claude-oscarhq"})
     assert list(s.policies) == ["claude-oscarhq"]
+
+
+def test_migrateam_goes_through_develop_never_master():
+    # 28-09 (Oscar): en MigraTeam todo entra por develop (staging); master solo por release/<fecha>.
+    from agent_lanes.config import load_lanes
+    lane = load_lanes()["claude-migrateam"]
+    assert lane.base == "develop"
+    p = load_integrator_settings(env={}).policies["claude-migrateam"]
+    assert "develop" in p.merge_label and "producción" not in p.merge_label
+    assert "staging" in p.health_url and "production" not in p.health_url

@@ -190,6 +190,28 @@ class Monitor:
             if not ok:
                 self.alert("ALTA", f"{name} no responde bien ({code or 'sin respuesta'})", f"health-{name}", every=600)
 
+    def refresh_branch_drift(self) -> str:
+        """MigraTeam: develop debe contener master. Tras un hotfix directo a master hay que devolverlo a develop
+        (28-09: develop iba 20 commits por detrás y los carriles no sabían qué base usar)."""
+        if time.time() - getattr(self, "_drift_at", 0) < 900:
+            return getattr(self, "_drift_text", "")
+        self._drift_at = time.time()
+        repo = HOME / "dev" / "migrateam"
+        try:
+            subprocess.run(["git", "-C", str(repo), "fetch", "-q", "origin", "master", "develop"], capture_output=True,
+                           timeout=60, creationflags=NO_WINDOW)
+            cp = subprocess.run(["git", "-C", str(repo), "rev-list", "--count", "origin/develop..origin/master"],
+                                capture_output=True, text=True, timeout=30, creationflags=NO_WINDOW)
+            behind = int((cp.stdout or "0").strip() or 0)
+        except Exception:
+            self._drift_text = "MigraTeam develop↔master: ?"
+            return self._drift_text
+        if behind:
+            self.alert("MEDIA", f"MigraTeam: develop va {behind} commit(s) por detrás de master (hotfix sin devolver a develop)",
+                       "drift-migrateam", every=3600)
+        self._drift_text = f"MigraTeam develop↔master: {'✅ al día' if not behind else f'❌ develop -{behind}'}"
+        return self._drift_text
+
     def hermes_gateway(self) -> str:
         """gateway_state.json (JSON: pid, gateway_state, active_agents, updated_at)."""
         import json
@@ -219,7 +241,8 @@ class Monitor:
         t.append("Hermes gateway: ", style="bold")
         t.append(self.hermes_gateway() + "\n")
         t.append("Servicios: ", style="bold")
-        t.append("  ".join(f"{k} {v}" for k, v in self.health.items()) + "\n\n")
+        t.append("  ".join(f"{k} {v}" for k, v in self.health.items()) + "\n")
+        t.append(self.refresh_branch_drift() + "\n\n")
         lines = [ln for ln in self.lanes_text.splitlines() if not ln.startswith("---")]
         for ln in lines[:8]:
             style = "yellow" if "ocupado" in ln else ("red" if "huérfano" in ln else None)

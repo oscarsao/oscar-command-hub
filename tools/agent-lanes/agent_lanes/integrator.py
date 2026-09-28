@@ -126,6 +126,9 @@ class Policy:
     # Infraestructura de arranque/deploy (Procfile, railway.*, alembic/env.py...): se fusiona, pero sin botón de
     # deploy (MigraTeam: sin botón) y con aviso, igual que una migración.
     sensitive_paths: tuple[str, ...] = ()
+    # on_merge: texto del botón y aviso. MigraTeam (28-09) fusiona en develop = staging, nunca en master.
+    merge_label: str = "🚀 Fusionar y desplegar a producción"
+    merge_warning: str = ""
 
 
 @dataclass(frozen=True)
@@ -685,8 +688,7 @@ class Integrator:
     def _spec(self, policy: Policy, migration: str | None) -> list[list[dict]] | None:
         if policy.deploy == DEPLOY_ON_MERGE:
             # MigraTeam: el merge ES el deploy. Siempre botón explícito; con migración pendiente, ninguno.
-            return None if migration else [[{"text": "🚀 Fusionar y desplegar a producción",
-                                             "action": INT_MERGE_DEPLOY}]]
+            return None if migration else [[{"text": policy.merge_label, "action": INT_MERGE_DEPLOY}]]
         return [[{"text": "🔀 Fusionar", "action": INT_MERGE}]]
 
     def _bullets(self, policy: Policy, result: GateResult) -> list[str]:
@@ -698,7 +700,7 @@ class Integrator:
         elif result.migration:
             out.append("⚠️ requiere migración manual (supabase/migrations)")
         if policy.deploy == DEPLOY_ON_MERGE:
-            out.append(NEEDS_MIGRATION if result.migration else MIGRATEAM_WARNING)
+            out.append(NEEDS_MIGRATION if result.migration else (policy.merge_warning or MIGRATEAM_WARNING))
         elif policy.deploy == DEPLOY_RAILWAY_UP:
             out.append("fusionar NO despliega; el deploy es otro botón" if not result.migration else
                        "fusionar NO despliega; " + NEEDS_MIGRATION)

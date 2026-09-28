@@ -65,7 +65,9 @@ lanes:
     telegram: {chat: -1003530490339, thread: 230}
     board: migrateam
     repo: C:/Users/oscar/dev/migrateam
-    base: master
+    # 28-09 (Oscar): en MigraTeam todo entra por develop (staging) y solo llega a master por promoción
+    # release/<fecha> (CLAUDE.md del repo, tabla de ramas). Un carril NUNCA parte ni apunta a master.
+    base: develop
     # AGENTS.md de MigraTeam: ownership por claims (.coordination/claims/, check_claims.py --diff falla si tocas
     # ficheros de otro dueño) y alembic/versions/ tiene un único propietario (integradora) => vetado aquí.
     # check_claims.py se ejecuta en su versión de {BASE}, nunca la copia del worker (sería ejecutar su código).
@@ -125,12 +127,14 @@ integrator:
       railway_environment: 3236716d-c75a-41fe-b426-9953deb7e426  # production
       health_url: https://oscar-hq-production.up.railway.app/api/health   # 2ª señal tras SUCCESS, nunca la única
     claude-migrateam:
-      # Un merge a master DESPLIEGA solo (Railway, en minutos): botón explícito [🚀 Fusionar y desplegar a producción];
-      # con migración de Alembic no hay botón. Su CLI de Railway NO está enlazada (proyecto mellow-patience): se
-      # verifica con GET /health hasta que commit_sha sea el del merge (confirmado el 28-09 que lo devuelve).
+      # 28-09: fusiona en develop, que DESPLIEGA STAGING solo (Railway staging + Vercel develop, alembic contra la BD
+      # de staging). Nunca master: la promoción a producción es release/<fecha> con OK de Oscar, fuera del carril.
+      # Con migración de Alembic no hay botón. Se verifica con GET /health de staging hasta que commit_sha sea el del merge.
       deploy: on_merge
+      merge_label: "🔀 Fusionar en develop (despliega staging)"
+      merge_warning: "⚠️ Fusionar despliega STAGING (develop), no producción; a master solo por release/<fecha>"
       alembic_versions: backend/alembic/versions/
       # alembic/env.py, alembic.ini, Procfile... corren en el arranque de Railway contra la BD de producción: sin botón.
       sensitive_paths: [backend/alembic/, backend/alembic.ini, backend/Procfile, backend/railway.json, backend/railway.toml, backend/nixpacks.toml, backend/Dockerfile, railway.json, vercel.json, frontend/vercel.json, .github/]
-      health_url: https://ocr-pdf-and-images-production.up.railway.app/health
+      health_url: https://migrateam-backend-staging-staging.up.railway.app/health
       health_commit_key: commit_sha
