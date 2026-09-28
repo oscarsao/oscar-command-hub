@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import logging
 import subprocess
+import tempfile
 
 from . import proc as _proc
 from .notices import normalize_questions, truncate
@@ -17,7 +18,7 @@ from .notices import normalize_questions, truncate
 log = logging.getLogger("agent_lanes")
 
 MODEL = "haiku"
-MAX_BUDGET_USD = 0.05
+MAX_BUDGET_USD = 0.10  # medido el 28-09: ~0,03 $ y ~16 s por explicación (el contexto global de Claude Code pesa)
 TIMEOUT_SECONDS = 90
 BODY_MAX = 3000
 SUMMARY_MAX = 1500
@@ -59,8 +60,9 @@ def claude_args() -> list[str]:
 def explain(rec: dict, *, runner=_proc.run, cwd: str | None = None) -> str | None:
     """Texto plano para Telegram, o None si la llamada falla (timeout, coste, salida no JSON)."""
     try:
-        cp = runner(claude_args(), input=build_prompt(rec), cwd=cwd, capture_output=True, text=True,
-                    encoding="utf-8", errors="replace", timeout=TIMEOUT_SECONDS)
+        # cwd neutro: sin CLAUDE.md/AGENTS.md de ningún repo (menos contexto, menos coste, sin arrastrar reglas).
+        cp = runner(claude_args(), input=build_prompt(rec), cwd=cwd or tempfile.gettempdir(), capture_output=True,
+                    text=True, encoding="utf-8", errors="replace", timeout=TIMEOUT_SECONDS)
     except (OSError, subprocess.SubprocessError) as exc:
         log.warning("%s: explicación no generada: %s", rec.get("task_id"), exc)
         return None
