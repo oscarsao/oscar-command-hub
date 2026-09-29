@@ -670,7 +670,11 @@ class Integrator:
         if forbidden:
             res.reasons.append(f"toca rutas vetadas del carril: {', '.join(forbidden[:5])}")
         execs = [f for f in res.changed_files if f.lower().endswith(EXEC_SUFFIXES)]
-        shadow = [f for f in res.changed_files if f.endswith(".py") and Path(f).stem in STDLIB_NAMES]
+        # Solo archivos NUEVOS: modificar un módulo que ya existía (p. ej. src/api/routes/signal.py en oscar-hq) no
+        # introduce ninguna suplantación nueva (falso positivo del PR #55, 29-09).
+        added = set((self._git(w, "diff", "--no-renames", "--name-only", "--diff-filter=A", rng).stdout or "").split())
+        shadow = [f for f in res.changed_files
+                  if f in added and f.endswith(".py") and Path(f).stem in STDLIB_NAMES]
         if execs or shadow:
             res.reasons.append("añade ejecutables o módulos que suplantan la librería estándar: "
                                + ", ".join((execs + shadow)[:5]))

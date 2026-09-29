@@ -49,6 +49,7 @@ class World:
         self.remote_base = BASE    # ls-remote (para detectar que la base se movió)
         self.conflict = False
         self.changed = ["src/app.py"]
+        self.added: list[str] | None = None  # archivos nuevos (--diff-filter=A); None = todos los de `changed`
         self.diff = diff("src/app.py", "+print('hola')", start=1)
         self.test_rc = 0
         self.alembic_files: dict[str, str] = {}
@@ -106,6 +107,8 @@ class World:
             return cp(1, "", "CONFLICT") if self.conflict else cp()
         if "--diff-filter=U" in args:
             return cp(0, "src/app.py\n")
+        if "--diff-filter=A" in args:
+            return cp(0, "\n".join(self.changed if self.added is None else self.added) + "\n")
         if "diff" in args and "--name-only" in args:
             return cp(0, "\n".join(self.changed) + "\n")
         if "diff" in args and "-U0" in args:
@@ -909,6 +912,14 @@ def test_executables_and_stdlib_shadowing_block_before_tests(tmp_path, path):
     assert integ.run_pass() == {"t_1": "gates_failed"}
     assert "suplantan" in tg.sent[-1]["text"]
     assert not [c for c in w.calls if c[1].get("shell")]  # test_cmd nunca se ejecuta
+
+
+def test_modifying_existing_stdlib_named_module_is_not_shadowing(tmp_path):
+    w = World()
+    w.changed, w.added = ["src/api/routes/signal.py"], []
+    integ, w, h, tg, _, _ = make(tmp_path, world=w)
+    integ.run_pass()
+    assert not any("suplantan" in (m.get("text") or "") for m in tg.sent)
 
 
 def test_forbidden_paths_of_the_lane_block(tmp_path):
