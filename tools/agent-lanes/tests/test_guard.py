@@ -11,8 +11,12 @@ import guard  # noqa: E402
 GUARD = Path(__file__).resolve().parents[1] / "contract" / "guard.py"
 
 
-def bash(cmd, db=None):
-    return guard.check({"tool_name": "Bash", "tool_input": {"command": cmd}}, env={"DATABASE_URL": db} if db else {})
+MERGE_OK = json.dumps(["origin/develop", "origin/feat/declarada"])
+
+
+def bash(cmd, db=None, merge_ok=MERGE_OK):
+    env = {"AGENT_LANES_MERGE_OK": merge_ok} if merge_ok else {}
+    return guard.check({"tool_name": "Bash", "tool_input": {"command": cmd}}, env={**env, **({"DATABASE_URL": db} if db else {})})
 
 
 @pytest.mark.parametrize("cmd", [
@@ -45,6 +49,9 @@ def bash(cmd, db=None):
     "git merge -X theirs origin/develop",
     "git merge -s ours origin/develop",
     "git merge --allow-unrelated-histories origin/x",
+    "git merge origin/feat/signal-core-v2",  # t_5fbf77bc: rama no declarada en la tarea
+    "git merge origin/develop origin/otra",
+    "git merge -m 'x' origin/otra",
 ])
 def test_blocks(cmd):
     assert bash(cmd), cmd
@@ -62,11 +69,33 @@ def test_blocks(cmd):
     "py -3.12 -m pytest tests -q",
     "git fetch origin develop",
     "git merge origin/develop",
-    "git merge --no-edit origin/feat/signal-core-v2",
+    "git merge --no-edit origin/feat/declarada",
+    "git merge -m 'Merge origin/develop en la lane' origin/develop",
     "git merge --abort",
 ])
 def test_allows(cmd):
     assert bash(cmd) is None, cmd
+
+
+@pytest.mark.parametrize("merge_ok", [None, "no-json", "[]"])
+def test_merge_sin_refs_permitidas_falla_cerrado(merge_ok):
+    assert bash("git merge origin/develop", merge_ok=merge_ok)
+    assert bash("git merge --abort", merge_ok=merge_ok) is None
+
+
+def test_merge_refs_solo_base_y_ramas_declaradas():
+    from types import SimpleNamespace
+    from agent_lanes.worker import merge_refs
+    lane = SimpleNamespace(remote="origin", base="develop")
+    body = "texto\nRama-origen: feat/x\nRama-origen: origin/fix/y\nRama-origen: ../mala\nRama-origen: a b\n"
+    assert merge_refs(lane, {"body": body}) == ["origin/develop", "origin/feat/x", "origin/fix/y"]
+    assert merge_refs(lane, {}) == ["origin/develop"]
+
+
+def test_prompt_pasa_todas_las_respuestas():
+    from agent_lanes.worker import _answers_section
+    out = _answers_section([f"Respuesta de Oscar: {i}" for i in range(12)])
+    assert "Respuesta de Oscar: 0" in out and "Respuesta de Oscar: 11" in out
 
 
 def test_alembic_env_local_allowed():

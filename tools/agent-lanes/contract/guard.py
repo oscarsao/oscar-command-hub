@@ -74,9 +74,10 @@ def _check_git_push(tokens: list[str], task: str | None = None) -> str | None:
     return None
 
 
-def _check_git_merge(tokens: list[str]) -> str | None:
-    """30-09 (OK de Oscar): el worker puede traer ramas REMOTAS a su lane (`git merge origin/<rama>`), abortar o
-    continuar. Nada de merges de ramas locales (p. ej. `git merge lane/otra` o `master`), ni -s/-X ours/theirs."""
+def _check_git_merge(tokens: list[str], allowed: list[str] | None = None) -> str | None:
+    """30-09 (OK de Oscar): el worker puede traer a su lane `origin/<base>` y las ramas que la tarea declara con
+    `Rama-origen: <rama>` (el runner las pasa en AGENT_LANES_MERGE_OK), abortar o continuar. Nada de otras ramas (un PR no
+    arrastra a otro sin revisar: t_5fbf77bc trajo feat/signal-core-v2), ni -s/-X ours/theirs. `-m <msg>` se permite."""
     if "git" not in tokens or "merge" not in tokens:
         return None
     args = tokens[tokens.index("merge") + 1:]
@@ -84,20 +85,30 @@ def _check_git_merge(tokens: list[str]) -> str | None:
         return None
     if any(a in ("-s", "-x") or a.startswith(("--strategy", "--allow-unrelated")) for a in args):
         return "git merge con estrategia forzada prohibido para workers"
-    targets = [a for a in args if not a.startswith("-")]
-    if not targets or any(not t.startswith("origin/") for t in targets):
-        return "git merge solo de ramas remotas: `git merge origin/<rama>` (hacia tu lane, nunca al revés)"
+    targets, skip = [], False
+    for a in args:
+        if skip:  # mensaje de -m / -F
+            skip = False
+        elif a in ("-m", "--message", "-f"):
+            skip = a != "-f"
+        elif not a.startswith("-"):
+            targets.append(a)
+    ok = allowed or []
+    if not targets or any(t not in ok for t in targets):
+        return ("git merge solo de origin/<base> o de una rama declarada en la tarea con `Rama-origen: <rama>`"
+                + (f" (permitidas: {', '.join(ok)})" if ok else ""))
     return None
 
 
-def check_bash(command: str, env_db_url: str | None, task: str | None = None) -> str | None:
+def check_bash(command: str, env_db_url: str | None, task: str | None = None,
+               merge_ok: list[str] | None = None) -> str | None:
     for segment in SEGMENT_SPLIT.split(command):
         seg = segment.strip()
         if not seg:
             continue
         tokens = _tokens(seg)
         low = [t.lower() for t in tokens]
-        reason = _check_git_push(low, task) or _check_git_merge(low)
+        reason = _check_git_push(low, task) or _check_git_merge(low, merge_ok)
         if reason:
             return reason
         if "gh" in low and "pr" in low and "merge" in low:
@@ -128,7 +139,11 @@ def check(payload: dict, env: dict | None = None) -> str | None:
     if tool == "Bash":
         if reviewer:
             return _check_reviewer_bash(ti.get("command", ""))
-        return check_bash(ti.get("command", ""), env.get("DATABASE_URL"), env.get("AGENT_LANES_TASK"))
+        try:
+            merge_ok = [str(r).lower() for r in json.loads(env.get("AGENT_LANES_MERGE_OK") or "[]")]
+        except (ValueError, TypeError):
+            merge_ok = []  # ilegible: ningún merge (falla cerrado)
+        return check_bash(ti.get("command", ""), env.get("DATABASE_URL"), env.get("AGENT_LANES_TASK"), merge_ok)
     if tool in WRITE_TOOLS and reviewer:
         return f"el revisor es de solo lectura: {tool} prohibido"
     if tool in WRITE_TOOLS:
