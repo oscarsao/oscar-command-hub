@@ -65,7 +65,16 @@ def build_prompt(task: dict, lane: Lane) -> str:
         f"# {task.get('title', '')}\n\n{task.get('body') or ''}\n"
         + _answers_section(task.get("oscar_answers"))
         + _feedback_section(task.get("review_feedback"))
+        + _conflict_section(task.get("merge_conflict"), lane)
     )
+
+
+def _conflict_section(conflict: str | None, lane: Lane) -> str:
+    if not conflict:
+        return ""
+    return (f"\n## Conflicto con {lane.remote}/{lane.base} (el runner intentó ponerte al día y hay conflicto)\n"
+            "Tu worktree está en medio de esa fusión. Resuelve los conflictos, `git add`, `git merge --continue`, "
+            f"comprueba los tests y haz push de tu rama. Salida de git:\n\n{conflict}\n")
 
 
 def build_ops_prompt(task: dict, lane: Lane, cwd: str, origins: list[str], dests: list[str]) -> str:

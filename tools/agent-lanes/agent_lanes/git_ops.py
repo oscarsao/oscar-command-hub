@@ -49,6 +49,30 @@ class GitOps:
             self._git(lane.repo, "worktree", "add", str(path), "-b", branch, f"{lane.remote}/{lane.base}")
         return str(path)
 
+    def sync_base(self, lane: Lane, path: str) -> str | None:
+        """`fetch` + `merge <remote>/<base>` en la lane antes de repetir el trabajo. None = al día o fusionado sin
+        problema (o no se pudo: se registra y se sigue). Con conflicto devuelve el texto y DEJA la fusión a medias para
+        que el worker la resuelva (`git merge --continue`)."""
+        ref = f"{lane.remote}/{lane.base}"
+        try:
+            fetch = self._run(["git", "-C", path, "fetch", lane.remote, lane.base], capture_output=True, text=True,
+                              encoding="utf-8", errors="replace", timeout=300)
+            if fetch.returncode != 0:
+                log.warning("sync_base %s: fetch falló: %s", path, fetch.stderr.strip()[:200])
+                return None
+            cp = self._run(["git", "-C", path, "merge", "--no-edit", ref], capture_output=True, text=True,
+                           encoding="utf-8", errors="replace", timeout=300)
+        except (OSError, subprocess.SubprocessError) as exc:
+            log.warning("sync_base %s: %s", path, exc)
+            return None
+        if cp.returncode == 0:
+            return None
+        out = (cp.stdout + cp.stderr).strip()
+        if "CONFLICT" in out:
+            return out[-600:]
+        log.warning("sync_base %s: merge %s falló sin conflicto: %s", path, ref, out[-200:])
+        return None
+
     def _fetch_remote_lane(self, lane: Lane, branch: str) -> bool:
         """True si <remote>/lane/<id> existe (y queda actualizada en refs/remotes)."""
         cp = self._run(["git", "-C", lane.repo, "fetch", lane.remote,

@@ -67,6 +67,9 @@ class Heartbeat:
         self._thread.join(timeout=5)
 
 
+# Motivos de verificación que dependen de la config (lanes.yaml / cuerpo de la tarea), no de algo que el worker arregle
+# reintentando: el aviso no ofrece [🔄 Reintentar].
+CONFIG_REASONS = ("toca rutas vetadas", "Destino-Ops no permitido")
 FOR_OSCAR_PREFIX = "Para Oscar:"  # línea del motivo del bloqueo con el `for_oscar` del worker (la lee renotify)
 
 
@@ -196,7 +199,8 @@ class LaneRunner:
         return {tid: job() for tid, job in self.jobs()}
 
     def _block(self, tid: str, kind: str, reason: str, task: dict | None = None, *, public: str,
-               questions: list | None = None, summary: str | None = None, for_oscar: str | None = None) -> str:
+               questions: list | None = None, summary: str | None = None, for_oscar: str | None = None,
+               notify_kind: str | None = None) -> str:
         """`reason` (detalle técnico) va a la tarjeta y al log; a Telegram solo `public` (+ preguntas si needs_input)."""
         if for_oscar:  # también a la tarjeta: renotify y /decisiones lo recuperan del motivo del bloqueo
             reason = f"{reason}\n{FOR_OSCAR_PREFIX} {' '.join(str(for_oscar).split())}"
@@ -218,7 +222,7 @@ class LaneRunner:
                         summary=summary, for_oscar=for_oscar)
         else:
             self.notify("blocked", tid, task, status_line("bloqueada", public, "detalle en la tarjeta"), alert=True,
-                        buttons=bool(blocked), block_kind=kind)
+                        buttons=bool(blocked), block_kind=notify_kind or kind)
         return f"blocked:{kind}"
 
     def process(self, task: dict) -> str:
@@ -262,6 +266,12 @@ class LaneRunner:
                             status_line("en curso", f"aplicando cambios de revisión (ronda {len(feedback)})"
                                         if feedback else None), branch_link=bool(feedback) and not ops)
                 cwd = self.git.prepare_worktree(lane, tid, task) if ops else self.git.prepare_worktree(lane, tid)
+                if not ops and hasattr(self.git, "sync_base"):
+                    # Antes de repetir nada: la lane al día con origin/<base>. Con conflicto se lo pasamos al worker
+                    # (t_985109b9 ×7 reintentos inútiles por una base que se había movido).
+                    conflict = self.git.sync_base(lane, cwd)
+                    if conflict:
+                        task = {**task, "merge_conflict": conflict}
                 outcome = self.worker.run(lane, task, cwd, session_id, timeout=max(60.0, deadline - self.clock()))
                 resumes = 0
                 while not outcome.ok and resumes < lane.max_resumes and deadline - self.clock() > 60:
@@ -293,6 +303,14 @@ class LaneRunner:
 
             check = self.verifier(lane, tid, cwd, result, task=task) if ops else self.verifier(lane, tid, cwd, result)
             if not check.ok:
+                config = [r for r in check.reasons if r.startswith(CONFIG_REASONS)]
+                if config:  # t_985109b9 ×7, t_0d94921e ×4: reintentar da siempre lo mismo; hay que cambiar la config
+                    return self._block(
+                        tid, "transient", "verificación mecánica fallida por CONFIGURACIÓN: " + "; ".join(config),
+                        task, notify_kind="config",
+                        public="la verificación falla por configuración (" + "; ".join(config)[:300] + "). Reintentar no "
+                        "sirve: Oscar/el carril hub debe cambiar lanes.yaml (forbidden_paths, dest_roots, claims) o "
+                        "corregir la tarea (quitar esas rutas/destinos) y entonces reabrirla")
                 return self._block(tid, "transient", "verificación mecánica fallida: " + "; ".join(check.reasons),
                                    task, public="verificación mecánica fallida")
             if ops:
