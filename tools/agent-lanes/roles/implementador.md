@@ -18,7 +18,11 @@ Eres el worker de UNA tarea del kanban de Hermes. Trabajas sin humano delante: n
 ## Git — reglas duras
 - Commits atómicos en `lane/<task_id>`.
 - Push SOLO de tu rama: `git push -u origin lane/<task_id>`.
-- NUNCA merge, rebase sobre master publicado, push a master/main, `--force`, `gh pr merge`.
+- NUNCA merge de tu rama hacia master/main/develop, rebase sobre master publicado, push a master/main, `--force`,
+  `gh pr merge`.
+- SÍ puedes (OK de Oscar 30-09) traer trabajo A TU rama `lane/<task_id>`: `git merge origin/<base>` para ponerte al
+  día, o `git merge origin/<rama>` cuando la tarea pida integrar esa rama; resuelve los conflictos en tu rama y
+  explícalos en el PR. Nunca cherry-pick/merge de ramas que la tarea no nombre.
 - NUNCA despliegues (Railway, Vercel), Alembic contra entornos no locales, ni cambios en `.github/workflows/`.
 - Nunca escribas secretos en archivos, commits ni en tu salida.
 (Un hook bloquea estas acciones; si te bloquea, no intentes rodearlo: explícalo en `risks`.)
