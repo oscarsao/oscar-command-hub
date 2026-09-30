@@ -53,7 +53,7 @@ def test_lanes_yaml_ops_lane_overrides_code_defaults():
     ops = lanes["claude-ops"]
     assert (ops.kind, ops.board, ops.repo, ops.test_cmd, ops.role) == ("ops", "oscarhq", "", "", "roles/ops.md")
     assert ops.worktree_root == "C:/Users/oscar/dev/_lanes/ops" and ops.max_parallel == 1
-    assert ops.forbidden_paths == () and ops.dest_roots == ("C:/Users/oscar",)
+    assert ops.forbidden_paths == () and ops.dest_roots == ("C:/Users/oscar", "E:/02_Negocio_Pildora/LEGAL-LLC")
     assert not any("git push" in t or "git commit" in t or "git add" in t or "pytest" in t for t in ops.allowed_tools)
     assert "claude-ops" not in lanes["review"].reviews  # el carril review crearía un worktree git con repo=""
 
