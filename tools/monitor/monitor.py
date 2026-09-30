@@ -49,6 +49,13 @@ HEALTH = {"Oscar HQ": "https://oscar-hq-production.up.railway.app/api/health",
           "Dashboard local": "http://127.0.0.1:9119/"}
 WATCH_PROCS = ("claude", "python", "pythonw", "node", "chrome", "hermes", "cloudflared", "msedge", "code")
 LOG_LEVEL_RE = re.compile(r"\b(WARNING|ERROR|CRITICAL)\b")
+# Silencio del DM de 23:00 a 08:00 (30-09): solo pasan las caídas reales (runner, Hermes, servicios, listado de tareas).
+QUIET_START, QUIET_END = 23, 8
+OUTAGE_KEYS = ("runner-dead", "gw-dead", "health-", "list-fail")
+LIST_FAIL = "no se pudieron listar tareas"
+LIST_FAIL_AFTER = 600  # s de fallos seguidos listando tareas (hermes/WinError) antes de abrir ALTA
+RETRY_TASKS = ("Resumen diario Hermes", "Auditor diario carriles")  # tareas programadas a relanzar si fallaron
+LIST_FAIL_GAP = 240   # s sin fallos nuevos = recuperado (el runner lista cada ~60 s)
 
 
 def now_s() -> str:
@@ -113,6 +120,12 @@ class Monitor:
         self.write_log, self.push = write_log, push
         self.alerts: deque[tuple[str, str, str]] = deque(maxlen=14)  # (hora, nivel, texto)
         self._seen: dict[str, float] = {}
+        self.now = datetime.now  # inyectable en tests
+        self._quiet_pending: list[str] = []
+        self._list_fail_first = self._list_fail_last = 0.0
+        self._list_fail_was_active = False
+        self.run = lambda args: subprocess.run(args, capture_output=True, text=True, timeout=30,
+                                               creationflags=NO_WINDOW)  # inyectable en tests
         self.cpu_hist: deque[float] = deque(maxlen=5)
         self.lanes_text, self.lanes_at = "(cargando…)", 0.0
         self.health: dict[str, str] = {}
@@ -153,7 +166,63 @@ class Monitor:
         with ALERTS_LOG.open("a", encoding="utf-8", newline="\n") as f:
             f.write(f"{datetime.now():%Y-%m-%d %H:%M:%S} {level} {text}\n")
         if level in ("ALTA", "RESUELTO") and self.push:
+            h = self.now().hour
+            if (h >= QUIET_START or h < QUIET_END) and not key.startswith(OUTAGE_KEYS):
+                self._quiet_pending.append(text.split("\n")[0][:160])  # se resume a las 08:00
+                return
             self.push(text)
+
+    def flush_quiet(self) -> None:
+        """Pasadas las 08:00, un solo DM con lo que se calló por la noche."""
+        if self._quiet_pending and QUIET_END <= self.now().hour < QUIET_START and self.push:
+            lines, self._quiet_pending = self._quiet_pending[-10:], []
+            self.push("🌙 Durante la noche (sin avisar):\n" + "\n".join(f"• {ln}" for ln in lines))
+
+    def note_runner_line(self, line: str) -> None:
+        """Fallos de `hermes` al listar tareas (WinError o cualquier otro) en runner.log: si duran más de 10 min con el
+        runner vivo, condición ALTA. 29/30-09: 24,5 h en MEDIA sin que nadie lo viese."""
+        if LIST_FAIL not in line:
+            return
+        try:
+            ts = datetime.strptime(line[:19], "%Y-%m-%d %H:%M:%S").timestamp()
+        except ValueError:
+            ts = time.time()
+        if not self._list_fail_first or ts - self._list_fail_last > LIST_FAIL_GAP:
+            self._list_fail_first = ts
+        self._list_fail_last = ts
+
+    def check_list_failures(self) -> None:
+        streak = self._list_fail_last - self._list_fail_first
+        active = bool(self._list_fail_first) and time.time() - self._list_fail_last <= LIST_FAIL_GAP \
+            and streak >= LIST_FAIL_AFTER
+        if self._list_fail_was_active and not active:
+            self.rerun_failed_jobs()  # recuperado: el brief/auditor de esas horas pudieron fallar por lo mismo
+        self._list_fail_was_active = active
+        self.condition("list-fail", active,
+                       "El runner está vivo pero lleva más de 10 min sin poder listar tareas (falla `hermes`): no "
+                       "arranca nada.",
+                       "mira las últimas líneas de agent-lanes/.state/runner.log; suele ser `hermes` caído o sin "
+                       "acceso a su base de datos. /salud te dice el estado.", min_hits=1, every=3600)
+
+    def rerun_failed_jobs(self) -> list[str]:
+        """Al cerrarse list-fail: relanza (tarea programada ya existente) el brief y el auditor cuyo último resultado
+        fue distinto de 0. Devuelve los relanzados. `self.run` es inyectable en tests."""
+        rerun = []
+        for task in RETRY_TASKS:
+            try:
+                cp = self.run(["schtasks", "/Query", "/TN", task, "/V", "/FO", "LIST"])
+                m = re.search(r"^\s*(?:Last Result|Último resultado|Resultado de la última ejecución)\s*:\s*(-?\d+)",
+                              cp.stdout or "", re.M | re.I)
+                if not m or int(m.group(1)) == 0:
+                    continue
+                if self.run(["schtasks", "/Run", "/TN", task]).returncode == 0:
+                    rerun.append(task)
+            except Exception:
+                continue
+        if rerun:
+            self.alert("MEDIA", "Listado de tareas recuperado: relanzado " + " y ".join(f"«{t}»" for t in rerun)
+                       + " porque su última ejecución había fallado.", "rerun-jobs", every=0)
+        return rerun
 
     # --- PC -------------------------------------------------------------------------------------------
     def pc(self) -> Panel:
@@ -164,8 +233,10 @@ class Monitor:
         free_gb = disk.free / 2**30
         if len(self.cpu_hist) == self.cpu_hist.maxlen and min(self.cpu_hist) > 90:
             self.alert("ALTA", f"CPU sostenida >90% ({cpu:.0f}%)", "cpu")
-        if vm.percent > 88:
-            self.alert("ALTA", f"RAM al {vm.percent:.0f}% ({vm.used / 2**30:.1f}/{vm.total / 2**30:.1f} GB)", "ram")
+        self.condition("ram", vm.percent > 88,
+                       f"RAM al {vm.percent:.0f}% ({vm.used / 2**30:.1f}/{vm.total / 2**30:.1f} GB)",
+                       "cierra ventanas de Chrome/Edge o sesiones de Claude que no uses; si sigue, revisa el top de "
+                       "RAM del monitor.", min_hits=4, every=3600)
         if free_gb < 10:
             self.alert("MEDIA", f"Disco C: solo {free_gb:.1f} GB libres", "disk", every=3600)
 
@@ -392,11 +463,13 @@ class Monitor:
         for line in self.runner_tail.new_lines():
             if not line.strip() or line.startswith((" ", "-")):
                 continue
+            self.note_runner_line(line)
             self.runner_events.appendleft(line[11:19] + " " + line[24:].strip())
             m = LOG_LEVEL_RE.search(line[:40])
             if m:
                 self.alert("MEDIA" if m.group(1) == "WARNING" else "ALTA", "carriles: " + line[24:160].strip(),
                            every=10 ** 9)
+        self.check_list_failures()
         ev = Text("\n".join(e[:150] for e in list(self.runner_events)[:6]) or "(sin eventos nuevos desde que abriste el monitor)",
                   style="dim")
         return Panel(Group(Text(busy, style="bold green"), tb, Text("\nCarriles (bot Trabajos) — últimos eventos:",
@@ -472,6 +545,7 @@ def run_headless(interval: float = 15.0) -> int:
                 step()
             except Exception as exc:  # una comprobación rota no para las demás
                 mon.alert("MEDIA", f"monitor: fallo en {step.__name__}: {exc}", f"self-{step.__name__}", every=3600)
+        mon.flush_quiet()
         time.sleep(interval)
 
 

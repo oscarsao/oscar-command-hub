@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 
 from . import proc as _proc
@@ -32,6 +33,21 @@ class WorkerOutcome:
     raw_error: str | None
 
 
+ORIGIN_BRANCH_LINE = re.compile(r"^\s*Rama-origen:\s*(\S+)\s*$", re.M | re.I)
+_SAFE_REF = re.compile(r"^[\w][\w./-]*$")
+
+
+def merge_refs(lane: Lane, task: dict) -> list[str]:
+    """Refs que el guard deja traer con `git merge`: `<remote>/<base>` y las ramas de líneas `Rama-origen: <rama>` del
+    cuerpo (línea de confianza, como Origen-Ops). Cualquier otra rama arrastraría trabajo sin revisar."""
+    refs = [f"{lane.remote}/{lane.base}"]
+    for b in ORIGIN_BRANCH_LINE.findall(task.get("body") or ""):
+        b = b.removeprefix(f"{lane.remote}/")
+        if _SAFE_REF.match(b) and ".." not in b:
+            refs.append(f"{lane.remote}/{b}")
+    return refs
+
+
 def render_settings(template: Path = SETTINGS_TEMPLATE) -> Path:
     """Settings template with the absolute agent-lanes path substituted (hook command needs it)."""
     STATE_DIR.mkdir(exist_ok=True)
@@ -49,7 +65,16 @@ def build_prompt(task: dict, lane: Lane) -> str:
         f"# {task.get('title', '')}\n\n{task.get('body') or ''}\n"
         + _answers_section(task.get("oscar_answers"))
         + _feedback_section(task.get("review_feedback"))
+        + _conflict_section(task.get("merge_conflict"), lane)
     )
+
+
+def _conflict_section(conflict: str | None, lane: Lane) -> str:
+    if not conflict:
+        return ""
+    return (f"\n## Conflicto con {lane.remote}/{lane.base} (el runner intentó ponerte al día y hay conflicto)\n"
+            "Tu worktree está en medio de esa fusión. Resuelve los conflictos, `git add`, `git merge --continue`, "
+            f"comprueba los tests y haz push de tu rama. Salida de git:\n\n{conflict}\n")
 
 
 def build_ops_prompt(task: dict, lane: Lane, cwd: str, origins: list[str], dests: list[str]) -> str:
@@ -71,9 +96,12 @@ def build_ops_prompt(task: dict, lane: Lane, cwd: str, origins: list[str], dests
 def _answers_section(answers: list[str] | None, ops: bool = False) -> str:
     if not answers:
         return ""
-    items = "\n".join(f"- {a}" for a in answers[-5:])
+    # TODAS las respuestas de la ronda (t_a2972b36, t_5fbf77bc): con solo las 5 últimas el worker volvía a preguntar
+    # lo ya decidido. `oscar_answers_from` ya deja una por pregunta; el tope solo evita un prompt desmesurado.
+    items = "\n".join(f"- {a}" for a in answers[-40:])
     return ("\n## Decisiones de Oscar (respuestas a tus preguntas; obligatorio respetarlas)\n"
-            "Esta tarea ya se bloqueó antes pidiendo decisión y Oscar ha respondido. Tu "
+            "Esta tarea ya se bloqueó antes pidiendo decisión y Oscar ha respondido a TODAS las de abajo: no vuelvas a "
+            "preguntar nada de lo ya decidido. Tu "
             + ("workspace" if ops else "worktree") + " conserva el trabajo "
             f"anterior: continúa desde ahí aplicando estas decisiones.\n\n{items}\n")
 
@@ -182,7 +210,9 @@ class ClaudeWorker:
             return self._exec(ops_args(lane, flag, dirs), build_ops_prompt(task, lane, cwd, origins, dests), cwd,
                               timeout, lane, task["id"], env)
         args = base_args(lane, flag)
-        return self._exec(args, build_prompt(task, lane), cwd, timeout, lane, task["id"])
+        env = {"AGENT_LANES_MERGE_OK": json.dumps(merge_refs(lane, task))}
+        self._ops[session_id] = (env, [])
+        return self._exec(args, build_prompt(task, lane), cwd, timeout, lane, task["id"], env)
 
     def resume(self, lane: Lane, cwd: str, session_id: str, timeout: float, task_id: str) -> WorkerOutcome:
         if lane.kind == "ops":
@@ -190,4 +220,5 @@ class ClaudeWorker:
             env, dirs = self._ops.get(session_id, ({"AGENT_LANES_ROLE": "ops"}, []))
             return self._exec(ops_args(lane, ["--resume", session_id], dirs), OPS_RESUME_PROMPT, cwd, timeout, lane,
                               task_id, env)
-        return self._exec(base_args(lane, ["--resume", session_id]), RESUME_PROMPT, cwd, timeout, lane, task_id)
+        env = self._ops.get(session_id, ({"AGENT_LANES_MERGE_OK": json.dumps([f"{lane.remote}/{lane.base}".lower()])}, []))[0]
+        return self._exec(base_args(lane, ["--resume", session_id]), RESUME_PROMPT, cwd, timeout, lane, task_id, env)

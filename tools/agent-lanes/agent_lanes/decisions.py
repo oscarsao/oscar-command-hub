@@ -78,6 +78,8 @@ def keyboard_spec(state: str, *, block_kind: str | None = None, questions=None,
         rows.append([{"text": "✍️ Otra respuesta", "action": OTHER}, park])
         rows.append([dict(EXPLAIN_BUTTON)])
         return rows
+    if state == "blocked" and block_kind == "config":  # reintentar no arregla la config: solo aparcar
+        return [[park]]
     if state == "blocked" and block_kind == "transient":
         return [[{"text": "🔄 Reintentar", "action": RETRY}, park]]
     if state == "stuck":  # 🧊 en triage por bloqueo repetido (block_loop_detected): unblock no vale, _retry lo saca

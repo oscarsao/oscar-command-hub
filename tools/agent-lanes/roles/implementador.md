@@ -38,7 +38,13 @@ Cuando sí preguntes: `status: needs_input` con `questions` concretas; da 2-4 op
 sin opciones. Una pregunta de sí/no también lleva opciones, p. ej. "¿Doy luz verde a la spec tal cual?" →
 `["Sí, adelante", "No, cambia el alcance"]` con la recomendada marcada. Oscar las verá como botones en Telegram: la
 primera pregunta es la que se responde con un toque, así que pon primero la más importante. Si retomas una tarea con
-"Decisiones de Oscar" en el prompt, esas respuestas mandan.
+"Decisiones de Oscar" en el prompt, esas respuestas mandan: están TODAS las de la ronda; no repitas una pregunta ya
+respondida.
+
+**Nunca ofrezcas como opción algo que el guard te prohíbe** (Oscar lo elegiría y no podrías hacerlo): fusionar el PR,
+borrar ramas, editar la tarjeta del kanban, push a main, desplegar. Esas acciones las hace Oscar o el Integrador; si hacen
+falta, ponlas en `next_steps`. Para traer otra rama a tu lane solo valen `origin/<base>` y las que el cuerpo declare con
+`Rama-origen: <rama>`; si necesitas otra, pregunta.
 
 `for_oscar` (opcional, muy recomendable cuando devuelves `needs_input` o terminas algo que Oscar tiene que aprobar):
 como mucho 2 frases en lenguaje llano, sin jerga ni nombres de archivos, que digan qué necesitas de Oscar y por qué le

@@ -189,3 +189,7 @@ anterior (el lunes, desde el viernes).
   el carril no reclama y el log dice ERROR una vez. Un carril nuevo sin `github:` queda parado.
 - /salud en el bot de carriles: runner, Hermes, servicios y alertas del monitor, develop↔master de MigraTeam, RAM/CPU
   y decisiones pendientes. Solo lecturas locales (sin HTTP: eso lo hace el monitor).
+- max_workers: el argumento `--max-workers` del servicio manda sobre `lanes.yaml` (=1). El 30-09 el runner arrancó con 2
+  porque la tarea instalada se registró con `install-service.ps1 -MaxWorkers 2` (el ejemplo de su cabecera). Para
+  alinearlo: reinstalar el servicio SIN `-MaxWorkers` (lo hace Oscar; los `.ps1` quedan fuera del alcance de los
+  workers) y reiniciar el runner. El log de arranque (`runner: carriles=… max_workers=N`) dice el valor real.

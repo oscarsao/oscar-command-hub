@@ -770,3 +770,15 @@ def test_poller_persists_offset_and_survives_a_broken_update(tmp_path):
     assert (tmp_path / "tg_offset").read_text() == "12"
     UpdatePoller(tg, desk, tmp_path / "tg_offset").poll_once()  # reinicio: sigue desde el offset guardado
     assert tg.offsets == [None, 12]
+
+
+def test_each_option_button_stores_its_own_text_not_the_default(tmp_path):
+    """Regresión t_a2972b36/t_5fbf77bc: el botón N guarda el texto de SU opción, nunca "Sí, adelante"."""
+    opts = ["Supabase", "SQLite", "Redis"]
+    for n, expected in enumerate(opts):
+        desk, tg, h = _desk(tmp_path / f"d{n}")
+        q = {"question": "¿Qué BD?", "options": opts, "recommended": 0}
+        markup = desk.markup("needs_input", task={"id": "t_1", "title": "T"}, lane=LANE, questions=[q])
+        _press(desk, markup, n)
+        assert h.calls[0] == ("comment", "t_1", f"Respuesta de Oscar: ¿Qué BD? → {expected}", OSCAR_AUTHOR)
+        assert "Sí, adelante" not in h.calls[0][2]

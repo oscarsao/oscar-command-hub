@@ -60,7 +60,7 @@ class World:
         self.up_out = f"Build Logs: https://railway.com/project/{PROJECT}/service/{SERVICE}?id={NEW_DEP}&"
         self.up_rc = 0
         self.upped = False
-        self.not_ancestor: set[tuple[str, str]] = set()  # (viejo, nuevo) con merge-base --is-ancestor != 0
+        self.not_ancestor: set[tuple[str, str]] = {(MERGE, BASE)}  # la base anterior no contiene el merge. # (viejo, nuevo) con merge-base --is-ancestor != 0
         self.between: list[str] = []  # archivos de `git diff --name-only <fusión> <punta>`
 
     def argv(self, name):
@@ -157,6 +157,12 @@ class FakeHermes:
         self.comments.append((tid, text, author))
         self.comments_by.setdefault(tid, []).append({"author": author, "body": text})
         return True
+
+    reopen_ok = False  # los tests de conflicto que no lo piden siguen viendo gates_failed
+
+    def reopen_review(self, tid):
+        self.reopened = getattr(self, "reopened", []) + [tid]
+        return self.reopen_ok
 
 
 class FakeLinks:
@@ -375,6 +381,29 @@ def test_conflict_blocks_without_running_tests(tmp_path):
     assert tg.sent[-1]["markup"] is None
     assert not [c for c in w.calls if c[1].get("shell")]
     assert any("gates fallidos" in t for _, t, _ in h.comments)
+
+
+def test_conflict_is_sent_back_to_the_lane_with_merge_instruction(tmp_path):
+    w = World()
+    w.conflict = True
+    integ, w, h, tg, _, _ = make(tmp_path, world=w)
+    h.reopen_ok = True
+    assert integ.run_pass() == {"t_1": "sent_back"}
+    assert h.reopened == ["t_1"]
+    tid, text, author = [c for c in h.comments if c[2] == "lane-review"][0]
+    assert "git merge origin/" in text and "conflictos" in text
+    assert integ._state("t_1")["sent_back"] == 1
+    assert not tg.sent or "no se puede integrar" not in tg.sent[-1]["text"]
+
+
+def test_conflict_sent_back_at_most_twice(tmp_path):
+    w = World()
+    w.conflict = True
+    integ, w, h, tg, _, _ = make(tmp_path, world=w)
+    h.reopen_ok = True
+    integ._save("t_1", sent_back=2)
+    assert integ.run_pass() == {"t_1": "gates_failed"}
+    assert not getattr(h, "reopened", [])
 
 
 def test_failing_tests_block(tmp_path):
@@ -836,6 +865,17 @@ def test_migrateam_merge_and_verify_health_commit(tmp_path):
     assert not w.argv(RW)  # CLI de Railway no enlazada para MigraTeam: nunca se usa
     assert "🚀 desplegado · ddddddd · health OK" in tg.edits[-1]["text"]
     assert clock.t == 40  # dos respuestas que no valen (contenedor viejo, 502)
+
+
+def test_migrateam_health_with_later_commit_containing_merge_counts_as_deployed(tmp_path):
+    later = "e" * 40  # otro PR se fusionó justo después; el fake de git da "es descendiente" por defecto
+    integ, w, h, tg, d, clock = make(tmp_path, name="claude-migrateam", world=World(MGT_SLUG),
+                                     health=lambda url: (200, json.dumps({"status": "healthy", "commit_sha": later})))
+    integ.run_pass()
+    press(d, tg)
+    assert "🚀 desplegado · eeeeeee · health OK" in tg.edits[-1]["text"]
+    assert any("commit posterior" in t for _, t, _ in h.comments)
+    assert integ._state("t_1")["deployed_sha"] == later
 
 
 def test_migrateam_health_with_old_commit_times_out(tmp_path):

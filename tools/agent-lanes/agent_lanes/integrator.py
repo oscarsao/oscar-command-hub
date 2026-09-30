@@ -52,7 +52,7 @@ if __package__ in (None, ""):  # `py agent_lanes/integrator.py`
 from . import proc as _proc  # noqa: E402
 from .config import ROOT, _chat_thread, _load  # noqa: E402
 from .deps import is_integration_comment, pending_parents, waiting_line  # noqa: E402
-from .hermes import OSCAR_AUTHOR  # noqa: E402
+from .hermes import OSCAR_AUTHOR, REVIEW_AUTHOR  # noqa: E402
 from .integration import (CHANNEL, FAILED, WAITING, PinnedSummary, link_line, phase_for, render_ficha,  # noqa: E402
                           repo_name, risk_of, summary_state, summary_text)
 from .notices import MessageStore, TaskNotices, render, status_line, truncate  # noqa: E402
@@ -66,6 +66,7 @@ RAILWAY_EXE = str(Path.home() / "AppData/Roaming/npm/node_modules/@railway/cli/b
 STATE_DIR = ROOT / ".state" / "integrator"
 
 INTEGRATOR_AUTHOR = "lane-integrator"
+MERGE_RETRY_WAITS = (10, 30, 60)  # s entre reintentos de `gh pr merge` ante "Base branch was modified"
 APPROVED_PREFIX = "APROBADO-OSCAR"
 INTEGRATED_PREFIX = "INTEGRADO"
 INT_MERGE, INT_DEPLOY, INT_MERGE_DEPLOY = "int_merge", "int_deploy", "int_merge_deploy"
@@ -554,6 +555,11 @@ class Integrator:
             self._report(tid, number, result, policy)
             return "dry-run:" + ("ok" if result.ok else "failed")
         if not result.ok:
+            if self._send_back_conflict(lane, tid, number, result):
+                self._save(tid, status="sent_back", pr=number, pr_url=url, head_sha=result.head_sha,
+                           base_sha=result.base_sha, sent_back=int(st.get("sent_back") or 0) + 1, **about)
+                return "sent_back"
+            log.info("%s: PR #%s gates fallidos: %s", tid, number, "; ".join(result.reasons)[:300])
             self._publish_failed(lane, task, number, url, result)
             self._save(tid, status="failed", pr=number, pr_url=url, head_sha=result.head_sha, base_sha=result.base_sha,
                        **about)
@@ -562,6 +568,23 @@ class Integrator:
         self._save(tid, status="offered", pr=number, pr_url=url, head_sha=result.head_sha, base_sha=result.base_sha,
                    migration=result.migration, **about)
         return "offered"
+
+    def _send_back_conflict(self, lane, tid: str, number: int, result: GateResult) -> bool:
+        """Gates fallidos SOLO por conflicto con la base (#59): la tarea vuelve al carril con la instrucción de traer
+        `origin/<base>` en vez de quedarse en failed esperando a Oscar. Máximo 2 veces por tarea."""
+        if self.dry_run or int(self._state(tid).get("sent_back") or 0) >= 2:
+            return False
+        if not result.reasons or not all(r.startswith("tiene conflictos con") for r in result.reasons):
+            return False
+        h = self.hermes_for(lane.board)
+        body = (f"CAMBIOS (integrador): el PR #{number} tiene conflictos con {lane.base}. En tu lane ejecuta "
+                f"`git fetch origin {lane.base}` y `git merge origin/{lane.base}`, resuelve los conflictos, "
+                "comprueba los tests y haz push de tu rama.\n" + "\n".join(f"- {d}" for d in result.detail[:5]))
+        if not h.comment(tid, body[:3000], author=REVIEW_AUTHOR) or not h.reopen_review(tid):
+            log.warning("%s: no se pudo devolver al carril el PR #%s con conflicto", tid, number)
+            return False
+        log.info("%s: PR #%s con conflicto con %s: devuelta al carril %s", tid, number, lane.base, lane.name)
+        return True
 
     def _pr_view(self, slug: str, number: int) -> dict | None:
         cp = self._gh("pr", "view", str(number), "--repo", slug, "--json",
@@ -1014,7 +1037,16 @@ class Integrator:
         args = ["pr", "merge", str(number), "--repo", slug, "--squash", "--match-head-commit", rec["head_sha"]]
         if pr["headRefName"] == f"lane/{tid}" and not pr.get("isCrossRepository"):
             args.append("--delete-branch")  # rama del runner, del mismo repo, y gh corre fuera de cualquier clon
+        log.info("%s: fusionando PR #%s (%s) sobre %s @ %s", tid, number, rec["head_sha"][:12], lane.base,
+                 (rec.get("base_sha") or "?")[:12])
         cp = self._gh(*args, timeout=180)
+        # "Base branch was modified": otro PR se fusionó entre medias; con espera, el reintento suele pasar.
+        for wait in MERGE_RETRY_WAITS:
+            if cp.returncode == 0 or "base branch was modified" not in (cp.stderr or "").lower():
+                break
+            log.info("%s: base modificada al fusionar PR #%s; reintento en %ss", tid, number, wait)
+            self._sleep(wait)
+            cp = self._gh(*args, timeout=180)
         if cp.returncode != 0:
             log.warning("%s: gh pr merge falló: %s", tid, (cp.stderr or "").strip()[:300])
             after = self._pr_view(slug, number) or {}
@@ -1232,6 +1264,14 @@ class Integrator:
         return out
 
     def _tip_problem(self, lane, policy: Policy, tid: str, sha: str, tip: str) -> str | None:
+        problem = self._tip_problem_raw(lane, policy, tid, sha, tip)
+        if problem:  # cada decisión de desplegar/no desplegar queda en runner.log (30-09)
+            log.warning("%s: despliegue de %s rechazado: %s", tid, lane.name, problem)
+        else:
+            log.info("%s: despliegue de %s permitido sobre %s", tid, lane.name, (tip or "?")[:12])
+        return problem
+
+    def _tip_problem_raw(self, lane, policy: Policy, tid: str, sha: str, tip: str) -> str | None:
         """Por qué NO desplegar la punta de la base (o None). Antes el candado era "punta == esta fusión"; ahora se
         despliega lo último, así que se comprueba que no se cuele nada que tampoco se habría desplegado solo."""
         if not re.fullmatch(r"[0-9a-f]{40}", tip or ""):
@@ -1321,11 +1361,22 @@ class Integrator:
             try:
                 code, body = self._http_get(policy.health_url)
                 data = json.loads(body or "{}") if code == 200 else {}
-                if str(data.get(policy.health_commit_key) or "").lower() == sha.lower() \
-                        and data.get("status") == "healthy":
-                    self._comment(lane, tid, f"DESPLEGADO {sha} · /health healthy con commit_sha del merge")
-                    self._save(tid, status="deployed")
-                    self._edit(desk, lane, rec, where, "done", status_line(f"🚀 desplegado · {sha[:7]}", "health OK"))
+                served = str(data.get(policy.health_commit_key) or "").lower()
+                # Sirve el merge o un commit POSTERIOR que lo contiene (otro PR se fusionó justo después): el deploy
+                # sigue incluyendo este PR.
+                if data.get("status") == "healthy" and re.fullmatch(r"[0-9a-f]{40}", served) \
+                        and (served == sha.lower() or self._is_ancestor(lane, sha, served)):
+                    later = served != sha.lower()
+                    self._comment(lane, tid, f"DESPLEGADO {served if later else sha} · /health healthy con "
+                                  + ("un commit posterior que incluye el merge" if later else "commit_sha del merge"))
+                    self._save(tid, status="deployed", deployed_sha=served)
+                    # Los PR anteriores fusionados e incluidos en ese commit también están desplegados; el resumen
+                    # fijado se rehace en la siguiente pasada del integrador con el nuevo estado.
+                    also = self._mark_included(lane, tid, served, "(health)", desk)
+                    log.info("%s: MigraTeam /health confirma %s; desplegados también: %s", tid, served[:12], also)
+                    self._edit(desk, lane, rec, where, "done", status_line(
+                        f"🚀 desplegado · {served[:7]}", "health OK",
+                        ("también PR " + ", ".join(f"#{n}" for n in also)) if also else None))
                     return True
                 last = f"HTTP {code}" if code != 200 else f"sirve {str(data.get(policy.health_commit_key))[:7]}"
             except Exception as exc:
