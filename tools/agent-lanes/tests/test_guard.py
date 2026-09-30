@@ -39,6 +39,12 @@ def bash(cmd, db=None):
     "DATABASE_URL=postgresql://u@db.supabase.co/x alembic upgrade head",
     "echo x > .github/workflows/ci.yml",
     "cp a.yml .github/workflows/a.yml",
+    "git merge master",
+    "git merge lane/t_2",
+    "git merge",
+    "git merge -X theirs origin/develop",
+    "git merge -s ours origin/develop",
+    "git merge --allow-unrelated-histories origin/x",
 ])
 def test_blocks(cmd):
     assert bash(cmd), cmd
@@ -54,6 +60,10 @@ def test_blocks(cmd):
     "DATABASE_URL=sqlite:///local.db alembic upgrade head",
     "cat .github/workflows/ci.yml",
     "py -3.12 -m pytest tests -q",
+    "git fetch origin develop",
+    "git merge origin/develop",
+    "git merge --no-edit origin/feat/signal-core-v2",
+    "git merge --abort",
 ])
 def test_allows(cmd):
     assert bash(cmd) is None, cmd

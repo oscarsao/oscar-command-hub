@@ -53,6 +53,10 @@ defaults:
     - "Bash(git show:*)"
     - "Bash(git branch:*)"
     - "Bash(git rev-parse:*)"
+    # 30-09 (OK de Oscar): traer origin/<base> o la rama nombrada en la tarea a lane/<id>. guard.py solo deja
+    # `git merge origin/...` (y --abort/--continue); nunca merge de una rama local ni hacia master/develop.
+    - "Bash(git fetch:*)"
+    - "Bash(git merge:*)"
     - "Bash(git add:*)"
     - "Bash(git commit:*)"
     - "Bash(git push:*)"
@@ -144,7 +148,8 @@ lanes:
     test_cmd: ""
     role: roles/ops.md
     worktree_root: C:/Users/oscar/dev/_lanes/ops
-    dest_roots: [C:/Users/oscar]
+    # 30-09: + carpeta legal de la LLC en E: (destino que pidió Oscar para t_0d94921e; solo esa carpeta).
+    dest_roots: [C:/Users/oscar, "E:/02_Negocio_Pildora/LEGAL-LLC"]
     max_parallel: 1
     max_budget_usd: 2.0
     max_runtime_seconds: 3600

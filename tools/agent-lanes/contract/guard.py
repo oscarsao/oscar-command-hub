@@ -74,6 +74,22 @@ def _check_git_push(tokens: list[str], task: str | None = None) -> str | None:
     return None
 
 
+def _check_git_merge(tokens: list[str]) -> str | None:
+    """30-09 (OK de Oscar): el worker puede traer ramas REMOTAS a su lane (`git merge origin/<rama>`), abortar o
+    continuar. Nada de merges de ramas locales (p. ej. `git merge lane/otra` o `master`), ni -s/-X ours/theirs."""
+    if "git" not in tokens or "merge" not in tokens:
+        return None
+    args = tokens[tokens.index("merge") + 1:]
+    if any(a in ("--abort", "--continue", "--quit") for a in args):
+        return None
+    if any(a in ("-s", "-x") or a.startswith(("--strategy", "--allow-unrelated")) for a in args):
+        return "git merge con estrategia forzada prohibido para workers"
+    targets = [a for a in args if not a.startswith("-")]
+    if not targets or any(not t.startswith("origin/") for t in targets):
+        return "git merge solo de ramas remotas: `git merge origin/<rama>` (hacia tu lane, nunca al revés)"
+    return None
+
+
 def check_bash(command: str, env_db_url: str | None, task: str | None = None) -> str | None:
     for segment in SEGMENT_SPLIT.split(command):
         seg = segment.strip()
@@ -81,7 +97,7 @@ def check_bash(command: str, env_db_url: str | None, task: str | None = None) ->
             continue
         tokens = _tokens(seg)
         low = [t.lower() for t in tokens]
-        reason = _check_git_push(low, task)
+        reason = _check_git_push(low, task) or _check_git_merge(low)
         if reason:
             return reason
         if "gh" in low and "pr" in low and "merge" in low:
