@@ -77,3 +77,27 @@ def test_quiet_hours_hold_non_outage_but_let_real_outages_through(monitor):
     m.now = lambda: datetime(2026, 9, 30, 8, 5)
     m.flush_quiet()
     assert "RAM al 95%" in pushed[-1] and "Durante la noche" in pushed[-1]
+
+
+def test_recovery_reruns_brief_and_auditor_only_if_last_run_failed(monitor):
+    m, pushed = make(monitor)
+    calls = []
+
+    def fake_run(args):
+        calls.append(args)
+        if args[1] == "/Query":
+            code = "1" if args[3] == "Resumen diario Hermes" else "0"  # el brief falló, el auditor fue bien
+            return type("CP", (), {"stdout": f"TaskName: x\nLast Result:   {code}\n", "returncode": 0})()
+        return type("CP", (), {"stdout": "", "returncode": 0})()
+
+    m.run = fake_run
+    now = time.time()
+    for k in range(12):
+        m.note_runner_line(line(now - (11 - k) * 60))
+    m.check_list_failures()
+    assert not any(a[1] == "/Run" for a in calls)  # durante la caída no se relanza nada
+    m._list_fail_last = now - 600
+    m.check_list_failures()
+    assert [a[3] for a in calls if a[1] == "/Run"] == ["Resumen diario Hermes"]
+    m.check_list_failures()  # ya recuperado: no se repite
+    assert len([a for a in calls if a[1] == "/Run"]) == 1

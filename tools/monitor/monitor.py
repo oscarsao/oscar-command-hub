@@ -54,7 +54,8 @@ QUIET_START, QUIET_END = 23, 8
 OUTAGE_KEYS = ("runner-dead", "gw-dead", "health-", "list-fail")
 LIST_FAIL = "no se pudieron listar tareas"
 LIST_FAIL_AFTER = 600  # s de fallos seguidos listando tareas (hermes/WinError) antes de abrir ALTA
-LIST_FAIL_GAP = 240    # s sin fallos nuevos = recuperado (el runner lista cada ~60 s)
+RETRY_TASKS = ("Resumen diario Hermes", "Auditor diario carriles")  # tareas programadas a relanzar si fallaron
+LIST_FAIL_GAP = 240   # s sin fallos nuevos = recuperado (el runner lista cada ~60 s)
 
 
 def now_s() -> str:
@@ -122,6 +123,9 @@ class Monitor:
         self.now = datetime.now  # inyectable en tests
         self._quiet_pending: list[str] = []
         self._list_fail_first = self._list_fail_last = 0.0
+        self._list_fail_was_active = False
+        self.run = lambda args: subprocess.run(args, capture_output=True, text=True, timeout=30,
+                                               creationflags=NO_WINDOW)  # inyectable en tests
         self.cpu_hist: deque[float] = deque(maxlen=5)
         self.lanes_text, self.lanes_at = "(cargando…)", 0.0
         self.health: dict[str, str] = {}
@@ -191,11 +195,34 @@ class Monitor:
         streak = self._list_fail_last - self._list_fail_first
         active = bool(self._list_fail_first) and time.time() - self._list_fail_last <= LIST_FAIL_GAP \
             and streak >= LIST_FAIL_AFTER
+        if self._list_fail_was_active and not active:
+            self.rerun_failed_jobs()  # recuperado: el brief/auditor de esas horas pudieron fallar por lo mismo
+        self._list_fail_was_active = active
         self.condition("list-fail", active,
                        "El runner está vivo pero lleva más de 10 min sin poder listar tareas (falla `hermes`): no "
                        "arranca nada.",
                        "mira las últimas líneas de agent-lanes/.state/runner.log; suele ser `hermes` caído o sin "
                        "acceso a su base de datos. /salud te dice el estado.", min_hits=1, every=3600)
+
+    def rerun_failed_jobs(self) -> list[str]:
+        """Al cerrarse list-fail: relanza (tarea programada ya existente) el brief y el auditor cuyo último resultado
+        fue distinto de 0. Devuelve los relanzados. `self.run` es inyectable en tests."""
+        rerun = []
+        for task in RETRY_TASKS:
+            try:
+                cp = self.run(["schtasks", "/Query", "/TN", task, "/V", "/FO", "LIST"])
+                m = re.search(r"^\s*(?:Last Result|Último resultado|Resultado de la última ejecución)\s*:\s*(-?\d+)",
+                              cp.stdout or "", re.M | re.I)
+                if not m or int(m.group(1)) == 0:
+                    continue
+                if self.run(["schtasks", "/Run", "/TN", task]).returncode == 0:
+                    rerun.append(task)
+            except Exception:
+                continue
+        if rerun:
+            self.alert("MEDIA", "Listado de tareas recuperado: relanzado " + " y ".join(f"«{t}»" for t in rerun)
+                       + " porque su última ejecución había fallado.", "rerun-jobs", every=0)
+        return rerun
 
     # --- PC -------------------------------------------------------------------------------------------
     def pc(self) -> Panel:
