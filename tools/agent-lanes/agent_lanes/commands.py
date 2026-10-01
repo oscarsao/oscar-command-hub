@@ -56,7 +56,8 @@ TASK_ID_RE = re.compile(r"^t_[0-9a-f]{8}$")
 STATUS_TEXT = {"running": ("running", "en curso"), "ready": ("ready", "en cola"), "review": ("review", "en review"),
                "done": ("done", "terminada"), "blocked": ("blocked", "bloqueada"), "todo": ("todo", "pendiente"),
                "triage": ("triage", "en triage"), "archived": ("archived", "archivada")}
-MAX_CARDS = 20       # tarjetas por /decisiones o /aprobar (el resto se cuenta en la cabecera)
+TOP_DECISIONS = 5    # /decisiones muestra las 5 más importantes; el resto con [📋 Ver todas]
+MAX_CARDS = 20     # tarjetas por /decisiones o /aprobar (el resto se cuenta en la cabecera)
 CARD_TITLE_MAX = 60  # título de una tarjeta de decisión de Oscar en /decisiones
 EXTRA_BOARDS = ("default",)  # además de los tableros de los carriles: donde viven muchas tarjetas de Oscar
 READY_PER_LANE = 8   # tareas en cola listadas por carril en /tareas
@@ -304,11 +305,18 @@ class CommandCenter:
 
     # --- /decisiones ----------------------------------------------------------------------------------
 
-    def cmd_decisiones(self, where, args: str, brand: str | None) -> None:
+    def cmd_decisiones(self, where, args: str, brand: str | None, show_all: bool = False) -> None:
+        """Las TOP_DECISIONS más importantes, cada una en su mensaje con botones, y "N más · ver todas". Importancia
+        (decide Oscar): primero las que bloquean agentes (preguntas y 🧊 atascadas, la más antigua antes), luego las
+        tarjetas de decisión por antigüedad. Con ≤5 en total, o con `show_all`, la bandeja completa de siempre."""
         now = self._now()
         pendings = self.pending_decisions(brand)
         stuck = self.stuck_tasks(brand)
         cards, untagged = self.oscar_cards(brand)
+        total = len(group_pending(pendings)) + len(stuck) + len(cards)
+        if total > TOP_DECISIONS and not show_all:
+            self._top_decisions(where, pendings, stuck, cards, now, brand, total)
+            return
         scope = f" · {brand}" if brand else ""
         if not pendings and not stuck and not cards:
             if untagged:  # no son decisiones, pero que no se olviden
@@ -324,6 +332,25 @@ class CommandCenter:
             self._send(where, self.cards_text(cards, now, scope, untagged=untagged))
         elif untagged:
             self._send(where, self.untagged_line(untagged))
+
+    def _top_decisions(self, where, pendings: list, stuck: list, cards: list[dict], now: float, brand: str | None,
+                       total: int) -> None:
+        scope = f" · {brand}" if brand else ""
+        n_q = min(len(group_pending(pendings)), TOP_DECISIONS)
+        n_s = min(len(stuck), TOP_DECISIONS - n_q)
+        n_c = TOP_DECISIONS - n_q - n_s
+        if n_q:
+            self._agent_questions(where, pendings, now, scope, limit=n_q)
+        if n_s:
+            self._stuck_section(where, stuck[:n_s], now, scope)
+        for c in cards[:n_c]:
+            t = c["task"]
+            url = card_url(self.base_url, c["board"], t["id"])
+            ref = f'<a href="{html.escape(url, quote=True)}">{html.escape(t["id"])}</a>' if url else f"<code>{html.escape(t['id'])}</code>"
+            self._send(where, f"📌 {ref} · {html.escape(truncate(t.get('title'), CARD_TITLE_MAX))} · "
+                              f"hace {hours_ago(c['since'], now)} h")
+        self._send(where, f"➕ {total - TOP_DECISIONS} más · ver todas", html=False,
+                   markup=self.desk.see_all_markup(brand))
 
     def _stuck_section(self, where, stuck: list, now: float, scope: str) -> None:
         """🧊 Atascadas: cabecera + una tarjeta por tarea con [🔄 Reintentar] [🗄 Aparcar]."""
@@ -388,8 +415,9 @@ class CommandCenter:
             pending=lambda: (len(self.pending_decisions()), len(self.stuck_tasks()), len(self.decision_cards())),
             now=now)
 
-    def _agent_questions(self, where, pendings: list, now: float, scope: str) -> None:
-        """Preguntas de los agentes (tareas de carril en needs_input): cabecera + una tarjeta con botones por tarea."""
+    def _agent_questions(self, where, pendings: list, now: float, scope: str, limit: int = MAX_CARDS) -> None:
+        """Preguntas de los agentes (tareas de carril en needs_input): cabecera + una tarjeta con botones por tarea.
+        `limit`: tarjetas que se muestran (el "aceptar todo" de la cabecera sigue cubriendo todas las pendientes)."""
         groups = group_pending(pendings)
         eligible = [p for p in pendings if fully_recommended(pending_of(p))]
         head = (f"❓ {_plural(len(pendings), 'decisión', 'decisiones')} · la más antigua hace "
@@ -406,10 +434,10 @@ class CommandCenter:
                                                   for p in pendings])
         else:
             head += "\nNinguna tiene opción recomendada: decide en cada tarjeta"
-        if len(groups) > MAX_CARDS:
+        if limit >= MAX_CARDS and len(groups) > MAX_CARDS:
             head += f"\nMuestro {MAX_CARDS} tarjetas; el resto, en el panel"
         self._send(where, head, html=False, markup=markup)
-        for group in groups[:MAX_CARDS]:
+        for group in groups[:limit]:
             if len(group) == 1:
                 self._decision_card(where, group[0], now)
             else:
