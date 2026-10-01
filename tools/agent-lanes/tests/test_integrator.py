@@ -298,7 +298,7 @@ def test_real_lanes_yaml_policies():
     assert s.policies["claude-migrateam"].alembic_versions == "backend/alembic/versions/"
     assert "supabase/migrations/" in s.policies["claude-oscarhq"].manual_migrations
     assert s.deploy_timeout_seconds == 900
-    assert "claude-scraper" not in s.policies  # solo carriles con política explícita
+    assert "claude-nextjobs" not in s.policies  # solo carriles con política explícita
 
 
 def test_without_enabled_it_does_nothing(tmp_path):

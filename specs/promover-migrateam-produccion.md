@@ -1,6 +1,6 @@
 # Spec-Lite · Producción desde Telegram (Promover MigraTeam, Scraper, 🚀 Oscar HQ)
 
-Tarea t_bc181313 · carril claude-hub · aprobado por Oscar el 01-10 · **estado: pendiente de OK de esta spec**.
+Tarea t_bc181313 · carril claude-hub · aprobado por Oscar el 01-10 · **estado: aprobada por Oscar el 01-10 e implementada** (1: alembic_version vía /health de producción; 2: develop → master directo; 3: 3 PR separados; 4: 30 min por paso, 2 h máximo).
 
 Por qué es spec y no código: son 3 funcionalidades que mueven producción real (merge a master, Railway del Scraper,
 `railway up` de Oscar HQ), con un flujo de doble confirmación y un modelo de seguridad nuevo. Es un Pitch de varios

@@ -24,6 +24,7 @@ from agent_lanes.git_ops import GitOps, github_slug_problem
 from agent_lanes.hermes import HermesCLI
 from agent_lanes.integration import IntegrationRoute
 from agent_lanes.integrator import build_integrator, load_integrator_settings
+from agent_lanes.promote import Promoter, load_promote_configs
 from agent_lanes.review import ClaudeReviewer, ReviewRunner, sweep_done
 from agent_lanes.notices import LinkBuilder, MessageStore
 from agent_lanes.ops import OpsWorkspace, verify_ops
@@ -145,6 +146,11 @@ def main(argv: list[str] | None = None) -> int:
         if decisions:
             decisions.integrator = integrator
         log.info("integrador activo: %s", list(integrator.settings.policies))
+        if decisions and notify:  # /promover y [🚀 Promover a producción]: sección `promote:` de lanes.yaml
+            configs = load_promote_configs()
+            if configs:
+                decisions.promoter = Promoter(configs, notifier=notify, desk=decisions)
+                log.info("promoción a producción activa: %s", list(configs))
     service = Service(runners, max_workers=args.max_workers or settings["max_workers"], busy_path=drain.BUSY_FILE)
     interval = args.interval or settings["interval_seconds"]
     log.info("runner: carriles=%s max_workers=%s interval=%ss", list(selected), service.max_workers, interval)
