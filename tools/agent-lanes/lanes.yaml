@@ -225,6 +225,7 @@ integrator:
       deploy: railway_up
       risk: manual                  # 🟠 cabecera de la ficha: deploy manual con botón
       risk_label: OSCAR HQ
+      batch: daily                  # lote diario (agent_lanes/batch.py): un solo botón [🔀 Fusionar lote] a las 08:30 o con /lote oscarhq
       manual_migrations: [supabase/migrations/]
       # Infraestructura de arranque/deploy: se puede fusionar, pero sin botón de deploy (lo revisa Oscar).
       sensitive_paths: [railway.json, railway.toml, nixpacks.toml, Procfile, Dockerfile, .railwayignore, requirements.txt, .github/]
@@ -239,6 +240,7 @@ integrator:
       # Con migración de Alembic no hay botón. Se verifica con GET /health de staging hasta que commit_sha sea el del merge.
       deploy: on_merge
       risk: staging                 # 🟢 develop = staging. Un on_merge sin `risk` se trata como 🔴 PRODUCCIÓN.
+      batch: daily                  # lote diario: un solo botón [🔀 Fusionar lote] a las 08:30 o con /lote migrateam
       merge_label: "🔀 Fusionar en develop (despliega staging)"
       merge_warning: "⚠️ Fusionar despliega STAGING (develop), no producción; a master solo por release/<fecha>"
       alembic_versions: backend/alembic/versions/
