@@ -550,7 +550,7 @@ class CommandCenter:
             return
         self._send(where, f"Preparando la promoción de {key}… compruebo el PR, los checks y producción (solo lectura).",
                    html=False)
-        dest = {"chat_id": where.get("chat_id"), "thread_id": where.get("thread_id")}
+        dest = {"chat_id": where[0], "thread_id": where[1]}
         self._spawn(lambda: promoter.start(key, dest))
 
     def _spawn(self, fn: Callable[[], None]) -> None:  # aparte para que los tests lo ejecuten en línea

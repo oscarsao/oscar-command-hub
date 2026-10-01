@@ -404,7 +404,16 @@ class Promoter:
 
     def _second_confirmation(self, cfg: PromoteConfig, st: dict, where: dict) -> None:
         pid = st["id"]
-        mig = st.get("migrations") or []
+        fresh = self._migrations(cfg, st["head"])  # producción pudo moverse desde el resumen
+        if fresh.get("problem") or fresh.get("pending") != (st.get("migrations") or []):
+            self._save(pid, status="stale")
+            self._unbutton(st, "⚠️ Las migraciones cambiaron desde el resumen: esta confirmación ya no vale.")
+            self._log(pid, "PARADA: la lista de migraciones cambió antes del último paso")
+            self._send(where, "⛔ Las migraciones pendientes han cambiado desde el resumen"
+                              + (f" ({fresh['problem']})" if fresh.get("problem") else "")
+                              + ". No se ha tocado producción. Vuelve a lanzar /promover migrateam.")
+            return
+        mig = fresh["pending"]
         text = [f"🚀 ÚLTIMO PASO · promover {cfg.key.upper()} a producción (PR #{st['pr']})",
                 f"Se fusionará {cfg.head} en {cfg.base} sin bypass y Railway/Vercel desplegarán solos."]
         if mig:

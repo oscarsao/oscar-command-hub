@@ -224,6 +224,16 @@ def test_head_change_after_summary_invalidates(tmp_path):
     assert "cambió desde el resumen" in tg.last["text"] and not gh.merge_args()
 
 
+@pytest.mark.parametrize("moved", ["r2", "zzz"])
+def test_migrations_changing_before_last_step_stop_the_flow(tmp_path, moved):
+    p, gh, tg, desk, *_ = to_review(tmp_path)
+    review = tg.last["markup"]
+    p._prod_health = lambda cfg: {"status": "healthy", "alembic_version": moved}  # producción se movió
+    click(p, desk, review)
+    assert "migraciones pendientes han cambiado" in tg.last["text"] and tg.last["markup"] is None
+    assert "ÚLTIMO PASO" not in tg.last["text"] and not gh.merge_args()
+
+
 def test_replayed_or_skipped_step_is_rejected(tmp_path):
     p, gh, tg, desk, *_ = to_review(tmp_path)
     review_markup = tg.last["markup"]

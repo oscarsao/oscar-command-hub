@@ -68,3 +68,12 @@ reutilizado / con head cambiado; checks rojos; `alembic_version` distinto; con y
 
 ## Fuera de alcance
 Activar `INTEGRATOR_LANES`, tocar `.env`, reiniciar el runner, cambios en el repo MigraTeam, hooks del contrato.
+
+## Revisión de seguridad (security-auditor, 01-10)
+Sin P0 ni secretos. Respuestas a las 4 preguntas:
+1. **Solo Oscar pulsa**: `owner_id` se comprueba antes de leer el token (`decisions.py`, botones; `commands.py`, comandos); tokens aleatorios y de un solo uso.
+2. **Callbacks firmados**: `promo_review/confirm/cancel` llevan HMAC (clave aleatoria en `.state/promote/`) verificada con `compare_digest`. `promo_start` del 🚦 solo lleva token de un solo uso + owner (solo prepara el PR, no fusiona).
+3. **No se ejecuta código del PR**: migraciones leídas con `gh api` y analizadas con `ast`; SHA y nombres validados con regex; `gh` siempre con lista de argumentos, sin shell.
+4. **Caducidad**: 30 min por paso, 2 h de flujo; si el PR cambia o las migraciones cambian antes del último paso, se invalida (`stale`).
+
+Corregido en esta ronda: `/promover` fallaba (`where` es tupla, no dict). Riesgos residuales aceptados: producción puede moverse entre "Sí, promover" y el merge (ventana ≤30 min; GitHub sigue aplicando la protección de rama); dos `/promover` seguidos abren flujos paralelos; checks homónimos en el rollup.

@@ -484,6 +484,16 @@ class Integrator:
             rows[-1] = token_markup["inline_keyboard"][0]
         return {"inline_keyboard": rows}
 
+    def reissue_promote_markup(self) -> str | None:
+        """Repone el botón 🚀 del fijado tras pulsarlo (token de un solo uso). Nunca lanza."""
+        if not self.pinned or self.dry_run:
+            return None
+        try:
+            return self.pinned.reissue(self._promote_markup)
+        except Exception as exc:
+            log.warning("no se pudo reponer el botón 🚀: %s", exc)
+            return None
+
     def refresh_summary(self) -> str | None:
         """Edita el mensaje fijado del tema de Integración con lo pendiente (solo si cambia). Nunca lanza."""
         # Sin una pasada hecha (_last_pass None: arranque, o la CLI del coordinador) _seen está vacío y el fijado

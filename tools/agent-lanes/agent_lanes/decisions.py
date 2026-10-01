@@ -444,6 +444,9 @@ class DecisionDesk:
                 if not self.promoter:
                     return False
                 key = str(rec.get("key") or "")
+                reissue = getattr(self.integrator, "reissue_promote_markup", None)
+                if reissue:  # el token del fijado ya está gastado: se repone para poder pulsar de nuevo
+                    reissue()
                 self.promoter.start(key, where)
                 return True
             return bool(self.promoter) and self.promoter.on_button(action, rec, where, self)
