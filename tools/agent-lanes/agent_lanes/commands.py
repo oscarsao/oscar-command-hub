@@ -27,6 +27,7 @@ from __future__ import annotations
 import html
 import logging
 import re
+import threading
 import time
 from typing import Callable
 from urllib.parse import urlsplit
@@ -46,6 +47,7 @@ COMMANDS = (
     ("aprobar", "Tareas listas para integrar"),
     ("tareas", "En curso y en cola por carril: /tareas [migrateam|pildora|nextjobs]"),
     ("tarea", "Ficha de una tarea con sus botones: /tarea t_xxx"),
+    ("lote", "Montar ya el lote de un proyecto: /lote migrateam|oscarhq"),
     ("salud", "Estado de runner, Hermes, servicios, MigraTeam y equipo"),
 )
 COMMAND_SCOPES = ("default", "all_private_chats", "all_group_chats")
@@ -478,6 +480,36 @@ class CommandCenter:
             self._mirror(p.tid, self._send(where, text, markup=markup), markup)
 
     # --- /tareas --------------------------------------------------------------------------------------
+
+    def cmd_lote(self, where, args: str, brand: str | None) -> None:
+        """/lote <marca>: monta ya el lote de las ramas aprobadas (lo mismo que hace solo a la hora del lote)."""
+        batches = getattr(getattr(self.desk, "integrator", None), "batches", None)
+        brands = batches.brands() if batches else []
+        if not brands:
+            self._send(where, "El lote diario no está activo (integrador apagado o ningún carril con batch).",
+                       html=False)
+            return
+        arg = args.strip().lower() or (brand or "").lower() or (brands[0] if len(brands) == 1 else "")
+        found = batches.resolve(arg) if arg else None
+        if not found:
+            self._send(where, "Dime de qué proyecto: /lote " + "|".join(brands), html=False)
+            return
+        lane, policy = found
+        self._send(where, f"Montando el lote de {arg}… pasa los gates y los tests, puede tardar unos minutos.",
+                   html=False)
+
+        def run() -> None:
+            try:
+                text = batches.assemble(lane, policy, manual=True)
+            except Exception as exc:
+                log.warning("/lote %s falló: %s", arg, exc)
+                text = "No pude montar el lote; detalle en el log."
+            self._send(where, text, html=False)
+
+        self._spawn(run)
+
+    def _spawn(self, fn: Callable[[], None]) -> None:  # aparte para que los tests lo ejecuten en línea
+        threading.Thread(target=fn, name="lote", daemon=True).start()
 
     def cmd_tareas(self, where, args: str, brand: str | None) -> None:
         if args:

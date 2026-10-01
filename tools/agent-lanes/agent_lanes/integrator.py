@@ -72,7 +72,8 @@ INTEGRATED_PREFIX = "INTEGRADO"
 INT_MERGE, INT_DEPLOY, INT_MERGE_DEPLOY = "int_merge", "int_deploy", "int_merge_deploy"
 INT_MIGRATION_APPLIED = "int_mig_applied"  # ✅ Migración aplicada (ficha fusionada con migración pendiente)
 INT_APPLY = "int_apply"  # claude-hub: [🔁 Aplicar (reinicio ordenado)] tras fusionar
-INT_ACTIONS = (INT_MERGE, INT_DEPLOY, INT_MERGE_DEPLOY, INT_MIGRATION_APPLIED, INT_APPLY)
+INT_BATCH_MERGE = "int_batch_merge"  # [🔀 Fusionar lote] (política con `batch: daily`, ver batch.py)
+INT_ACTIONS = (INT_MERGE, INT_DEPLOY, INT_MERGE_DEPLOY, INT_MIGRATION_APPLIED, INT_APPLY, INT_BATCH_MERGE)
 MIGRATION_APPLIED_PREFIX = "MIGRACION-APLICADA"
 MIGRATION_KINDS = ("supabase", "alembic")  # "infra" no es una migración: no se da por aplicada con un botón
 MIGRATION_BUTTON = {"text": "✅ Migración aplicada", "action": INT_MIGRATION_APPLIED}
@@ -158,6 +159,13 @@ class Policy:
     risk_label: str = ""
     # Solo con deploy none: acción de [🔁 Aplicar] tras fusionar (restart_drain = reinicio ordenado del runner).
     apply: str = ""
+    # Lote diario (batch.py): `daily` = las ramas aprobadas se juntan en release/lote-<marca>-<fecha> y Oscar recibe un
+    # solo botón [🔀 Fusionar lote]. Vacío = PR a PR, como siempre.
+    batch: str = ""
+    batch_time: str = "08:30"                   # hora local de montaje automático
+    batch_brand: str = ""                       # nombre en la rama y en /lote <marca>; vacío = el carril sin `claude-`
+    batch_frontend_paths: tuple[str, ...] = ()  # si el lote toca estas rutas se ejecuta batch_frontend_cmd
+    batch_frontend_cmd: str = ""                # build/typecheck del frontend (en la raíz del worktree del lote)
 
 
 @dataclass(frozen=True)
@@ -196,6 +204,11 @@ def load_integrator_settings(path: Path | None = None, env: dict | None = None, 
         p = dict(p or {})
         p["manual_migrations"] = tuple(p.get("manual_migrations") or ())
         p["sensitive_paths"] = tuple(p.get("sensitive_paths") or ())
+        p["batch_frontend_paths"] = tuple(p.get("batch_frontend_paths") or ())
+        if p.get("batch") and p["batch"] != "daily":
+            raise ValueError(f"integrator.lanes.{name}.batch desconocido: {p['batch']}")
+        if p.get("batch_time") is not None and not re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", str(p["batch_time"])):
+            raise ValueError(f"integrator.lanes.{name}.batch_time debe ser HH:MM")
         if p.get("health_url") and not str(p["health_url"]).startswith("https://"):
             raise ValueError(f"integrator.lanes.{name}.health_url debe ser https://")
         policies[name] = Policy(lane=name, **{k: ("" if v is None else v) for k, v in p.items()})
@@ -350,6 +363,8 @@ class Integrator:
         self.pinned = (PinnedSummary(notifier, target, self.state_dir / "pinned.json")
                        if target and notifier and not dry_run else None)
         self._seen: list[tuple[object, Policy, str]] = []  # (carril, política, tarea) vistos en la última pasada
+        from .batch import BatchPlanner  # import tardío: batch usa constantes de este módulo
+        self.batches = BatchPlanner(self)  # lote diario: solo actúa en carriles con `batch: daily`
 
     # --- utilidades ----------------------------------------------------------------------------------
 
@@ -442,6 +457,10 @@ class Integrator:
                 if out:
                     results[task["id"]] = out
         self._seen = seen
+        try:
+            self.batches.run_due()
+        except Exception as exc:  # el lote nunca tumba la pasada PR a PR de los demás carriles
+            log.warning("integrador: lote diario falló: %s", exc)
         self.refresh_summary()
         return results
 
@@ -517,6 +536,8 @@ class Integrator:
         st = self._state(tid)
         if st.get("status") in ("integrated", "merged", "deployed"):
             return None
+        if policy.batch and st.get("status") == "batch_included":
+            return None  # ya va en un lote abierto: lo cierra su botón (o /lote lo libera)
         show = self.hermes_for(lane.board).show(tid)
         comments = show.get("comments") or []
         if any(is_integration_comment(c) for c in comments):
@@ -548,6 +569,10 @@ class Integrator:
                 self._publish_waiting(lane, task, number, url, waiting)
                 self._save(tid, status="waiting_deps", pr=number, pr_url=url, waiting=key, **about)
             return "waiting_deps"
+        if policy.batch:  # lote diario: sin ficha ni gates sueltos; el lote los pasa todos juntos (batch.py)
+            if not self.dry_run and (st.get("status") != "batch_pending" or st.get("head_sha") != pr["headRefOid"]):
+                self._save(tid, status="batch_pending", pr=number, pr_url=url, head_sha=pr["headRefOid"], **about)
+            return "dry-run:batch_pending" if self.dry_run else "batch_pending"
         if st.get("head_sha") == pr["headRefOid"] and st.get("status") in ("failed", "offered", "merging"):
             return None  # gates ya hechos sobre esta cabeza; se repiten al pulsar si la base se movió
         result = self.run_gates(lane, policy, tid, number, pr["headRefOid"])
@@ -689,6 +714,12 @@ class Integrator:
         rng = f"{res.base_sha}...{res.head_sha}"
         res.changed_files = (self._git(w, "diff", "--no-renames", "--name-only", rng).stdout or "").split()
 
+        self._diff_gates(w, lane, policy, res, rng)
+        self._migration_gates(wt, lane, policy, res)
+
+    def _diff_gates(self, w: str, lane, policy: Policy, res: GateResult, rng: str) -> None:
+        """Gates del diff (rutas vetadas, ejecutables, .env, secretos): los comparten el PR suelto y cada rama de un
+        lote (batch.py). `res.changed_files` ya está rellenado y `w` es un worktree con el diff accesible."""
         forbidden = [f for f in res.changed_files if any(f.startswith(p) for p in lane.forbidden_paths)]
         if forbidden:
             res.reasons.append(f"toca rutas vetadas del carril: {', '.join(forbidden[:5])}")
@@ -718,6 +749,9 @@ class Integrator:
         else:
             res.passed.append("sin secretos")
 
+    def _migration_gates(self, wt: Path, lane, policy: Policy, res: GateResult) -> None:
+        """Migraciones, infraestructura y test_cmd del carril sobre el PR ya fusionado en `wt`."""
+        w = str(wt)
         if policy.alembic_versions and any(f.startswith(policy.alembic_versions) for f in res.changed_files):
             heads, problems = alembic_heads(wt / policy.alembic_versions)
             if len(heads) != 1 or problems:
@@ -764,6 +798,8 @@ class Integrator:
     def _text(self, state: str, lane, rec: dict, status: str, bullets=None, *, phase: str | None = None,
               override: str | None = None) -> str:
         """Sin tema de Integración: el aviso de siempre. Con él: ficha con cabecera por riesgo (integration.py)."""
+        if rec.get("batch"):  # ficha de un lote: tabla de lo que incluye (con o sin tema de Integración)
+            return self.batches.ficha(lane, rec, state, status, phase=phase, override=override)
         links = self._links(lane, rec["task_id"], rec["pr_number"], rec["pr_url"])
         tree_of = getattr(self, "tree", None)  # deps.TreeReader que pone runner.py; None = sin árbol
         if not self.settings.integration_telegram:
@@ -917,6 +953,8 @@ class Integrator:
         lane = self.lanes.get(rec.get("lane"))
         if not policy or not lane:
             return False
+        if action == INT_BATCH_MERGE and policy.batch and rec.get("batch"):
+            return self.batches.on_merge_button(lane, policy, rec, where, desk)
         if action == INT_MERGE and policy.deploy != DEPLOY_ON_MERGE:
             return self._merge(lane, policy, rec, where, desk)
         if action == INT_MERGE_DEPLOY and policy.deploy == DEPLOY_ON_MERGE and not rec.get("migration"):
@@ -952,6 +990,9 @@ class Integrator:
             return True, f"{tid}: la migración ya constaba como aplicada ({st['migration_applied'].get('by')})"
         stamp = time.strftime("%Y-%m-%d %H:%M")
         self._save(tid, migration_applied={"by": author, "at": self._now()})
+        for other in st.get("batch_tids") or ():  # lote: "Migración aplicada" vale para todas sus ramas
+            if other != tid and TID_RE.fullmatch(other):
+                self._save(other, migration_applied={"by": author, "at": self._now()})
         if not self.dry_run and not self.hermes_for(lane.board).comment(
                 tid, f"{MIGRATION_APPLIED_PREFIX} {stamp} · {st['migration']} · PR #{st.get('pr', '?')} · "
                      f"marcada por {author}", author=author):
@@ -1064,6 +1105,11 @@ class Integrator:
                       + (" (fusionado fuera del integrador)" if outside else ""))
         self._save(tid, status="merged", merge_sha=sha)
         rec = {**rec, "merge_sha": sha}
+        return self._after_merge(lane, policy, rec, where, desk, sha)
+
+    def _after_merge(self, lane, policy: Policy, rec: dict, where: dict, desk, sha: str) -> bool:
+        """Lo que sigue a una fusión ya hecha (verificar el deploy, botón de deploy/aplicar o nada). Lo comparte la
+        fusión de un PR suelto y la de un lote (batch.py)."""
         short = sha[:7] or "?"
         if policy.deploy == DEPLOY_ON_MERGE:
             self._edit(desk, lane, rec, where, "running", status_line(
@@ -1505,6 +1551,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--dry-run", action="store_true", required=True)
     ap.add_argument("--lane", help="carril (con --pr)")
     ap.add_argument("--pr", type=int, help="gates de este PR sin mirar el kanban (requiere --lane)")
+    ap.add_argument("--batch", help="prueba en seco de un lote con estos PR, en orden: 12,15,18 (requiere --lane)")
     args = ap.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     lanes = load_lanes()
@@ -1513,6 +1560,9 @@ def main(argv: list[str] | None = None) -> int:
     links = LinkBuilder(load_telegram_settings()["kanban_base_url"])
     integ = Integrator(settings, lanes, hermes_for=lambda b: cache.setdefault(b, HermesCLI(b)), links=links,
                        dry_run=True)
+    if args.batch:
+        lane, policy = lanes[args.lane], settings.policies.get(args.lane) or Policy(lane=args.lane)
+        return integ.batches.dry_run(lane, policy, [int(n) for n in args.batch.split(",") if n.strip()])
     if args.pr:
         lane, policy = lanes[args.lane], settings.policies.get(args.lane) or Policy(lane=args.lane)
         pr = integ._pr_view(links.repo_slug(lane), args.pr)
