@@ -169,7 +169,7 @@ def test_register_commands_in_three_scopes_with_spanish_descriptions():
     assert register_commands(bot) == list(COMMAND_SCOPES)
     assert set(bot.commands) == {"default", "all_private_chats", "all_group_chats"}
     names = [c for c, _ in bot.commands["all_group_chats"]]
-    assert names == ["hoy", "decisiones", "aprobar", "tareas", "tarea", "lote", "promover", "salud"]
+    assert names == ["hoy", "decisiones", "aprobar", "tareas", "tarea", "lote", "promover", "salud", "ram"]
     assert all(d and len(d) <= 256 for _, d in bot.commands["default"])
 
 
@@ -180,6 +180,14 @@ def test_only_oscar_can_use_commands(tmp_path):
     command(desk, "/decisiones@pildora_carriles_bot", user=1234, chat=GESTION, thread=230)
     assert [m["text"] for m in bot.sent] == ["Solo Oscar"]
     assert h.calls == []
+
+
+def test_ram_command_replies_on_demand(tmp_path, monkeypatch):
+    from agent_lanes import health
+    monkeypatch.setattr(health, "ram_report", lambda *a, **k: "🧠 RAM 50 % (8,0/16,0 GB)\n• chrome: 3,0 GB")
+    cc, desk, bot, h, _ = center(tmp_path, {})
+    command(desk, "/ram")
+    assert [m["text"] for m in bot.sent] == ["🧠 RAM 50 % (8,0/16,0 GB)\n• chrome: 3,0 GB"]
 
 
 def test_non_command_text_still_reaches_force_reply_handling(tmp_path):

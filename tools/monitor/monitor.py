@@ -58,6 +58,26 @@ RETRY_TASKS = ("Resumen diario Hermes", "Auditor diario carriles")  # tareas pro
 LIST_FAIL_GAP = 240   # s sin fallos nuevos = recuperado (el runner lista cada ~60 s)
 
 
+RAM_REPORT_EVERY = 4 * 3600  # s entre informes de RAM al DM (antes: aviso repetido cada hora mientras RAM > 88 %)
+
+
+def ram_text(top: int = 5) -> str:
+    """RAM total y los `top` procesos que más usan (agrupados por nombre). Mismo formato que /ram del bot."""
+    vm = psutil.virtual_memory()
+    by_name: dict[str, int] = {}
+    for p in psutil.process_iter(["name", "memory_info"]):
+        try:
+            name = (p.info["name"] or "?").lower().removesuffix(".exe")
+            by_name[name] = by_name.get(name, 0) + (p.info["memory_info"].rss if p.info["memory_info"] else 0)
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+    flag = "⚠️ " if vm.percent >= 90 else ""
+    lines = [f"{flag}🧠 RAM {vm.percent:.0f} % ({vm.used / 2**30:.1f}/{vm.total / 2**30:.1f} GB)".replace(".", ",")]
+    lines += [f"• {n}: {r / 2**30:.1f} GB".replace(".", ",")
+              for n, r in sorted(by_name.items(), key=lambda kv: -kv[1])[:top]]
+    return "\n".join(lines)
+
+
 def now_s() -> str:
     return datetime.now().strftime("%H:%M:%S")
 
@@ -172,6 +192,27 @@ class Monitor:
                 return
             self.push(text)
 
+    def ram_report(self) -> None:
+        """Informe de RAM al DM cada RAM_REPORT_EVERY (4 h), con el top de procesos; es lo mismo que /ram. De noche
+        (silencio) se aplaza al primer ciclo de las 08:00. La hora del último envío se guarda para sobrevivir a reinicios."""
+        if not self.push:
+            return
+        h = self.now().hour
+        if h >= QUIET_START or h < QUIET_END:
+            return
+        stamp = STATE / "ram_report.ts"
+        try:
+            last = float(stamp.read_text().strip())
+        except (OSError, ValueError):
+            last = 0.0
+        if time.time() - last < RAM_REPORT_EVERY:
+            return
+        self.push(ram_text())
+        try:
+            stamp.write_text(str(time.time()))
+        except OSError:
+            pass
+
     def flush_quiet(self) -> None:
         """Pasadas las 08:00, un solo DM con lo que se calló por la noche."""
         if self._quiet_pending and QUIET_END <= self.now().hour < QUIET_START and self.push:
@@ -233,10 +274,9 @@ class Monitor:
         free_gb = disk.free / 2**30
         if len(self.cpu_hist) == self.cpu_hist.maxlen and min(self.cpu_hist) > 90:
             self.alert("ALTA", f"CPU sostenida >90% ({cpu:.0f}%)", "cpu")
-        self.condition("ram", vm.percent > 88,
-                       f"RAM al {vm.percent:.0f}% ({vm.used / 2**30:.1f}/{vm.total / 2**30:.1f} GB)",
-                       "cierra ventanas de Chrome/Edge o sesiones de Claude que no uses; si sigue, revisa el top de "
-                       "RAM del monitor.", min_hits=4, every=3600)
+        if vm.percent > 88:  # solo se ve en la ventana/alerts.log; al DM va el informe de cada 4 h y /ram
+            self.alert("MEDIA", f"RAM al {vm.percent:.0f}% ({vm.used / 2**30:.1f}/{vm.total / 2**30:.1f} GB)", "ram",
+                       every=3600)
         if free_gb < 10:
             self.alert("MEDIA", f"Disco C: solo {free_gb:.1f} GB libres", "disk", every=3600)
 
@@ -546,6 +586,10 @@ def run_headless(interval: float = 15.0) -> int:
             except Exception as exc:  # una comprobación rota no para las demás
                 mon.alert("MEDIA", f"monitor: fallo en {step.__name__}: {exc}", f"self-{step.__name__}", every=3600)
         mon.flush_quiet()
+        try:
+            mon.ram_report()
+        except Exception as exc:
+            mon.alert("MEDIA", f"monitor: fallo en ram_report: {exc}", "self-ram_report", every=3600)
         time.sleep(interval)
 
 

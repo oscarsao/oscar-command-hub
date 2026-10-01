@@ -11,6 +11,7 @@ también como /cmd@<bot>. Un /cmd@otro_bot (p. ej. el de Hermes) se ignora.
     /tarea t_xxx         ficha de la tarea con los botones de su estado
     /salud               runner y carriles, gateway de Hermes, servicios y alertas (del monitor), develop↔master de
                          MigraTeam, RAM/CPU y decisiones pendientes; sin peticiones HTTP (agent_lanes/health.py)
+    /ram                 RAM ahora y los 5 procesos que más gastan (el monitor lo manda solo al DM cada 4 h)
 
 /decisiones también lista las 🧊 atascadas (tareas de carril que Hermes pasó a triage por bloquearse dos veces por
 lo mismo) con [🔄 Reintentar] (las devuelve a ready sin reescribirlas) y cuenta las tarjetas a nombre de Oscar sin
@@ -50,6 +51,7 @@ COMMANDS = (
     ("lote", "Montar ya el lote de un proyecto: /lote migrateam|oscarhq"),
     ("promover", "Promover MigraTeam a producción (doble confirmación): /promover migrateam"),
     ("salud", "Estado de runner, Hermes, servicios, MigraTeam y equipo"),
+    ("ram", "Consumo de RAM ahora y qué procesos más gastan"),
 )
 COMMAND_SCOPES = ("default", "all_private_chats", "all_group_chats")
 HELP_ALIASES = ("start", "ayuda", "help")
@@ -398,6 +400,11 @@ class CommandCenter:
 
     def cmd_salud(self, where, args: str, brand: str | None) -> None:
         self._send(where, self._health() if self._health is not None else self.health_text())
+
+    def cmd_ram(self, where, args: str, brand: str | None) -> None:
+        """RAM bajo demanda; el monitor manda el mismo informe al DM cada 4 h (ya no hay aviso continuo)."""
+        from . import health
+        self._send(where, health.ram_report(), html=False)
 
     def health_text(self) -> str:
         """Todo local (health.py): .state, `hermes kanban list`, ficheros del monitor y git sin fetch."""

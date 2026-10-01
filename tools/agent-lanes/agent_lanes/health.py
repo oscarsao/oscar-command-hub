@@ -147,6 +147,33 @@ def machine_line(psutil_mod=None) -> str:
         return NA
 
 
+def ram_report(psutil_mod=None, top: int = 5) -> str:
+    """/ram: RAM total y los `top` procesos que más usan (agrupados por nombre). Mismo formato que el informe de
+    cada 4 h del monitor."""
+    try:
+        ps = psutil_mod
+        if ps is None:
+            import psutil as ps  # noqa: PLC0415 - opcional
+        mem = ps.virtual_memory()
+        by_name: dict[str, int] = {}
+        for p in ps.process_iter(["name", "memory_info"]):
+            try:
+                name = (p.info["name"] or "?").lower().removesuffix(".exe")
+                by_name[name] = by_name.get(name, 0) + (p.info["memory_info"].rss if p.info["memory_info"] else 0)
+            except Exception:  # noqa: BLE001 - proceso que desaparece o sin permiso
+                continue
+        gb = 1024 ** 3
+        flag = "⚠️ " if mem.percent >= 90 else ""
+        lines = [f"{flag}🧠 RAM {mem.percent:.0f} % ({mem.used / gb:.1f}/{mem.total / gb:.1f} GB)"]
+        lines += [f"• {n}: {r / gb:.1f} GB" for n, r in sorted(by_name.items(), key=lambda kv: -kv[1])[:top]]
+        return "\n".join(lines).replace(".", ",")
+    except ImportError:
+        return f"RAM {NA} (falta psutil)"
+    except Exception as exc:  # noqa: BLE001
+        log.info("ram: psutil falló: %s", exc)
+        return f"RAM {NA}"
+
+
 # --- mensaje -------------------------------------------------------------------------------------------
 
 def lane_line(row: dict) -> str:
