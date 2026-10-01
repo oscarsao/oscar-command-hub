@@ -47,6 +47,7 @@ PR_FOOTER = "🤖 Generated with [Claude Code](https://claude.com/claude-code)"
 APPROVE, CHANGES, PARK, RETRY, OPTION, OTHER = "approve", "changes", "park", "retry", "option", "other"
 EXPLAIN = "explain"        # 💬 Explícame más: responde con una explicación llana; no consume el teclado
 ACCEPT_ALL = "accept_all"  # cabecera de /decisiones: aplica la opción recomendada en todas las que la tienen
+HAZLO = "hazlo"            # /hazlo con duda: el botón elige el carril donde crear la tarea
 REPLY_ACTIONS = (CHANGES, OTHER)  # piden texto a Oscar con force_reply
 EXPLAIN_BUTTON = {"text": "💬 Explícame más", "action": EXPLAIN}
 DEFAULT_OPTION_LABELS = ("✅ Sí, adelante", "❌ No")  # botones de una pregunta sin opciones (DEFAULT_OPTIONS)
@@ -421,6 +422,8 @@ class DecisionDesk:
         action = button["action"]
         if action.startswith("int_"):  # 🔀 Fusionar / 🚀 Desplegar: solo con el Integrador activo
             return bool(self.integrator) and self.integrator.on_button(action, rec, where, self)
+        if action == HAZLO:  # /hazlo con duda: el botón elige carril
+            return bool(self.commands) and self.commands.hazlo_choice(rec, button, where)
         if action == ACCEPT_ALL:
             return self._accept_all(rec, where)
         if rec.get("group"):

@@ -9,6 +9,9 @@ también como /cmd@<bot>. Un /cmd@otro_bot (p. ej. el de Hermes) se ignora.
     /aprobar             tareas listas para integrar con [✅ Aprobar] [🔁 Pedir cambios] [🗄 Aparcar]
     /tareas [marca]      en curso y en cola por carril (migrateam | pildora | nextjobs), un solo mensaje
     /tarea t_xxx         ficha de la tarea con los botones de su estado
+    /hazlo <texto>       crea una tarea pequeña (prioridad alta, tope 15 min): marca y carril salen del texto; con
+                         duda, botones para elegir carril. El resultado vuelve a donde lo pediste
+    /estado [marca]      en un solo mensaje: en curso, lo que espera a Oscar y lo pendiente de desplegar
     /salud               runner y carriles, gateway de Hermes, servicios y alertas (del monitor), develop↔master de
                          MigraTeam, RAM/CPU y decisiones pendientes; sin peticiones HTTP (agent_lanes/health.py)
 
@@ -24,6 +27,7 @@ se eligen en el menú (setMyCommands). Sin sufijo, un /hoy puede ir a parar solo
 """
 from __future__ import annotations
 
+import hashlib
 import html
 import logging
 import re
@@ -31,7 +35,7 @@ import time
 from typing import Callable
 from urllib.parse import urlsplit
 
-from .decisions import OWNER_TELEGRAM_ID
+from .decisions import HAZLO, OWNER_TELEGRAM_ID
 from .deps import (ShowCache, child_bucket, dependency_order, family, pending_parents, tree_lines,
                    waiting_line)
 from .notices import (BOARD_BRANDS, BRANDS, DECISION_CARD_STATUSES, OSCAR_ASSIGNEE, TEXT_MAX, card_url,
@@ -46,6 +50,8 @@ COMMANDS = (
     ("aprobar", "Tareas listas para integrar"),
     ("tareas", "En curso y en cola por carril: /tareas [migrateam|pildora|nextjobs]"),
     ("tarea", "Ficha de una tarea con sus botones: /tarea t_xxx"),
+    ("hazlo", "Crea una tarea pequeña (carril según el texto): /hazlo <texto>"),
+    ("estado", "En curso, esperando a Oscar y pendiente de desplegar: /estado [marca]"),
     ("salud", "Estado de runner, Hermes, servicios, MigraTeam y equipo"),
 )
 COMMAND_SCOPES = ("default", "all_private_chats", "all_group_chats")
@@ -59,7 +65,20 @@ STATUS_TEXT = {"running": ("running", "en curso"), "ready": ("ready", "en cola")
 MAX_CARDS = 20       # tarjetas por /decisiones o /aprobar (el resto se cuenta en la cabecera)
 CARD_TITLE_MAX = 60  # título de una tarjeta de decisión de Oscar en /decisiones
 EXTRA_BOARDS = ("default",)  # además de los tableros de los carriles: donde viven muchas tarjetas de Oscar
-READY_PER_LANE = 8   # tareas en cola listadas por carril en /tareas
+HAZLO_PRIORITY = 10  # prioridad alta (kanban: más alto = antes)
+HAZLO_MINUTES = 15
+HAZLO_TITLE_MAX = 70
+# Palabras (con límite de palabra, en minúsculas) que delatan el carril de un /hazlo. "píldora" a secas no decide: hay
+# dos carriles de esa marca (oscarhq y scraper).
+LANE_HINTS = {
+    "claude-migrateam": ("migrateam", "migra team"),
+    "claude-oscarhq": ("oscar hq", "oscarhq", "oscar-hq", "crewai", "crews"),
+    "claude-scraper": ("scraper", "icp", "signal engine"),
+    "claude-nextjobs": ("nextjobs", "next jobs", "autoapply"),
+    "claude-hub": ("command hub", "command-hub", "agent-lanes", "carriles", "runner", "bot de trabajos", "monitor",
+                   "hermes"),
+}
+READY_PER_LANE = 8  # tareas en cola listadas por carril en /tareas
 
 _CMD_RE = re.compile(r"^/([A-Za-z0-9_]+)(?:@([A-Za-z0-9_]+))?(?:\s+(.*))?$", re.S)
 
@@ -211,7 +230,8 @@ class CommandCenter:
 
     @staticmethod
     def help_text() -> str:
-        return "Comandos del bot de trabajos:\n" + "\n".join(f"/{c} · {d}" for c, d in COMMANDS)
+        return ("Comandos del bot de trabajos:\n" + "\n".join(f"/{c} · {d}" for c, d in COMMANDS)
+                + "\n\nCon /hazlo la tarea se crea ya, con prioridad alta y tope de 15 minutos; te aviso al terminar.")
 
     # --- datos ----------------------------------------------------------------------------------------
 
@@ -363,6 +383,125 @@ class CommandCenter:
         url = panel_url(self.base_url)
         panel = f'<a href="{e(url, quote=True)}">panel</a>' if url else "panel"
         return f"📋 {_plural(n, 'tarjeta más', 'tarjetas más')} a tu nombre sin etiqueta · {panel}"
+
+    # --- /hazlo ---------------------------------------------------------------------------------------
+
+    def _implement_lanes(self) -> list[str]:
+        return [n for n, l in self.lanes.items() if getattr(l, "kind", "implement") == "implement"]
+
+    def infer_lane(self, text: str, brand: str | None) -> str | None:
+        """Carril de un /hazlo: el único cuyas palabras clave salen en el texto; si no hay ninguna, el único carril de la
+        marca del tema. None si no se puede decidir (ninguno, varios o marca con dos carriles)."""
+        low = " ".join((text or "").casefold().split())
+        named = [n for n in self._implement_lanes()
+                 if any(re.search(rf"(?<![\w-]){re.escape(h)}(?![\w-])", low) for h in LANE_HINTS.get(n, ()))]
+        if len(named) == 1:
+            return named[0]
+        if named:
+            return None
+        in_brand = [n for n in self._implement_lanes() if brand and BRANDS.get(n) == brand]
+        return in_brand[0] if len(in_brand) == 1 else None
+
+    def cmd_hazlo(self, where, args: str, brand: str | None) -> None:
+        text = args.strip()
+        if not text:
+            self._send(where, "Uso: /hazlo <qué hay que hacer>. Ej.: /hazlo MigraTeam: corrige el typo del pie",
+                       html=False)
+            return
+        lane = self.infer_lane(text, brand)
+        if lane:
+            self._send(where, self.create_quick(lane, text, where))
+            return
+        names = [n for n in self._implement_lanes() if not brand or BRANDS.get(n) == brand] or self._implement_lanes()
+        rec = {"task_id": "hazlo", "board": "", "lane": "", "kind": "hazlo", "text": text, "lanes": names}
+        spec = [[{"text": f"{BRANDS.get(n, 'Sistema')} · {n}", "action": HAZLO, "index": i}]
+                for i, n in enumerate(names)] + [[{"text": "🚫 Cancelar", "action": HAZLO, "index": -1}]]
+        markup = self.desk.store.issue(rec, spec)[1]
+        self._send(where, "¿En qué carril lo pongo?\n" + truncate(text, 300), html=False, markup=markup)
+
+    def create_quick(self, lane_name: str, text: str, where) -> str:
+        """Crea la tarjeta del /hazlo en el carril y devuelve el aviso (HTML) para Oscar."""
+        lane = self.lanes[lane_name]
+        chat, thread = where
+        body = (f"## Objetivo\n{text.strip()}\n\n## Encargo rápido (/hazlo desde Telegram)\n"
+                f"- Tarea pequeña: tope de {HAZLO_MINUTES} minutos de trabajo. Si no cabe, no la empieces: "
+                "devuelve needs_input proponiendo cómo trocearla.\n\n"
+                f"Origen-Telegram: chat={chat} thread={thread}\n")
+        slot = int(self._now() // 600)  # reenvío del mismo update: misma tarjeta, no dos
+        key = "hazlo-" + hashlib.sha1(f"{lane_name}|{chat}|{thread}|{slot}|{text}".encode()).hexdigest()[:16]
+        tid = self.hermes_for(lane.board).create(truncate(text.splitlines()[0], HAZLO_TITLE_MAX), body, lane_name,
+                                                 priority=HAZLO_PRIORITY, key=key, created_by="oscar")
+        return (f"✅ Creada <code>{html.escape(tid)}</code> en {html.escape(lane_name)} · prioridad alta, tope "
+                f"{HAZLO_MINUTES} min. Te aviso al terminar.")
+
+    def hazlo_choice(self, rec: dict, button: dict, where: dict) -> bool:
+        """Botón de carril de un /hazlo con duda. True = hecho (tarjeta creada o cancelado); False = fallo (vuelven
+        los botones)."""
+        idx, names = button.get("index"), rec.get("lanes") or []
+        if idx == -1:
+            self.notifier.edit(where["chat_id"], where["message_id"], "🚫 Cancelado, no he creado nada", html=False)
+            return True
+        if not isinstance(idx, int) or not 0 <= idx < len(names) or names[idx] not in self.lanes:
+            return False
+        text = self.create_quick(names[idx], rec.get("text") or "", (where["chat_id"], where["thread_id"]))
+        self.notifier.edit(where["chat_id"], where["message_id"], text)
+        return True
+
+    # --- /estado --------------------------------------------------------------------------------------
+
+    def cmd_estado(self, where, args: str, brand: str | None) -> None:
+        if args:
+            brand = BRAND_ARGS.get(args.split()[0].lower())
+            if not brand:
+                self._send(where, "Marca desconocida: usa /estado migrateam, /estado pildora o /estado nextjobs",
+                           html=False)
+                return
+        self._send(where, self.estado_text(brand))
+
+    def undeployed(self, brand: str | None) -> list[str] | None:
+        """Líneas de lo fusionado y sin desplegar (estado del integrador) y develop↔master de MigraTeam. None = sin
+        integrador activo (no se sabe)."""
+        integ = getattr(self.desk, "integrator", None)
+        if not integ:
+            return None
+        out = []
+        for name, policy in integ.settings.policies.items():
+            lane = self.lanes.get(name)
+            if lane is None or policy.deploy == "none" or (brand and BRANDS.get(name) != brand):
+                continue
+            for tid, st in integ._merged_states(lane, ""):
+                out.append(f"{name} · PR #{st.get('pr', '?')} ({tid}) fusionado, sin desplegar")
+        mig = self.lanes.get("claude-migrateam")
+        if mig and (not brand or brand == "MigraTeam"):
+            from . import health
+            drift = health.migrateam_drift(mig.repo)
+            if drift != health.NA:
+                out.append("MigraTeam · " + drift)
+        return out
+
+    def estado_text(self, brand: str | None) -> str:
+        e = html.escape
+        out = ["📊 <b>Estado</b>" + (f" · {e(brand)}" if brand else "")]
+        running = []
+        for name, lane in self.lanes.items():
+            if lane.kind not in ("implement", "ops") or (brand and BRANDS.get(name) != brand):
+                continue
+            for t in self.hermes_for(lane.board).list_status(name, "running"):
+                running.append(f"▶️ {self._task_ref(lane, t, True)} · {e(name)}")
+        out.append(f"\n<b>En curso ({len(running)})</b>")
+        out += running[:10] or ["nada en curso"]
+        if len(running) > 10:
+            out.append(f"  +{len(running) - 10} más en /tareas")
+        waiting = [(len(self.pending_decisions(brand)), "decisiones de agentes", "/decisiones"),
+                   (len(self.stuck_tasks(brand)), "atascadas", "/decisiones"),
+                   (len(self.ready_to_approve(brand)), "listas para integrar", "/aprobar"),
+                   (len(self.decision_cards(brand)), "tarjetas de decisión", "/decisiones")]
+        out.append("\n<b>Esperan a Oscar</b>")
+        out += [f"❓ {n} {label} · {cmd}" for n, label, cmd in waiting if n] or ["nada 🎉"]
+        pend = self.undeployed(brand)
+        out.append("\n<b>Pendiente de desplegar</b>")
+        out += [e(l) for l in pend] if pend else (["nada"] if pend is not None else ["sin integrador activo: no lo sé"])
+        return "\n".join(out)[:TEXT_MAX]
 
     # --- /salud ---------------------------------------------------------------------------------------
 
