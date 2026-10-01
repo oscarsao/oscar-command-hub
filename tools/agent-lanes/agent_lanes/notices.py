@@ -148,14 +148,24 @@ def question_text(q: dict) -> str:
     return q["question"] + (f" [{opts}]" if opts else "")
 
 
+OPTION_LETTERS = "ABCD"  # las opciones (2-4) van escritas en el mensaje como A) B) C); los botones solo dicen la letra
+
+
+def option_lines(q: dict) -> list[str]:
+    """Opciones de una pregunta redactadas: "   A) texto ⭐" (la recomendada marcada)."""
+    return [f"   {OPTION_LETTERS[i]}) {o}" + (" ⭐" if i == q.get("recommended") else "")
+            for i, o in enumerate(q.get("options") or ()) if i < len(OPTION_LETTERS)]
+
+
 def questions_block(questions) -> list[str]:
-    """Máximo 5 viñetas y 1200 caracteres en total (contando saltos de línea)."""
+    """Máximo 5 preguntas y 1200 caracteres en total (contando saltos de línea). Cada pregunta lleva debajo sus
+    opciones A) B) C) con la recomendada marcada ⭐: Oscar decide leyendo el mensaje y pulsa solo la letra."""
     lines: list[str] = []
     for q in normalize_questions(questions)[:QUESTIONS_MAX_ITEMS]:
-        line = "• " + truncate(q["question"], QUESTION_MAX_CHARS)
-        if len("\n".join(lines + [line])) > QUESTIONS_MAX_CHARS:
+        chunk = ["• " + truncate(q["question"], QUESTION_MAX_CHARS), *option_lines(q)]
+        if len("\n".join(lines + chunk)) > QUESTIONS_MAX_CHARS:
             break
-        lines.append(line)
+        lines += chunk
     return lines
 
 

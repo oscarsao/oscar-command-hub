@@ -28,8 +28,8 @@ from . import proc as _proc
 from .config import ROOT
 from .hermes import ANSWER_PREFIX, OSCAR_AUTHOR, REVIEW_AUTHOR, answer_progress, resume
 from .explain import explain as _explain
-from .notices import (card_url, normalize_questions, questions_block, render, status_line, truncate,
-                      with_default_options)
+from .notices import (OPTION_LETTERS, card_url, normalize_questions, questions_block, render, status_line,
+                      truncate, with_default_options)
 from .review import CHANGES_PREFIX
 
 log = logging.getLogger("agent_lanes")
@@ -47,6 +47,8 @@ PR_FOOTER = "🤖 Generated with [Claude Code](https://claude.com/claude-code)"
 APPROVE, CHANGES, PARK, RETRY, OPTION, OTHER = "approve", "changes", "park", "retry", "option", "other"
 EXPLAIN = "explain"        # 💬 Explícame más: responde con una explicación llana; no consume el teclado
 ACCEPT_ALL = "accept_all"  # cabecera de /decisiones: aplica la opción recomendada en todas las que la tienen
+ACCEPT_CARD = "accept_card"  # ✅ Acepto todas las recomendadas: las preguntas pendientes de ESTA tarjeta, de una vez
+SEE_ALL = "see_all"        # "N más · ver todas" de /decisiones
 REPLY_ACTIONS = (CHANGES, OTHER)  # piden texto a Oscar con force_reply
 EXPLAIN_BUTTON = {"text": "💬 Explícame más", "action": EXPLAIN}
 DEFAULT_OPTION_LABELS = ("✅ Sí, adelante", "❌ No")  # botones de una pregunta sin opciones (DEFAULT_OPTIONS)
@@ -55,10 +57,13 @@ EXPLAIN_FAILED = "💬 No pude generar la explicación ahora; mira la tarjeta o 
 
 
 def keyboard_spec(state: str, *, block_kind: str | None = None, questions=None,
-                  yes_no: bool = True, ops: bool = False, index: int = 0) -> list[list[dict]] | None:
+                  yes_no: bool = True, ops: bool = False, index: int = 0,
+                  accept_card: bool = True) -> list[list[dict]] | None:
     """Botones por estado: filas de {text, action, index}. None = aviso sin botones (en curso, en review...).
     `ops`: el carril ops no tiene carril review ni PR; su review la valida Oscar directamente.
-    `index`: pregunta en curso (con varias preguntas van en secuencia: una por paso, en la misma tarjeta)."""
+    `index`: pregunta en curso (con varias preguntas van en secuencia: una por paso, en la misma tarjeta).
+    Las opciones van escritas en el mensaje (A, B, C...): los botones solo dicen la letra, ⭐ Recomendada y ✍️ Otra.
+    `accept_card`: con varias preguntas y recomendada en todas las pendientes, añade ✅ Acepto todas las recomendadas."""
     park = {"text": "🗄 Aparcar", "action": PARK}
     if state == "review" and ops:
         return [[{"text": "✅ Validar", "action": APPROVE}, {"text": "🔁 Pedir cambios", "action": CHANGES}, park]]
@@ -72,9 +77,16 @@ def keyboard_spec(state: str, *, block_kind: str | None = None, questions=None,
         if q and q.get("default_options"):
             rows.append([{"text": label, "action": OPTION, "index": i} for i, label in enumerate(DEFAULT_OPTION_LABELS)])
         elif q and q["options"]:  # botones de la pregunta en curso; la siguiente sale al responderla
-            for i, opt in enumerate(q["options"]):
-                star = "⭐ " if i == q["recommended"] else ""
-                rows.append([{"text": f"{star}{i + 1}) {opt}", "action": OPTION, "index": i}])
+            rows.append([{"text": OPTION_LETTERS[i], "action": OPTION, "index": i}
+                         for i in range(min(len(q["options"]), len(OPTION_LETTERS)))])
+            other = {"text": "✍️ Otra", "action": OTHER}
+            rows.append([{"text": "⭐ Recomendada", "action": OPTION, "index": q["recommended"]}, other]
+                        if q["recommended"] is not None else [other])
+            rows.append([park, dict(EXPLAIN_BUTTON)])
+            pending = qs[min(max(index, 0), len(qs) - 1):]
+            if accept_card and yes_no and len(qs) > 1 and all(x["recommended"] is not None for x in pending):
+                rows.append([{"text": "✅ Acepto todas las recomendadas", "action": ACCEPT_CARD}])
+            return rows
         rows.append([{"text": "✍️ Otra respuesta", "action": OTHER}, park])
         rows.append([dict(EXPLAIN_BUTTON)])
         return rows
@@ -257,7 +269,7 @@ class DecisionDesk:
     def _group_rec(members: list[dict], questions, yes_no: bool, q_index: int) -> tuple[dict, list]:
         qs = with_default_options(questions, yes_no)
         q_index = _clamp(q_index, qs)
-        spec = keyboard_spec("needs_input", questions=questions, yes_no=yes_no, index=q_index)
+        spec = keyboard_spec("needs_input", questions=questions, yes_no=yes_no, index=q_index, accept_card=False)
         rec = {**members[0], "group": members, "question": qs[q_index] if qs else None, "questions": qs,
                "n_questions": len(qs), "q_index": q_index, "yes_no": yes_no,
                **({"other_label": ALL_LABEL} if len(qs) > 1 and not yes_no else {})}
@@ -267,6 +279,11 @@ class DecisionDesk:
         """[✅ Aceptar todo lo recomendado] sobre `members` (se filtran al pulsar: recomendada en TODAS sus preguntas)."""
         rec = {"task_id": "bandeja", "board": "", "lane": "", "accept_all": members}
         return self.store.issue(rec, [[{"text": "✅ Aceptar todo lo recomendado", "action": ACCEPT_ALL}]])[1]
+
+    def see_all_markup(self, brand: str | None) -> dict:
+        """[📋 Ver todas] bajo la línea "N más" de /decisiones: reenvía la bandeja completa."""
+        rec = {"task_id": "bandeja", "board": "", "lane": "", "see_all": True, "brand": brand}
+        return self.store.issue(rec, [[{"text": "📋 Ver todas", "action": SEE_ALL}]])[1]
 
     # --- entrada: updates de getUpdates ---------------------------------------------------------------
 
@@ -423,6 +440,10 @@ class DecisionDesk:
             return bool(self.integrator) and self.integrator.on_button(action, rec, where, self)
         if action == ACCEPT_ALL:
             return self._accept_all(rec, where)
+        if action == ACCEPT_CARD:
+            return self._accept_all({"accept_all": [rec]}, where, card_where=where)
+        if action == SEE_ALL:
+            return self._see_all(rec, where)
         if rec.get("group"):
             return self._group_act(rec, button, where)
         if action == APPROVE:
@@ -493,11 +514,20 @@ class DecisionDesk:
                         + answer + (f" · sin tocar: {', '.join(skipped)}" if skipped else ""))
         return True
 
-    def _accept_all(self, rec: dict, where: dict) -> bool:
+    def _see_all(self, rec: dict, where: dict) -> bool:
+        if not self.commands:
+            return False
+        self._edit_text(where, "📋 La lista completa va debajo ⬇️")
+        self.commands.cmd_decisiones((where["chat_id"], where["thread_id"]), "", rec.get("brand"), show_all=True)
+        return True
+
+    def _accept_all(self, rec: dict, where: dict, card_where: dict | None = None) -> bool:
         """Cada tarea con recomendada en TODAS sus preguntas PENDIENTES: un comentario "Respuesta de Oscar" por
         pregunta pendiente (las que Oscar ya contestó no se pisan) y un único desbloqueo (lo mismo que pulsar la
         opción ⭐). Una tarea con alguna pendiente sin recomendada queda intacta: desbloquear con media respuesta haría
-        que el worker se volviera a bloquear. Las ya decididas se saltan."""
+        que el worker se volviera a bloquear. Las ya decididas se saltan.
+        `card_where`: ✅ Acepto todas las recomendadas de UNA tarjeta; se edita ese mensaje (y sus copias) en vez de
+        sustituirlo por el resumen, y si no se pudo aplicar los botones vuelven (False)."""
         done, skipped, failed = [], [], []
         for m in rec.get("accept_all") or ():
             qs = normalize_questions(m.get("questions"))
@@ -514,11 +544,13 @@ class DecisionDesk:
                 self._edit(m, None, "blocked", "no se pudo guardar la respuesta en la tarjeta")
                 continue
             answers = " · ".join(truncate(q["options"][q["recommended"]], 40) for q in todo)
-            self._edit(m, None, "answered", f"💬 respondida (lo recomendado): {truncate(answers, 120)}")
+            self._edit(m, card_where, "answered", f"💬 respondida (lo recomendado): {truncate(answers, 120)}")
             if not self._resume(h, tid):  # en triage (bloqueo repetido) unblock falla: requeue_triage
-                self._edit(m, None, "answered", "💬 respuesta anotada · no se pudo desbloquear (mira la tarjeta)")
+                self._edit(m, card_where, "answered", "💬 respuesta anotada · no se pudo desbloquear (mira la tarjeta)")
             done.append(tid)
             self._retire(m)
+        if card_where:
+            return bool(done)
         parts = [f"✅ Aplicado lo recomendado en {len(done)} tarea{'s' if len(done) != 1 else ''}"
                  + (f" ({', '.join(done)})" if done else "")]
         if skipped:

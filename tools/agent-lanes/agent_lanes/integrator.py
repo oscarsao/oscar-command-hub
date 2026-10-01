@@ -55,7 +55,7 @@ from .deps import is_integration_comment, pending_parents, waiting_line  # noqa:
 from .hermes import OSCAR_AUTHOR, REVIEW_AUTHOR  # noqa: E402
 from .integration import (CHANNEL, FAILED, WAITING, PinnedSummary, link_line, phase_for, render_ficha,  # noqa: E402
                           repo_name, risk_of, summary_state, summary_text)
-from .notices import MessageStore, TaskNotices, render, status_line, truncate  # noqa: E402
+from .notices import MessageStore, TaskNotices, markup_token, render, status_line, truncate  # noqa: E402
 from .telegram import telegram_target  # noqa: E402
 from .verify import render_test_cmd  # noqa: E402
 
@@ -992,6 +992,33 @@ class Integrator:
                 desk.notifier.edit(msg["chat_id"], msg["message_id"], text, **extra)
             except Exception as exc:
                 log.warning("%s: no se pudo editar el aviso %s: %s", rec.get("task_id"), msg.get("message_id"), exc)
+        if markup:
+            self._announce_buttons(desk, rec, markup, status)
+
+    def _announce_buttons(self, desk, rec: dict, markup: dict, status: str) -> None:
+        """Botón nuevo en una ficha ya publicada (🚀 Desplegar, ✅ Migración aplicada, 🔁 Aplicar): además de editarla,
+        un mensaje NUEVO con ese teclado al final del tema y en el DM de Oscar (una edición no avisa ni sube al final).
+        Un solo mensaje por teclado (marca `announced` en el store). Las copias comparten token: pulsar una retira
+        las demás."""
+        store, tid = self._notices.store if self._notices else None, rec.get("task_id") or ""
+        token = markup_token(markup)
+        main = store.get(tid) if store else None
+        if not main or not token or token in (main.get("announced") or ()):
+            return
+        labels = [b["text"] for row in markup.get("inline_keyboard") or () for b in row]
+        text = f"🔔 {tid} · {truncate(rec.get('title'), 40)}\n{status}\nAhora puedes pulsar: {' · '.join(labels)}"
+        owner = str(getattr(desk, "owner_id", "") or "")
+        dests = [(main.get("chat_id"), main.get("thread_id"))]
+        if owner and owner != str(main.get("chat_id")):
+            dests.append((owner, None))
+        for chat_id, thread_id in dests:
+            try:
+                sent = desk.notifier.send_to(str(chat_id), thread_id, text, html=False, reply_markup=markup)
+            except Exception as exc:  # DM sin /start, tema borrado...: la ficha ya está editada
+                log.info("%s: no se pudo enviar el aviso del botón nuevo: %s", tid, exc)
+                continue
+            store.add_mirror(tid, sent, token=token, bot=getattr(desk.notifier, "bot_id", None))
+        store.put(tid, {**(store.get(tid) or main), "announced": [*(main.get("announced") or ())[-9:], token]})
 
     def _merge(self, lane, policy: Policy, rec: dict, where: dict, desk) -> bool:
         tid, number = rec["task_id"], int(rec["pr_number"])
