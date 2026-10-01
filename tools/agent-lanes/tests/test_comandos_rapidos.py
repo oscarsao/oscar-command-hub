@@ -194,3 +194,84 @@ def test_help_lists_new_commands(tmp_path, cmd):
     text = bot.sent[-1]["text"]
     assert "/hazlo" in text and "/estado" in text and "prioridad alta" in text
     assert isinstance(cc, CommandCenter)
+    assert "/desplegar" in text and "/promover" in text and "/lote" in text and "dos toques" in text
+
+
+# --- /desplegar (doble toque) y /promover (solo prepara la tarjeta) ----------------------------------------
+
+class DeployIntegrator:
+    def __init__(self, merged, enabled=True):
+        pol = {"claude-oscarhq": SimpleNamespace(deploy="railway_up"),
+               "claude-migrateam": SimpleNamespace(deploy="on_merge")}
+        self.settings = SimpleNamespace(enabled=enabled, policies=pol)
+        self.merged, self.pressed = merged, []
+
+    def _merged_states(self, lane, exclude):
+        return self.merged.get(lane.name, [])
+
+    def on_button(self, action, rec, where, desk):
+        self.pressed.append((action, rec["task_id"]))
+        return True
+
+
+MERGED = ("t_ccccccc3", {"pr": 41, "title": "Arregla el health", "merge_sha": "a" * 40, "pr_url": "u"})
+
+
+def test_desplegar_needs_two_taps_before_int_deploy(tmp_path):
+    cc, desk, bot, h = center(tmp_path)
+    desk.integrator = DeployIntegrator({"claude-oscarhq": [MERGED]})
+    command(desk, "/desplegar oscarhq")
+    ask = bot.sent[-1]
+    assert texts(ask["markup"]) == ["🚀 Desplegar"] and "PR #41" in ask["text"]
+    press(desk, ask, 0)
+    assert desk.integrator.pressed == []  # el 1.er toque no despliega
+    confirm = bot.edits[-1]
+    assert "¿Seguro?" in confirm["text"] and texts(confirm["markup"]) == ["✅ Sí, desplegar", "✖ No"]
+    press(desk, {**ask, "markup": confirm["markup"]}, 0, cid="cq2")
+    assert desk.integrator.pressed == [("int_deploy", "t_ccccccc3")]
+
+
+def test_desplegar_no_cancels_and_never_deploys(tmp_path):
+    cc, desk, bot, h = center(tmp_path)
+    desk.integrator = DeployIntegrator({"claude-oscarhq": [MERGED]})
+    command(desk, "/desplegar oscarhq")
+    ask = bot.sent[-1]
+    press(desk, ask, 0)
+    press(desk, {**ask, "markup": bot.edits[-1]["markup"]}, 1, cid="cq2")
+    assert desk.integrator.pressed == [] and "No despliego" in bot.edits[-1]["text"]
+
+
+def test_desplegar_without_args_unknown_nothing_pending_or_integrator_off(tmp_path):
+    cc, desk, bot, h = center(tmp_path)
+    command(desk, "/desplegar oscarhq")
+    assert "apagado" in bot.sent[-1]["text"]
+    desk.integrator = DeployIntegrator({})
+    command(desk, "/desplegar", uid=2)
+    assert "Dime el proyecto: /desplegar oscarhq" in bot.sent[-1]["text"]
+    command(desk, "/desplegar migrateam", uid=3)  # on_merge: no se despliega desde aquí
+    assert "Dime el proyecto" in bot.sent[-1]["text"]
+    command(desk, "/desplegar oscarhq", uid=4)
+    assert "Nada que desplegar" in bot.sent[-1]["text"] and not bot.sent[-1].get("markup")
+
+
+def test_desplegar_skips_merges_with_pending_migration(tmp_path):
+    cc, desk, bot, h = center(tmp_path)
+    mig = ("t_ddddddd4", {"pr": 42, "merge_sha": "b" * 40, "migration": "alembic"})
+    desk.integrator = DeployIntegrator({"claude-oscarhq": [mig]})
+    command(desk, "/desplegar oscarhq")
+    assert "migración pendiente" in bot.sent[-1]["text"] and not bot.sent[-1].get("markup")
+
+
+def test_promover_only_creates_card_for_migrateam(tmp_path, monkeypatch):
+    from agent_lanes import health
+    monkeypatch.setattr(health, "migrateam_drift", lambda repo: "develop lleva 3 sin promocionar")
+    cc, desk, bot, h = center(tmp_path)
+    desk.integrator = DeployIntegrator({})
+    command(desk, "/promover migrateam")
+    [card] = h.created
+    assert card["assignee"] == "claude-migrateam" and card["key"].startswith("promover-")
+    assert "no hagas merge ni push a master" in card["body"] and "develop lleva 3" in card["body"]
+    assert "Origen-Telegram: chat=6744452215" in card["body"]
+    assert desk.integrator.pressed == [] and "Solo prepara" in bot.sent[-1]["text"]
+    command(desk, "/promover oscarhq", uid=2)
+    assert len(h.created) == 1 and bot.sent[-1]["text"].startswith("Solo MigraTeam")

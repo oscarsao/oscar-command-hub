@@ -131,7 +131,8 @@ def test_options_written_by_the_runner_become_option_buttons(tmp_path):
     reason = "El worker necesita decisión:\n- ¿Qué BD? [1) SQLite / 2) Postgres (recomendada)]"
     r, bot, *_ = make(tmp_path, {"t_1": blocked_show("t_1", "needs_input", reason)})
     r.run()
-    assert texts(bot.sent[0]["markup"]) == ["1) SQLite", "⭐ 2) Postgres", "✍️ Otra respuesta", "🗄 Aparcar", "💬 Explícame más"]
+    assert texts(bot.sent[0]["markup"]) == ["A", "B", "⭐ Recomendada", "✍️ Otra", "🗄 Aparcar", "💬 Explícame más"]
+    assert "   A) SQLite" in bot.sent[0]["text"] and "   B) Postgres ⭐" in bot.sent[0]["text"]
     assert "• ¿Qué BD?" in bot.sent[0]["text"]
 
 
@@ -143,7 +144,7 @@ def test_dict_reprs_left_by_the_old_runner_become_option_buttons(tmp_path):
     assert qs[1]["question"] == "¿Umbral?" and qs[1]["options"] == []
     r, bot, *_ = make(tmp_path, {"t_1": blocked_show("t_1", "needs_input", reason)})
     r.run()
-    assert texts(bot.sent[0]["markup"]) == ["⭐ 1) Aprobar", "2) Solo in-app", "✍️ Otra respuesta", "🗄 Aparcar", "💬 Explícame más"]
+    assert texts(bot.sent[0]["markup"]) == ["A", "B", "⭐ Recomendada", "✍️ Otra", "🗄 Aparcar", "💬 Explícame más"]
     assert "• ¿Apruebas este diseño?" in bot.sent[0]["text"] and "'options'" not in bot.sent[0]["text"]
 
 
@@ -151,7 +152,7 @@ def test_questions_in_run_metadata_win_over_the_reason_text(tmp_path):
     meta = {"questions": [{"question": "¿X o Y?", "options": ["X", "Y"], "recommended": 0}]}
     r, bot, *_ = make(tmp_path, {"t_1": blocked_show("t_1", "needs_input", NEEDS, meta=meta)})
     r.run()
-    assert texts(bot.sent[0]["markup"]) == ["⭐ 1) X", "2) Y", "✍️ Otra respuesta", "🗄 Aparcar", "💬 Explícame más"]
+    assert texts(bot.sent[0]["markup"]) == ["A", "B", "⭐ Recomendada", "✍️ Otra", "🗄 Aparcar", "💬 Explícame más"]
 
 
 def test_review_escalation_keeps_its_public_line(tmp_path):

@@ -103,7 +103,7 @@ def reply(desk, chat, prompt_mid, text):
 def test_three_questions_answered_with_buttons_in_sequence_unblock_only_at_the_end(tmp_path):
     cc, desk, bot, h, messages, _ = setup(tmp_path, {"t_aaaaaaa1": needs("t_aaaaaaa1", THREE)})
     topic, dm = ask(desk, bot, messages, h)
-    assert texts(topic["markup"])[:2] == ["⭐ 1) Sí", "2) No"]
+    assert texts(topic["markup"])[:2] == ["A", "B"]
 
     press(desk, topic, 1)  # 1ª: No
     assert h.calls == [("comment", "t_aaaaaaa1", f"{ANSWER_PREFIX} {Q1} → No", OSCAR_AUTHOR)]  # sin unblock
@@ -112,12 +112,12 @@ def test_three_questions_answered_with_buttons_in_sequence_unblock_only_at_the_e
     for e in (e_topic, e_dm):
         assert "Pregunta 2/3" in e["text"] and "• ¿Precio?" in e["text"] and "¿Publicar ya?" not in e["text"]
         assert "💬 1ª: No" in e["text"]
-        assert texts(e["markup"]) == ["1) 9 €", "⭐ 2) 19 €", "✍️ Otra respuesta", "🗄 Aparcar", "💬 Explícame más"]
+        assert texts(e["markup"]) == ["A", "B", "⭐ Recomendada", "✍️ Otra", "🗄 Aparcar", "💬 Explícame más"]
 
     press(desk, as_msg(e_dm), 1, cid="q2")  # 2ª desde el DM: 19 €
     e_topic, e_dm = last_edits(bot)
     assert all("Pregunta 3/3" in e["text"] and "• ¿Canal?" in e["text"] for e in (e_topic, e_dm))
-    assert texts(e_topic["markup"])[:2] == ["1) Email", "2) WhatsApp"]
+    assert texts(e_topic["markup"])[:2] == ["A", "B"]
     assert ("unblock", "t_aaaaaaa1") not in h.calls
 
     press(desk, as_msg(e_topic), 0, cid="q3")  # 3ª desde el tema: Email -> desbloquea
@@ -132,7 +132,7 @@ def test_free_reply_in_the_middle_answers_only_the_current_question(tmp_path):
     topic, dm = ask(desk, bot, messages, h)
     press(desk, topic, 0)  # 1ª: Sí
     step2 = as_msg(last_edits(bot)[0])
-    press(desk, step2, texts(step2["markup"]).index("✍️ Otra respuesta"), cid="w")
+    press(desk, step2, texts(step2["markup"]).index("✍️ Otra"), cid="w")
     prompt = bot.sent[-1]
     assert "Pregunta 2/3" in prompt["text"] and "¿Precio?" in prompt["text"]
     reply(desk, prompt["chat_id"], prompt["message_id"], "15 € al mes")
@@ -172,7 +172,7 @@ def test_decisiones_shows_the_second_question_once_the_first_is_answered(tmp_pat
     command(desk, "/decisiones")
     card = next(m for m in bot.sent if m["text"].startswith("❓ t_aaaaaaa1"))
     assert "Pregunta 2/3" in card["text"] and "• ¿Precio?" in card["text"] and "¿Publicar ya?" not in card["text"]
-    assert texts(card["markup"])[:2] == ["1) 9 €", "⭐ 2) 19 €"]
+    assert texts(card["markup"])[:2] == ["A", "B"]
     press(desk, card, 1)  # sigue la secuencia desde la 2ª
     assert [c[2] for c in h.calls if c[0] == "comment"] == [f"{ANSWER_PREFIX} {Q2} → 19 €"]
     assert "Pregunta 3/3" in bot.edits[-1]["text"]
@@ -196,7 +196,7 @@ def test_renotify_resends_from_the_first_pending_question(tmp_path):
     assert (sent, failed) == (["t_aaaaaaa1"], [])
     msg = bot.sent[0]
     assert "Pregunta 3/3" in msg["text"] and "• ¿Canal?" in msg["text"] and "¿Precio?" not in msg["text"]
-    assert texts(msg["markup"])[:2] == ["1) Email", "2) WhatsApp"]
+    assert texts(msg["markup"])[:2] == ["A", "B"]
 
 
 def test_reminders_count_partial_decisions_but_not_fully_answered_ones(tmp_path):
@@ -312,7 +312,7 @@ def test_real_case_three_answers_to_the_first_question_show_the_second(tmp_path)
     card = next(m for m in bot.sent if m["text"].startswith("❓ t_6a2fdf4d"))
     assert "Pregunta 2/2" in card["text"] and "¿qué listas quieres por carpeta?" in card["text"]
     assert "gestión de ClickUp" not in card["text"]
-    assert texts(card["markup"])[:2] == ["⭐ 1) Propón tú una estructura mínima", "2) Te digo yo las listas exactas"]
+    assert texts(card["markup"])[:2] == ["A", "B"]
     press(desk, card, 0)  # responder la 2ª desbloquea
     assert h.calls[-1] == ("unblock", "t_6a2fdf4d")
     assert "💬 respondida (2/2)" in bot.edits[-1]["text"]

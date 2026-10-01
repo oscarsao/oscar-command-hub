@@ -12,6 +12,11 @@ también como /cmd@<bot>. Un /cmd@otro_bot (p. ej. el de Hermes) se ignora.
     /hazlo <texto>       crea una tarea pequeña (prioridad alta, tope 15 min): marca y carril salen del texto; con
                          duda, botones para elegir carril. El resultado vuelve a donde lo pediste
     /estado [marca]      en un solo mensaje: en curso, lo que espera a Oscar y lo pendiente de desplegar
+    /desplegar <proyecto>  ficha de lo fusionado y sin desplegar con [🚀 Desplegar] → "¿Seguro?" → ✅ Sí (doble toque;
+                         el despliegue es el mismo int_deploy del integrador, nunca otra vía)
+    /promover migrateam  solo PREPARA la tarjeta de promoción develop→master (release/<fecha>) para el integrador;
+                         no fusiona ni despliega nada
+    /lote <proyecto>     monta ya el lote de las ramas aprobadas
     /salud               runner y carriles, gateway de Hermes, servicios y alertas (del monitor), develop↔master de
                          MigraTeam, RAM/CPU y decisiones pendientes; sin peticiones HTTP (agent_lanes/health.py)
 
@@ -31,11 +36,12 @@ import hashlib
 import html
 import logging
 import re
+import threading
 import time
 from typing import Callable
 from urllib.parse import urlsplit
 
-from .decisions import HAZLO, OWNER_TELEGRAM_ID
+from .decisions import DEPLOY_ASK, DEPLOY_NO, HAZLO, OWNER_TELEGRAM_ID
 from .deps import (ShowCache, child_bucket, dependency_order, family, pending_parents, tree_lines,
                    waiting_line)
 from .notices import (BOARD_BRANDS, BRANDS, DECISION_CARD_STATUSES, OSCAR_ASSIGNEE, TEXT_MAX, card_url,
@@ -52,6 +58,9 @@ COMMANDS = (
     ("tarea", "Ficha de una tarea con sus botones: /tarea t_xxx"),
     ("hazlo", "Crea una tarea pequeña (carril según el texto): /hazlo <texto>"),
     ("estado", "En curso, esperando a Oscar y pendiente de desplegar: /estado [marca]"),
+    ("desplegar", "Despliega lo fusionado de un proyecto, con doble confirmación: /desplegar oscarhq"),
+    ("promover", "Prepara la promoción develop→master de MigraTeam para el integrador: /promover migrateam"),
+    ("lote", "Montar ya el lote de un proyecto: /lote migrateam|oscarhq"),
     ("salud", "Estado de runner, Hermes, servicios, MigraTeam y equipo"),
 )
 COMMAND_SCOPES = ("default", "all_private_chats", "all_group_chats")
@@ -62,7 +71,8 @@ TASK_ID_RE = re.compile(r"^t_[0-9a-f]{8}$")
 STATUS_TEXT = {"running": ("running", "en curso"), "ready": ("ready", "en cola"), "review": ("review", "en review"),
                "done": ("done", "terminada"), "blocked": ("blocked", "bloqueada"), "todo": ("todo", "pendiente"),
                "triage": ("triage", "en triage"), "archived": ("archived", "archivada")}
-MAX_CARDS = 20       # tarjetas por /decisiones o /aprobar (el resto se cuenta en la cabecera)
+TOP_DECISIONS = 5    # /decisiones muestra las 5 más importantes; el resto con [📋 Ver todas]
+MAX_CARDS = 20     # tarjetas por /decisiones o /aprobar (el resto se cuenta en la cabecera)
 CARD_TITLE_MAX = 60  # título de una tarjeta de decisión de Oscar en /decisiones
 EXTRA_BOARDS = ("default",)  # además de los tableros de los carriles: donde viven muchas tarjetas de Oscar
 HAZLO_PRIORITY = 10  # prioridad alta (kanban: más alto = antes)
@@ -231,7 +241,8 @@ class CommandCenter:
     @staticmethod
     def help_text() -> str:
         return ("Comandos del bot de trabajos:\n" + "\n".join(f"/{c} · {d}" for c, d in COMMANDS)
-                + "\n\nCon /hazlo la tarea se crea ya, con prioridad alta y tope de 15 minutos; te aviso al terminar.")
+                + "\n\nCon /hazlo la tarea se crea ya, con prioridad alta y tope de 15 minutos; te aviso al terminar."
+                + "\n/desplegar pide dos toques (🚀 y ✅ Sí); /promover solo prepara la tarjeta, el integrador fusiona.")
 
     # --- datos ----------------------------------------------------------------------------------------
 
@@ -324,11 +335,18 @@ class CommandCenter:
 
     # --- /decisiones ----------------------------------------------------------------------------------
 
-    def cmd_decisiones(self, where, args: str, brand: str | None) -> None:
+    def cmd_decisiones(self, where, args: str, brand: str | None, show_all: bool = False) -> None:
+        """Las TOP_DECISIONS más importantes, cada una en su mensaje con botones, y "N más · ver todas". Importancia
+        (decide Oscar): primero las que bloquean agentes (preguntas y 🧊 atascadas, la más antigua antes), luego las
+        tarjetas de decisión por antigüedad. Con ≤5 en total, o con `show_all`, la bandeja completa de siempre."""
         now = self._now()
         pendings = self.pending_decisions(brand)
         stuck = self.stuck_tasks(brand)
         cards, untagged = self.oscar_cards(brand)
+        total = len(group_pending(pendings)) + len(stuck) + len(cards)
+        if total > TOP_DECISIONS and not show_all:
+            self._top_decisions(where, pendings, stuck, cards, now, brand, total)
+            return
         scope = f" · {brand}" if brand else ""
         if not pendings and not stuck and not cards:
             if untagged:  # no son decisiones, pero que no se olviden
@@ -344,6 +362,25 @@ class CommandCenter:
             self._send(where, self.cards_text(cards, now, scope, untagged=untagged))
         elif untagged:
             self._send(where, self.untagged_line(untagged))
+
+    def _top_decisions(self, where, pendings: list, stuck: list, cards: list[dict], now: float, brand: str | None,
+                       total: int) -> None:
+        scope = f" · {brand}" if brand else ""
+        n_q = min(len(group_pending(pendings)), TOP_DECISIONS)
+        n_s = min(len(stuck), TOP_DECISIONS - n_q)
+        n_c = TOP_DECISIONS - n_q - n_s
+        if n_q:
+            self._agent_questions(where, pendings, now, scope, limit=n_q)
+        if n_s:
+            self._stuck_section(where, stuck[:n_s], now, scope)
+        for c in cards[:n_c]:
+            t = c["task"]
+            url = card_url(self.base_url, c["board"], t["id"])
+            ref = f'<a href="{html.escape(url, quote=True)}">{html.escape(t["id"])}</a>' if url else f"<code>{html.escape(t['id'])}</code>"
+            self._send(where, f"📌 {ref} · {html.escape(truncate(t.get('title'), CARD_TITLE_MAX))} · "
+                              f"hace {hours_ago(c['since'], now)} h")
+        self._send(where, f"➕ {total - TOP_DECISIONS} más · ver todas", html=False,
+                   markup=self.desk.see_all_markup(brand))
 
     def _stuck_section(self, where, stuck: list, now: float, scope: str) -> None:
         """🧊 Atascadas: cabecera + una tarjeta por tarea con [🔄 Reintentar] [🗄 Aparcar]."""
@@ -527,8 +564,9 @@ class CommandCenter:
             pending=lambda: (len(self.pending_decisions()), len(self.stuck_tasks()), len(self.decision_cards())),
             now=now)
 
-    def _agent_questions(self, where, pendings: list, now: float, scope: str) -> None:
-        """Preguntas de los agentes (tareas de carril en needs_input): cabecera + una tarjeta con botones por tarea."""
+    def _agent_questions(self, where, pendings: list, now: float, scope: str, limit: int = MAX_CARDS) -> None:
+        """Preguntas de los agentes (tareas de carril en needs_input): cabecera + una tarjeta con botones por tarea.
+        `limit`: tarjetas que se muestran (el "aceptar todo" de la cabecera sigue cubriendo todas las pendientes)."""
         groups = group_pending(pendings)
         eligible = [p for p in pendings if fully_recommended(pending_of(p))]
         head = (f"❓ {_plural(len(pendings), 'decisión', 'decisiones')} · la más antigua hace "
@@ -545,10 +583,10 @@ class CommandCenter:
                                                   for p in pendings])
         else:
             head += "\nNinguna tiene opción recomendada: decide en cada tarjeta"
-        if len(groups) > MAX_CARDS:
+        if limit >= MAX_CARDS and len(groups) > MAX_CARDS:
             head += f"\nMuestro {MAX_CARDS} tarjetas; el resto, en el panel"
         self._send(where, head, html=False, markup=markup)
-        for group in groups[:MAX_CARDS]:
+        for group in groups[:limit]:
             if len(group) == 1:
                 self._decision_card(where, group[0], now)
             else:
@@ -617,6 +655,123 @@ class CommandCenter:
             self._mirror(p.tid, self._send(where, text, markup=markup), markup)
 
     # --- /tareas --------------------------------------------------------------------------------------
+
+    def cmd_lote(self, where, args: str, brand: str | None) -> None:
+        """/lote <marca>: monta ya el lote de las ramas aprobadas (lo mismo que hace solo a la hora del lote)."""
+        batches = getattr(getattr(self.desk, "integrator", None), "batches", None)
+        brands = batches.brands() if batches else []
+        if not brands:
+            self._send(where, "El lote diario no está activo (integrador apagado o ningún carril con batch).",
+                       html=False)
+            return
+        arg = args.strip().lower() or (brand or "").lower() or (brands[0] if len(brands) == 1 else "")
+        found = batches.resolve(arg) if arg else None
+        if not found:
+            self._send(where, "Dime de qué proyecto: /lote " + "|".join(brands), html=False)
+            return
+        lane, policy = found
+        self._send(where, f"Montando el lote de {arg}… pasa los gates y los tests, puede tardar unos minutos.",
+                   html=False)
+
+        def run() -> None:
+            try:
+                text = batches.assemble(lane, policy, manual=True)
+            except Exception as exc:
+                log.warning("/lote %s falló: %s", arg, exc)
+                text = "No pude montar el lote; detalle en el log."
+            self._send(where, text, html=False)
+
+        self._spawn(run)
+
+    # --- /desplegar y /promover -----------------------------------------------------------------------
+
+    def _deploy_target(self, arg: str):
+        """(carril, política) con deploy `railway_up` cuyo nombre, marca o palabra clave es `arg`; None si no hay."""
+        integ = getattr(self.desk, "integrator", None)
+        if not integ or not integ.settings.enabled:
+            return None
+        want = re.sub(r"[^a-z0-9 -]+", "", (arg or "").lower()).strip()
+        for name, policy in integ.settings.policies.items():
+            lane = self.lanes.get(name)
+            if lane is not None and policy.deploy == "railway_up" and want and want in (
+                    name, name.removeprefix("claude-"), *LANE_HINTS.get(name, ())):
+                return lane, policy
+        return None
+
+    def cmd_desplegar(self, where, args: str, brand: str | None) -> None:
+        """/desplegar <proyecto>: ficha de cada fusión sin desplegar con [🚀 Desplegar]; hace falta un 2.º toque."""
+        from .integrator import pending_migration
+        integ = getattr(self.desk, "integrator", None)
+        arg = args.strip()
+        if not integ or not integ.settings.enabled:
+            self._send(where, "El integrador está apagado: no hay nada que desplegar desde aquí.", html=False)
+            return
+        found = self._deploy_target(arg)
+        if not found:
+            names = sorted(n.removeprefix("claude-") for n, p in integ.settings.policies.items()
+                           if p.deploy == "railway_up")
+            self._send(where, "Dime el proyecto: /desplegar " + ("|".join(names) or "(ninguno despliega con botón)")
+                       + ". MigraTeam despliega staging al fusionar y producción va por /promover.", html=False)
+            return
+        lane, policy = found
+        merged = integ._merged_states(lane, "")
+        if not merged:
+            self._send(where, f"Nada que desplegar en {lane.name}: no hay fusiones pendientes.", html=False)
+            return
+        for tid, st in merged[:5]:
+            if pending_migration(st):
+                self._send(where, f"⏸ {tid} · PR #{st.get('pr', '?')} lleva una migración pendiente: no se despliega "
+                                  "desde aquí (aplícala a mano y márcala en su ficha).", html=False)
+                continue
+            rec = {"kind": "integrate", "task_id": tid, "board": lane.board, "lane": lane.name,
+                   "title": st.get("title") or "", "pr_number": st.get("pr"), "pr_url": st.get("pr_url") or "",
+                   "merge_sha": st.get("merge_sha"), "migration": None}
+            markup = self.desk.store.issue(rec, [[{"text": "🚀 Desplegar", "action": DEPLOY_ASK}]])[1]
+            self._send(where, f"🚀 {tid} · {truncate(st.get('title'), 60)}\nPR #{st.get('pr', '?')} fusionado "
+                              f"({(st.get('merge_sha') or '')[:7]}) y sin desplegar en {lane.name}.", html=False,
+                       markup=markup)
+
+    def deploy_step(self, action: str, rec: dict, where: dict, desk) -> bool:
+        """1.er toque de /desplegar: edita la ficha con "¿Seguro?" y [✅ Sí, desplegar] (= int_deploy) / [✖ No]."""
+        from .integrator import INT_DEPLOY
+        if action == DEPLOY_NO:
+            self.notifier.edit(where["chat_id"], where["message_id"], "✖ No despliego nada.", html=False)
+            return True
+        policy = desk.integrator.settings.policies.get(rec.get("lane")) if desk.integrator else None
+        if not policy or policy.deploy != "railway_up" or not rec.get("merge_sha"):
+            return False
+        markup = desk.store.issue(rec, [[{"text": "✅ Sí, desplegar", "action": INT_DEPLOY}],
+                                        [{"text": "✖ No", "action": DEPLOY_NO}]])[1]
+        self.notifier.edit(where["chat_id"], where["message_id"],
+                           f"⚠️ ¿Seguro? Esto despliega {rec.get('lane')} (PR #{rec.get('pr_number')}, "
+                           f"{(rec.get('merge_sha') or '')[:7]}) con `railway up`.", html=False, reply_markup=markup)
+        return True
+
+    def cmd_promover(self, where, args: str, brand: str | None) -> None:
+        """/promover migrateam: crea la tarjeta de promoción develop→master. NO fusiona ni despliega: eso es del
+        integrador y de Oscar con su ficha."""
+        arg = args.strip().lower() or (brand or "").lower()
+        lane = self.lanes.get("claude-migrateam")
+        if arg not in ("migrateam", "claude-migrateam") or lane is None:
+            self._send(where, "Solo MigraTeam tiene promoción: /promover migrateam", html=False)
+            return
+        from . import health
+        drift = health.migrateam_drift(lane.repo)
+        day = time.strftime("%Y%m%d", time.localtime(self._now()))
+        chat, thread = where
+        body = (f"## Objetivo\nPreparar la promoción de producción de MigraTeam: rama `release/{day}` desde develop con "
+                f"la lista de PRs que suben a master y el resultado de los gates.\n\n## Encargo (/promover desde "
+                f"Telegram)\n- Estado develop↔master al pedirlo: {drift}\n- SOLO preparar: no hagas merge ni push a "
+                "master, ni despliegues. La fusión a master es del integrador con el OK de Oscar.\n- Si no puedes "
+                "preparar la rama con tus permisos, deja la lista de PRs en `for_oscar` y devuelve needs_input.\n\n"
+                f"Origen-Telegram: chat={chat} thread={thread}\n")
+        tid = self.hermes_for(lane.board).create(f"Promoción MigraTeam release/{day}", body, lane.name,
+                                                 priority=HAZLO_PRIORITY, key=f"promover-{day}", created_by="oscar")
+        self._send(where, f"📝 Tarjeta de promoción creada: <code>{html.escape(tid)}</code> en {lane.name}. Solo "
+                          "prepara la release; producción la fusiona el integrador con tu OK.\n" + html.escape(drift))
+
+    def _spawn(self, fn: Callable[[], None]) -> None:  # aparte para que los tests lo ejecuten en línea
+        threading.Thread(target=fn, name="lote", daemon=True).start()
 
     def cmd_tareas(self, where, args: str, brand: str | None) -> None:
         if args:

@@ -130,9 +130,11 @@ def test_needs_input_buttons_only_for_first_question_with_star():
     qs = [{"question": "¿Qué BD?", "options": ["Supabase", "SQLite", "Postgres propio"], "recommended": 1},
           {"question": "¿Y la cola?", "options": ["Redis", "Ninguna"]}]
     spec = keyboard_spec("needs_input", questions=qs)
-    assert [r[0]["text"] for r in spec[:3]] == ["1) Supabase", "⭐ 2) SQLite", "3) Postgres propio"]
-    assert [r[0]["index"] for r in spec[:3]] == [0, 1, 2]
-    assert _actions(spec)[3] == [OTHER, PARK] and _actions(spec)[4] == [EXPLAIN] and len(spec) == 5
+    # opciones escritas en el mensaje; botones: letras, ⭐ Recomendada (= la opción 2) y ✍️ Otra
+    assert [b["text"] for b in spec[0]] == ["A", "B", "C"] and [b["index"] for b in spec[0]] == [0, 1, 2]
+    assert [(b["text"], b["action"], b.get("index")) for b in spec[1]] == [("⭐ Recomendada", OPTION, 1),
+                                                                         ("✍️ Otra", OTHER, None)]
+    assert _actions(spec)[2] == [PARK, EXPLAIN] and len(spec) == 3  # la 2ª sin recomendada: sin "aceptar todas"
 
 
 def test_questions_are_normalised_retrocompatibly():
@@ -141,7 +143,9 @@ def test_questions_are_normalised_retrocompatibly():
     assert [q["question"] for q in qs] == ["¿A?", "¿B?", "¿C?", "3"]
     assert qs[0]["options"] == [] and len(qs[1]["options"][0]) == 40 and qs[1]["recommended"] is None
     assert qs[2]["options"] == []  # opciones fuera de contrato: solo texto libre
-    assert notices.questions_block([{"question": "¿B?", "options": ["a", "b"]}]) == ["• ¿B?"]
+    assert notices.questions_block([{"question": "¿B?", "options": ["a", "b"]}]) == ["• ¿B?", "   A) a", "   B) b"]
+    assert notices.questions_block([{"question": "¿B?", "options": ["a", "b"], "recommended": 1}]) == [
+        "• ¿B?", "   A) a", "   B) b ⭐"]
 
 
 # --- 3. callback_data corto y persistido --------------------------------------------------------------
@@ -162,13 +166,13 @@ def test_callback_data_is_short_and_persisted_without_the_text(tmp_path):
     q = {"question": "¿Qué opción " + "larga " * 40 + "?", "options": ["ó" * 40, "b", "c", "d"], "recommended": 0}
     markup = desk.markup("needs_input", task={"id": "t_1", "title": "T", "body": BODY}, lane=LANE, questions=[q])
     datas = [b["callback_data"] for row in markup["inline_keyboard"] for b in row]
-    assert len(datas) == 7 and all(len(d.encode()) <= 64 for d in datas)
+    assert len(datas) == 8 and all(len(d.encode()) <= 64 for d in datas)
     assert all("ó" not in d for d in datas)
     token = datas[0].split(":")[0]
     assert len({d.split(":")[0] for d in datas}) == 1
     rec = json.loads((tmp_path / "cb" / f"{token}.json").read_text(encoding="utf-8"))
     assert (rec["task_id"], rec["board"], rec["lane"]) == ("t_1", "oscarhq", "claude-oscarhq")
-    assert rec["buttons"][1] == {"action": OPTION, "index": 1, "text": "2) b"}
+    assert rec["buttons"][1] == {"action": OPTION, "index": 1, "text": "B"}
 
 
 def test_no_markup_for_states_without_buttons(tmp_path):
@@ -493,7 +497,7 @@ def test_runner_needs_input_alert_carries_buttons_when_desk_is_active(tmp_path):
     LaneRunner(LANE, hermes=h, git=FakeGit(), worker=FakeWorker([out]), verifier=FakeVerifier(), notify=n,
                decisions=desk).run_once()
     texts = [b["text"] for row in n.markups[-1]["inline_keyboard"] for b in row]
-    assert texts == ["1) A", "⭐ 2) B", "✍️ Otra respuesta", "🗄 Aparcar", "💬 Explícame más"]
+    assert texts == ["A", "B", "⭐ Recomendada", "✍️ Otra", "🗄 Aparcar", "💬 Explícame más"]
     assert "responde con un botón" in n.msgs[-1]
     block = [c for c in h.calls if c[0] == "block"][0]
     assert "¿A o B? [1) A / 2) B (recomendada)]" in block[3]  # la tarjeta ve las opciones (dicts no rompen)

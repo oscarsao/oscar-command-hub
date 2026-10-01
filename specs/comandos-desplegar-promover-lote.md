@@ -1,6 +1,11 @@
-# Spec-Lite · /desplegar, /promover y /lote (pendiente del OK de Oscar)
+# Spec-Lite · /desplegar, /promover y /lote
 
-Estado: NO implementado. `/hazlo` y `/estado` (y la ayuda de `/start` y `/ayuda`) ya están en la rama; esta parte
+**Estado (01-10, OK de Oscar "sí a las recomendaciones"): IMPLEMENTADO.** `/lote` ya lo trajo main (batch.py). `/desplegar
+<proyecto>` = ficha por fusión pendiente con [🚀 Desplegar] → "¿Seguro?" → [✅ Sí, desplegar] (el `int_deploy` del
+integrador; solo carriles `railway_up`, y no con migración pendiente). `/promover migrateam` solo crea la tarjeta de
+promoción para el integrador: ni fusiona ni despliega. Lo de abajo es el análisis original.
+
+Estado original: NO implementado. `/hazlo` y `/estado` (y la ayuda de `/start` y `/ayuda`) ya están en la rama; esta parte
 mueve producción y su diseño no existe aún en el integrador, así que se para aquí en lugar de inventarlo.
 
 ## Por qué no se ha implementado
