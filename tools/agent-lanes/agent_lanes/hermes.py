@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
+import tempfile
 
 from . import proc as _proc
 from pathlib import Path
@@ -234,6 +236,29 @@ class HermesCLI:
 
     def list_ready(self, assignee: str) -> list[dict]:
         return self.list_status(assignee, "ready")
+
+    def create(self, title: str, body: str, assignee: str, *, priority: int | None = None, key: str | None = None,
+               created_by: str | None = None) -> str:
+        """Crea una tarjeta y devuelve su id. --body-file: un cuerpo que empieza por "- " no se toma como flag."""
+        fd, tmp = tempfile.mkstemp(prefix="tarjeta-", suffix=".md")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as fh:
+                fh.write(body)
+            args = ["create", "--assignee", assignee, "--body-file", tmp, "--created-by", created_by or self.author,
+                    "--json"]
+            if priority is not None:
+                args += ["--priority", str(priority)]
+            if key:
+                args += ["--idempotency-key", key]
+            cp = self._call(*args, title)
+        finally:
+            os.remove(tmp)
+        if cp.returncode != 0:
+            raise HermesError(f"create failed: {cp.stderr.strip()[:300]}")
+        found = re.search(r"t_[0-9a-f]{8}", cp.stdout or "")
+        if not found:
+            raise HermesError(f"create sin id en la salida: {(cp.stdout or '')[:200]}")
+        return found.group(0)
 
     def claim(self, task_id: str, ttl: int) -> bool:
         return self._call("claim", task_id, "--ttl", str(ttl)).returncode == 0
