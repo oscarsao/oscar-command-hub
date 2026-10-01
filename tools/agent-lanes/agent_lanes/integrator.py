@@ -85,6 +85,8 @@ def pending_migration(st: dict) -> str | None:
     mig = st.get("migration")
     return None if (mig in MIGRATION_KINDS and st.get("migration_applied")) else (mig or None)
 DEPLOY_RAILWAY_UP, DEPLOY_ON_MERGE, DEPLOY_NONE = "railway_up", "on_merge", "none"
+CHECK_GITHUB_DEPLOYMENTS = "github_deployments"
+GH_DEPLOY_OK, GH_DEPLOY_BAD = {"success"}, {"failure", "error", "inactive"}
 # `apply` de una política con deploy none: qué hace [🔁 Aplicar] tras fusionar. Solo restart_drain (claude-hub):
 # `py -3.12 lanes.py restart --drain` en el checkout VIVO (ROOT), lanzado sin esperar, porque reinicia el propio
 # proceso que atiende el botón. El subcomando lo aporta feat/plan-d-runtime; mientras lanes.py no lo tenga, no hay
@@ -147,6 +149,9 @@ class Policy:
     railway_environment: str = ""
     health_url: str = ""
     health_commit_key: str = ""              # clave del JSON de health con el sha desplegado (MigraTeam: commit_sha)
+    # on_merge: cómo se comprueba el deploy. Vacío = /health (health_url + health_commit_key); github_deployments =
+    # estado de GitHub Deployments del commit fusionado (Scraper: Railway despliega desde la rama base).
+    deploy_check: str = ""
     # Infraestructura de arranque/deploy (Procfile, railway.*, alembic/env.py...): se fusiona, pero sin botón de
     # deploy (MigraTeam: sin botón) y con aviso, igual que una migración.
     sensitive_paths: tuple[str, ...] = ()
@@ -214,6 +219,8 @@ def load_integrator_settings(path: Path | None = None, env: dict | None = None, 
         policies[name] = Policy(lane=name, **{k: ("" if v is None else v) for k, v in p.items()})
         if policies[name].deploy not in (DEPLOY_RAILWAY_UP, DEPLOY_ON_MERGE, DEPLOY_NONE):
             raise ValueError(f"integrator.lanes.{name}.deploy desconocido: {policies[name].deploy}")
+        if policies[name].deploy_check not in ("", CHECK_GITHUB_DEPLOYMENTS):
+            raise ValueError(f"integrator.lanes.{name}.deploy_check desconocido: {policies[name].deploy_check}")
         if policies[name].apply and (policies[name].apply not in APPLY_ARGV or policies[name].deploy != DEPLOY_NONE):
             raise ValueError(f"integrator.lanes.{name}.apply: solo {sorted(APPLY_ARGV)} y con deploy none")
     return IntegratorSettings(enabled=enabled, interval_seconds=int(cfg.get("interval_seconds") or 300),
@@ -464,6 +471,29 @@ class Integrator:
         self.refresh_summary()
         return results
 
+    def _promote_markup(self) -> dict | None:
+        """[🚀 Promover a producción] en el resumen fijado 🚦 (uno por proyecto con `promote:` en lanes.yaml)."""
+        promoter = getattr(self.desk, "promoter", None)
+        if not promoter or not promoter.configs:
+            return None
+        rows = []
+        for key in promoter.configs:
+            rec = {"task_id": f"promo-start-{key}", "board": "", "lane": "", "key": key}
+            rows.append([{"text": f"🚀 Promover {key.capitalize()} a producción", "action": "promo_start"}])
+            token_markup = self.desk.store.issue(rec, [rows[-1]])[1]
+            rows[-1] = token_markup["inline_keyboard"][0]
+        return {"inline_keyboard": rows}
+
+    def reissue_promote_markup(self) -> str | None:
+        """Repone el botón 🚀 del fijado tras pulsarlo (token de un solo uso). Nunca lanza."""
+        if not self.pinned or self.dry_run:
+            return None
+        try:
+            return self.pinned.reissue(self._promote_markup)
+        except Exception as exc:
+            log.warning("no se pudo reponer el botón 🚀: %s", exc)
+            return None
+
     def refresh_summary(self) -> str | None:
         """Edita el mensaje fijado del tema de Integración con lo pendiente (solo si cambia). Nunca lanza."""
         # Sin una pasada hecha (_last_pass None: arranque, o la CLI del coordinador) _seen está vacío y el fijado
@@ -480,7 +510,7 @@ class Integrator:
                     continue
                 entries.append({"emoji": risk_of(policy).emoji, "pr": st["pr"], "title": st.get("title") or tid,
                                 "state": state, "since": st.get("since")})
-            return self.pinned.update(summary_text(entries, self._now()))
+            return self.pinned.update(summary_text(entries, self._now()), self._promote_markup)
         except Exception as exc:
             log.warning("resumen de integración falló: %s", exc)
             return None
@@ -1147,8 +1177,13 @@ class Integrator:
                 # Oscar aplica la migración a mano y lo dice con [✅ Migración aplicada]: desbloquea el 🚀.
                 markup = (desk.store.issue(rec, [[dict(MIGRATION_BUTTON)]])[1]
                           if rec["migration"] in MIGRATION_KINDS else None)
-                self._edit(desk, lane, rec, where, "done", status_line(f"✅ fusionado · {short}", NEEDS_MIGRATION),
-                           markup=markup)
+                names = self._migration_files(lane, policy, sha) if rec["migration"] == "supabase" else []
+                if names:
+                    self._save(rec["task_id"], migration_files=names)
+                self._edit(desk, lane, rec, where, "done", status_line(
+                    f"✅ fusionado · {short}", NEEDS_MIGRATION,
+                    ("migraciones: " + ", ".join(names[:8]) + (f" (+{len(names) - 8})" if len(names) > 8 else ""))
+                    if names else None), markup=markup)
                 return True
             markup = desk.store.issue(rec, [[{"text": "🚀 Desplegar", "action": INT_DEPLOY}]])[1]
             self._edit(desk, lane, rec, where, "done", status_line(f"✅ fusionado · {short}", "sin desplegar"),
@@ -1338,8 +1373,9 @@ class Integrator:
 
     def _tip_problem(self, lane, policy: Policy, tid: str, sha: str, tip: str) -> str | None:
         problem = self._tip_problem_raw(lane, policy, tid, sha, tip)
-        if problem:  # cada decisión de desplegar/no desplegar queda en runner.log (30-09)
+        if problem:  # cada decisión de desplegar/no desplegar queda en runner.log (30-09) y en la tarjeta (01-10)
             log.warning("%s: despliegue de %s rechazado: %s", tid, lane.name, problem)
+            self._comment(lane, tid, f"DEPLOY-RECHAZADO {tip or '?'} · {problem}")
         else:
             log.info("%s: despliegue de %s permitido sobre %s", tid, lane.name, (tip or "?")[:12])
         return problem
@@ -1353,7 +1389,9 @@ class Integrator:
             return f"{lane.base} ya no contiene esta fusión"
         for other, st in self._merged_states(lane, tid):
             if pending_migration(st) and self._is_ancestor(lane, st["merge_sha"], tip):
-                return f"{lane.base} incluye el PR #{st.get('pr', '?')} con migración o infraestructura pendiente"
+                names = st.get("migration_files") or []
+                return (f"{lane.base} incluye el PR #{st.get('pr', '?')} con migración o infraestructura pendiente"
+                        + (f" ({', '.join(names[:5])})" if names else ""))
         if tip != sha:
             changed = (self._git(lane.repo, "diff", "--no-renames", "--name-only", sha, tip).stdout or "").split()
             risky = [f for f in changed if any(f.startswith(p) for p in policy.manual_migrations)
@@ -1362,6 +1400,12 @@ class Integrator:
                 return (f"después de esta fusión {lane.base} trae migración o infraestructura: "
                         + ", ".join(risky[:3]))
         return None
+
+    def _migration_files(self, lane, policy: Policy, sha: str) -> list[str]:
+        """Migraciones manuales (policy.manual_migrations) que trae la fusión `sha` (squash: su padre es la base)."""
+        cp = self._git(lane.repo, "diff", "--no-renames", "--name-only", f"{sha}^", sha)
+        files = (cp.stdout or "").split() if cp.returncode == 0 else []
+        return [f for f in files if any(f.startswith(p) for p in policy.manual_migrations)]
 
     def _mark_included(self, lane, tid: str, tip: str, dep_id: str, desk) -> list:
         """Tras un deploy correcto de `tip`: toda ficha fusionada cuyo merge_sha está en lo desplegado queda como
@@ -1424,6 +1468,8 @@ class Integrator:
         """MigraTeam: su CLI de Railway no está enlazada (y enlazarla es config): se sondea GET /health hasta que
         `commit_sha` sea el del merge. Un 200 con otro sha es el contenedor anterior, no el deploy nuevo."""
         tid, sha = rec["task_id"], rec.get("merge_sha") or ""
+        if policy.deploy_check == CHECK_GITHUB_DEPLOYMENTS and sha:
+            return self._verify_github_deployments(lane, policy, rec, where, desk)
         if not policy.health_url or not policy.health_commit_key or not sha:
             self._edit(desk, lane, rec, where, "done", status_line(
                 f"🚀 fusionado · {sha[:7]}", "Railway despliega solo", "compruébalo en Railway y GET /health"))
@@ -1458,6 +1504,67 @@ class Integrator:
         self._comment(lane, tid, f"DEPLOY-SIN-CONFIRMAR {sha} · 15 min sin /health con el commit nuevo ({last})")
         self._edit(desk, lane, rec, where, "blocked", status_line(
             "⛔ deploy sin confirmar en 15 min", f"/health {last}", "revisa Railway y Vercel"))
+        return True
+
+    def _github_deploy_state(self, slug: str, sha: str) -> str:
+        """Estado más reciente de los GitHub Deployments de ESTE commit (solo lectura, `gh api`): success | failure |
+        error | inactive | queued | in_progress | pending | none (aún no hay deployment) | unknown (gh falló)."""
+        cp = self._gh("api", f"repos/{slug}/deployments?sha={sha}&per_page=10")
+        try:
+            deps = json.loads(cp.stdout or "[]") if cp.returncode == 0 else None
+        except json.JSONDecodeError:
+            deps = None
+        if not isinstance(deps, list):
+            return "unknown"
+        states = []
+        for dep in deps:
+            if str(dep.get("sha") or sha).lower() != sha.lower() or not isinstance(dep.get("id"), int):
+                continue
+            st = self._gh("api", f"repos/{slug}/deployments/{dep['id']}/statuses?per_page=1")
+            try:
+                items = json.loads(st.stdout or "[]") if st.returncode == 0 else None
+            except json.JSONDecodeError:
+                items = None
+            if not isinstance(items, list):
+                return "unknown"
+            states.append(str(items[0].get("state") or "pending").lower() if items else "pending")
+        if not states:
+            return "none"
+        for wanted in (GH_DEPLOY_OK, GH_DEPLOY_BAD):  # un success del commit manda; si no, el fallo
+            hit = next((x for x in states if x in wanted), None)
+            if hit:
+                return hit
+        return states[0]
+
+    def _verify_github_deployments(self, lane, policy: Policy, rec: dict, where: dict, desk) -> bool:
+        """Scraper: Railway despliega desde la rama base. Se sondea el estado de GitHub Deployments del commit
+        fusionado hasta `success`; `failure`/`error` = aviso de fallo; el plazo agotado = "sin confirmar" (no se
+        reintenta nada: solo lectura)."""
+        tid, sha = rec["task_id"], rec["merge_sha"]
+        slug = (self.links.repo_slug(lane) if self.links else None) or getattr(lane, "github", "") or ""
+        if not slug:
+            self._edit(desk, lane, rec, where, "done", status_line(
+                f"🚀 fusionado · {sha[:7]}", "compruébalo en Railway y GitHub Deployments"))
+            return True
+        deadline = self._clock() + self.settings.deploy_timeout_seconds
+        last = "sin deployment"
+        while self._clock() < deadline:
+            last = self._github_deploy_state(slug, sha)
+            if last in GH_DEPLOY_OK:
+                self._comment(lane, tid, f"DESPLEGADO {sha} · GitHub Deployments success")
+                self._save(tid, status="deployed", deployed_sha=sha)
+                self._edit(desk, lane, rec, where, "done", status_line(f"🚀 desplegado · {sha[:7]}",
+                                                                       "GitHub Deployments: success"))
+                return True
+            if last in GH_DEPLOY_BAD:
+                self._comment(lane, tid, f"DEPLOY-FALLIDO {sha} · GitHub Deployments {last}")
+                self._edit(desk, lane, rec, where, "blocked", status_line(
+                    "⛔ deploy falló", f"GitHub Deployments: {last}", "revisa Railway"))
+                return True
+            self._sleep(self.settings.poll_seconds)
+        self._comment(lane, tid, f"DEPLOY-SIN-CONFIRMAR {sha} · plazo agotado sin success en GitHub Deployments ({last})")
+        self._edit(desk, lane, rec, where, "blocked", status_line(
+            "⛔ deploy sin confirmar", f"GitHub Deployments: {last}", "revisa Railway"))
         return True
 
 

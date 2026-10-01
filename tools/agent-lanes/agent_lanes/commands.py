@@ -48,6 +48,7 @@ COMMANDS = (
     ("tareas", "En curso y en cola por carril: /tareas [migrateam|pildora|nextjobs]"),
     ("tarea", "Ficha de una tarea con sus botones: /tarea t_xxx"),
     ("lote", "Montar ya el lote de un proyecto: /lote migrateam|oscarhq"),
+    ("promover", "Promover MigraTeam a producción (doble confirmación): /promover migrateam"),
     ("salud", "Estado de runner, Hermes, servicios, MigraTeam y equipo"),
 )
 COMMAND_SCOPES = ("default", "all_private_chats", "all_group_chats")
@@ -535,6 +536,22 @@ class CommandCenter:
             self._send(where, text, html=False)
 
         self._spawn(run)
+
+    def cmd_promover(self, where, args: str, brand: str | None) -> None:
+        """/promover migrateam: prepara el PR develop → master y pide la doble confirmación (promote.py)."""
+        promoter = getattr(self.desk, "promoter", None)
+        if not promoter:
+            self._send(where, "La promoción a producción no está activa (integrador apagado o sin sección promote).",
+                       html=False)
+            return
+        key = (args.strip().split() or [""])[0].lower()
+        if key not in promoter.configs:
+            self._send(where, "Dime qué promover: /promover " + "|".join(promoter.configs), html=False)
+            return
+        self._send(where, f"Preparando la promoción de {key}… compruebo el PR, los checks y producción (solo lectura).",
+                   html=False)
+        dest = {"chat_id": where[0], "thread_id": where[1]}
+        self._spawn(lambda: promoter.start(key, dest))
 
     def _spawn(self, fn: Callable[[], None]) -> None:  # aparte para que los tests lo ejecuten en línea
         threading.Thread(target=fn, name="lote", daemon=True).start()

@@ -211,7 +211,22 @@ lanes:
 # Solo actúa con INTEGRATOR_ENABLED=true en agent-lanes/.env (por defecto apagado). Nunca fusiona sin el botón de
 # Oscar, nunca --force/--admin, nunca push a la base, nunca migraciones ni variables de entorno.
 # Prueba en seco: py -3.12 -m agent_lanes.integrator --dry-run [--lane claude-oscarhq --pr N]
-# Carriles sin entrada aquí (scraper, nextjobs) no se integran; para añadirlos basta `deploy: none`.
+# Promoción a producción desde Telegram (agent_lanes/promote.py): /promover migrateam o [🚀 Promover a producción] en
+# 🚦. PR develop → master, checks obligatorios, alembic_version de producción por /health (solo lectura) y doble
+# confirmación. Si el /health de producción no expone alembic_version no hay botón (cambio en el repo MigraTeam).
+promote:
+  migrateam:
+    repo: PildoraDigital/OCR-PDF-and-images
+    head: develop
+    base: master
+    health_url: https://api.migrateam.com/health
+    health_commit_key: commit_sha
+    health_alembic_key: alembic_version
+    alembic_versions: backend/alembic/versions/
+    seeds: [backend/seeds/, backend/app/seeds/]
+    sensitive_paths: [backend/alembic/, backend/alembic.ini, backend/Procfile, backend/railway.json, backend/railway.toml, backend/nixpacks.toml, backend/Dockerfile, railway.json, vercel.json, frontend/vercel.json, .github/]
+
+# Carriles sin entrada aquí (nextjobs) no se integran; para añadirlos basta `deploy: none`.
 integrator:
   interval_seconds: 300          # cada cuánto revisa tarjetas done aprobadas (el runner pasa cada 60 s)
   worktree_root: C:/Users/oscar/dev/_lanes/_integrator   # worktrees temporales int-<id> / intdep-<id>
@@ -260,3 +275,13 @@ integrator:
       risk_label: SISTEMA
       # Hooks y contrato de seguridad de los workers: se puede fusionar, con aviso en la ficha (revísalo tú).
       sensitive_paths: [tools/agent-lanes/contract/, tools/agent-lanes/lanes.yaml]
+    claude-scraper:
+      # 01-10: Railway despliega el Scraper desde la rama base: fusionar = producción. Se verifica con GitHub
+      # Deployments del commit fusionado (success), no con /health.
+      # Activarlo: añadir claude-scraper a INTEGRATOR_LANES en agent-lanes/.env (lo hace el coordinador).
+      deploy: on_merge
+      deploy_check: github_deployments
+      risk: production              # 🔴 PRODUCCIÓN
+      risk_label: SCRAPER
+      merge_warning: "⚠️ Fusionar DESPLIEGA el Scraper a producción solo (Railway, desde la rama base)"
+      sensitive_paths: [railway.json, railway.toml, nixpacks.toml, Procfile, Dockerfile, requirements.txt, .github/]

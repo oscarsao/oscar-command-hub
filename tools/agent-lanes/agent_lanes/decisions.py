@@ -221,6 +221,7 @@ class DecisionDesk:
         self._now = now
         self.integrator = None  # carril Integrador (INTEGRATOR_ENABLED): botones int_* de fusionar/desplegar
         self.messages = messages  # MessageStore: todas las copias de cada aviso (sincronización tema <-> DM)
+        self.promoter = None      # promote.Promoter: /promover y botones promo_* (producción de MigraTeam)
         self.commands = None      # CommandCenter: /hoy, /decisiones, /aprobar, /tareas, /tarea
         self.tree = None          # deps.TreeReader: líneas 🔗/⏸/↳ al redibujar un aviso (opcional)
         # 💬 Explícame más: rec -> texto llano (claude -p --model haiku sin herramientas); inyectable en tests.
@@ -438,6 +439,17 @@ class DecisionDesk:
         action = button["action"]
         if action.startswith("int_"):  # 🔀 Fusionar / 🚀 Desplegar: solo con el Integrador activo
             return bool(self.integrator) and self.integrator.on_button(action, rec, where, self)
+        if action.startswith("promo_"):  # 🚀 Promover MigraTeam: Revisado / Sí, promover (promote.py)
+            if action == "promo_start":
+                if not self.promoter:
+                    return False
+                key = str(rec.get("key") or "")
+                reissue = getattr(self.integrator, "reissue_promote_markup", None)
+                if reissue:  # el token del fijado ya está gastado: se repone para poder pulsar de nuevo
+                    reissue()
+                self.promoter.start(key, where)
+                return True
+            return bool(self.promoter) and self.promoter.on_button(action, rec, where, self)
         if action == ACCEPT_ALL:
             return self._accept_all(rec, where)
         if action == ACCEPT_CARD:

@@ -220,8 +220,25 @@ class PinnedSummary:
         tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
         os.replace(tmp, self.path)
 
-    def update(self, text: str) -> str:
-        """'created' | 'edited' | 'unchanged' | 'error'. Un error de red no recrea (evita fijados duplicados)."""
+    def reissue(self, markup_factory) -> str:
+        """Vuelve a editar el fijado con teclado nuevo y el mismo texto (los botones son de un solo uso: tras pulsar
+        [🚀 Promover] el token queda gastado y el texto no cambia, así que `update` no lo repondría)."""
+        with self._lock:
+            st = self._load()
+            if not st.get("message_id") or str(st.get("chat_id")) != self.chat or str(st.get("thread_id")) != self.thread:
+                return "unchanged"
+            try:
+                markup = markup_factory() if markup_factory else None
+                ok = markup and self.notifier.edit(self.chat, st["message_id"], st.get("text") or "",
+                                                   reply_markup=markup)
+            except Exception as exc:
+                log.info("resumen de integración: no se pudo reponer el teclado (%s)", exc)
+                return "error"
+            return "edited" if ok else "unchanged"
+
+    def update(self, text: str, markup_factory=None) -> str:
+        """'created' | 'edited' | 'unchanged' | 'error'. Un error de red no recrea (evita fijados duplicados).
+        `markup_factory`: teclado (p. ej. [🚀 Promover a producción]) que se pide solo cuando hay que editar o crear."""
         with self._lock:
             st = self._load()
             same_place = str(st.get("chat_id")) == self.chat and str(st.get("thread_id")) == self.thread
@@ -229,7 +246,9 @@ class PinnedSummary:
                 if st.get("text") == text:
                     return "unchanged"
                 try:
-                    ok = self.notifier.edit(self.chat, st["message_id"], text)
+                    markup = markup_factory() if markup_factory else None
+                    ok = self.notifier.edit(self.chat, st["message_id"], text,
+                                            **({"reply_markup": markup} if markup else {}))
                 except Exception as exc:
                     log.info("resumen de integración: no se pudo editar (%s); se reintenta en la próxima pasada", exc)
                     return "error"
@@ -238,7 +257,9 @@ class PinnedSummary:
                     return "edited"
                 log.info("resumen de integración: el mensaje fijado ya no se puede editar; creo otro")
             try:
-                sent = self.notifier.send_to(self.chat, self.thread, text, silent=True)
+                markup = markup_factory() if markup_factory else None
+                sent = self.notifier.send_to(self.chat, self.thread, text, silent=True,
+                                             **({"reply_markup": markup} if markup else {}))
             except Exception as exc:
                 log.warning("resumen de integración: no se pudo enviar: %s", exc)
                 return "error"
