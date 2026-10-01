@@ -669,7 +669,10 @@ def test_roles_escalate_only_business_decisions():
     for role in ("roles/implementador.md", "roles/revisor.md"):
         text = (ROOT / role).read_text(encoding="utf-8")
         assert "decisiones TÉCNICAS o de implementación en las que ya tengas una opción recomendada NO se escalan" in text
-        assert "Solo pregunta a Oscar decisiones de NEGOCIO o de producto" in text
+        if role == "roles/implementador.md":  # 01-10: regla de autonomía (solo para lo irreversible)
+            assert "AUTONOMÍA" in text and "IRREVERSIBLE" in text
+        else:
+            assert "Solo pregunta a Oscar decisiones de NEGOCIO o de producto" in text
         assert "UNA" in text and "no 5 preguntas sueltas" in text
 
 

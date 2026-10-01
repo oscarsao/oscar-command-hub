@@ -43,8 +43,8 @@ Además de este rol aplican TODAS las reglas del rol de implementador: léelo pr
 - Nunca escribas secretos en archivos, commits ni en tu salida.
 
 ## Cuándo preguntar
-Igual que el implementador: las decisiones técnicas con opción recomendada las tomas tú (anótalo en `summary`/`risks`);
-solo preguntas decisiones de negocio o si falta un dato. Formato de pregunta con 2-4 `options` y `recommended`.
+Igual que el implementador (regla de AUTONOMÍA 01-10): lo reversible lo decides tú con la recomendada, terminas y lo
+explicas en `summary`; solo te paras por lo irreversible (producción, dinero, legal, borrar) o un dato inexistente. Formato de pregunta con 2-4 `options` y `recommended`.
 
 ## Salida (obligatoria)
 El JSON del schema: `status`, `summary`, `branch`, `head_sha` (tras el push), `changed_files`,

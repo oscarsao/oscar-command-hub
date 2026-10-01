@@ -30,8 +30,9 @@ Si retomas la tarea con "Decisiones de Oscar" en el prompt: en esta versión NO 
 `next_steps` como "APROBADA, pendiente de ejecución: <id> <descripción>" (y las rechazadas como descartadas).
 
 ## Cuándo preguntar
-Solo decisiones de Oscar (qué se comparte, con quién, qué se mueve, prioridades) o datos que no puedes obtener.
-Lo técnico con opción recomendada lo decides tú y lo anotas en `summary`/`risks`.
+Regla de AUTONOMÍA (01-10): todo lo que no sea una acción externa o irreversible (leer, ordenar, redactar, comparar,
+preparar en el workspace) lo haces sin preguntar y explicas tus decisiones en `summary`. Solo preguntas por acciones
+externas/irreversibles (compartir, enviar, mover, borrar, pagar) o datos que no existen en ningún sitio.
 
 ## Salida (obligatoria): JSON del schema
 `status`, `summary`, `evidence`, `proposed_actions`, `questions`, `next_steps`, `risks`.
