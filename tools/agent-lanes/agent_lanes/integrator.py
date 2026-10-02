@@ -117,7 +117,9 @@ SECRET_RULES: tuple[tuple[str, re.Pattern], ...] = (
     ("clave de Google", re.compile(r"\bAIza[0-9A-Za-z_-]{35}\b")),
     ("clave secreta de Supabase", re.compile(r"\bsb_secret_[A-Za-z0-9_-]{20,}")),
     ("URL de base de datos con contraseña", re.compile(
-        r"\b(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis)(?:\+\w+)?://[^\s:/@'\"]+:[^\s@/'\"]+@")),
+        # La contraseña no puede ser un marcador de ejemplo: <contraseña>, ${VAR}, $VAR, ***, PASSWORD (02-10, PR #6).
+        r"\b(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis)(?:\+\w+)?://[^\s:/@'\"]+:"
+        r"(?!<[^>@\s]*>@|\$\{?\w+\}?@|\*+@|(?:password|pass|pwd|contrase[nñ]a)@)[^\s@/'\"]+@", re.I)),
     ("service_role con valor", re.compile(
         r"service[_-]?role[\w-]*[\"']?\s*[:=]\s*[\"']?(?!\s*(?:os\.|process\.|\$\{|<|None|null|\"\"|''))"
         r"[A-Za-z0-9._-]{20,}", re.I)),

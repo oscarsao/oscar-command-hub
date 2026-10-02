@@ -443,7 +443,10 @@ def test_secret_rules_detect(line, rule):
 
 @pytest.mark.parametrize("line", ["task-sk-list = 1", "sk-short", "key = os.environ['SERVICE_ROLE_KEY']",
                                   "service_role_key = os.getenv('X')", "postgres://localhost/db",
-                                  "url = 'postgresql://user@host/db'"])
+                                  "url = 'postgresql://user@host/db'",
+                                  "DSN: `postgresql://monitor_ro:<contraseña>@db.<ref>.supabase.co:5432/postgres`",
+                                  "postgresql://app:${DB_PASSWORD}@db:5432/x", "postgres://u:$PGPASS@h/db",
+                                  "postgres://u:****@h/db", "postgres://u:PASSWORD@h/db"])
 def test_secret_rules_ignore_harmless(line):
     assert scan_secrets(diff("f.py", f"+{line}")) == []
 
