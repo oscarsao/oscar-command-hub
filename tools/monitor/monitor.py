@@ -29,6 +29,9 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import dbwatch  # noqa: E402  (sonda de la base de Supabase; mismo directorio)
+
 HOME = Path.home()
 HERMES = Path(os.environ.get("LOCALAPPDATA", HOME / "AppData" / "Local")) / "hermes"
 LANES = HOME / "oscar-command-hub" / "tools" / "agent-lanes"
@@ -51,7 +54,10 @@ WATCH_PROCS = ("claude", "python", "pythonw", "node", "chrome", "hermes", "cloud
 LOG_LEVEL_RE = re.compile(r"\b(WARNING|ERROR|CRITICAL)\b")
 # Silencio del DM de 23:00 a 08:00 (30-09): solo pasan las caídas reales (runner, Hermes, servicios, listado de tareas).
 QUIET_START, QUIET_END = 23, 8
-OUTAGE_KEYS = ("runner-dead", "gw-dead", "health-", "list-fail")
+OUTAGE_KEYS = ("runner-dead", "gw-dead", "health-", "list-fail", "db-down", "db-slow")
+DB_EVERY = 300        # s entre sondas de la base de Supabase (01-10: saturada 30-09 y 01-10)
+DB_MAX_CONNS = 45     # AVISO por encima (el plan Micro admite 60)
+DB_MIN_MEM_PCT = 15   # AVISO si la memoria disponible baja de esto
 LIST_FAIL = "no se pudieron listar tareas"
 LIST_FAIL_AFTER = 600  # s de fallos seguidos listando tareas (hermes/WinError) antes de abrir ALTA
 RETRY_TASKS = ("Resumen diario Hermes", "Auditor diario carriles")  # tareas programadas a relanzar si fallaron
@@ -115,9 +121,10 @@ def dm_pusher():
 
 
 class Monitor:
-    def __init__(self, *, write_log: bool = False, push=None):
+    def __init__(self, *, write_log: bool = False, push=None, db=None):
         STATE.mkdir(exist_ok=True)
         self.write_log, self.push = write_log, push
+        self.db, self.db_at = db, 0.0  # dbwatch.DbWatch o None (vigilancia de Supabase desactivada)
         self.alerts: deque[tuple[str, str, str]] = deque(maxlen=14)  # (hora, nivel, texto)
         self._seen: dict[str, float] = {}
         self.now = datetime.now  # inyectable en tests
@@ -136,7 +143,8 @@ class Monitor:
         psutil.cpu_percent(None)
 
     # --- alertas --------------------------------------------------------------------------------------
-    def condition(self, key: str, active: bool, text: str, fix: str, *, min_hits: int = 3, every: float = 1800) -> None:
+    def condition(self, key: str, active: bool, text: str, fix: str, *, min_hits: int = 3, every: float = 1800,
+                  level: str = "ALTA") -> None:
         """Estado persistente (runner/Hermes/servicio caído): alerta solo si dura `min_hits` lecturas seguidas, con
         qué hacer, y avisa cuando se resuelve. 28-09: un reinicio de 20 s del runner mandó "NO está vivo" sin más."""
         conds = self.__dict__.setdefault("_conds", {})
@@ -145,7 +153,7 @@ class Monitor:
             c["hits"] += 1
             c["since"] = c["since"] or time.time()
             if c["hits"] >= min_hits:
-                self.alert("ALTA", f"{text}\n👉 Qué hacer: {fix}", key, every=every)
+                self.alert(level, f"{text}\n👉 Qué hacer: {fix}", key, every=every)
                 c["alerted"] = True
             return
         if c["alerted"]:
@@ -165,7 +173,7 @@ class Monitor:
             return
         with ALERTS_LOG.open("a", encoding="utf-8", newline="\n") as f:
             f.write(f"{datetime.now():%Y-%m-%d %H:%M:%S} {level} {text}\n")
-        if level in ("ALTA", "RESUELTO") and self.push:
+        if level in ("ALTA", "AVISO", "RESUELTO") and self.push:
             h = self.now().hour
             if (h >= QUIET_START or h < QUIET_END) and not key.startswith(OUTAGE_KEYS):
                 self._quiet_pending.append(text.split("\n")[0][:160])  # se resume a las 08:00
@@ -343,6 +351,42 @@ class Monitor:
             shared.write_text(json.dumps(self.health, ensure_ascii=False), encoding="utf-8")
         except OSError:
             pass
+
+    def refresh_db(self, force: bool = False) -> dict | None:
+        """Solo el servicio headless sonda la base de Supabase (cada 5 min), guarda la foto y evalúa los avisos."""
+        if not (self.write_log and self.db) or (not force and time.time() - self.db_at < DB_EVERY):
+            return None
+        self.db_at = time.time()
+        snap = self.db.probe()
+        self.db.save(snap)
+        self.check_db(snap)
+        return snap
+
+    def check_db(self, snap: dict) -> None:
+        """AVISO: memoria <15 %, load > cores 10 min, >45 conexiones. ALTA: sonda muda o consulta trivial >5 s, 2 veces."""
+        fix = self.db.fix_text()
+        sql = snap.get("sql") or {}
+        self.condition("db-down", not snap["ok"],
+                       f"La base de Supabase de Oscar HQ no responde a la sonda ({snap.get('error', '?')}).",
+                       fix, min_hits=2, every=1800)
+        if not snap["ok"]:
+            return  # sin datos fiables no se evalúa (ni se resuelve) el resto
+        slow_s = sql["trivial_s"] if "trivial_s" in sql else snap.get("latency_s", 0)
+        self.condition("db-slow", slow_s > dbwatch.SLOW_S,
+                       f"La base de Supabase de Oscar HQ está lenta: una consulta trivial tarda {slow_s:.0f} s.",
+                       fix, min_hits=2, every=1800)
+        mem = snap.get("mem_avail_pct")
+        self.condition("db-mem", mem is not None and mem < DB_MIN_MEM_PCT,
+                       f"Supabase: a la base le queda solo el {mem}% de memoria disponible.",
+                       fix, min_hits=2, every=3600, level="AVISO")
+        load, cores = snap.get("load1"), snap.get("cores") or 2
+        self.condition("db-load", load is not None and load > cores,
+                       f"Supabase: carga {load} con {cores} núcleos, mantenida ~10 min.",
+                       fix, min_hits=3, every=3600, level="AVISO")  # 3 sondas de 5 min = 10 min
+        conns = snap.get("backends")
+        self.condition("db-conns", conns is not None and conns > DB_MAX_CONNS,
+                       f"Supabase: {conns} conexiones abiertas (máximo del plan: 60).",
+                       fix, min_hits=2, every=3600, level="AVISO")
 
     def refresh_branch_drift(self) -> str:
         """MigraTeam: develop debe contener master. Tras un hotfix directo a master hay que devolverlo a develop
@@ -537,10 +581,11 @@ def run_headless(interval: float = 15.0) -> int:
     except (OSError, ValueError, psutil.Error):
         pass
     pidf.write_text(str(os.getpid()))
-    mon = Monitor(write_log=True, push=dm_pusher())
-    mon.alert("INFO", "Monitor headless arrancado", every=0)
+    mon = Monitor(write_log=True, push=dm_pusher(), db=dbwatch.from_env([LANES / ".env", Path(__file__).resolve().parent / ".env"]))
+    mon.alert("INFO", "Monitor headless arrancado" + ("" if mon.db else " (vigilancia de Supabase desactivada: falta "
+              + dbwatch.ENV_KEY + ")"), every=0)
     while True:
-        for step in (mon.pc, mon.system, mon.chats, mon.alerts_panel):
+        for step in (mon.pc, mon.system, mon.chats, mon.alerts_panel, mon.refresh_db):
             try:
                 step()
             except Exception as exc:  # una comprobación rota no para las demás
