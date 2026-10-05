@@ -92,7 +92,7 @@ def restart(argv: list[str]) -> int:
                     help="obligatorio: nunca se reinicia con workers vivos (incidente 27-09)")
     ap.add_argument("--timeout", type=int, default=3600, help="segundos máximos esperando a los workers")
     args = ap.parse_args(argv)
-    return drain.Restarter(pid_alive=pid_alive).restart(timeout=args.timeout)
+    return drain.Restarter(pid_alive=pid_alive, repo=drain.LIVE_REPO, alert=drain.dm_alert()).restart(timeout=args.timeout)
 
 
 def main(argv: list[str]) -> int:

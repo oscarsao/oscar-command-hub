@@ -49,6 +49,7 @@ if __package__ in (None, ""):  # `py agent_lanes/integrator.py`
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     __package__ = "agent_lanes"
 
+from . import drain  # noqa: E402
 from . import proc as _proc  # noqa: E402
 from .config import ROOT, _chat_thread, _load  # noqa: E402
 from .deps import is_integration_comment, pending_parents, waiting_line  # noqa: E402
@@ -95,6 +96,9 @@ APPLY_RESTART_DRAIN = "restart_drain"
 APPLY_ARGV = {APPLY_RESTART_DRAIN: ["py", "-3.12", "lanes.py", "restart", "--drain"]}
 APPLY_LABEL = "🔁 Aplicar (reinicio ordenado)"
 APPLIED_PREFIX = "APLICADO"
+APPLY_WAIT = 2 * 3600  # un reinicio sin veredicto pasado este tiempo se da por fallido (drain 1 h + arranque)
+LAG_AFTER = 30 * 60    # checkout vivo por detrás de origin/<base> más de esto: aviso con [🔁 Aplicar]
+LAG_REPEAT = 2 * 3600  # y se repite cada tanto mientras siga atrasado
 NEEDS_MIGRATION = "⏸ requiere aplicar migración antes (manual, con OK)"
 MIGRATEAM_WARNING = "⚠️ Fusionar DESPLIEGA a producción solo (Railway, en minutos)"
 RAILWAY_OK = {"SUCCESS"}
@@ -346,6 +350,7 @@ class Integrator:
         self.settings = settings
         self._launch = launcher or launch_detached      # [🔁 Aplicar]: lanza sin esperar (reinicia este proceso)
         self._apply_probe = apply_probe or apply_available  # ¿existe ya el subcomando? (lectura estática)
+        self.apply_result_path = drain.RESULT_FILE  # veredicto del último `restart --drain` (tests: otra ruta)
         self.lanes = lanes
         self.hermes_for = hermes_for
         self.links = links
@@ -443,6 +448,12 @@ class Integrator:
         if not force and self._last_pass is not None and now - self._last_pass < self.settings.interval_seconds:
             return {}
         self._last_pass = now
+        try:
+            if finalized := self.finalize_apply():
+                log.info("integrador: veredicto de Aplicar en %s", finalized)
+            self.check_live_lag()
+        except Exception as exc:  # nunca tumba la pasada
+            log.warning("integrador: Aplicar/checkout vivo: %s", exc)
         results = {}
         seen = []
         for name, policy in self.settings.policies.items():
@@ -1222,11 +1233,16 @@ class Integrator:
                 f"✅ fusionado · {short}", "no se puede aplicar desde aquí: falta `lanes.py restart --drain`"))
             return True
         argv = APPLY_ARGV[policy.apply]
+        if st.get("status") == "applying" and self._now() - float((st.get("apply") or {}).get("at") or 0) < APPLY_WAIT:
+            self._edit(desk, lane, rec, where, "done", status_line(f"🔁 reinicio en curso · {short}",
+                                                                   "espera el veredicto del reinicio"))
+            return True
         # Todo el registro ANTES de lanzar: el reinicio puede parar este proceso en cuanto arranca, y lo que quede
-        # después (estado, comentario, aviso, resumen fijado) no llegaría a hacerse.
-        self._save(tid, status="applied")
-        self._comment(lane, tid, f"{APPLIED_PREFIX} {rec.get('merge_sha') or '?'} · reinicio ordenado lanzado "
-                      f"(`{' '.join(argv)}`)")
+        # después (estado, comentario, aviso, resumen fijado) no llegaría a hacerse. El APLICADO <sha> NO se dice
+        # aquí: lo deja `finalize_apply` el runner nuevo, cuando el restart ha verificado HEAD == origin/main.
+        self._save(tid, status="applying", apply={"at": self._now(), "lane": lane.name, "rec": rec, "where": where})
+        self._comment_task(lane, tid, f"reinicio ordenado lanzado (`{' '.join(argv)}`); falta verificar que el "
+                           f"checkout vivo queda en {lane.remote}/{lane.base}")
         self._edit(desk, lane, rec, where, "done", status_line(
             f"🔁 reinicio ordenado lanzado · {short}", "el runner se reinicia al terminar lo que tenga en curso"))
         self.refresh_summary()
@@ -1235,11 +1251,104 @@ class Integrator:
         except Exception as exc:
             log.warning("%s: no se pudo lanzar el reinicio ordenado: %s", tid, exc)
             self._save(tid, status="merged")
-            self._comment(lane, tid, f"{APPLIED_PREFIX}: FALLÓ el lanzamiento del reinicio ordenado; sigue sin aplicar")
+            self._comment_task(lane, tid, f"{APPLIED_PREFIX}: FALLÓ el lanzamiento del reinicio ordenado; sigue sin aplicar")
             self._edit(desk, lane, rec, where, "blocked", status_line(
                 f"⛔ no se pudo aplicar · {short}", "detalle en el log", "puedes reintentar"))
             return False
         return True
+
+    def _comment_task(self, lane, tid: str, text: str) -> None:
+        if TID_RE.fullmatch(tid):  # el aviso «checkout atrasado» (lag-<carril>) no tiene tarjeta
+            self._comment(lane, tid, text)
+
+    def finalize_apply(self) -> list[str]:
+        """Tras `lanes.py restart --drain`: deja en cada ficha «applying» el veredicto que escribió el restart
+        (.state/apply_result.json). «APLICADO <sha>» solo si HEAD == origin/main y el runner arrancó; si no, ⛔ con el
+        motivo y el botón para reintentar. Sin veredicto tras APPLY_WAIT s, ⛔ también (el restart murió a medias)."""
+        verdict = drain.read_result(self.apply_result_path)
+        done = []
+        for path in sorted(self.state_dir.glob("*.json")):
+            tid, st = path.stem, self._state(path.stem)
+            pending = st.get("apply")
+            if st.get("status") != "applying" or not isinstance(pending, dict):
+                continue
+            at = float(pending.get("at") or 0)
+            fresh = bool(verdict) and float(verdict.get("at") or 0) >= at
+            if not fresh and self._now() - at < APPLY_WAIT:
+                continue
+            ok = fresh and bool(verdict.get("ok"))
+            reason = (verdict or {}).get("reason") if fresh else "el reinicio no dejó veredicto (¿murió a medias?)"
+            try:
+                self._finish_apply(tid, pending, ok, (verdict or {}).get("sha") or "", reason or "motivo desconocido")
+            except Exception as exc:
+                log.warning("%s: no se pudo dejar el veredicto de Aplicar: %s", tid, exc)
+                continue
+            done.append(tid)
+        return done
+
+    def _finish_apply(self, tid: str, pending: dict, ok: bool, sha: str, reason: str) -> None:
+        lane, rec, where = self.lanes.get(pending.get("lane")), pending.get("rec") or {}, pending.get("where") or {}
+        short = (rec.get("merge_sha") or "")[:7] or "?"
+        if ok:
+            self._save(tid, status="applied", applied_sha=sha)
+            if lane:
+                self._comment_task(lane, tid, f"{APPLIED_PREFIX} {rec.get('merge_sha') or '?'} · runner en "
+                                   f"{sha[:12]} == {lane.remote}/{lane.base} e integrador activo")
+            if lane and self.desk:
+                self._edit(self.desk, lane, rec, where, "done", status_line(
+                    f"🔁 aplicado · {short}", f"el runner ejecuta ya {sha[:7]}"))
+        else:
+            self._save(tid, status="merged")
+            if lane:
+                self._comment_task(lane, tid, f"APLICAR FALLÓ (no aplicado): {reason}")
+            if lane and self.desk:
+                markup = self.desk.store.issue(rec, [[{"text": APPLY_LABEL, "action": INT_APPLY}]])[1]
+                self._edit(self.desk, lane, rec, where, "blocked", status_line(
+                    f"⛔ no aplicado · {short}", truncate(reason, 300), "arréglalo y reintenta"), markup=markup)
+        self.refresh_summary()
+
+    def check_live_lag(self) -> None:
+        """Carril con `apply` (claude-hub): si el checkout vivo va por detrás de origin/<base> más de LAG_AFTER s,
+        ALTA al DM de Oscar con [🔁 Aplicar] (cada LAG_REPEAT s mientras siga atrasado). Solo lectura: fetch."""
+        for name, policy in self.settings.policies.items():
+            lane = self.lanes.get(name)
+            if not (lane and policy.apply and self.desk and self.notifier and not self.dry_run):
+                continue
+            try:
+                self._check_lag(name, lane)
+            except Exception as exc:
+                log.warning("integrador %s: comprobación del checkout vivo falló: %s", name, exc)
+
+    def _check_lag(self, name: str, lane) -> None:
+        tid, ref = f"lag-{name}", f"{lane.remote}/{lane.base}"
+        if self._git(lane.repo, "fetch", lane.remote, lane.base).returncode:
+            return
+        cp = self._git(lane.repo, "rev-list", "--count", f"HEAD..{ref}")
+        if cp.returncode:
+            return
+        behind, st, now = int((cp.stdout or "0").strip() or 0), self._state(tid), self._now()
+        if not behind:
+            if st.get("behind_since"):
+                self._save(tid, behind_since=None, offered_at=None, status="ok")
+            return
+        since = st.get("behind_since")
+        if not since:
+            self._save(tid, behind_since=now)
+            return
+        if st.get("status") == "applying" and now - float((st.get("apply") or {}).get("at") or 0) < APPLY_WAIT:
+            return
+        if now - since < LAG_AFTER or now - float(st.get("offered_at") or 0) < LAG_REPEAT:
+            return
+        sha = (self._git(lane.repo, "rev-parse", ref).stdout or "").strip()
+        rec = {"kind": "integrate", "task_id": tid, "board": lane.board, "lane": name, "merge_sha": sha,
+               "title": f"checkout vivo atrasado ({behind} commit(s))", "pr_number": 0, "pr_url": ""}
+        self._save(tid, status="lag", offered_at=now)
+        markup = self.desk.store.issue(rec, [[{"text": APPLY_LABEL, "action": INT_APPLY}]])[1]
+        text = (f"🚨 ALTA · el runner ejecuta código viejo: el checkout vivo va {behind} commit(s) por detrás de "
+                f"{ref} desde hace {int((now - since) // 60)} min. Pulsa {APPLY_LABEL} para ponerlo al día.")
+        owner = str(getattr(self.desk, "owner_id", "") or "")
+        if owner:
+            self.notifier.send_to(owner, None, text, html=False, reply_markup=markup)
 
     def _remote_sha(self, lane, branch: str) -> str | None:
         cp = self._git(lane.repo, "ls-remote", lane.remote, f"refs/heads/{branch}", timeout=120)

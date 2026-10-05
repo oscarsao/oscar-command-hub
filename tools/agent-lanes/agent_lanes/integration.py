@@ -280,6 +280,8 @@ def summary_state(status: str, *, deploy: str = "none", migration: str | None = 
     """Estado legible de una entrada del integrador; None = ya no está pendiente (integrada, desplegada, aplicada...)."""
     if status == "applied":
         return None
+    if status == "applying":  # claude-hub: reinicio lanzado, sin veredicto todavía
+        return "🔁 aplicando, falta verificar"
     if status == "merged" and apply:  # claude-hub: fusionado en main, falta el reinicio ordenado
         return "🔁 fusionado, falta aplicar"
     if status == "offered":

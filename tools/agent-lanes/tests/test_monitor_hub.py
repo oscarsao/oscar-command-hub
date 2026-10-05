@@ -101,3 +101,27 @@ def test_recovery_reruns_brief_and_auditor_only_if_last_run_failed(monitor):
     assert [a[3] for a in calls if a[1] == "/Run"] == ["Resumen diario Hermes"]
     m.check_list_failures()  # ya recuperado: no se repite
     assert len([a for a in calls if a[1] == "/Run"]) == 1
+
+
+def test_live_checkout_behind_origin_over_30_min_alerts(monitor, monkeypatch):
+    """Aplicar actualiza el código (5/10): el checkout vivo del hub por detrás de origin/main >30 min = aviso."""
+    m, pushed = make(monitor)
+    behind = {"n": 2}
+    calls = []
+
+    def fake_run(args):
+        calls.append(args)
+        out = f"{behind['n']}\n" if "rev-list" in args else ""
+        return type("CP", (), {"stdout": out, "returncode": 0})()
+
+    m.run = fake_run
+    clock = {"t": 1_000_000.0}
+    monkeypatch.setattr(monitor.time, "time", lambda: clock["t"])
+    assert "-2" in m.refresh_live_lag() and not m.alerts  # recién visto: aún no avisa
+    clock["t"] += monitor.LIVE_LAG_AFTER + 301
+    assert "-2" in m.refresh_live_lag()
+    assert any("código viejo" in a[2] and a[1] == "MEDIA" for a in m.alerts)
+    assert any("fetch" in c for c in calls)
+    behind["n"] = 0
+    clock["t"] += 301
+    assert "✅" in m.refresh_live_lag()
