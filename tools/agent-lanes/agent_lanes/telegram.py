@@ -40,7 +40,19 @@ def notifier_from_env(env: dict, tg_settings: dict) -> tuple[TelegramNotifier, b
     notifier = TelegramNotifier(lanes_bot or env.get("TELEGRAM_BOT_TOKEN"), env.get("TELEGRAM_CHAT_ID"),
                                 env.get("TELEGRAM_THREAD_ID"), allowed_chats=allowed,
                                 generic_origins=tg_settings["generic_origins"])
+    _protect_collaborator_dms(notifier, env)
     return notifier, bool(lanes_bot)
+
+
+def _protect_collaborator_dms(notifier: "TelegramNotifier", env: dict) -> None:
+    """DM de los colaboradores (tools/telegram/people.yaml): todo lo que les llegue pasa por collab_view (solo t_id,
+    estado y enlace; sin botones). Falla cerrado: sin people.yaml legible no hay colaboradores."""
+    from .collab_intake import collab_view
+    from .decisions import OWNER_TELEGRAM_ID
+    from .people import load_people
+    owner = env.get("OWNER_TELEGRAM_ID") or OWNER_TELEGRAM_ID
+    notifier.collab_chats = load_people(owner).collaborator_ids()
+    notifier.collab_view = collab_view
 
 
 class TelegramAPIError(RuntimeError):
@@ -62,6 +74,16 @@ class TelegramNotifier:
         # so a task text cannot redirect review summaries to an arbitrary chat where the bot is present.
         self.allowed_chats = {str(c) for c in (allowed_chats or ())} | ({str(chat_id)} if chat_id else set())
         self.generic_origins = set(generic_origins or ())
+        # DM de colaboradores: nada sale hacia ellos sin pasar por collab_view (ver notifier_from_env).
+        self.collab_chats: set[str] = set()
+        self.collab_view = None
+
+    def _for_collab(self, chat_id, text: str, html: bool, reply_markup, trusted: bool = False):
+        """(text, html, reply_markup) tal como pueden salir hacia `chat_id`: a un colaborador, solo t_id + estado +
+        enlace, sin HTML ni botones. `trusted` = texto fijo montado por CollabIntake."""
+        if trusted or not self.collab_view or str(chat_id) not in self.collab_chats:
+            return text, html, reply_markup
+        return self.collab_view(text), False, None
 
     @property
     def enabled(self) -> bool:
@@ -112,10 +134,11 @@ class TelegramNotifier:
         return self.send_to(chat_id, thread_id, text, silent=silent, html=html, reply_markup=reply_markup)
 
     def send_to(self, chat_id, thread_id, text: str, *, silent: bool = False, html: bool = True,
-                reply_markup: dict | None = None, reply_to=None) -> dict | None:
+                reply_markup: dict | None = None, reply_to=None, trusted: bool = False) -> dict | None:
         """Envío a un chat/hilo concreto (el del mensaje que Oscar acaba de pulsar): sin allowlist."""
         if not self._token or not chat_id:
             return None
+        text, html, reply_markup = self._for_collab(chat_id, text, html, reply_markup, trusted)
         payload = {"chat_id": chat_id, "text": text[:TEXT_LIMIT], "disable_web_page_preview": True}
         if html:
             payload["parse_mode"] = "HTML"
@@ -136,6 +159,7 @@ class TelegramNotifier:
         Sin `reply_markup`, Telegram quita los botones que tuviera el mensaje."""
         if not self._token or not message_id:
             return False
+        text, html, reply_markup = self._for_collab(chat_id, text, html, reply_markup)
         payload = {"chat_id": chat_id, "message_id": int(message_id), "text": text[:TEXT_LIMIT],
                    "disable_web_page_preview": True}
         if html:
@@ -152,6 +176,8 @@ class TelegramNotifier:
         """Cambia solo los botones (None = quitarlos)."""
         if not self._token or not message_id:
             return False
+        if self.collab_view and str(chat_id) in self.collab_chats:
+            reply_markup = None  # a un colaborador nunca le llegan botones
         try:
             self._api("editMessageReplyMarkup", {"chat_id": chat_id, "message_id": int(message_id),
                                                  "reply_markup": reply_markup or {"inline_keyboard": []}})

@@ -226,6 +226,7 @@ class DecisionDesk:
         self.messages = messages  # MessageStore: todas las copias de cada aviso (sincronización tema <-> DM)
         self.promoter = None      # promote.Promoter: /promover y botones promo_* (producción de MigraTeam)
         self.commands = None      # CommandCenter: /hoy, /decisiones, /aprobar, /tareas, /tarea
+        self.collab = None        # CollabIntake: DM de colaboradores (people.yaml) -> tarjeta [IDEA]; None = como antes
         self.tree = None          # deps.TreeReader: líneas 🔗/⏸/↳ al redibujar un aviso (opcional)
         # 💬 Explícame más: rec -> texto llano (claude -p --model haiku sin herramientas); inyectable en tests.
         self.explainer = explainer or (lambda rec: _explain(rec, runner=self._run))
@@ -296,6 +297,10 @@ class DecisionDesk:
             self._callback(update["callback_query"])
         elif update.get("message"):
             msg = update["message"]
+            if self.collab and self.collab.claims(msg, self.owner_id):
+                # DM privado de alguien que no es Oscar: nunca llega a los comandos ni a _reply (hermes: segundos).
+                self._spawn(lambda: self.collab.handle(msg))
+                return
             if self.commands and (msg.get("text") or "").startswith("/"):
                 # Los comandos llaman a la CLI de hermes (segundos): fuera del hilo de escucha.
                 self._spawn(lambda: self.commands.handle(msg) or self._reply(msg))
