@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import io
+from dataclasses import replace
 import json
 import subprocess
 import urllib.error
@@ -111,8 +112,34 @@ def test_link_builder_reads_origin_once_and_omits_card_without_base():
     lb = notices.LinkBuilder(None, runner=run)
     assert lb(LANE, "t_1") == [("🔀 Cambios", "https://github.com/oscarsao/oscar-hq/compare/master...lane/t_1")]
     assert lb(LANE, "t_2")[0][1].endswith("...lane/t_2")
-    assert calls == [["git", "-C", "C:/repo", "remote", "get-url", "origin"]]
+    assert calls.count(["git", "-C", "C:/repo", "remote", "get-url", "origin"]) == 1  # remote leído una sola vez
     assert notices.LinkBuilder("https://k", runner=run)(LANE, "t_1", branch=False) == [
+        ("🗂 Tarjeta", "https://k/tasks/oscarhq/t_1")]
+
+
+def test_link_builder_drops_branch_links_when_lane_not_pushed():
+    def run(args, **kw):
+        if "ls-remote" in args:
+            return subprocess.CompletedProcess(args, 0, "", "")  # rama inexistente en el remoto
+        return subprocess.CompletedProcess(args, 0, "git@github.com:oscarsao/oscar-hq.git\n", "")
+
+    lb = notices.LinkBuilder("https://k", runner=run)
+    assert [l for l, _ in lb(LANE, "t_1", changed_files=["docs/x.md"])] == ["🗂 Tarjeta"]
+
+
+def test_link_builder_keeps_branch_links_if_ls_remote_fails():
+    def run(args, **kw):
+        if "ls-remote" in args:
+            return subprocess.CompletedProcess(args, 128, "", "network")
+        return subprocess.CompletedProcess(args, 0, "git@github.com:oscarsao/oscar-hq.git\n", "")
+
+    labels = [l for l, _ in notices.LinkBuilder("https://k", runner=run)(LANE, "t_1", changed_files=["docs/x.md"])]
+    assert labels == ["🗂 Tarjeta", "📄 Spec/pitch", "🔀 Cambios"]
+
+
+def test_link_builder_ops_lane_without_repo_keeps_only_the_card():
+    ops = replace(LANE, repo="", kind="ops")
+    assert notices.LinkBuilder("https://k", runner=lambda a, **k: None)(ops, "t_1", changed_files=["docs/x.md"]) == [
         ("🗂 Tarjeta", "https://k/tasks/oscarhq/t_1")]
 
 
@@ -207,6 +234,20 @@ def test_needs_input_alert_has_short_bullets_and_reply_hint():
     assert "responde en este hilo o a Hermes" in alert
     bullets = [l for l in alert.split("\n") if l.startswith("• ")]
     assert 1 <= len(bullets) <= 5 and len("\n".join(bullets)) <= notices.QUESTIONS_MAX_CHARS
+
+
+def test_needs_input_passes_changed_files_to_links():
+    class Links:
+        def __call__(self, lane, tid, *, branch=True, changed_files=None):
+            self.files = changed_files
+            return []
+
+    links = Links()
+    out = ok_outcome({**GOOD, "status": "needs_input", "questions": ["¿A o B?"],
+                      "changed_files": ["docs/newsletter-flujo-envio.md"]})
+    LaneRunner(LANE, hermes=FakeHermes(tasks=[{"id": "t_1", "title": "T", "body": "B"}]), git=FakeGit(),
+               worker=FakeWorker([out]), verifier=FakeVerifier(), notify=FakeNotifier(), links=links).run_once()
+    assert links.files == ["docs/newsletter-flujo-envio.md"]
 
 
 def test_review_status_line_has_files_tests_and_cost():

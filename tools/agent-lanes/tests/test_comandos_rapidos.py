@@ -260,18 +260,3 @@ def test_desplegar_skips_merges_with_pending_migration(tmp_path):
     desk.integrator = DeployIntegrator({"claude-oscarhq": [mig]})
     command(desk, "/desplegar oscarhq")
     assert "migración pendiente" in bot.sent[-1]["text"] and not bot.sent[-1].get("markup")
-
-
-def test_promover_only_creates_card_for_migrateam(tmp_path, monkeypatch):
-    from agent_lanes import health
-    monkeypatch.setattr(health, "migrateam_drift", lambda repo: "develop lleva 3 sin promocionar")
-    cc, desk, bot, h = center(tmp_path)
-    desk.integrator = DeployIntegrator({})
-    command(desk, "/promover migrateam")
-    [card] = h.created
-    assert card["assignee"] == "claude-migrateam" and card["key"].startswith("promover-")
-    assert "no hagas merge ni push a master" in card["body"] and "develop lleva 3" in card["body"]
-    assert "Origen-Telegram: chat=6744452215" in card["body"]
-    assert desk.integrator.pressed == [] and "Solo prepara" in bot.sent[-1]["text"]
-    command(desk, "/promover oscarhq", uid=2)
-    assert len(h.created) == 1 and bot.sent[-1]["text"].startswith("Solo MigraTeam")

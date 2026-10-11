@@ -14,8 +14,7 @@ también como /cmd@<bot>. Un /cmd@otro_bot (p. ej. el de Hermes) se ignora.
     /estado [marca]      en un solo mensaje: en curso, lo que espera a Oscar y lo pendiente de desplegar
     /desplegar <proyecto>  ficha de lo fusionado y sin desplegar con [🚀 Desplegar] → "¿Seguro?" → ✅ Sí (doble toque;
                          el despliegue es el mismo int_deploy del integrador, nunca otra vía)
-    /promover migrateam  solo PREPARA la tarjeta de promoción develop→master (release/<fecha>) para el integrador;
-                         no fusiona ni despliega nada
+    /promover migrateam  prepara el PR develop→master y pide la doble confirmación (promote.py)
     /lote <proyecto>     monta ya el lote de las ramas aprobadas
     /salud               runner y carriles, gateway de Hermes, servicios y alertas (del monitor), develop↔master de
                          MigraTeam, RAM/CPU y decisiones pendientes; sin peticiones HTTP (agent_lanes/health.py)
@@ -59,7 +58,7 @@ COMMANDS = (
     ("hazlo", "Crea una tarea pequeña (carril según el texto): /hazlo <texto>"),
     ("estado", "En curso, esperando a Oscar y pendiente de desplegar: /estado [marca]"),
     ("desplegar", "Despliega lo fusionado de un proyecto, con doble confirmación: /desplegar oscarhq"),
-    ("promover", "Prepara la promoción develop→master de MigraTeam para el integrador: /promover migrateam"),
+    ("promover", "Promover MigraTeam a producción (doble confirmación): /promover migrateam"),
     ("lote", "Montar ya el lote de un proyecto: /lote migrateam|oscarhq"),
     ("salud", "Estado de runner, Hermes, servicios, MigraTeam y equipo"),
 )
@@ -242,7 +241,7 @@ class CommandCenter:
     def help_text() -> str:
         return ("Comandos del bot de trabajos:\n" + "\n".join(f"/{c} · {d}" for c, d in COMMANDS)
                 + "\n\nCon /hazlo la tarea se crea ya, con prioridad alta y tope de 15 minutos; te aviso al terminar."
-                + "\n/desplegar pide dos toques (🚀 y ✅ Sí); /promover solo prepara la tarjeta, el integrador fusiona.")
+                + "\n/desplegar pide dos toques (🚀 y ✅ Sí); /promover también pide doble confirmación.")
 
     # --- datos ----------------------------------------------------------------------------------------
 
@@ -683,7 +682,23 @@ class CommandCenter:
 
         self._spawn(run)
 
-    # --- /desplegar y /promover -----------------------------------------------------------------------
+    def cmd_promover(self, where, args: str, brand: str | None) -> None:
+        """/promover migrateam: prepara el PR develop → master y pide la doble confirmación (promote.py)."""
+        promoter = getattr(self.desk, "promoter", None)
+        if not promoter:
+            self._send(where, "La promoción a producción no está activa (integrador apagado o sin sección promote).",
+                       html=False)
+            return
+        key = (args.strip().split() or [""])[0].lower()
+        if key not in promoter.configs:
+            self._send(where, "Dime qué promover: /promover " + "|".join(promoter.configs), html=False)
+            return
+        self._send(where, f"Preparando la promoción de {key}… compruebo el PR, los checks y producción (solo lectura).",
+                   html=False)
+        dest = {"chat_id": where[0], "thread_id": where[1]}
+        self._spawn(lambda: promoter.start(key, dest))
+
+    # --- /desplegar -----------------------------------------------------------------------
 
     def _deploy_target(self, arg: str):
         """(carril, política) con deploy `railway_up` cuyo nombre, marca o palabra clave es `arg`; None si no hay."""
@@ -747,28 +762,6 @@ class CommandCenter:
                            f"{(rec.get('merge_sha') or '')[:7]}) con `railway up`.", html=False, reply_markup=markup)
         return True
 
-    def cmd_promover(self, where, args: str, brand: str | None) -> None:
-        """/promover migrateam: crea la tarjeta de promoción develop→master. NO fusiona ni despliega: eso es del
-        integrador y de Oscar con su ficha."""
-        arg = args.strip().lower() or (brand or "").lower()
-        lane = self.lanes.get("claude-migrateam")
-        if arg not in ("migrateam", "claude-migrateam") or lane is None:
-            self._send(where, "Solo MigraTeam tiene promoción: /promover migrateam", html=False)
-            return
-        from . import health
-        drift = health.migrateam_drift(lane.repo)
-        day = time.strftime("%Y%m%d", time.localtime(self._now()))
-        chat, thread = where
-        body = (f"## Objetivo\nPreparar la promoción de producción de MigraTeam: rama `release/{day}` desde develop con "
-                f"la lista de PRs que suben a master y el resultado de los gates.\n\n## Encargo (/promover desde "
-                f"Telegram)\n- Estado develop↔master al pedirlo: {drift}\n- SOLO preparar: no hagas merge ni push a "
-                "master, ni despliegues. La fusión a master es del integrador con el OK de Oscar.\n- Si no puedes "
-                "preparar la rama con tus permisos, deja la lista de PRs en `for_oscar` y devuelve needs_input.\n\n"
-                f"Origen-Telegram: chat={chat} thread={thread}\n")
-        tid = self.hermes_for(lane.board).create(f"Promoción MigraTeam release/{day}", body, lane.name,
-                                                 priority=HAZLO_PRIORITY, key=f"promover-{day}", created_by="oscar")
-        self._send(where, f"📝 Tarjeta de promoción creada: <code>{html.escape(tid)}</code> en {lane.name}. Solo "
-                          "prepara la release; producción la fusiona el integrador con tu OK.\n" + html.escape(drift))
 
     def _spawn(self, fn: Callable[[], None]) -> None:  # aparte para que los tests lo ejecuten en línea
         threading.Thread(target=fn, name="lote", daemon=True).start()

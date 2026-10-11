@@ -74,7 +74,7 @@ def test_full_card_has_at_most_7_lines_in_order():
 
 
 @pytest.mark.parametrize("path,ok", [("docs/specs/botones.md", True), ("pitches/x.md", True), ("specs/a.md", True),
-                                     ("README.md", True), ("./HANDOFF.md", True), ("docs/otro.md", False),
+                                     ("README.md", True), ("./HANDOFF.md", True), ("docs/otro.md", True), ("docs/sub/diag.md", True), ("docs/x.png", False),
                                      ("agent_lanes/x.py", False), ("notas.txt", False), ("../fuera.md", False)])
 def test_is_spec_path(path, ok):
     assert is_spec_path(path) is ok
@@ -433,7 +433,7 @@ def test_request_changes_asks_then_comments_and_reopens(tmp_path):
     desk, tg, h = _desk(tmp_path)
     _press(desk, _done_markup(desk), 1)
     ask = tg.sent[-1]
-    assert ask["text"] == "¿Qué cambio pides para t_1?" and ask["reply_markup"]["force_reply"] is True
+    assert ask["text"] == "¿Qué cambio pides para t_1?\nTarjeta: https://k/tasks/oscarhq/t_1" and ask["reply_markup"]["force_reply"] is True
     assert (ask["chat"], ask["thread"], ask["reply_to"]) == ("-1003530490339", "231", 77)
     assert h.calls == []  # hasta que Oscar responda no pasa nada
     _reply(desk, ask_mid := 501, "Renombra el botón a Aprobar PR")

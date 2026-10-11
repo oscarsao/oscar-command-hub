@@ -1,6 +1,7 @@
 """Thin wrapper over the `hermes kanban` CLI (pinned to 0.21.4) plus its contract check."""
 from __future__ import annotations
 
+import difflib
 import json
 import os
 import re
@@ -100,17 +101,89 @@ def pending_hermes_answer(show: dict | None) -> dict | None:
     return found
 
 
+# Comentarios del coordinador (Hermes `default` / `coordinador`): contexto que el worker debe respetar, p. ej. "NO vuelvas a
+# preguntar X". No son respuestas de Oscar (eso sigue exigiendo `RESPUESTA-OSCAR:` o el bot): solo se muestran al worker.
+COORDINATOR_AUTHORS = frozenset({HERMES_AUTHOR, "coordinador"})
+COORDINATOR_NOTES_MAX = 6
+
+# Limitación PERMANENTE del guard (instalar paquetes, borrar ramas, acceso a staging, fusionar PR...): no es una pregunta
+# para Oscar, nadie puede "responderla" y reintentar da siempre lo mismo. Va como needs_input con este motivo
+# estructurado; ni la autocuración ni el botón Reintentar la devuelven al carril: hace falta una consola interactiva.
+GUARD_LIMIT_MARK = "LIMITACION-GUARD:"
+_GUARD_LIMIT_RE = re.compile(r"(?:\bguard\b|\bhook\b|sandbox|permission|permiso)", re.I)
+_GUARD_DENIED_RE = re.compile(r"(?:no puedo|no tengo|bloquea|deneg|prohib|vetad|no permit|denied|blocked)", re.I)
+
+
+def is_guard_limit(reason: str | None) -> bool:
+    return GUARD_LIMIT_MARK in (reason or "")
+
+
+def looks_like_guard_limit(*texts) -> bool:
+    """Heurística de respaldo cuando el worker no marca `limitation: guard`: el texto habla del guard/hook/permisos Y de
+    algo que no puede hacer."""
+    t = " ".join(str(x or "") for x in texts)
+    return bool(_GUARD_LIMIT_RE.search(t) and _GUARD_DENIED_RE.search(t))
+
+
+def similar_text(a, b) -> bool:
+    """¿Dos preguntas son la misma reformulada? Texto normalizado igual, ratio de secuencia alto o muchas palabras
+    (>3 letras) en común. Conservador: un falso positivo solo relanza una vez con las respuestas a la vista."""
+    x, y = _norm(a), _norm(b)
+    if not x or not y:
+        return False
+    if x == y or difflib.SequenceMatcher(None, x, y).ratio() >= 0.8:
+        return True
+    wx, wy = {w for w in re.findall(r"\w+", x) if len(w) > 3}, {w for w in re.findall(r"\w+", y) if len(w) > 3}
+    return bool(wx and wy and len(wx & wy) / len(wx | wy) >= 0.7)
+
+
+def answered_pairs(show: dict | None) -> list[tuple[str, str]]:
+    """[(pregunta, respuesta)] de TODA la tarjeta (cualquier ronda), en orden; las dos últimas respuestas a preguntas
+    parecidas se quedan en la más reciente. Solo las de los botones (`Respuesta de Oscar: <pregunta> → <respuesta>`)."""
+    out: list[tuple[str, str]] = []
+    for c in (show or {}).get("comments") or []:
+        body = c.get("body") or ""
+        if c.get("author") == OSCAR_AUTHOR and body.startswith(ANSWER_PREFIX) and ANSWER_ARROW in body:
+            q, a = body[len(ANSWER_PREFIX):].split(ANSWER_ARROW, 1)
+            q, a = " ".join(q.split()), a.strip()
+            if q and a:
+                out = [(k, v) for k, v in out if not similar_text(k, q)]
+                out.append((q, a))
+    return out
+
+
+def find_answered(show: dict | None, questions) -> list[tuple[str, str]] | None:
+    """[(pregunta nueva, respuesta previa)] si CADA pregunta nueva ya tiene una respuesta de Oscar a una pregunta
+    parecida en la tarjeta (el worker reformuló lo ya decidido); None si alguna es realmente nueva."""
+    pairs = answered_pairs(show)
+    found = []
+    for q in questions or ():
+        text = q.get("question") if isinstance(q, dict) else q
+        hit = next(((text, a) for k, a in reversed(pairs) if similar_text(k, text)), None)
+        if hit is None:
+            return None
+        found.append(hit)
+    return found or None
+
+
+def coordinator_notes_from(show: dict | None) -> list[str]:
+    """Últimos comentarios del coordinador en la tarjeta (sin los `RESPUESTA-OSCAR:`, que ya van como respuestas)."""
+    notes = [" ".join((c.get("body") or "").split())[:600] for c in (show or {}).get("comments") or []
+             if c.get("author") in COORDINATOR_AUTHORS and hermes_answer_text(c) is None and (c.get("body") or "").strip()]
+    return notes[-COORDINATOR_NOTES_MAX:]
+
+
 def oscar_answers_from(show: dict | None) -> list[str]:
     """Respuestas de Oscar en la tarjeta, en orden: las de los botones (`Respuesta de Oscar: …` de oscar-telegram) y
     las que apuntó Hermes (`RESPUESTA-OSCAR: …`), estas como "Respuesta de Oscar (vía Hermes): <texto>".
-    Varias respuestas a la MISMA pregunta (Oscar la contestó otra vez): solo cuenta la última, en su posición; los
-    comentarios no se borran."""
+    Varias respuestas a la MISMA pregunta o a una reformulada (Oscar la contestó otra vez, t_a2972b36): solo cuenta
+    la última, en su posición; los comentarios no se borran. Las respuestas son de la TAREA, no de un texto exacto."""
     out: list[tuple[str | None, str]] = []
     for c in (show or {}).get("comments") or []:
         body = c.get("body") or ""
         if c.get("author") == OSCAR_AUTHOR and body.startswith(ANSWER_PREFIX):
             key = answer_question(body)
-            out = [(k, b) for k, b in out if key is None or k != key]
+            out = [(k, b) for k, b in out if key is None or not similar_text(k, key)]
             out.append((key, body))
         elif (text := hermes_answer_text(c)) is not None:
             out.append((None, f"Respuesta de Oscar (vía Hermes): {text}"))
@@ -199,6 +272,13 @@ def answer_progress(show: dict | None, questions) -> tuple[dict[int, str], int |
             legacy = next((k for k in LEGACY_ALL_LABELS if low.startswith(k + ANSWER_ARROW.rstrip())), None)
             if legacy:
                 answers.update({i: rest[len(legacy) + len(ANSWER_ARROW):].strip() for i in range(len(qs))})
+                continue
+            # Pregunta reformulada por el worker (mismo asunto, otro texto): se empareja por parecido, no por texto.
+            if ANSWER_ARROW in rest:
+                asked, _, reply = rest.partition(ANSWER_ARROW)
+                fuzzy = next((i for k, i in known if k and similar_text(k, asked)), None)
+                if fuzzy is not None and reply.strip():
+                    answers[fuzzy] = reply.strip()
     nxt = next((i for i in range(len(qs)) if i not in answers), None)
     return answers, nxt
 
@@ -285,6 +365,12 @@ class HermesCLI:
         """Oscar's answers to the worker's questions (Telegram buttons / free reply / RESPUESTA-OSCAR vía Hermes),
         oldest first."""
         return oscar_answers_from(self.show(task_id))
+
+    def answered_for(self, task_id: str, questions) -> list[tuple[str, str]] | None:
+        return find_answered(self.show(task_id), questions)
+
+    def coordinator_notes(self, task_id: str) -> list[str]:
+        return coordinator_notes_from(self.show(task_id))
 
     def assign(self, task_id: str, profile: str) -> bool:
         return self._call("assign", task_id, profile).returncode == 0

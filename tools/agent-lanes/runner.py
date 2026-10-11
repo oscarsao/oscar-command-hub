@@ -16,6 +16,8 @@ from logging.handlers import RotatingFileHandler
 from agent_lanes import drain
 from agent_lanes.config import ROOT, load_env, load_lanes, load_runner_settings, load_telegram_settings
 from agent_lanes.commands import CommandCenter, register_commands
+from agent_lanes.collab_intake import CollabIntake
+from agent_lanes.people import load_people
 from agent_lanes.decisions import CALLBACKS_DIR, OWNER_TELEGRAM_ID, CallbackStore, DecisionDesk, UpdatePoller
 from agent_lanes.deps import ShowCache, TreeReader
 from agent_lanes.hermes_answers import HermesAnswers
@@ -24,6 +26,7 @@ from agent_lanes.git_ops import GitOps, github_slug_problem
 from agent_lanes.hermes import HermesCLI
 from agent_lanes.integration import IntegrationRoute
 from agent_lanes.integrator import build_integrator, load_integrator_settings
+from agent_lanes.promote import Promoter, load_promote_configs
 from agent_lanes.review import ClaudeReviewer, ReviewRunner, sweep_done
 from agent_lanes.notices import LinkBuilder, MessageStore
 from agent_lanes.ops import OpsWorkspace, verify_ops
@@ -36,6 +39,7 @@ from agent_lanes.worker import ClaudeWorker
 LOCK = ROOT / ".state" / "runner.lock"
 TG_OFFSET = ROOT / ".state" / "tg_offset"      # offset de getUpdates del bot de carriles
 REMINDERS_STATE = ROOT / ".state" / "reminders.json"  # franjas 13:00/18:00 ya enviadas
+COLLAB_STATE = ROOT / ".state" / "collab_reject.json"  # DM de desconocidos ya rechazados (1 cada 6 h)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -101,10 +105,11 @@ def main(argv: list[str] | None = None) -> int:
                                  links=links, generic_origins=tg_settings["generic_origins"], bot_username=username,
                                  owner_id=owner)
         decisions.commands = commands
+        decisions.collab = CollabIntake(notify, load_people(owner), hermes_for=hermes_for, state_path=COLLAB_STATE)
         log.info("comandos del bot registrados en: %s", register_commands(notify))
         UpdatePoller(notify, decisions, TG_OFFSET).start()
         Reminders(notify, owner, commands.pending_decisions, REMINDERS_STATE, cards=commands.decision_cards,
-                  stuck=commands.stuck_tasks).start()
+                  stuck=commands.stuck_tasks, base_url=links.kanban_base_url).start()
         log.info("bot de carriles activo (id %s, @%s): avisos con botones, comandos, escucha y recordatorios",
                  notify.bot_id, username)
     else:
@@ -136,7 +141,8 @@ def main(argv: list[str] | None = None) -> int:
         if lane.kind == "review":
             runners.append(ReviewRunner(lane, all_lanes, hermes_for=hermes_for, git=git, reviewer=ClaudeReviewer(),
                                         verifier=verify, notify=notify, messages=messages, links=links,
-                                        decisions=decisions, integration=integration, tree=tree))
+                                        decisions=decisions, integration=integration, tree=tree,
+                                        state_dir=ROOT / ".state" / "review-blocked"))
     # Carril Integrador: solo con INTEGRATOR_ENABLED. Sin bot de carriles corre los gates y avisa sin botones.
     integrator = build_integrator(env, all_lanes, hermes_for=hermes_for, links=links, notifier=notify,
                                   messages=messages, desk=decisions)
@@ -145,6 +151,11 @@ def main(argv: list[str] | None = None) -> int:
         if decisions:
             decisions.integrator = integrator
         log.info("integrador activo: %s", list(integrator.settings.policies))
+        if decisions and notify:  # /promover y [🚀 Promover a producción]: sección `promote:` de lanes.yaml
+            configs = load_promote_configs()
+            if configs:
+                decisions.promoter = Promoter(configs, notifier=notify, desk=decisions)
+                log.info("promoción a producción activa: %s", list(configs))
     service = Service(runners, max_workers=args.max_workers or settings["max_workers"], busy_path=drain.BUSY_FILE)
     interval = args.interval or settings["interval_seconds"]
     log.info("runner: carriles=%s max_workers=%s interval=%ss", list(selected), service.max_workers, interval)
