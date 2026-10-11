@@ -336,7 +336,8 @@ def test_summary_created_and_pinned_then_edited_only_when_it_changes(tmp_path):
     assert len(pinned) == 1 and (pinned[0]["chat_id"], pinned[0]["thread_id"]) == INTEG and pinned[0]["silent"]
     assert tg.pins == [(GESTION, pinned[0]["message_id"])]
     assert pinned[0]["text"] == ("<b>🚦 PENDIENTE DE INTEGRAR (1)</b>\n"
-                                 "🟠 PR #7 · Arreglar login · 🚦 listo, pulsa Fusionar · &lt;1 h")
+                                 '🟠 PR <a href="https://github.com/oscarsao/oscar-hq/pull/7">repo#7</a> · Arreglar login · '
+                                 "🚦 listo, pulsa Fusionar · &lt;1 h")
     st = json.loads((tmp_path / "state" / "pinned.json").read_text(encoding="utf-8"))
     assert st["message_id"] == pinned[0]["message_id"] and st["thread_id"] == "398"
     n_edits = len(tg.edits)
@@ -352,7 +353,8 @@ def test_summary_after_merge_button_shows_pending_deploy_without_waiting_a_pass(
     integ, w, h, tg, desk, messages = build(tmp_path)
     integ.run_pass()
     press(desk, fichas(tg)[0])
-    assert tg.edits[-1]["text"].endswith("🟠 PR #7 · Arreglar login · 🚀 fusionado, falta desplegar · &lt;1 h")
+    assert tg.edits[-1]["text"].endswith('🟠 PR <a href="https://github.com/oscarsao/oscar-hq/pull/7">repo#7</a> · Arreglar login · '
+                                          "🚀 fusionado, falta desplegar · &lt;1 h")
 
 
 def test_summary_empty(tmp_path):
@@ -408,6 +410,16 @@ def test_summary_text_and_states():
     assert text[1].startswith("🟢 PR #9 · " + "B" * 39 + "…") and text[1].endswith("· 3 d")  # la más antigua primero
     assert text[2] == "🟠 PR #7 · A · 🚦 listo, pulsa Fusionar · 1 h"
     assert summary_text([], NOW) == SUMMARY_EMPTY
+
+
+def test_summary_text_links_pr_and_card_and_shows_repo():
+    rows = [{"emoji": "🟠", "pr": 7, "title": "A <b>", "state": "listo", "since": NOW - 3600, "repo": "oscar-hq",
+             "url": "https://github.com/o/oscar-hq/pull/7", "card": "https://k/kanban?board=oscarhq#t_1"},
+            {"emoji": "🟢", "pr": 7, "title": "B", "state": "listo", "since": NOW - 7200, "repo": "migrateam"}]
+    text = summary_text(rows, NOW).split("\n")
+    assert text[1] == "🟢 PR migrateam#7 · B · listo · 2 h"  # mismo nº en dos repos: se distinguen
+    assert text[2] == ('🟠 PR <a href="https://github.com/o/oscar-hq/pull/7">oscar-hq#7</a> · A &lt;b&gt; · listo · 1 h'
+                       ' · <a href="https://k/kanban?board=oscarhq#t_1">🗂</a>')
     assert age_label(NOW - 30 * 3600, NOW) == "30 h" and age_label(None, NOW) == "?"
     assert summary_state("deployed") is None and summary_state("integrated") is None
     # fusionado o cerrado a mano en GitHub (p. ej. MigraTeam con migración, sin botón): sale de la lista

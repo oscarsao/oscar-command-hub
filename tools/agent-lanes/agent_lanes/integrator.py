@@ -55,7 +55,7 @@ from .deps import is_integration_comment, pending_parents, waiting_line  # noqa:
 from .hermes import OSCAR_AUTHOR, REVIEW_AUTHOR  # noqa: E402
 from .integration import (CHANNEL, FAILED, WAITING, PinnedSummary, link_line, phase_for, render_ficha,  # noqa: E402
                           repo_name, risk_of, summary_state, summary_text)
-from .notices import MessageStore, TaskNotices, markup_token, render, status_line, truncate  # noqa: E402
+from .notices import MessageStore, TaskNotices, card_url, markup_token, render, status_line, truncate  # noqa: E402
 from .telegram import telegram_target  # noqa: E402
 from .verify import render_test_cmd  # noqa: E402
 
@@ -511,7 +511,9 @@ class Integrator:
                 if not state or not st.get("pr"):
                     continue
                 entries.append({"emoji": risk_of(policy).emoji, "pr": st["pr"], "title": st.get("title") or tid,
-                                "state": state, "since": st.get("since")})
+                                "state": state, "since": st.get("since"), "repo": repo_name(lane),
+                                "url": st.get("pr_url"),
+                                "card": card_url(getattr(self.links, "kanban_base_url", None), lane.board, tid)})
             return self.pinned.update(summary_text(entries, self._now()), self._promote_markup)
         except Exception as exc:
             log.warning("resumen de integración falló: %s", exc)
@@ -1080,6 +1082,11 @@ class Integrator:
             return
         labels = [b["text"] for row in markup.get("inline_keyboard") or () for b in row]
         text = f"🔔 {tid} · {truncate(rec.get('title'), 40)}\n{status}\nAhora puedes pulsar: {' · '.join(labels)}"
+        if rec.get("pr_url"):  # texto plano: Telegram enlaza las URL solas
+            text += f"\nPR #{rec.get('pr_number')}: {rec['pr_url']}"
+        card = card_url(getattr(self.links, "kanban_base_url", None), rec.get("board") or "", tid)
+        if card:
+            text += f"\nTarjeta: {card}"
         owner = str(getattr(desk, "owner_id", "") or "")
         dests = [(main.get("chat_id"), main.get("thread_id"))]
         if owner and owner != str(main.get("chat_id")):
