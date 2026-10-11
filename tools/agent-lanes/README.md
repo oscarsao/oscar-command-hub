@@ -178,6 +178,27 @@ anterior (el lunes, desde el viernes).
 - Programarlo (L-V 07:40, `pyw`, sin ventana, log en `.state/auditor.log`): desde el checkout vivo,
   `powershell -NoProfile -ExecutionPolicy Bypass -File tools\agent-lanes\instalar_auditor.ps1`. No está registrado.
 
+## Tarjetas de decisión con botones (`/decisiones`, `/preparar`)
+
+Cada tarjeta de decisión de Oscar (assignee `oscar`, `[DECISIÓN]`/`[SEMANA]`/`[IDEA]`) sale en su propio mensaje con
+contexto, enlace y botones. Las opciones se escriben en el cuerpo de la tarjeta (o en un comentario
+`PREPARADO-POR-CLAUDE:` que escribe `/preparar`):
+
+```
+Contexto: por qué hay que decidir esto
+Opciones:
+A) primera
+B) segunda
+C) tercera
+Recomendada: B
+```
+
+Botones: `[A][B][C]` + `[✅ La recomendada]` + `[⏳ Aplazar 7 d]` `[🗄 Aparcar]`. Sin opciones: `[✅ Hecho]` `[⏳ Aplazar 7 d]`
+`[🗄 Aparcar]` `[✍️ Responder]`. Elegir/Hecho/Responder anotan `RESPUESTA-OSCAR: …` (autor `oscar-telegram`) y completan la
+tarjeta; Aparcar comenta y archiva; Aplazar comenta y la oculta 7 días (`.state/card_snooze.json`; también de los
+recordatorios). `/preparar t_xxx` o `/preparar todas` (tope 10) genera el borrador con `claude -p --model sonnet` sin
+herramientas y ≤0,5 $ por tarjeta (`card_prepare.py`). Código: `card_options.py`, `card_prepare.py`, `decisions.py`.
+
 ## Otros
 - Tests: `cd tools/agent-lanes && py -3.12 -m pytest -q`.
 - Una pasada de un carril: `py -3.12 runner.py --lane claude-ops --once`. Estado: `py -3.12 lanes.py status`

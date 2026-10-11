@@ -402,6 +402,10 @@ class HermesCLI:
         cp = self._call("complete", task_id, "--result", result, "--metadata", json.dumps(metadata))
         return cp.returncode == 0, cp.stderr.strip()[:500]
 
+    def archive(self, task_id: str) -> bool:
+        """Archiva la tarjeta (Aparcar de una tarjeta de decisión de Oscar)."""
+        return self._call("archive", task_id).returncode == 0
+
     def reopen_review(self, task_id: str) -> bool:
         return self._call("reopen-review", task_id).returncode == 0
 

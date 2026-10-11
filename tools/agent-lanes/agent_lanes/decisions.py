@@ -27,11 +27,12 @@ from typing import Callable
 
 from . import proc as _proc
 from .config import ROOT
-from .hermes import (ANSWER_PREFIX, OSCAR_AUTHOR, REVIEW_AUTHOR, answer_progress, is_guard_limit,
-                     last_needs_input_block, resume)
+from .card_options import LETTERS as CARD_LETTERS
+from .hermes import (ANSWER_PREFIX, HERMES_ANSWER_PREFIX, OSCAR_AUTHOR, REVIEW_AUTHOR, answer_progress,
+                     is_guard_limit, last_needs_input_block, resume)
 from .explain import explain as _explain
-from .notices import (OPTION_LETTERS, card_url, normalize_questions, questions_block, render, status_line,
-                      truncate, with_default_options)
+from .notices import (DECISION_CARD_STATUSES, OPTION_LETTERS, card_url, normalize_questions, questions_block,
+                      render, status_line, truncate, with_default_options)
 from .review import CHANGES_PREFIX
 
 log = logging.getLogger("agent_lanes")
@@ -54,7 +55,15 @@ DEPLOY_ASK = "deploy_ask"  # /desplegar: 1.er toque = pide confirmar; el 2.º (�
 DEPLOY_NO = "deploy_no"    # /desplegar: ✖ No en la confirmación
 ACCEPT_CARD = "accept_card"  # ✅ Acepto todas las recomendadas: las preguntas pendientes de ESTA tarjeta, de una vez
 SEE_ALL = "see_all"        # "N más · ver todas" de /decisiones
-REPLY_ACTIONS = (CHANGES, OTHER)  # piden texto a Oscar con force_reply
+# Tarjetas de decisión de Oscar (/decisiones): su propio juego de acciones; no tocan las rutas de las tareas de carril.
+CARD_OPTION = "card_option"   # A/B/C: anota RESPUESTA-OSCAR con la opción y completa la tarjeta
+CARD_REC = "card_rec"         # ✅ La recomendada (misma ruta que CARD_OPTION con el índice recomendado)
+CARD_DONE = "card_done"       # ✅ Hecho (tarjeta sin opciones)
+CARD_SNOOZE = "card_snooze"   # ⏳ Aplazar 7 d: comentario + oculta de /decisiones y recordatorios 7 días
+CARD_PARK = "card_park"       # 🗄 Aparcar: comentario + archive
+CARD_ASK = "card_ask"         # ✍️ Responder: force_reply; el texto es la respuesta
+SNOOZE_DAYS = 7
+REPLY_ACTIONS = (CHANGES, OTHER, CARD_ASK)  # piden texto a Oscar con force_reply
 EXPLAIN_BUTTON = {"text": "💬 Explícame más", "action": EXPLAIN}
 DEFAULT_OPTION_LABELS = ("✅ Sí, adelante", "❌ No")  # botones de una pregunta sin opciones (DEFAULT_OPTIONS)
 ALL_LABEL = "todas las preguntas"  # ✍️ de una escalada de review (= hermes.LEGACY_ALL_LABELS)
@@ -104,6 +113,60 @@ def keyboard_spec(state: str, *, block_kind: str | None = None, questions=None,
     if state == "stuck":  # 🧊 en triage por bloqueo repetido (block_loop_detected): unblock no vale, _retry lo saca
         return [[{"text": "🔄 Reintentar", "action": RETRY}, park]]
     return None
+
+
+def card_keyboard_spec(n_options: int, recommended: int | None) -> list[list[dict]]:
+    """Botones de una tarjeta de decisión. Con opciones: solo la letra (A/B/C van escritas en el mensaje), la
+    recomendada, aplazar y aparcar. Sin opciones: botones genéricos."""
+    snooze = {"text": f"⏳ Aplazar {SNOOZE_DAYS} d", "action": CARD_SNOOZE}
+    park = {"text": "🗄 Aparcar", "action": CARD_PARK}
+    if n_options < 2:
+        return [[{"text": "✅ Hecho", "action": CARD_DONE}, snooze],
+                [park, {"text": "✍️ Responder", "action": CARD_ASK}]]
+    n = min(n_options, len(CARD_LETTERS))
+    rows = [[{"text": CARD_LETTERS[i], "action": CARD_OPTION, "index": i} for i in range(n)]]
+    if isinstance(recommended, int) and 0 <= recommended < n:
+        rows.append([{"text": f"✅ La recomendada ({CARD_LETTERS[recommended]})", "action": CARD_REC,
+                      "index": recommended}])
+    rows.append([snooze, park])
+    return rows
+
+
+class CardSnoozes:
+    """Tarjetas aplazadas: .state/card_snooze.json {task_id: hasta (epoch)}. /decisiones y los recordatorios las
+    ocultan hasta entonces (hermes `schedule` no admite fecha: dejaría la tarjeta fuera de ready/blocked para siempre)."""
+
+    def __init__(self, path: Path | str, clock: Callable[[], float] = time.time):
+        self.path = Path(path)
+        self._clock = clock
+        self._lock = threading.Lock()
+
+    def _load(self) -> dict[str, float]:
+        try:
+            raw = json.loads(self.path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {}
+        if not isinstance(raw, dict):
+            return {}
+        return {str(k): float(v) for k, v in raw.items() if isinstance(v, (int, float))}
+
+    def add(self, task_id: str, days: float = SNOOZE_DAYS) -> float:
+        """Aplaza `days` días desde ahora y devuelve el epoch hasta el que se oculta."""
+        now = self._clock()
+        until = now + days * 86400
+        with self._lock:
+            data = {k: v for k, v in self._load().items() if v > now}
+            data[task_id] = until
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self.path.with_suffix(f".{os.getpid()}.{threading.get_ident()}.tmp")
+            tmp.write_text(json.dumps(data), encoding="utf-8")
+            os.replace(tmp, self.path)
+        return until
+
+    def hidden(self) -> set[str]:
+        with self._lock:
+            now = self._clock()
+            return {k for k, v in self._load().items() if v > now}
 
 
 def _clamp(index, qs) -> int:
@@ -215,7 +278,8 @@ class DecisionDesk:
     def __init__(self, notifier, store: CallbackStore, *, lanes: dict, hermes_for: Callable[[str], object],
                  links=None, owner_id: str = OWNER_TELEGRAM_ID, runner=_proc.run, gh_exe: str = GH_EXE,
                  spawn: Callable[[Callable[[], None]], None] = _spawn, now: Callable[[], datetime] = datetime.now,
-                 messages=None, explainer: Callable[[dict], str | None] | None = None):
+                 messages=None, explainer: Callable[[dict], str | None] | None = None,
+                 snoozes: CardSnoozes | None = None):
         self.notifier = notifier
         self.store = store
         self.lanes = lanes
@@ -234,6 +298,8 @@ class DecisionDesk:
         self.tree = None          # deps.TreeReader: líneas 🔗/⏸/↳ al redibujar un aviso (opcional)
         # 💬 Explícame más: rec -> texto llano (claude -p --model haiku sin herramientas); inyectable en tests.
         self.explainer = explainer or (lambda rec: _explain(rec, runner=self._run))
+        # Aplazadas 7 días: junto a los teclados (.state/), así los tests con tmp_path no escriben en el .state real.
+        self.snoozes = snoozes or CardSnoozes(Path(store.root).parent / "card_snooze.json")
 
     # --- teclados -------------------------------------------------------------------------------------
 
@@ -288,6 +354,13 @@ class DecisionDesk:
         """[✅ Aceptar todo lo recomendado] sobre `members` (se filtran al pulsar: recomendada en TODAS sus preguntas)."""
         rec = {"task_id": "bandeja", "board": "", "lane": "", "accept_all": members}
         return self.store.issue(rec, [[{"text": "✅ Aceptar todo lo recomendado", "action": ACCEPT_ALL}]])[1]
+
+    def card_markup(self, card: dict, options: list[str], recommended: int | None, head: str) -> dict:
+        """Teclado de la tarjeta de decisión `card` ({board, task}); `head` = su mensaje HTML (se reedita al pulsar)."""
+        t = card["task"]
+        rec = {"task_id": t["id"], "board": card["board"], "lane": "", "card": True, "title": t.get("title") or "",
+               "options": list(options[:len(CARD_LETTERS)]), "head": head}
+        return self.store.issue(rec, card_keyboard_spec(len(options), recommended))[1]
 
     def see_all_markup(self, brand: str | None) -> dict:
         """[📋 Ver todas] bajo la línea "N más" de /decisiones: reenvía la bandeja completa."""
@@ -449,6 +522,8 @@ class DecisionDesk:
 
     def _act(self, rec: dict, button: dict, where: dict) -> bool:
         action = button["action"]
+        if rec.get("card"):  # tarjeta de decisión de Oscar (/decisiones)
+            return self._card_act(rec, button, where)
         if action.startswith("int_"):  # 🔀 Fusionar / 🚀 Desplegar: solo con el Integrador activo
             return bool(self.integrator) and self.integrator.on_button(action, rec, where, self)
         if action.startswith("promo_"):  # 🚀 Promover MigraTeam: Revisado / Sí, promover (promote.py)
@@ -483,6 +558,77 @@ class DecisionDesk:
         if action == OPTION:
             return self._option_answer(rec, where, button.get("index"))
         return False
+
+    # --- tarjetas de decisión de Oscar ---------------------------------------------------------------
+
+    @staticmethod
+    def _has_comment(show: dict | None, body: str) -> bool:
+        return any(c.get("author") == OSCAR_AUTHOR and (c.get("body") or "").strip() == body.strip()
+                   for c in (show or {}).get("comments") or ())
+
+    def _card_act(self, rec: dict, button: dict, where: dict, text: str | None = None) -> bool:
+        """Botón de una tarjeta de decisión. Anota RESPUESTA-OSCAR (misma autoría que las demás respuestas de Oscar) y
+        completa la tarjeta; aplazar y aparcar comentan y no cuentan como respuesta. Idempotente: si la tarjeta ya no
+        está en ready/blocked no hace nada, y un comentario idéntico no se repite si hay que reintentar."""
+        action, tid, h = button["action"], rec["task_id"], self._hermes(rec)
+        show = None
+        if hasattr(h, "show"):
+            try:
+                show = h.show(tid)
+            except Exception as exc:
+                log.info("%s: tarjeta no leída antes de decidir: %s", tid, exc)
+        status = ((show or {}).get("task") or {}).get("status")
+        if status and status not in DECISION_CARD_STATUSES:
+            self._edit(rec, where, None, "ya estaba decidida (mira la tarjeta)")
+            return True
+        stamp = self._now().strftime("%Y-%m-%d %H:%M")
+
+        def note(body: str) -> bool:
+            if self._has_comment(show, body):
+                return True
+            if h.comment(tid, body[:3000], author=OSCAR_AUTHOR):
+                return True
+            self._edit(rec, where, "blocked", "no se pudo guardar la respuesta en la tarjeta")
+            return False
+
+        if action == CARD_SNOOZE:
+            until = self.snoozes.add(tid, SNOOZE_DAYS)
+            label = datetime.fromtimestamp(until).strftime("%d/%m")
+            if not note(f"APLAZADA-OSCAR hasta {label} ({SNOOZE_DAYS} d, desde Telegram)"):
+                return False
+            self._edit(rec, where, None, f"⏳ aplazada hasta el {label}")
+            return True
+        if action == CARD_PARK:
+            if not note("Aparcada por Oscar desde Telegram"):
+                return False
+            archive = getattr(h, "archive", None)
+            if not archive or not archive(tid):
+                self._edit(rec, where, "blocked", "no se pudo aparcar la tarjeta (mira el panel)")
+                return False
+            self._edit(rec, where, None, "🗄 aparcada")
+            return True
+        opts = rec.get("options") or []
+        if action in (CARD_OPTION, CARD_REC):
+            idx = button.get("index")
+            if not isinstance(idx, int) or isinstance(idx, bool) or not 0 <= idx < len(opts):
+                return False
+            answer = f"{CARD_LETTERS[idx]}) {opts[idx]}" + (" (la recomendada)" if action == CARD_REC else "")
+        elif action == CARD_DONE:
+            answer = "Hecho"
+        elif action == CARD_ASK and text:
+            answer = text.strip()
+        else:
+            return False
+        if not note(f"{HERMES_ANSWER_PREFIX} {answer}"):
+            return False
+        ok, err = h.complete(tid, f"Decidido por Oscar desde Telegram: {answer}"[:1500],
+                             {"decided_by": OSCAR_AUTHOR, "at": stamp})
+        if not ok:
+            log.warning("%s: complete de la tarjeta falló: %s", tid, err)
+            self._edit(rec, where, "blocked", "respuesta anotada, pero no se pudo cerrar la tarjeta (mira el panel)")
+            return False
+        self._edit(rec, where, None, f"✅ Elegida: {truncate(answer, 200)}")
+        return True
 
     def _option_answer(self, rec: dict, where, idx) -> bool:
         return self._option_step(rec, where, idx)[0]
@@ -803,7 +949,8 @@ class DecisionDesk:
         if button["action"] == CHANGES:
             prompt = f"¿Qué cambio pides para {tid}?"
         else:
-            q = (rec.get("question") or {}).get("question") or rec.get("summary") or ""
+            q = ((rec.get("question") or {}).get("question") or rec.get("summary")
+                 or (rec.get("title") if rec.get("card") else "") or "")
             n = rec.get("n_questions") or 1
             step = f" (Pregunta {(rec.get('q_index') or 0) + 1}/{n})" if n > 1 and not rec.get("other_label") else ""
             prompt = f"Tu respuesta para {tid}{step}:" + (f"\n{truncate(q, 300)}" if q else "")
@@ -825,6 +972,8 @@ class DecisionDesk:
                                  {"token": token, "rec": rec, "button": button, "where": where})
 
     def _apply_reply(self, rec: dict, button: dict, where: dict, text: str) -> bool:
+        if rec.get("card"):
+            return self._card_act(rec, button, where, text)
         if rec.get("group"):
             return self._group_act(rec, button, where, text)
         tid, h = rec["task_id"], self._hermes(rec)
@@ -856,11 +1005,14 @@ class DecisionDesk:
         if rec.get("group") or rec.get("accept_all"):  # tarjeta de grupo / cabecera: texto propio, sin copias
             self._edit_text(where, status or "")
             return
-        lane = self._lane(rec)
-        links = self.links(lane, rec["task_id"], changed_files=rec.get("changed_files")) if (self.links and lane) else []
-        tree = self.tree(rec.get("board"), rec["task_id"]) if self.tree else None
-        text = render(state, rec["task_id"], rec.get("title"), rec["lane"], status, [*links, *extra_links], bullets,
-                      body=rec.get("body"), for_oscar=rec.get("for_oscar"), tree=tree)
+        if rec.get("card"):  # tarjeta de decisión: su mensaje HTML + lo que pasó, sin botones
+            text = (rec.get("head") or "") + "\n" + _esc(status or "")
+        else:
+            lane = self._lane(rec)
+            links = self.links(lane, rec["task_id"], changed_files=rec.get("changed_files")) if (self.links and lane) else []
+            tree = self.tree(rec.get("board"), rec["task_id"]) if self.tree else None
+            text = render(state, rec["task_id"], rec.get("title"), rec["lane"], status, [*links, *extra_links], bullets,
+                          body=rec.get("body"), for_oscar=rec.get("for_oscar"), tree=tree)
         extra = {"reply_markup": markup} if markup else {}
         seen = set()
         if where:

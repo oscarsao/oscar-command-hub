@@ -41,6 +41,7 @@ import time
 from typing import Callable
 from urllib.parse import urlsplit
 
+from .card_options import PREPARED_AUTHOR, PREPARED_PREFIX, CardSpec, card_message, parse_card
 from .decisions import DEPLOY_ASK, DEPLOY_NO, HAZLO, OWNER_TELEGRAM_ID
 from .deps import (ShowCache, child_bucket, dependency_order, family, pending_parents, tree_lines,
                    waiting_line)
@@ -56,6 +57,7 @@ COMMANDS = (
     ("aprobar", "Tareas listas para integrar"),
     ("tareas", "En curso y en cola por carril: /tareas [migrateam|pildora|nextjobs]"),
     ("tarea", "Ficha de una tarea con sus botones: /tarea t_xxx"),
+    ("preparar", "Claude redacta contexto y 3 opciones de una tarjeta de decisión: /preparar t_xxx | todas"),
     ("hazlo", "Crea una tarea pequeña (carril según el texto): /hazlo <texto>"),
     ("estado", "En curso, esperando a Oscar y pendiente de desplegar: /estado [marca]"),
     ("desplegar", "Despliega lo fusionado de un proyecto, con doble confirmación: /desplegar oscarhq"),
@@ -89,6 +91,7 @@ LANE_HINTS = {
     "claude-hub": ("command hub", "command-hub", "agent-lanes", "carriles", "runner", "bot de trabajos", "monitor",
                    "hermes"),
 }
+PREPARE_MAX = 10  # /preparar todas: tope de tarjetas por orden (0,5 $ como máximo cada una)
 READY_PER_LANE = 8  # tareas en cola listadas por carril en /tareas
 
 _CMD_RE = re.compile(r"^/([A-Za-z0-9_]+)(?:@([A-Za-z0-9_]+))?(?:\s+(.*))?$", re.S)
@@ -188,7 +191,7 @@ class CommandCenter:
                  generic_origins=(), bot_username: str | None = None, base_url: str | None = None,
                  owner_id: str | None = None, brief: Callable[[str | None], str] | None = None,
                  renotifier=None, now: Callable[[], float] = time.time,
-                 health: Callable[[], str] | None = None):
+                 health: Callable[[], str] | None = None, preparer: Callable[[dict], str | None] | None = None):
         self.notifier = notifier
         self.desk = desk
         self.lanes = lanes
@@ -203,6 +206,7 @@ class CommandCenter:
         self._renotifier = renotifier
         self._now = now
         self._shows = ShowCache(ttl=30)  # árbol padre/hijas: una lectura por tarea y comando, no una por línea
+        self._preparer = preparer  # /preparar: ctx -> bloque Contexto/Opciones/Recomendada (None = card_prepare.prepare)
         self._health = health  # /salud: texto HTML ya montado (tests); None = health.build con lo real
 
     # --- entrada --------------------------------------------------------------------------------------
@@ -279,6 +283,7 @@ class CommandCenter:
         """(tarjetas de decisión, nº de tarjetas a nombre de Oscar SIN etiqueta de decisión) en una sola pasada por
         los tableros: mismos estados y tableros, sin duplicados por id."""
         boards = dict.fromkeys([l.board for l in self.lanes.values() if l.board] + list(EXTRA_BOARDS))
+        snoozed = self._snoozed()
         found: dict[str, dict] = {}
         untagged: set[str] = set()
         for board in boards:
@@ -293,7 +298,7 @@ class CommandCenter:
                     continue
                 for t in tasks:
                     t = {"assignee": OSCAR_ASSIGNEE, "status": status, **t}
-                    if not t.get("id") or t["id"] in found:
+                    if not t.get("id") or t["id"] in found or t["id"] in snoozed:
                         continue
                     if is_decision_card(t):
                         found[t["id"]] = {"board": board, "task": t, "since": decision_since(t)}
@@ -301,6 +306,15 @@ class CommandCenter:
                     else:
                         untagged.add(t["id"])
         return sorted(found.values(), key=lambda c: (c["since"] or 0, c["task"]["id"])), len(untagged)
+
+    def _snoozed(self) -> set[str]:
+        """Tarjetas aplazadas con [⏳ Aplazar 7 d]: no salen en /decisiones ni en los recordatorios hasta que pasa el plazo."""
+        snoozes = getattr(self.desk, "snoozes", None)
+        try:
+            return snoozes.hidden() if snoozes else set()
+        except Exception as exc:
+            log.warning("tarjetas aplazadas no leídas: %s", exc)
+            return set()
 
     def ready_to_approve(self, brand: str | None = None) -> list:
         found = [p for p in self.renotifier().collect(statuses=("done",)) if p.state == "done"]
@@ -360,8 +374,8 @@ class CommandCenter:
         if stuck:
             self._stuck_section(where, stuck, now, scope)
         if cards:
-            self._send(where, self.cards_text(cards, now, scope, untagged=untagged))
-        elif untagged:
+            self._cards_section(where, cards, now, scope)
+        if untagged:
             self._send(where, self.untagged_line(untagged))
 
     def _top_decisions(self, where, pendings: list, stuck: list, cards: list[dict], now: float, brand: str | None,
@@ -375,11 +389,7 @@ class CommandCenter:
         if n_s:
             self._stuck_section(where, stuck[:n_s], now, scope)
         for c in cards[:n_c]:
-            t = c["task"]
-            url = card_url(self.base_url, c["board"], t["id"])
-            ref = f'<a href="{html.escape(url, quote=True)}">{html.escape(t["id"])}</a>' if url else f"<code>{html.escape(t['id'])}</code>"
-            self._send(where, f"📌 {ref} · {html.escape(truncate(t.get('title'), CARD_TITLE_MAX))} · "
-                              f"hace {hours_ago(c['since'], now)} h")
+            self._send_card(where, c, now)
         self._send(where, f"➕ {total - TOP_DECISIONS} más · ver todas", html=False,
                    markup=self.desk.see_all_markup(brand))
 
@@ -397,23 +407,99 @@ class CommandCenter:
             markup = self.desk.markup("stuck", task=p.task, lane=p.lane, block_kind=p.block_kind)
             self._mirror(p.tid, self._send(where, text, markup=markup), markup)
 
-    def cards_text(self, cards: list[dict], now: float, scope: str = "", *, untagged: int = 0) -> str:
-        """Un mensaje HTML con las tarjetas de decisión de Oscar (sin botones en v1) y, debajo, cuántas más tiene a su
-        nombre sin etiqueta (con enlace al panel). Nunca corta el HTML: si no cabe, quita líneas y lo dice."""
-        e = html.escape
-        head = f"📌 <b>Tus tarjetas de decisión ({len(cards)})</b>{e(scope)}"
-        tail = [self.untagged_line(untagged)] if untagged else []
-        lines = []
-        for c in cards:
-            t = c["task"]
-            url = card_url(self.base_url, c["board"], t["id"])
-            ref = f'<a href="{e(url, quote=True)}">{e(t["id"])}</a>' if url else f"<code>{e(t['id'])}</code>"
-            lines.append(f"• {ref} · {e(truncate(t.get('title'), CARD_TITLE_MAX))} · hace {hours_ago(c['since'], now)} h")
-        shown = len(lines)
-        while shown and len("\n".join([head, *lines[:shown], "  +000 más en el panel", *tail])) > TEXT_MAX:
-            shown -= 1
-        more = [f"  +{len(lines) - shown} más en el panel"] if shown < len(lines) else []
-        return "\n".join([head, *lines[:shown], *more, *tail])
+    def card_spec(self, c: dict) -> CardSpec:
+        """Opciones de una tarjeta: de su cuerpo o de un comentario PREPARADO-POR-CLAUDE (lee `show`; sin él, sin opciones)."""
+        t = c["task"]
+        try:
+            show = self._shows.show(self.hermes_for(c["board"]), t["id"])
+        except Exception as exc:
+            log.info("%s: tarjeta no leída para sus opciones: %s", t.get("id"), exc)
+            show = {}
+        body = ((show.get("task") or {}).get("body")) or t.get("body")
+        return parse_card(body, show.get("comments") or ())
+
+    def _send_card(self, where, c: dict, now: float) -> None:
+        """Una tarjeta de decisión = un mensaje con contexto, opciones escritas y botones."""
+        spec = self.card_spec(c)
+        text = card_message(c, spec, self.base_url, now)
+        markup = self.desk.card_markup(c, spec.options if spec.has_options else [], spec.recommended, text)
+        self._mirror(c["task"]["id"], self._send(where, text, markup=markup), markup)
+
+    def _cards_section(self, where, cards: list[dict], now: float, scope: str) -> None:
+        """Cabecera + una tarjeta por mensaje (hasta MAX_CARDS; el resto, en el panel)."""
+        head = f"📌 Tus tarjetas de decisión ({len(cards)}){scope}"
+        if len(cards) > MAX_CARDS:
+            head += f"\nMuestro {MAX_CARDS}; el resto, en el panel"
+        self._send(where, head, html=False)
+        for c in cards[:MAX_CARDS]:
+            self._send_card(where, c, now)
+
+    # --- /preparar ------------------------------------------------------------------------------------
+
+    def _prepare_ctx(self, c: dict) -> dict:
+        t = c["task"]
+        h = self.hermes_for(c["board"])
+        show = self._shows.show(h, t["id"])
+        task = show.get("task") or {}
+        ctx = {"task_id": t["id"], "title": task.get("title") or t.get("title"), "body": task.get("body") or "",
+               "comments": show.get("comments") or []}
+        for pid in (show.get("parents") or [])[:1]:
+            pid = pid if isinstance(pid, str) else (pid or {}).get("id")
+            try:
+                ptask = (h.show(pid) or {}).get("task") or {}
+            except Exception:
+                continue
+            ctx.update(parent_title=ptask.get("title"), parent_body=ptask.get("body"))
+        return ctx
+
+    def cmd_preparar(self, where, args: str, brand: str | None) -> None:
+        """/preparar t_xxx | todas: Claude (sonnet, sin herramientas, ≤0,5 $ por tarjeta) redacta Contexto + 3 opciones +
+        recomendada y se guarda como comentario PREPARADO-POR-CLAUDE (el cuerpo no se toca). Luego reenvía la tarjeta
+        con botones. Solo tarjetas de decisión sin opciones; `todas` tiene tope PREPARE_MAX."""
+        arg = args.strip().split()[0].lower() if args.strip() else ""
+        cards = self.oscar_cards(brand)[0]
+        if arg == "todas":
+            todo = [c for c in cards if not self.card_spec(c).has_options]
+        elif TASK_ID_RE.match(arg):
+            todo = [c for c in cards if c["task"]["id"] == arg]
+            if not todo:
+                self._send(where, f"{arg} no es una tarjeta de decisión pendiente tuya", html=False)
+                return
+            if self.card_spec(todo[0]).has_options:
+                self._send(where, f"{arg} ya tiene opciones; aquí van:", html=False)
+                self._send_card(where, todo[0], self._now())
+                return
+        else:
+            self._send(where, "Uso: /preparar t_xxxxxxxx  o  /preparar todas", html=False)
+            return
+        if not todo:
+            self._send(where, "No hay tarjetas sin opciones que preparar 🎉", html=False)
+            return
+        skipped = max(0, len(todo) - PREPARE_MAX)
+        todo = todo[:PREPARE_MAX]
+        self._send(where, f"Preparando {len(todo)} tarjeta{'s' if len(todo) != 1 else ''}"
+                          + (f" (tope {PREPARE_MAX}; quedan {skipped} para otra vez)" if skipped else "")
+                          + "… tarda un rato", html=False)
+        preparer = self._preparer
+        if preparer is None:
+            from .card_prepare import prepare as preparer
+        failed = []
+        for c in todo:
+            tid = c["task"]["id"]
+            try:
+                block = preparer(self._prepare_ctx(c))
+                h = self.hermes_for(c["board"])
+                ok = bool(block) and h.comment(tid, f"{PREPARED_PREFIX}\n{block}"[:3000], author=PREPARED_AUTHOR)
+            except Exception as exc:
+                log.warning("/preparar %s falló: %s", tid, exc)
+                ok = False
+            if not ok:
+                failed.append(tid)
+                continue
+            self._shows._data.clear()  # que el mensaje nuevo lea el comentario recién escrito
+            self._send_card(where, c, self._now())
+        if failed:
+            self._send(where, "No pude preparar: " + ", ".join(failed), html=False)
 
     def untagged_line(self, n: int) -> str:
         """"📋 N tarjetas más a tu nombre sin etiqueta · panel" (enlace a la raíz del panel del kanban)."""
