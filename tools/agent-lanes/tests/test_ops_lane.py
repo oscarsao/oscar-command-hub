@@ -226,6 +226,14 @@ def test_runner_claims_creates_workspace_verifies_and_goes_to_review(lane):
     assert "pendiente de tu validación" in (n.msgs + [e[1] for e in n.edits])[-1]  # alerta: mensaje nuevo
 
 
+def test_runner_ops_review_notice_shows_deliverable_path_as_text(lane):
+    ws = Path(lane.worktree_root) / "t_1"
+    ws.mkdir(parents=True)
+    (ws / "informe.md").write_text("inventario", encoding="utf-8")
+    _, _, n = _run_ops(lane, {**DONE, "evidence": [{"type": "path", "value": "informe.md"}]})
+    assert "📁 informe.md" in (n.msgs + [e[1] for e in n.edits])[-1]
+
+
 def test_runner_ops_bad_evidence_blocks_never_review(lane):
     res, h, _ = _run_ops(lane, {**DONE, "evidence": [{"type": "path", "value": "C:/Windows/win.ini"}]})
     assert res == {"t_1": "blocked:transient"}

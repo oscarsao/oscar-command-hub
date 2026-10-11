@@ -74,7 +74,7 @@ def test_full_card_has_at_most_7_lines_in_order():
 
 
 @pytest.mark.parametrize("path,ok", [("docs/specs/botones.md", True), ("pitches/x.md", True), ("specs/a.md", True),
-                                     ("README.md", True), ("./HANDOFF.md", True), ("docs/otro.md", False),
+                                     ("README.md", True), ("./HANDOFF.md", True), ("docs/otro.md", True), ("docs/sub/diag.md", True), ("docs/x.png", False),
                                      ("agent_lanes/x.py", False), ("notas.txt", False), ("../fuera.md", False)])
 def test_is_spec_path(path, ok):
     assert is_spec_path(path) is ok
