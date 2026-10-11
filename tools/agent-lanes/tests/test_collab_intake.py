@@ -327,7 +327,8 @@ def test_resolve_target_never_sends_dm_to_generic_or_other_chat():
 def test_lanes_yaml_generic_origins_do_not_list_collaborators():
     cfg = yaml.safe_load((ROOT / "lanes.yaml").read_text(encoding="utf-8"))
     chats = {str(o.get("chat")) for o in cfg["telegram"]["generic_origins"]}
-    assert not chats & {str(MARIA), str(INGERBER), str(ANDREA)}
+    real_ids = load_people(OSCAR).collaborator_ids()  # los ids reales de tools/telegram/people.yaml, cuando existan
+    assert not chats & (real_ids | {str(MARIA), str(INGERBER), str(ANDREA)})
 
 
 # --- filtro de salida ------------------------------------------------------------------------------------
@@ -351,6 +352,7 @@ class _Capture(TelegramNotifier):
     def __init__(self, collab):
         super().__init__("1:tok", "-100", None, allowed_chats={str(MARIA)})
         self.collab_chats, self.collab_view, self.payloads = collab, collab_view, []
+        self.owner_id = OSCAR
 
     def _api(self, method, payload, timeout=None):
         self.payloads.append((method, payload))
@@ -376,6 +378,46 @@ def test_notifier_filters_every_path_to_collaborator_dm():
         assert "SECRETO" not in p["text"] and "privado" not in p["text"] and "parse_mode" not in p
         assert "reply_markup" not in p and p["text"].startswith("t_0a1b2c3d · en curso")
     assert owner[1]["text"] == notice and owner[1]["reply_markup"] == markup
+
+
+def test_filter_covers_any_private_chat_that_is_not_oscar_even_if_not_in_people_yaml():
+    n = _Capture(set())  # people.yaml vacío/roto o persona revocada con user_id: null
+    n.owner_id = OSCAR
+    notice = (f'▶️ t_0a1b2c3d · Titulo ghp_SECRETO\nQué: privado '
+              f'<a href="{PANEL_URL}?board=oscarhq#t_0a1b2c3d">T</a>')
+    markup = {"inline_keyboard": [[{"text": "x", "callback_data": "a:0"}]]}
+    revoked = "7777"
+    n.send_to(revoked, 0, notice, reply_markup=markup)
+    n.edit(revoked, 5, notice, reply_markup=markup)
+    n.edit_markup(revoked, 5, markup)
+    n.send(notice, (revoked, "0"), reply_markup=markup)  # origen no permitido: cae al default, sin fugas
+    assert len(n.payloads) == 4
+    for method, p in n.payloads[:3]:
+        if method == "editMessageReplyMarkup":
+            assert p["reply_markup"] == {"inline_keyboard": []}
+        else:
+            assert "SECRETO" not in p["text"] and "privado" not in p["text"]
+            assert "reply_markup" not in p and p["text"].startswith("t_0a1b2c3d")
+
+
+def test_filter_leaves_groups_oscar_and_default_chat_untouched():
+    n = _Capture(set())
+    n.owner_id = OSCAR
+    notice = "▶️ t_0a1b2c3d · Titulo"
+    markup = {"inline_keyboard": [[{"text": "x", "callback_data": "a:0"}]]}
+    for chat in ("-1003530490339", OSCAR, "-100"):
+        n.send_to(chat, 0, notice, reply_markup=markup)
+    assert all(p["text"] == notice and p["reply_markup"] == markup for _, p in n.payloads)
+
+
+def test_only_notifier_from_env_builds_the_runtime_notifier():
+    import re
+    offenders = []
+    for path in list((ROOT / "agent_lanes").glob("*.py")) + [ROOT / "runner.py", ROOT / "lanes.py"]:
+        for m in re.finditer(r"(?<![\w.])TelegramNotifier\(", path.read_text(encoding="utf-8")):
+            offenders.append(path.name)
+    # telegram.py define la clase y construye el notificador en notifier_from_env; ningún otro módulo del runner
+    assert [o for o in offenders if o != "telegram.py"] == []
 
 
 def test_trusted_text_bypasses_filter_only_when_flagged():

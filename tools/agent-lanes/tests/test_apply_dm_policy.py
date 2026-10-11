@@ -3,6 +3,7 @@ backup, --apply idempotente y --revert exacto."""
 from __future__ import annotations
 
 import importlib.util
+import sys
 from pathlib import Path
 
 import pytest
@@ -15,6 +16,7 @@ CONFIG = ("model: x\ngateway:\n  allow_all_users: false\n  multiplex_profiles: t
 
 @pytest.fixture
 def mod(tmp_path, monkeypatch):
+    monkeypatch.setattr(sys, "dont_write_bytecode", True)  # no dejar tools/hermes-config/__pycache__
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     for n in ("GATEWAY_UNAUTHORIZED_DM_BEHAVIOR", "UNAUTHORIZED_DM_BEHAVIOR"):
         monkeypatch.delenv(n, raising=False)

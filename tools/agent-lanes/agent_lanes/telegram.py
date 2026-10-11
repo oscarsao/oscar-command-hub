@@ -51,6 +51,7 @@ def _protect_collaborator_dms(notifier: "TelegramNotifier", env: dict) -> None:
     from .decisions import OWNER_TELEGRAM_ID
     from .people import load_people
     owner = env.get("OWNER_TELEGRAM_ID") or OWNER_TELEGRAM_ID
+    notifier.owner_id = str(owner)
     notifier.collab_chats = load_people(owner).collaborator_ids()
     notifier.collab_view = collab_view
 
@@ -77,11 +78,23 @@ class TelegramNotifier:
         # DM de colaboradores: nada sale hacia ellos sin pasar por collab_view (ver notifier_from_env).
         self.collab_chats: set[str] = set()
         self.collab_view = None
+        self.owner_id: str | None = None
+
+    def _is_collab_chat(self, chat_id) -> bool:
+        """Falla ABIERTO es lo que hay que evitar: con el filtro activo, todo chat privado (id positivo) que no sea el de
+        Oscar ni el default del .env se trata como colaborador, aunque ya no esté en people.yaml (revocado con
+        user_id: null, YAML roto, tarjeta antigua con su Origen-Telegram...)."""
+        if not self.collab_view:
+            return False
+        cid = str(chat_id)
+        if cid in self.collab_chats:
+            return True
+        return cid.isdigit() and cid != str(self.owner_id) and cid != str(self.chat_id)
 
     def _for_collab(self, chat_id, text: str, html: bool, reply_markup, trusted: bool = False):
         """(text, html, reply_markup) tal como pueden salir hacia `chat_id`: a un colaborador, solo t_id + estado +
         enlace, sin HTML ni botones. `trusted` = texto fijo montado por CollabIntake."""
-        if trusted or not self.collab_view or str(chat_id) not in self.collab_chats:
+        if trusted or not self._is_collab_chat(chat_id):
             return text, html, reply_markup
         return self.collab_view(text), False, None
 
@@ -176,7 +189,7 @@ class TelegramNotifier:
         """Cambia solo los botones (None = quitarlos)."""
         if not self._token or not message_id:
             return False
-        if self.collab_view and str(chat_id) in self.collab_chats:
+        if self._is_collab_chat(chat_id):
             reply_markup = None  # a un colaborador nunca le llegan botones
         try:
             self._api("editMessageReplyMarkup", {"chat_id": chat_id, "message_id": int(message_id),

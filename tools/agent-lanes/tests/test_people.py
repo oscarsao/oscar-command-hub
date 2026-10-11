@@ -13,9 +13,19 @@ def _write(tmp_path, text):
     return p
 
 
-def test_versioned_people_yaml_has_no_real_ids_yet():
-    ppl = load_people(OWNER)  # el fichero versionado: todos los user_id son null (TODO de Oscar)
-    assert len(ppl) == 0 and ppl.lookup(OWNER).is_owner
+def test_versioned_people_yaml_is_structurally_valid():
+    """Valida la ESTRUCTURA del fichero versionado, no sus ids (Oscar los rellena a mano y esto no debe romper)."""
+    import yaml
+    entries = yaml.safe_load(people.PEOPLE_FILE.read_text(encoding="utf-8"))["people"]
+    assert entries
+    for key, cfg in entries.items():
+        assert cfg["role"] in ("coo", "cmo", "marketing"), key  # nunca owner ni desconocido
+        assert set(cfg.get("can") or ()) <= {"carril"}, key
+        assert not cfg.get("can") or cfg["role"] == "coo", key
+        assert cfg["user_id"] is None or str(cfg["user_id"]).isdigit(), key
+    ppl = load_people(OWNER)  # y el lector la acepta tal cual, sea cual sea el número de ids rellenados
+    assert ppl.lookup(OWNER).is_owner and OWNER not in ppl.collaborator_ids()
+    assert len(ppl) == sum(1 for c in entries.values() if c["user_id"] is not None)
 
 
 def test_entry_without_user_id_is_ignored(tmp_path):
