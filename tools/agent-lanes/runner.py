@@ -137,7 +137,8 @@ def main(argv: list[str] | None = None) -> int:
         if lane.kind == "review":
             runners.append(ReviewRunner(lane, all_lanes, hermes_for=hermes_for, git=git, reviewer=ClaudeReviewer(),
                                         verifier=verify, notify=notify, messages=messages, links=links,
-                                        decisions=decisions, integration=integration, tree=tree))
+                                        decisions=decisions, integration=integration, tree=tree,
+                                        state_dir=STATE_DIR.parent / "review-blocked"))
     # Carril Integrador: solo con INTEGRATOR_ENABLED. Sin bot de carriles corre los gates y avisa sin botones.
     integrator = build_integrator(env, all_lanes, hermes_for=hermes_for, links=links, notifier=notify,
                                   messages=messages, desk=decisions)

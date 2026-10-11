@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from . import proc as _proc
 from .config import Lane
 from .decisions import keyboard_spec
-from .hermes import OSCAR_AUTHOR, answer_progress, pending_hermes_answer
+from .hermes import OSCAR_AUTHOR, answer_progress, is_guard_limit, pending_hermes_answer
 from .notices import (
     MessageStore,
     decision_since,
@@ -261,6 +261,10 @@ class Renotifier:
         meta = (runs[-1].get("metadata") if runs else None) or {}
         if not isinstance(meta, dict):
             meta = {}
+        if is_guard_limit(reason):  # limitación permanente del guard: sin botón de responder ni de reintentar
+            return Pending(tid, lane, "blocked", task, status_line(
+                "requiere consola", f"el guard no deja hacerlo; en una consola interactiva: /tomar-tarea {tid}",
+                "detalle en la tarjeta"), block_kind="console", since=decision_since(task, show))
         reason, plain = split_for_oscar(reason)
         questions = block_questions(show)
         # Preguntas ya respondidas en esta ronda (kanban, no memoria): se pinta la siguiente pendiente, nunca una
