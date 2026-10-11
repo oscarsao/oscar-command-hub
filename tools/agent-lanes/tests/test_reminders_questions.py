@@ -234,3 +234,32 @@ def test_brief_compose_filters_by_brand():
     assert "t_mig" in text and "t_ohq" not in text and "claude-oscarhq" not in text
     assert text.split("\n")[0].endswith("</b> · MigraTeam")
     assert classify(items, NOW)["decide"][0]["since"] == NOW - 3600
+
+
+def test_reminder_with_base_url_links_oldest_cards_and_panel(tmp_path):
+    clock = [at(28, 13, 2)]
+    bot = DMBot()
+    now_ts = clock[0].timestamp()
+    lane = SimpleNamespace(board="oscarhq")
+    pending = [SimpleNamespace(tid=f"t_{i}", lane=lane, since=now_ts - i * 3600, task={"title": f"Título <{i}> & co"})
+               for i in range(1, 6)]
+    cards = [{"board": "migrateam", "since": now_ts - 10 * 3600, "task": {"id": "t_card", "title": "Decidir"}}]
+    rem = Reminders(bot, OSCAR, lambda: pending, tmp_path / "r.json", now=lambda: clock[0], cards=lambda: cards,
+                    base_url="https://kanban.example/kanban?board={board}#{id}")
+    text = rem.tick()
+    chat, sent, is_html = bot.sent[0]
+    assert is_html is True and text.startswith("Tienes 5 preguntas")
+    assert sent.count("📌") == 3  # solo las 3 más antiguas
+    assert '<a href="https://kanban.example/kanban?board=migrateam#t_card">t_card</a> · Decidir · hace 10 h' in sent
+    assert 'board=oscarhq#t_5">t_5</a>' in sent and "t_1<" not in sent and "t_2<" not in sent
+    assert "Título &lt;5&gt; &amp; co" in sent and "<5>" not in sent  # HTML escapado
+    assert '<a href="https://kanban.example/">Panel del kanban</a>' in sent
+
+
+def test_reminder_with_base_url_tolerates_items_without_task_ids(tmp_path):
+    clock = [at(28, 13, 2)]
+    bot = DMBot()
+    rem = Reminders(bot, OSCAR, lambda: [SimpleNamespace(since=None)], tmp_path / "r.json", now=lambda: clock[0],
+                    base_url="https://k")
+    assert rem.tick() is not None
+    assert bot.sent[0][2] is True and "📌" not in bot.sent[0][1]

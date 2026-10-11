@@ -14,6 +14,7 @@ se anota UNA vez en el log y la franja se da por hecha.
 """
 from __future__ import annotations
 
+import html
 import json
 import logging
 import threading
@@ -22,13 +23,14 @@ from pathlib import Path
 from typing import Callable
 from zoneinfo import ZoneInfo
 
-from .notices import hours_ago
+from .notices import card_url, hours_ago, truncate
 
 log = logging.getLogger("agent_lanes")
 
 MADRID = ZoneInfo("Europe/Madrid")
 SLOTS = (13, 18)
 WINDOW_MINUTES = 60
+LINKED_ITEMS = 3  # tarjetas más antiguas que se enlazan en el recordatorio
 DM_CLOSED_HINT = "Oscar debe mandar /start al bot de carriles para recibir los recordatorios en su DM"
 
 
@@ -44,6 +46,36 @@ def reminder_text(n: int, oldest_hours: int, cards: int = 0, stuck: int = 0) -> 
         parts.append(("1 tarjeta" if cards == 1 else f"{cards} tarjetas") + " de decisión")
     joined = ", ".join(parts[:-1]) + " y " + parts[-1] if len(parts) > 1 else "".join(parts)
     return f"Tienes {joined or 'nada pendiente'} · /decisiones"
+
+
+def _oldest_items(pending, stuck, cards, limit: int = LINKED_ITEMS) -> list[tuple[float | None, str, str, str]]:
+    """(since, tablero, id, título) de las `limit` pendientes más antiguas entre preguntas, atascadas y tarjetas."""
+    items = []
+    for p in [*pending, *stuck]:
+        board = getattr(getattr(p, "lane", None), "board", None)
+        tid = getattr(p, "tid", None)
+        if tid and board:
+            items.append((getattr(p, "since", None), board, tid, (getattr(p, "task", None) or {}).get("title") or ""))
+    for c in cards:
+        if isinstance(c, dict) and c.get("board") and (c.get("task") or {}).get("id"):
+            items.append((c.get("since"), c["board"], c["task"]["id"], c["task"].get("title") or ""))
+    items.sort(key=lambda i: (i[0] is None, i[0] or 0, i[2]))
+    return items[:limit]
+
+
+def reminder_html(text: str, items, base_url: str | None, now_ts: float) -> str:
+    """El recordatorio en HTML con enlaces a la tarjeta de las más antiguas y al panel; sin base_url, texto escapado."""
+    from .commands import panel_url  # import tardío: commands importa decisions y este módulo es de arranque
+    lines = [html.escape(text)]
+    for since, board, tid, title in items:
+        url = card_url(base_url, board, tid)
+        ref = f'<a href="{html.escape(url, quote=True)}">{html.escape(tid)}</a>' if url else f"<code>{html.escape(tid)}</code>"
+        age = f" · hace {hours_ago(since, now_ts)} h" if since else ""
+        lines.append(f"📌 {ref} · {html.escape(truncate(title, 60))}{age}")
+    panel = panel_url(base_url)
+    if panel:
+        lines.append(f'🗂 <a href="{html.escape(panel, quote=True)}">Panel del kanban</a>')
+    return "\n".join(lines)
 
 
 def due_slot(now: datetime, sent: set[str], window_minutes: int = WINDOW_MINUTES) -> str | None:
@@ -67,7 +99,8 @@ def _dm_closed(exc: Exception) -> bool:
 class Reminders:
     def __init__(self, notifier, owner_id: str, pending: Callable[[], list], state_path: Path | str, *,
                  now: Callable[[], datetime] = lambda: datetime.now(MADRID), interval: float = 60,
-                 cards: Callable[[], list] | None = None, stuck: Callable[[], list] | None = None):
+                 cards: Callable[[], list] | None = None, stuck: Callable[[], list] | None = None,
+                 base_url: str | None = None):
         """`pending()` -> preguntas de agentes con `.since` (la lista de /decisiones); `cards()` -> tarjetas de
         decisión de Oscar (la segunda sección de /decisiones); `stuck()` -> tareas 🧊 atascadas en triage."""
         self.notifier = notifier
@@ -75,6 +108,7 @@ class Reminders:
         self.pending = pending
         self.cards = cards
         self.stuck = stuck
+        self.base_url = base_url  # KANBAN_BASE_URL: con ella el recordatorio lleva enlaces (HTML); sin ella, texto plano
         self.state_path = Path(state_path)
         self._now = now
         self.interval = interval
@@ -117,7 +151,11 @@ class Reminders:
         oldest = min((p.since for p in pending if getattr(p, "since", None)), default=None)
         text = reminder_text(len(pending), hours_ago(oldest, now.timestamp()), len(cards), len(stuck))
         try:
-            self.notifier.send_to(self.owner_id, None, text, html=False)
+            if self.base_url:
+                items = _oldest_items(pending, stuck, cards)
+                self.notifier.send_to(self.owner_id, None, reminder_html(text, items, self.base_url, now.timestamp()))
+            else:
+                self.notifier.send_to(self.owner_id, None, text, html=False)
         except Exception as exc:
             if _dm_closed(exc):
                 if not self._warned_dm:

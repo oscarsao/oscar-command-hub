@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Callable
 
 from .config import ROOT, Lane
+from .hermes import GUARD_LIMIT_MARK, looks_like_guard_limit
 from .notices import (MessageStore, TaskNotices, files_label, money, normalize_questions, question_text,
                       questions_block, render, status_line, test_label)
 from .telegram import telegram_target
@@ -114,6 +115,7 @@ class LaneRunner:
         self.pid_alive = pid_alive
         self.exclude = set(exclude or ())
         self._active: dict[str, dict] = {}  # tid -> task being processed (for notice routing)
+        self._reasked: set[str] = set()  # tareas relanzadas UNA vez porque el worker repitió una pregunta ya respondida
 
     def notify(self, state: str, tid: str, task: dict | None, status: str, *, alert: bool = False,
                bullets: list[str] | None = None, branch_link: bool = True, changed_files=None,
@@ -200,7 +202,7 @@ class LaneRunner:
 
     def _block(self, tid: str, kind: str, reason: str, task: dict | None = None, *, public: str,
                questions: list | None = None, summary: str | None = None, for_oscar: str | None = None,
-               notify_kind: str | None = None) -> str:
+               notify_kind: str | None = None, changed_files=None) -> str:
         """`reason` (detalle técnico) va a la tarjeta y al log; a Telegram solo `public` (+ preguntas si needs_input)."""
         if for_oscar:  # también a la tarjeta: renotify y /decisiones lo recuperan del motivo del bloqueo
             reason = f"{reason}\n{FOR_OSCAR_PREFIX} {' '.join(str(for_oscar).split())}"
@@ -218,7 +220,7 @@ class LaneRunner:
             step = f"Pregunta 1/{len(normalize_questions(questions))}" if many else None
             self.notify("needs_input", tid, task, status_line(public, step, hint), alert=True,
                         bullets=questions_block((questions or [])[:1] if many else questions), buttons=bool(blocked),
-                        questions=questions,
+                        questions=questions, changed_files=changed_files,
                         summary=summary, for_oscar=for_oscar)
         else:
             self.notify("blocked", tid, task, status_line("bloqueada", public, "detalle en la tarjeta"), alert=True,
@@ -253,6 +255,7 @@ class LaneRunner:
         where = "workspace ops (sin git)" if ops else f"rama lane/{tid}"
         self.hermes.comment(tid, f"LANE claim por {lane.name} · session_id={session_id} · {where}")
 
+        repeated = ""  # nota con las respuestas previas si el worker insiste en una pregunta ya respondida
         with Heartbeat(lambda: self.hermes.heartbeat(tid), lane.heartbeat_seconds):
             try:
                 feedback = self.hermes.review_feedback(tid)  # non-empty when the review lane reopened it
@@ -262,6 +265,10 @@ class LaneRunner:
                 answers = self.hermes.oscar_answers(tid) if hasattr(self.hermes, "oscar_answers") else []
                 if answers:
                     task = {**task, "oscar_answers": answers}
+                # Notas del coordinador en la tarjeta ("NO vuelvas a preguntar X"): el worker las ve junto a las respuestas.
+                notes = self.hermes.coordinator_notes(tid) if hasattr(self.hermes, "coordinator_notes") else []
+                if notes:
+                    task = {**task, "coordinator_notes": notes}
                 self.notify("running", tid, task,
                             status_line("en curso", f"aplicando cambios de revisión (ronda {len(feedback)})"
                                         if feedback else None), branch_link=bool(feedback) and not ops)
@@ -278,6 +285,10 @@ class LaneRunner:
                     resumes += 1
                     log.info("%s: resume %d tras %s", tid, resumes, outcome.subtype)
                     outcome = self.worker.resume(lane, cwd, session_id, timeout=max(60.0, deadline - self.clock()), task_id=tid)
+                # El worker reformuló una pregunta que Oscar ya contestó: se relanza UNA vez con las respuestas; si
+                # insiste, pasa a Oscar con las respuestas previas a la vista (la 2ª llamada solo anota, no relanza).
+                for _ in range(2):
+                    outcome, repeated = self._reask_if_answered(lane, tid, cwd, session_id, deadline, outcome)
             except Exception as exc:
                 return self._block(tid, "transient", f"error del runner: {exc}", task, public="error del runner")
 
@@ -290,13 +301,18 @@ class LaneRunner:
             if result["status"] == "needs_input":
                 asked = normalize_questions(result.get("questions")) or normalize_questions([result.get("summary", "")])
                 detail = "\n".join(f"- {question_text(q)}" for q in asked) or result.get("summary", "")
+                if result.get("limitation") == "guard" or looks_like_guard_limit(result.get("summary"), detail):
+                    return self._block_console(tid, task, detail, result)
+                detail += repeated
                 if ops and result.get("proposed_actions"):  # la acción exacta queda en la tarjeta para Oscar
                     detail += "\nAcciones propuestas (no ejecutadas):\n" + "\n".join(
                         f"- [{a.get('id')}] {a.get('description')} · {a.get('tool')} {a.get('arguments')}"
                         for a in result["proposed_actions"])
                 return self._block(tid, "needs_input", f"El worker necesita decisión:\n{detail}", task,
-                                   public="necesita tu decisión", questions=asked, summary=result.get("summary"),
-                                   for_oscar=result.get("for_oscar"))
+                                   public="necesita tu decisión" + (" (repite una pregunta ya respondida; "
+                                                                    "respuestas previas en la tarjeta)" if repeated else ""),
+                                   questions=asked, summary=result.get("summary"),
+                                   for_oscar=result.get("for_oscar"), changed_files=result.get("changed_files"))
             if result["status"] != "done":
                 return self._block(tid, "transient", f"worker status={result['status']}: {result.get('summary', '')}",
                                    task, public="el worker no pudo completarla")
@@ -332,6 +348,42 @@ class LaneRunner:
                 money(outcome.cost_usd)), changed_files=result.get("changed_files"), for_oscar=result.get("for_oscar"))
             return "review"
 
+    def _reask_if_answered(self, lane: Lane, tid: str, cwd: str, session_id: str, deadline: float, outcome):
+        """(outcome, nota). Si el worker pide decisión sobre algo que Oscar YA contestó en la tarjeta (otra redacción),
+        no se bloquea: se reanuda una vez con las respuestas. Si insiste, la nota las lista para la tarjeta."""
+        res = outcome.structured if getattr(outcome, "ok", False) else None
+        finder = getattr(self.hermes, "answered_for", None)
+        if not res or res.get("status") != "needs_input" or not finder:
+            self._reasked.discard(tid)
+            return outcome, ""
+        asked = normalize_questions(res.get("questions"))
+        found = finder(tid, asked) if asked else None
+        if not found:
+            return outcome, ""
+        pairs = "\n".join(f"- {q} -> {a}" for q, a in found)
+        if tid in self._reasked or deadline - self.clock() <= 60:
+            return outcome, "\nRespuestas previas de Oscar a lo mismo:\n" + pairs
+        self._reasked.add(tid)
+        self.hermes.comment(tid, "LANE: el worker repitió una pregunta ya respondida; se relanza una vez con las respuestas.")
+        prompt = ("Oscar YA respondió a lo que preguntas (aunque con otras palabras). No vuelvas a preguntarlo: "
+                  "aplica estas decisiones, termina la tarea y devuelve el JSON del schema.\n\n" + pairs)
+        return self.worker.resume(lane, cwd, session_id, timeout=max(60.0, deadline - self.clock()), task_id=tid,
+                                  prompt=prompt), ""
+
+    def _block_console(self, tid: str, task: dict | None, detail: str, result: dict) -> str:
+        """Limitación PERMANENTE del guard (no es una pregunta): bloqueo needs_input con motivo estructurado. Ni la
+        autocuración ni Reintentar la devuelven al carril; el aviso (una vez) dice qué comando usar."""
+        reason = f"{GUARD_LIMIT_MARK} el worker no puede hacerlo con el guard del carril:\n{detail}"
+        log.warning("%s bloqueada (limitacion_guard): %s", tid, reason)
+        blocked = self.hermes.block(tid, "needs_input", reason[:1500])
+        if not blocked:
+            log.error("no se pudo bloquear %s (limitacion_guard) en el kanban: la tarea sigue en running", tid)
+        self.notify("blocked", tid, task or self._active.get(tid), status_line(
+            "requiere consola", f"el guard no deja hacerlo; en una consola interactiva: /tomar-tarea {tid}",
+            "detalle en la tarjeta"), alert=True, buttons=bool(blocked), block_kind="console",
+            summary=result.get("summary"), for_oscar=result.get("for_oscar"))
+        return "blocked:limitacion_guard"
+
     def _to_review_ops(self, tid, task, session_id, cwd, resumes, outcome, result) -> str:
         """Ops nunca se marca done sola: siempre review, y Oscar valida con [✅ Validar / 🔁 Pedir cambios]."""
         metadata = {"lane": self.lane.name, "kind": "ops", "session_id": session_id, "workspace": cwd,
@@ -342,7 +394,10 @@ class LaneRunner:
             return self._block(tid, "transient", f"request-review rechazado: {err}", task,
                                public="el kanban rechazó el paso a review")
         n = len(result.get("evidence") or [])
+        paths = [str(ev.get("path") or (ev.get("value") if ev.get("type") == "path" else "") or "")
+                 for ev in result.get("evidence") or [] if isinstance(ev, dict)]
         self.notify("review", tid, task, status_line(
             "pendiente de tu validación", f"{n} evidencia{'s' if n != 1 else ''}",
-            money(outcome.cost_usd)), branch_link=False, buttons=True, alert=True)
+            money(outcome.cost_usd)), branch_link=False, buttons=True, alert=True,
+            bullets=[f"📁 {p}" for p in paths if p][:3])
         return "review"

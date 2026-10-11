@@ -21,12 +21,14 @@ import secrets
 import threading
 import time
 from datetime import datetime
+from html import escape as _esc
 from pathlib import Path
 from typing import Callable
 
 from . import proc as _proc
 from .config import ROOT
-from .hermes import ANSWER_PREFIX, OSCAR_AUTHOR, REVIEW_AUTHOR, answer_progress, resume
+from .hermes import (ANSWER_PREFIX, OSCAR_AUTHOR, REVIEW_AUTHOR, answer_progress, is_guard_limit,
+                     last_needs_input_block, resume)
 from .explain import explain as _explain
 from .notices import (OPTION_LETTERS, card_url, normalize_questions, questions_block, render, status_line,
                       truncate, with_default_options)
@@ -93,7 +95,9 @@ def keyboard_spec(state: str, *, block_kind: str | None = None, questions=None,
         rows.append([{"text": "✍️ Otra respuesta", "action": OTHER}, park])
         rows.append([dict(EXPLAIN_BUTTON)])
         return rows
-    if state == "blocked" and block_kind == "config":  # reintentar no arregla la config: solo aparcar
+    if state == "blocked" and block_kind == "review_stuck":  # tarea en review que no se pudo bloquear: decide Oscar
+        return [[{"text": "✅ Aprobar", "action": APPROVE}, {"text": "🔁 Pedir cambios", "action": CHANGES}, park]]
+    if state == "blocked" and block_kind in ("config", "console"):  # reintentar no arregla la config ni el guard: solo aparcar
         return [[park]]
     if state == "blocked" and block_kind == "transient":
         return [[{"text": "🔄 Reintentar", "action": RETRY}, park]]
@@ -629,12 +633,16 @@ class DecisionDesk:
         else:
             answer = truncate(text or "", 60)
         cur = _clamp(rec.get("q_index"), qs)
-        lines = [f"💬 {cur + 1}ª respondida en {len(members)} tareas ({', '.join(m['task_id'] for m in members)}): "
-                 f"{answer}", f"❓ Pregunta {nxt + 1}/{total} · la respuesta se aplica a todas",
-                 *questions_block(qs[nxt:nxt + 1])]
+        base = getattr(self.links, "kanban_base_url", None)
+        refs = []  # HTML: cada tarea enlaza su tarjeta (con html=False se perdían los enlaces del aviso original)
+        for m in members:
+            url = card_url(base, m.get("board") or "", m["task_id"])
+            refs.append(f'<a href="{_esc(url, quote=True)}">{_esc(m["task_id"])}</a>' if url else _esc(m["task_id"]))
+        lines = [f"💬 {cur + 1}ª respondida en {len(members)} tareas ({', '.join(refs)}): {_esc(answer)}",
+                 f"❓ Pregunta {nxt + 1}/{total} · la respuesta se aplica a todas",
+                 *(_esc(q) for q in questions_block(qs[nxt:nxt + 1]))]
         if where:
-            self.notifier.edit(where["chat_id"], where["message_id"], "\n".join(lines), html=False,
-                               reply_markup=markup)
+            self.notifier.edit(where["chat_id"], where["message_id"], "\n".join(lines), reply_markup=markup)
         return True
 
     def _resume(self, h, tid: str) -> str | None:
@@ -736,6 +744,9 @@ class DecisionDesk:
         return True
 
     def _retry(self, rec: dict, where: dict) -> bool:
+        if self._guard_limited(rec):  # limitación permanente del guard: devolverla al carril repite el mismo bloqueo
+            self._edit(rec, where, "blocked", f"requiere consola: /tomar-tarea {rec['task_id']} (el guard del carril no lo permite)")
+            return False
         # Se edita ANTES de desbloquear: el runner puede cogerla enseguida y su "▶️ en curso" debe quedar encima.
         self._edit(rec, where, "requeued", "🔄 reencolada")
         h, tid = self._hermes(rec), rec["task_id"]
@@ -748,6 +759,13 @@ class DecisionDesk:
             return True
         self._edit(rec, where, "blocked", "no se pudo reencolar: la tarea ya no está bloqueada ni en triage")
         return False
+
+    def _guard_limited(self, rec: dict) -> bool:
+        try:
+            block = last_needs_input_block(self._hermes(rec).show(rec["task_id"]))
+        except Exception:  # sin poder comprobarlo, el reintento sigue como siempre
+            return False
+        return is_guard_limit(((block or {}).get("payload") or {}).get("reason"))
 
     def _answer(self, rec: dict, where: dict, question: str, answer: str) -> bool:
         tid, h = rec["task_id"], self._hermes(rec)
@@ -789,6 +807,9 @@ class DecisionDesk:
             n = rec.get("n_questions") or 1
             step = f" (Pregunta {(rec.get('q_index') or 0) + 1}/{n})" if n > 1 and not rec.get("other_label") else ""
             prompt = f"Tu respuesta para {tid}{step}:" + (f"\n{truncate(q, 300)}" if q else "")
+        card = card_url(getattr(self.links, "kanban_base_url", None), rec.get("board") or "", tid)
+        if card:  # texto plano: Telegram enlaza la URL sola
+            prompt += f"\nTarjeta: {card}"
         try:
             sent = self.notifier.send_to(where["chat_id"], where["thread_id"], prompt, html=False,
                                          reply_to=where["message_id"],
