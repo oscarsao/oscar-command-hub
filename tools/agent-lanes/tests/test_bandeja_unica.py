@@ -134,16 +134,17 @@ CARDS = {
 def test_decisiones_lists_oscar_decision_cards_when_no_agent_asks(tmp_path):
     cc, desk, bot, h, messages = center(tmp_path, dict(CARDS))
     command(desk, "/decisiones")
-    [msg] = bot.sent
-    text = msg["text"]
-    assert text.startswith("📌 <b>Tus tarjetas de decisión (2)</b>") and "Nada pendiente" not in text
-    # más antigua primero, enlazada al panel, título y antigüedad; una sola vez aunque 3 tableros compartan kanban
-    assert text.index("t_d0000002") < text.index("t_d0000001")
-    assert text.count("t_d0000001") == 2  # texto del enlace + URL
+    head, *cards, untagged = bot.sent
+    assert head["text"] == "📌 Tus tarjetas de decisión (2)" and len(cards) == 2
+    # más antigua primero; cada tarjeta en su mensaje, enlazada al panel, con título, antigüedad y botones
+    assert "t_d0000002" in cards[0]["text"] and "t_d0000001" in cards[1]["text"]
+    text = "\n".join(m["text"] for m in cards)
+    assert text.count("t_d0000001") == 3  # texto del enlace + URL + "pide /preparar"
     assert '<a href="https://k/tasks/' in text and "Precio del plan Pro" in text and "hace 30 h" in text
     for tid in ("t_d0000003", "t_d0000004", "t_d0000005"):
         assert tid not in text
-    assert msg["markup"] is None  # sin botones en v1
+    assert all(m["markup"] for m in cards)  # sin opciones: botones genéricos
+    assert "pide /preparar t_d0000002" in cards[0]["text"]
 
 
 def test_decisiones_shows_agent_questions_first_then_the_cards(tmp_path):
@@ -153,7 +154,7 @@ def test_decisiones_shows_agent_questions_first_then_the_cards(tmp_path):
     command(desk, "/decisiones")
     assert bot.sent[0]["text"].startswith("❓ 1 decisión")
     assert bot.sent[1]["text"].startswith("❓ t_aaaaaaa1")
-    assert bot.sent[-1]["text"].startswith("📌 <b>Tus tarjetas de decisión (2)</b>")
+    assert bot.sent[2]["text"] == "📌 Tus tarjetas de decisión (2)" and bot.sent[3]["text"].startswith("📌 ")
 
 
 def test_decisiones_in_a_brand_topic_only_shows_that_brand_board(tmp_path):
@@ -175,12 +176,12 @@ def test_nothing_pending_only_when_both_lists_are_empty(tmp_path):
                                     '<a href="https://k/">panel</a>')
 
 
-def test_cards_text_never_cuts_the_html(tmp_path):
-    cc, *_ = center(tmp_path, {})
-    many = [{"board": "default", "task": {"id": f"t_{i:08x}", "title": "[DECISIÓN] " + "x" * 80}, "since": 1.0}
-            for i in range(200)]
-    text = cc.cards_text(many, 1000.0)
-    assert len(text) <= 4000 and text.endswith("más en el panel") and text.count("<a ") == text.count("</a>")
+def test_card_messages_are_capped_and_stay_inside_telegram_limit(tmp_path):
+    shows = {f"t_{i:08x}": card(f"t_{i:08x}", "[DECISIÓN] " + "x" * 80, created_at=10.0 + i) for i in range(30)}
+    cc, desk, bot, h, messages = center(tmp_path, shows)
+    cc.cmd_decisiones((DM, "0"), "", None, show_all=True)
+    assert "Muestro 20" in bot.sent[0]["text"] and len(bot.sent) == 21
+    assert all(len(m["text"]) <= 4000 and m["text"].count("<a ") == m["text"].count("</a>") for m in bot.sent)
 
 
 def test_is_decision_card_is_the_brief_rule():

@@ -274,7 +274,7 @@ def test_untagged_line_after_decision_cards_with_panel_link(tmp_path):
     assert cc.oscar_cards() == (cc.decision_cards(), 2)
     command(desk, "/decisiones")
     text = bot.sent[-1]["text"]
-    assert text.startswith("📌 <b>Tus tarjetas de decisión (1)</b>")
+    assert bot.sent[0]["text"] == "📌 Tus tarjetas de decisión (1)" and "t_d0000001" in bot.sent[1]["text"]
     assert text.endswith('📋 2 tarjetas más a tu nombre sin etiqueta · <a href="https://k/">panel</a>')
 
 
