@@ -56,16 +56,34 @@ def test_short_list_failure_does_not_alert(monitor):
     assert pushed == []
 
 
-def test_ram_is_a_persistent_condition_with_hourly_repeat(monitor):
+def test_pc_check_no_longer_pushes_ram_to_dm(monitor):
     m, pushed = make(monitor)
-    for _ in range(3):
-        m.condition("ram", True, "RAM al 95%", "cierra cosas", min_hits=4, every=3600)
-    assert pushed == []
-    m.condition("ram", True, "RAM al 95%", "cierra cosas", min_hits=4, every=3600)
-    m.condition("ram", True, "RAM al 95%", "cierra cosas", min_hits=4, every=3600)
-    assert len(pushed) == 1
-    m.condition("ram", False, "RAM al 95%", "cierra cosas", min_hits=4, every=3600)
-    assert "Resuelto" in pushed[-1]
+    vm = type("VM", (), {"percent": 95.0, "used": 15 * 2**30, "total": 16 * 2**30})()
+    monitor.psutil.virtual_memory = lambda: vm
+    for _ in range(6):
+        m.pc()
+    assert pushed == []  # el aviso continuo ya no existe
+    assert any("RAM al 95%" in t for _, _, t in m.alerts)  # solo visible en la ventana
+
+
+def test_ram_report_every_4h_and_not_at_night(monitor, tmp_path):
+    monitor.ram_text = lambda top=5: "🧠 RAM 50 %"
+    m, pushed = make(monitor, hour=12)
+    m.ram_report()
+    m.ram_report()  # recién enviado: no repite
+    assert pushed == ["🧠 RAM 50 %"]
+    (tmp_path / "ram_report.ts").write_text(str(time.time() - 4 * 3600 - 5))
+    m.ram_report()
+    assert len(pushed) == 2
+    n, npushed = make(monitor, hour=2)
+    (tmp_path / "ram_report.ts").write_text("0")
+    n.ram_report()
+    assert npushed == []  # silencio nocturno: se aplaza
+
+
+def test_ram_text_lists_top_processes(monitor):
+    out = monitor.ram_text(top=2)
+    assert out.startswith(("🧠 RAM", "⚠️ 🧠 RAM")) and out.count("•") <= 2
 
 
 def test_quiet_hours_hold_non_outage_but_let_real_outages_through(monitor):
