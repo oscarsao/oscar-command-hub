@@ -64,6 +64,7 @@ def build_prompt(task: dict, lane: Lane) -> str:
         f"Al terminar: commit, `git push -u {lane.remote} lane/{task['id']}` y devuelve el JSON del schema.\n\n"
         f"# {task.get('title', '')}\n\n{task.get('body') or ''}\n"
         + _answers_section(task.get("oscar_answers"))
+        + _coordinator_section(task.get("coordinator_notes"))
         + _feedback_section(task.get("review_feedback"))
         + _conflict_section(task.get("merge_conflict"), lane)
     )
@@ -89,6 +90,7 @@ def build_ops_prompt(task: dict, lane: Lane, cwd: str, origins: list[str], dests
         "van en proposed_actions + needs_input, nunca se ejecutan.\n\n"
         f"# {task.get('title', '')}\n\n{task.get('body') or ''}\n"
         + _answers_section(task.get("oscar_answers"), ops=True)
+        + _coordinator_section(task.get("coordinator_notes"))
         + _feedback_section(task.get("review_feedback"), ops=True)
     )
 
@@ -101,9 +103,20 @@ def _answers_section(answers: list[str] | None, ops: bool = False) -> str:
     items = "\n".join(f"- {a}" for a in answers[-40:])
     return ("\n## Decisiones de Oscar (respuestas a tus preguntas; obligatorio respetarlas)\n"
             "Esta tarea ya se bloqueó antes pidiendo decisión y Oscar ha respondido a TODAS las de abajo: no vuelvas a "
-            "preguntar nada de lo ya decidido. Tu "
+            "preguntar nada de lo ya decidido, aunque tu pregunta tenga otras palabras. Si dos respuestas se "
+            "contradicen, vale la ÚLTIMA (la de más abajo). Tu "
             + ("workspace" if ops else "worktree") + " conserva el trabajo "
             f"anterior: continúa desde ahí aplicando estas decisiones.\n\n{items}\n")
+
+
+def _coordinator_section(notes: list[str] | None) -> str:
+    if not notes:
+        return ""
+    items = "\n".join(f"- {n}" for n in notes[-6:])
+    return ("\n## Notas del coordinador (leer antes de preguntar)\n"
+            "Comentarios del coordinador en la tarjeta. Si una nota ya contesta o descarta algo, NO vuelvas a "
+            "preguntarlo; si es posterior a una respuesta de Oscar y la contradice, prevalece la más reciente.\n\n"
+            f"{items}\n")
 
 
 def _feedback_section(feedback: list[str] | None, ops: bool = False) -> str:
@@ -214,11 +227,13 @@ class ClaudeWorker:
         self._ops[session_id] = (env, [])
         return self._exec(args, build_prompt(task, lane), cwd, timeout, lane, task["id"], env)
 
-    def resume(self, lane: Lane, cwd: str, session_id: str, timeout: float, task_id: str) -> WorkerOutcome:
+    def resume(self, lane: Lane, cwd: str, session_id: str, timeout: float, task_id: str,
+               prompt: str | None = None) -> WorkerOutcome:
+        """`prompt`: mensaje de reanudación a medida (p. ej. "Oscar ya respondió esto: …"); por defecto el genérico."""
         if lane.kind == "ops":
             # Sin el entorno del run() (proceso reiniciado) el hook no tiene workspace: bloquea toda escritura.
             env, dirs = self._ops.get(session_id, ({"AGENT_LANES_ROLE": "ops"}, []))
-            return self._exec(ops_args(lane, ["--resume", session_id], dirs), OPS_RESUME_PROMPT, cwd, timeout, lane,
+            return self._exec(ops_args(lane, ["--resume", session_id], dirs), prompt or OPS_RESUME_PROMPT, cwd, timeout, lane,
                               task_id, env)
         env = self._ops.get(session_id, ({"AGENT_LANES_MERGE_OK": json.dumps([f"{lane.remote}/{lane.base}".lower()])}, []))[0]
-        return self._exec(base_args(lane, ["--resume", session_id]), RESUME_PROMPT, cwd, timeout, lane, task_id, env)
+        return self._exec(base_args(lane, ["--resume", session_id]), prompt or RESUME_PROMPT, cwd, timeout, lane, task_id, env)

@@ -26,7 +26,8 @@ from typing import Callable
 
 from . import proc as _proc
 from .config import ROOT
-from .hermes import ANSWER_PREFIX, OSCAR_AUTHOR, REVIEW_AUTHOR, answer_progress, resume
+from .hermes import (ANSWER_PREFIX, OSCAR_AUTHOR, REVIEW_AUTHOR, answer_progress, is_guard_limit,
+                     last_needs_input_block, resume)
 from .explain import explain as _explain
 from .notices import (OPTION_LETTERS, card_url, normalize_questions, questions_block, render, status_line,
                       truncate, with_default_options)
@@ -95,7 +96,7 @@ def keyboard_spec(state: str, *, block_kind: str | None = None, questions=None,
         return rows
     if state == "blocked" and block_kind == "review_stuck":  # tarea en review que no se pudo bloquear: decide Oscar
         return [[{"text": "✅ Aprobar", "action": APPROVE}, {"text": "🔁 Pedir cambios", "action": CHANGES}, park]]
-    if state == "blocked" and block_kind == "config":  # reintentar no arregla la config: solo aparcar
+    if state == "blocked" and block_kind in ("config", "console"):  # reintentar no arregla la config ni el guard: solo aparcar
         return [[park]]
     if state == "blocked" and block_kind == "transient":
         return [[{"text": "🔄 Reintentar", "action": RETRY}, park]]
@@ -733,6 +734,9 @@ class DecisionDesk:
         return True
 
     def _retry(self, rec: dict, where: dict) -> bool:
+        if self._guard_limited(rec):  # limitación permanente del guard: devolverla al carril repite el mismo bloqueo
+            self._edit(rec, where, "blocked", f"requiere consola: /tomar-tarea {rec['task_id']} (el guard del carril no lo permite)")
+            return False
         # Se edita ANTES de desbloquear: el runner puede cogerla enseguida y su "▶️ en curso" debe quedar encima.
         self._edit(rec, where, "requeued", "🔄 reencolada")
         h, tid = self._hermes(rec), rec["task_id"]
@@ -745,6 +749,13 @@ class DecisionDesk:
             return True
         self._edit(rec, where, "blocked", "no se pudo reencolar: la tarea ya no está bloqueada ni en triage")
         return False
+
+    def _guard_limited(self, rec: dict) -> bool:
+        try:
+            block = last_needs_input_block(self._hermes(rec).show(rec["task_id"]))
+        except Exception:  # sin poder comprobarlo, el reintento sigue como siempre
+            return False
+        return is_guard_limit(((block or {}).get("payload") or {}).get("reason"))
 
     def _answer(self, rec: dict, where: dict, question: str, answer: str) -> bool:
         tid, h = rec["task_id"], self._hermes(rec)

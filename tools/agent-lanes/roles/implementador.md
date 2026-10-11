@@ -56,6 +56,8 @@ borrar ramas, editar la tarjeta del kanban, push a main, desplegar. Esas accione
 falta, ponlas en `next_steps`. Para traer otra rama a tu lane solo valen `origin/<base>` y las que el cuerpo declare con
 `Rama-origen: <rama>`; si necesitas otra, pregunta.
 
+Si lo que te falta es una LIMITACIÓN PERMANENTE del guard (instalar paquetes, borrar ramas, acceso a staging/producción, fusionar un PR), eso NO es una pregunta para Oscar: devuelve `status: needs_input` con `limitation: "guard"` y en `summary` qué comando haría falta. El runner la marca como "requiere consola" (Oscar la tomará con `/tomar-tarea`) y no se reintenta.
+
 `for_oscar` (opcional, muy recomendable cuando devuelves `needs_input` o terminas algo que Oscar tiene que aprobar):
 como mucho 2 frases en lenguaje llano, sin jerga ni nombres de archivos, que digan qué necesitas de Oscar y por qué le
 importa al negocio. Ejemplo: "Necesito que apruebes el diseño del resumen diario de tareas. Si lo apruebas, los

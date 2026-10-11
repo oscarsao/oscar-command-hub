@@ -32,6 +32,7 @@
       }
     },
     "for_oscar": {"type": "string", "maxLength": 300},
+    "limitation": {"type": "string", "enum": ["guard"]},
     "next_steps": {"type": "array", "items": {"type": "string"}},
     "risks": {"type": "array", "items": {"type": "string"}}
   }
