@@ -16,6 +16,8 @@ from logging.handlers import RotatingFileHandler
 from agent_lanes import drain
 from agent_lanes.config import ROOT, load_env, load_lanes, load_runner_settings, load_telegram_settings
 from agent_lanes.commands import CommandCenter, register_commands
+from agent_lanes.collab_intake import CollabIntake
+from agent_lanes.people import load_people
 from agent_lanes.decisions import CALLBACKS_DIR, OWNER_TELEGRAM_ID, CallbackStore, DecisionDesk, UpdatePoller
 from agent_lanes.deps import ShowCache, TreeReader
 from agent_lanes.hermes_answers import HermesAnswers
@@ -37,6 +39,7 @@ from agent_lanes.worker import ClaudeWorker
 LOCK = ROOT / ".state" / "runner.lock"
 TG_OFFSET = ROOT / ".state" / "tg_offset"      # offset de getUpdates del bot de carriles
 REMINDERS_STATE = ROOT / ".state" / "reminders.json"  # franjas 13:00/18:00 ya enviadas
+COLLAB_STATE = ROOT / ".state" / "collab_reject.json"  # DM de desconocidos ya rechazados (1 cada 6 h)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -102,6 +105,7 @@ def main(argv: list[str] | None = None) -> int:
                                  links=links, generic_origins=tg_settings["generic_origins"], bot_username=username,
                                  owner_id=owner)
         decisions.commands = commands
+        decisions.collab = CollabIntake(notify, load_people(owner), hermes_for=hermes_for, state_path=COLLAB_STATE)
         log.info("comandos del bot registrados en: %s", register_commands(notify))
         UpdatePoller(notify, decisions, TG_OFFSET).start()
         Reminders(notify, owner, commands.pending_decisions, REMINDERS_STATE, cards=commands.decision_cards,
