@@ -105,7 +105,7 @@ def main(argv: list[str] | None = None) -> int:
         log.info("comandos del bot registrados en: %s", register_commands(notify))
         UpdatePoller(notify, decisions, TG_OFFSET).start()
         Reminders(notify, owner, commands.pending_decisions, REMINDERS_STATE, cards=commands.decision_cards,
-                  stuck=commands.stuck_tasks).start()
+                  stuck=commands.stuck_tasks, base_url=links.kanban_base_url).start()
         log.info("bot de carriles activo (id %s, @%s): avisos con botones, comandos, escucha y recordatorios",
                  notify.bot_id, username)
     else:

@@ -202,7 +202,7 @@ class LaneRunner:
 
     def _block(self, tid: str, kind: str, reason: str, task: dict | None = None, *, public: str,
                questions: list | None = None, summary: str | None = None, for_oscar: str | None = None,
-               notify_kind: str | None = None) -> str:
+               notify_kind: str | None = None, changed_files=None) -> str:
         """`reason` (detalle técnico) va a la tarjeta y al log; a Telegram solo `public` (+ preguntas si needs_input)."""
         if for_oscar:  # también a la tarjeta: renotify y /decisiones lo recuperan del motivo del bloqueo
             reason = f"{reason}\n{FOR_OSCAR_PREFIX} {' '.join(str(for_oscar).split())}"
@@ -220,7 +220,7 @@ class LaneRunner:
             step = f"Pregunta 1/{len(normalize_questions(questions))}" if many else None
             self.notify("needs_input", tid, task, status_line(public, step, hint), alert=True,
                         bullets=questions_block((questions or [])[:1] if many else questions), buttons=bool(blocked),
-                        questions=questions,
+                        questions=questions, changed_files=changed_files,
                         summary=summary, for_oscar=for_oscar)
         else:
             self.notify("blocked", tid, task, status_line("bloqueada", public, "detalle en la tarjeta"), alert=True,
@@ -312,7 +312,7 @@ class LaneRunner:
                                    public="necesita tu decisión" + (" (repite una pregunta ya respondida; "
                                                                     "respuestas previas en la tarjeta)" if repeated else ""),
                                    questions=asked, summary=result.get("summary"),
-                                   for_oscar=result.get("for_oscar"))
+                                   for_oscar=result.get("for_oscar"), changed_files=result.get("changed_files"))
             if result["status"] != "done":
                 return self._block(tid, "transient", f"worker status={result['status']}: {result.get('summary', '')}",
                                    task, public="el worker no pudo completarla")
@@ -394,7 +394,10 @@ class LaneRunner:
             return self._block(tid, "transient", f"request-review rechazado: {err}", task,
                                public="el kanban rechazó el paso a review")
         n = len(result.get("evidence") or [])
+        paths = [str(ev.get("path") or (ev.get("value") if ev.get("type") == "path" else "") or "")
+                 for ev in result.get("evidence") or [] if isinstance(ev, dict)]
         self.notify("review", tid, task, status_line(
             "pendiente de tu validación", f"{n} evidencia{'s' if n != 1 else ''}",
-            money(outcome.cost_usd)), branch_link=False, buttons=True, alert=True)
+            money(outcome.cost_usd)), branch_link=False, buttons=True, alert=True,
+            bullets=[f"📁 {p}" for p in paths if p][:3])
         return "review"

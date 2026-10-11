@@ -215,11 +215,12 @@ def _clean_path(path: str) -> str:
 
 
 def is_spec_path(path: str) -> bool:
-    """Spec o pitch: bajo docs/specs/, pitches/ o specs/, o un .md en la raíz del repo."""
+    """Spec o pitch: bajo docs/specs/, pitches/ o specs/, cualquier .md bajo docs/ o un .md en la raíz del repo."""
     p = _clean_path(path)
     if not p or p.startswith("/") or ".." in p.split("/"):
         return False
-    return p.startswith(SPEC_PREFIXES) or ("/" not in p and p.lower().endswith(".md"))
+    return (p.startswith(SPEC_PREFIXES) or ("/" not in p and p.lower().endswith(".md"))
+            or (p.startswith("docs/") and p.lower().endswith(".md")))
 
 
 def spec_url(remote_url: str | None, task_id: str, changed_files) -> str | None:
@@ -248,6 +249,7 @@ class LinkBuilder:
         self.kanban_base_url = kanban_base_url
         self._run = runner
         self._remotes: dict[tuple[str, str], str | None] = {}
+        self._pushed: set[tuple[str, str, str]] = set()  # ramas ya vistas en el remoto (solo se cachea el sí)
 
     def _remote_url(self, repo: str, remote: str) -> str | None:
         key = (repo, remote)
@@ -260,6 +262,23 @@ class LinkBuilder:
                 self._remotes[key] = None
         return self._remotes[key]
 
+    def branch_pushed(self, lane, task_id: str) -> bool:
+        """¿Existe lane/<id> en el remoto? Sin push, 🔀 Cambios y 📄 Spec/pitch dan 404. Solo un "no" confirmado
+        (ls-remote correcto y vacío) la descarta: ante un fallo de red se conserva el enlace."""
+        key = (lane.repo, lane.remote, task_id)
+        if key in self._pushed:
+            return True
+        try:
+            cp = self._run(["git", "-C", lane.repo, "ls-remote", "--heads", lane.remote, f"refs/heads/lane/{task_id}"],
+                           capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30)
+        except (OSError, subprocess.SubprocessError):
+            return True
+        if cp.returncode == 0 and not (cp.stdout or "").strip():
+            return False
+        if cp.returncode == 0:
+            self._pushed.add(key)
+        return True
+
     def repo_slug(self, lane) -> str | None:
         """owner/repo del carril en GitHub (para `gh --repo`). None si el remote no es de GitHub."""
         url = github_repo_url(self._remote_url(lane.repo, lane.remote)) if lane.repo else None
@@ -271,7 +290,7 @@ class LinkBuilder:
         card = card_url(self.kanban_base_url, lane.board, task_id)
         if card:
             links.append(("🗂 Tarjeta", card))
-        if branch and lane.repo:
+        if branch and lane.repo and self.branch_pushed(lane, task_id):
             remote = self._remote_url(lane.repo, lane.remote)
             spec = spec_url(remote, task_id, changed_files)
             if spec:

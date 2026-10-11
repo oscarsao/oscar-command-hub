@@ -21,6 +21,7 @@ import secrets
 import threading
 import time
 from datetime import datetime
+from html import escape as _esc
 from pathlib import Path
 from typing import Callable
 
@@ -627,12 +628,16 @@ class DecisionDesk:
         else:
             answer = truncate(text or "", 60)
         cur = _clamp(rec.get("q_index"), qs)
-        lines = [f"💬 {cur + 1}ª respondida en {len(members)} tareas ({', '.join(m['task_id'] for m in members)}): "
-                 f"{answer}", f"❓ Pregunta {nxt + 1}/{total} · la respuesta se aplica a todas",
-                 *questions_block(qs[nxt:nxt + 1])]
+        base = getattr(self.links, "kanban_base_url", None)
+        refs = []  # HTML: cada tarea enlaza su tarjeta (con html=False se perdían los enlaces del aviso original)
+        for m in members:
+            url = card_url(base, m.get("board") or "", m["task_id"])
+            refs.append(f'<a href="{_esc(url, quote=True)}">{_esc(m["task_id"])}</a>' if url else _esc(m["task_id"]))
+        lines = [f"💬 {cur + 1}ª respondida en {len(members)} tareas ({', '.join(refs)}): {_esc(answer)}",
+                 f"❓ Pregunta {nxt + 1}/{total} · la respuesta se aplica a todas",
+                 *(_esc(q) for q in questions_block(qs[nxt:nxt + 1]))]
         if where:
-            self.notifier.edit(where["chat_id"], where["message_id"], "\n".join(lines), html=False,
-                               reply_markup=markup)
+            self.notifier.edit(where["chat_id"], where["message_id"], "\n".join(lines), reply_markup=markup)
         return True
 
     def _resume(self, h, tid: str) -> str | None:
@@ -797,6 +802,9 @@ class DecisionDesk:
             n = rec.get("n_questions") or 1
             step = f" (Pregunta {(rec.get('q_index') or 0) + 1}/{n})" if n > 1 and not rec.get("other_label") else ""
             prompt = f"Tu respuesta para {tid}{step}:" + (f"\n{truncate(q, 300)}" if q else "")
+        card = card_url(getattr(self.links, "kanban_base_url", None), rec.get("board") or "", tid)
+        if card:  # texto plano: Telegram enlaza la URL sola
+            prompt += f"\nTarjeta: {card}"
         try:
             sent = self.notifier.send_to(where["chat_id"], where["thread_id"], prompt, html=False,
                                          reply_to=where["message_id"],
