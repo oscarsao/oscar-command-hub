@@ -5,6 +5,7 @@ vuelven a pintar una pregunta ya respondida, y la autocuración devuelve al carr
 seguían paradas (también en triage, vía requeue_triage)."""
 from __future__ import annotations
 
+import subprocess
 import logging
 
 from agent_lanes import renotify
@@ -12,7 +13,7 @@ from agent_lanes.commands import CommandCenter
 from agent_lanes.decisions import CallbackStore, DecisionDesk
 from agent_lanes.hermes import ANSWER_PREFIX, OSCAR_AUTHOR, answer_progress, oscar_answers_from
 from agent_lanes.hermes_answers import HermesAnswers
-from agent_lanes.notices import MessageStore
+from agent_lanes.notices import LinkBuilder, MessageStore
 from agent_lanes.reminders import Reminders
 from agent_lanes.runner import LaneRunner
 from tests.test_commands import BODY, GENERIC, GESTION, LANES, MIG, OSCAR, Bot, KanbanHermes, command, needs, press, texts
@@ -367,3 +368,15 @@ def test_no_heal_loop_after_block_loop_detected_or_reclaim():
     assert not answered_after_last_claim(show)                # la respuesta es anterior al último claim
     show["comments"].append({"author": "oscar-telegram", "created_at": 500, "body": "Respuesta de Oscar: ¿B? → no"})
     assert answered_after_last_claim(show)
+
+
+def test_group_card_next_question_keeps_card_links_in_html(tmp_path):
+    shows = {"t_aaaaaaa1": needs("t_aaaaaaa1", THREE), "t_bbbbbbb2": needs("t_bbbbbbb2", THREE)}
+    cc, desk, bot, h, messages, _ = setup(tmp_path, shows)
+    desk.links = LinkBuilder("https://k/kanban?board={board}#{id}", runner=lambda a, **k: subprocess.CompletedProcess(a, 1, "", ""))
+    command(desk, "/decisiones")
+    group = next(m for m in bot.sent if m["text"].startswith("❓ Misma pregunta en 2 tareas"))
+    press(desk, group, 0)
+    text = bot.edits[-1]["text"]
+    assert text.count('<a href="https://k/kanban?board=') == 2 and ">t_aaaaaaa1</a>" in text
+    assert "Pregunta 2/3" in text and "¿Precio?" in text

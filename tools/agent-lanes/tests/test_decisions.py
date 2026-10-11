@@ -433,7 +433,7 @@ def test_request_changes_asks_then_comments_and_reopens(tmp_path):
     desk, tg, h = _desk(tmp_path)
     _press(desk, _done_markup(desk), 1)
     ask = tg.sent[-1]
-    assert ask["text"] == "¿Qué cambio pides para t_1?" and ask["reply_markup"]["force_reply"] is True
+    assert ask["text"] == "¿Qué cambio pides para t_1?\nTarjeta: https://k/tasks/oscarhq/t_1" and ask["reply_markup"]["force_reply"] is True
     assert (ask["chat"], ask["thread"], ask["reply_to"]) == ("-1003530490339", "231", 77)
     assert h.calls == []  # hasta que Oscar responda no pasa nada
     _reply(desk, ask_mid := 501, "Renombra el botón a Aprobar PR")
