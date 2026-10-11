@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import hashlib
 import json
 import logging
 import os
@@ -186,6 +187,8 @@ class IntegratorSettings:
     # Tema de Integración (`integration_telegram` de lanes.yaml): fichas + resumen fijado + copia en el DM de Oscar.
     # None = los avisos siguen en el tema del carril, con el formato de siempre.
     integration_telegram: tuple[str, str] | None = None
+    # PR en batch_pending sin salida: pasados estos días (o con conflictos) se avisa UNA vez a Oscar.
+    batch_pending_days: int = 3
 
 
 def _truthy(v) -> bool:
@@ -229,7 +232,21 @@ def load_integrator_settings(path: Path | None = None, env: dict | None = None, 
                               worktree_root=cfg.get("worktree_root") or str(ROOT / ".state" / "integrator" / "wt"),
                               deploy_timeout_seconds=int(cfg.get("deploy_timeout_seconds") or 900),
                               poll_seconds=int(cfg.get("poll_seconds") or 20), policies=policies,
-                              integration_telegram=_chat_thread(data.get("integration_telegram")))
+                              integration_telegram=_chat_thread(data.get("integration_telegram")),
+                              batch_pending_days=int(cfg.get("batch_pending_days") or 3))
+
+
+# Versión de los gates: sube a mano si cambia su lógica (no solo las reglas del secret-scan, que van en la huella).
+GATE_VERSION = "1"
+
+
+def gate_fingerprint() -> str:
+    """Huella de las reglas de gate vigentes. Un PR `failed` se reevalúa si cambió desde que falló (hub #6: un falso
+    positivo del secret-scan ya corregido seguía bloqueando el PR porque la cabeza no había cambiado)."""
+    h = hashlib.sha1(GATE_VERSION.encode())
+    for name, rx in SECRET_RULES:
+        h.update(f"{name}|{rx.pattern}|{rx.flags}||".encode())
+    return h.hexdigest()[:12]
 
 
 # --- gates puros ---------------------------------------------------------------------------------------
@@ -603,10 +620,18 @@ class Integrator:
             return "waiting_deps"
         if policy.batch:  # lote diario: sin ficha ni gates sueltos; el lote los pasa todos juntos (batch.py)
             if not self.dry_run and (st.get("status") != "batch_pending" or st.get("head_sha") != pr["headRefOid"]):
-                self._save(tid, status="batch_pending", pr=number, pr_url=url, head_sha=pr["headRefOid"], **about)
+                keep = st.get("pending_since") if st.get("status") == "batch_pending" else None
+                self._save(tid, status="batch_pending", pr=number, pr_url=url, head_sha=pr["headRefOid"],
+                           pending_since=keep or self._now(), pending_alert=None, **about)
+                st = self._state(tid)
+            if not self.dry_run:
+                self._warn_stale_batch(lane, task, number, url, pr, st)
             return "dry-run:batch_pending" if self.dry_run else "batch_pending"
         if st.get("head_sha") == pr["headRefOid"] and st.get("status") in ("failed", "offered", "merging"):
-            return None  # gates ya hechos sobre esta cabeza; se repiten al pulsar si la base se movió
+            # Gates ya hechos sobre esta cabeza; se repiten al pulsar si la base se movió. Un `failed` SÍ se reevalúa
+            # si las reglas de gate cambiaron desde que falló (o tras `lanes.py integrator reset <t_id>`).
+            if not (st.get("status") == "failed" and st.get("gate_fp") != gate_fingerprint()):
+                return None
         result = self.run_gates(lane, policy, tid, number, pr["headRefOid"])
         if self.dry_run:
             self._report(tid, number, result, policy)
@@ -619,12 +644,43 @@ class Integrator:
             log.info("%s: PR #%s gates fallidos: %s", tid, number, "; ".join(result.reasons)[:300])
             self._publish_failed(lane, task, number, url, result)
             self._save(tid, status="failed", pr=number, pr_url=url, head_sha=result.head_sha, base_sha=result.base_sha,
-                       **about)
+                       gate_fp=gate_fingerprint(), **about)
             return "gates_failed"
         self._offer(lane, policy, task, number, url, result)
         self._save(tid, status="offered", pr=number, pr_url=url, head_sha=result.head_sha, base_sha=result.base_sha,
                    migration=result.migration, **about)
         return "offered"
+
+    def _warn_stale_batch(self, lane, task: dict, number: int, url: str, pr: dict, st: dict) -> None:
+        """batch_pending sin salida (más de `batch_pending_days` días, o el PR tiene conflictos): UNA alerta al tema de
+        Integración con enlace y motivo. `pending_alert` guarda el motivo ya avisado para no repetirlo."""
+        reason = None
+        days = (self._now() - float(st.get("pending_since") or st.get("since") or self._now())) / 86400
+        if pr.get("mergeable") == "CONFLICTING":
+            reason = "conflict"
+            why = f"el PR #{number} tiene conflictos con {lane.base}"
+        elif days >= self.settings.batch_pending_days:
+            reason = "stale"
+            why = f"lleva {int(days)} días esperando lote"
+        if not reason or st.get("pending_alert") == reason:
+            return
+        self._save(task["id"], pending_alert=reason)  # antes del aviso: si falla Telegram no se repite en bucle
+        self._comment(lane, task["id"], f"INTEGRADOR: PR #{number} sin salida en el lote · {why}")
+        rec = self._rec(lane, task, number, url)
+        self._publish(lane, task, self._text("blocked", lane, rec, status_line(
+            f"⏳ PR #{number} aprobado pero sin integrar", why, "revísalo o pide /lote"),
+            phase="SIN SALIDA"), link=f"⏳ PR #{number} sin salida en el lote")
+
+    def reset_pr(self, tid: str) -> tuple[bool, str]:
+        """Fuerza la reevaluación de un PR `failed`/`pr_problem`/`sent_back` en la próxima vuelta (comando
+        `lanes.py integrator reset <t_id>`). Solo toca el estado local; no fusiona ni despliega nada."""
+        if not TID_RE.fullmatch(tid or ""):
+            return False, f"id de tarea no válido: {tid!r}"
+        st = self._state(tid)
+        if st.get("status") not in ("failed", "pr_problem", "sent_back"):
+            return False, f"{tid}: estado {st.get('status')!r}; solo se resetea failed/pr_problem/sent_back"
+        self._save(tid, status="reset", head_sha=None, gate_fp=None, pr_problem=None)
+        return True, f"{tid}: reseteado; el integrador lo reevaluará en la próxima vuelta"
 
     def _send_back_conflict(self, lane, tid: str, number: int, result: GateResult) -> bool:
         """Gates fallidos SOLO por conflicto con la base (#59): la tarea vuelve al carril con la instrucción de traer
@@ -645,7 +701,8 @@ class Integrator:
 
     def _pr_view(self, slug: str, number: int) -> dict | None:
         cp = self._gh("pr", "view", str(number), "--repo", slug, "--json",
-                      "number,url,state,isDraft,headRefName,headRefOid,baseRefName,isCrossRepository,mergeCommit")
+                      "number,url,state,isDraft,headRefName,headRefOid,baseRefName,isCrossRepository,mergeCommit,"
+                      "mergeable")
         if cp.returncode != 0:
             log.warning("gh pr view %s falló: %s", number, (cp.stderr or "").strip()[:300])
             return None
@@ -1648,6 +1705,13 @@ def migration_applied_cli(tid: str, *, integrator: "Integrator | None" = None, o
     lee los teclados de .state/callbacks); sin él, solo estado + comentario en la tarjeta."""
     integ = integrator or _cli_integrator()
     ok, msg = integ.mark_migration_applied(tid, author, desk=integ.desk)
+    out(msg)
+    return 0 if ok else 1
+
+
+def reset_cli(tid: str, *, integrator: "Integrator | None" = None, out: Callable[[str], None] = print) -> int:
+    """`lanes.py integrator reset <t_id>`: reevalúa un PR failed/pr_problem/sent_back en la próxima vuelta."""
+    ok, msg = (integrator or _cli_integrator()).reset_pr(tid)
     out(msg)
     return 0 if ok else 1
 
