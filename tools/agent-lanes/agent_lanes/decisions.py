@@ -93,6 +93,8 @@ def keyboard_spec(state: str, *, block_kind: str | None = None, questions=None,
         rows.append([{"text": "✍️ Otra respuesta", "action": OTHER}, park])
         rows.append([dict(EXPLAIN_BUTTON)])
         return rows
+    if state == "blocked" and block_kind == "review_stuck":  # tarea en review que no se pudo bloquear: decide Oscar
+        return [[{"text": "✅ Aprobar", "action": APPROVE}, {"text": "🔁 Pedir cambios", "action": CHANGES}, park]]
     if state == "blocked" and block_kind == "config":  # reintentar no arregla la config: solo aparcar
         return [[park]]
     if state == "blocked" and block_kind == "transient":
