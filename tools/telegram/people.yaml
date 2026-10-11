@@ -1,0 +1,34 @@
+# Personas del equipo que pueden escribir por DM al bot de carriles (@pildora_carriles_bot).
+# Lo lee agent_lanes/people.py. Decision de Oscar 11-10: Ingerber (CMO Pildora), Andrea (marketing) y Maria (COO).
+#
+# Reglas (las aplica el codigo, no este fichero):
+#   - Oscar (owner) NO se declara aqui: su id es OWNER_TELEGRAM_ID (agent_lanes/decisions.py). Una entrada con
+#     role: owner se ignora.
+#   - Una entrada sin user_id (null) se IGNORA: la persona recibe el rechazo de "no conocida" hasta que se rellene.
+#   - Capacidades por rol (fijas en codigo): coo/cmo/marketing = consulta, estado, idea, contenido.
+#     `can` solo admite `carril` y solo para coo; hoy esta RESERVADO: aunque se active, todo DM de un no-owner
+#     sigue creando una tarjeta [IDEA] asignada a oscar, nunca una tarea de carril ejecutable.
+#   - PRODUCCION (/desplegar, /promover, /aprobar, /hazlo, botones int_*, fusionar, migraciones, env vars) es SOLO
+#     de Oscar; ningun valor de este fichero lo cambia.
+#   - Tras rellenar un user_id (Oscar, a mano): anadirlo a TELEGRAM_ALLOWED_CHATS en tools/agent-lanes/.env para que
+#     los avisos vuelvan a su DM, y que la persona envie /start al bot. NO anadirlo a generic_origins de lanes.yaml.
+#   - brands: la primera marca decide el tablero de sus tarjetas (Pildora -> oscarhq, MigraTeam -> migrateam).
+people:
+  maria:
+    name: María
+    user_id: null   # TODO(Oscar): user_id numerico de Telegram de Maria (COO, acceso como Oscar salvo produccion)
+    role: coo
+    brands: [Píldora, MigraTeam]
+    can: []         # [carril] reservado; desactivado por defecto
+  ingerber:
+    name: Ingerber
+    user_id: null   # TODO(Oscar): user_id numerico de Telegram de Ingerber (CMO Pildora)
+    role: cmo
+    brands: [Píldora]
+    can: []
+  andrea:
+    name: Andrea
+    user_id: null   # TODO(Oscar): user_id numerico de Telegram de Andrea (marketing, a prueba)
+    role: marketing
+    brands: [Píldora]
+    can: []

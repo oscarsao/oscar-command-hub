@@ -5,6 +5,7 @@ claimed from `review`, and the CLI `claim` only takes `ready` tasks.
 """
 from __future__ import annotations
 
+import json
 import logging
 import subprocess
 
@@ -91,8 +92,13 @@ class ReviewRunner:
     def __init__(self, review_lane: Lane, lanes: dict[str, Lane], *, hermes_for: Callable[[str], object], git,
                  reviewer, verifier, notify, clock: Callable[[], float] = time.monotonic,
                  messages: MessageStore | None = None, links: Callable | None = None, decisions=None,
-                 integration=None, tree: Callable | None = None):
+                 integration=None, tree: Callable | None = None, state_dir: Path | str | None = None):
         self.lane = review_lane
+        # Tareas en review que NO se pudieron bloquear (h.block solo mueve running/ready): se recuerda la cabeza ya
+        # avisada para no reprocesarlas ni repetir la alerta en cada vuelta. state_dir=None: solo en memoria.
+        self._unblockable: dict[str, str] = {}
+        self._heads: dict[str, str] = {}
+        self._state_dir = Path(state_dir) if state_dir else None
         self._tree = tree  # deps.TreeReader: líneas 🔗/⏸/↳ en los avisos; None = sin árbol
         # IntegrationRoute (tema de Integración): la tarjeta done con ✅ Aprobar va allí como ficha + copia en el DM.
         self._integration = integration
@@ -188,6 +194,11 @@ class ReviewRunner:
         blocked = h.block(task["id"], kind, reason[:1500])
         if not blocked:  # block solo mueve running/ready: una tarea en review puede no quedar bloqueada
             log.error("no se pudo bloquear %s (%s) en el kanban", task["id"], kind)
+            # 9 alertas sin botones seguidas (escalada de review): se anota la cabeza y se emite UNA con botones.
+            self._remember_unblockable(task["id"], kind)
+            self.notify("blocked", task, status_line(f"en review, requiere tu decisión: {public}", "detalle en la tarjeta"),
+                        alert=True, buttons=True, block_kind="review_stuck", bullets=questions_block(questions))
+            return f"blocked:{kind}"
         if kind == "needs_input":
             self.notify("needs_input", task, status_line(public, "responde en este hilo o a Hermes"), alert=True,
                         bullets=questions_block(questions), buttons=bool(blocked), questions=questions,
@@ -197,12 +208,39 @@ class ReviewRunner:
                         alert=True, buttons=bool(blocked), block_kind=kind)
         return f"blocked:{kind}"
 
+    def _unblockable_path(self, tid: str) -> Path | None:
+        return self._state_dir / f"{tid}.json" if self._state_dir else None
+
+    def _remember_unblockable(self, tid: str, kind: str) -> None:
+        head = self._heads.get(tid) or ""
+        self._unblockable[tid] = head
+        path = self._unblockable_path(tid)
+        try:
+            if path:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(json.dumps({"task_id": tid, "head_sha": head, "kind": kind, "at": time.time()}),
+                                encoding="utf-8")
+        except OSError as exc:
+            log.warning("%s: no se pudo guardar el estado de la alerta de review: %s", tid, exc)
+
+    def _already_escalated(self, tid: str, head: str) -> bool:
+        if self._unblockable.get(tid) == head:
+            return True
+        path = self._unblockable_path(tid)
+        try:
+            return bool(path and json.loads(path.read_text(encoding="utf-8")).get("head_sha") == head)
+        except (OSError, json.JSONDecodeError):
+            return False
+
     def process(self, task: dict, lane: Lane, h) -> str:
         tid = task["id"]
         try:
             show = h.show(tid)
             task = {**show.get("task", {}), **task}
             meta = implementation_metadata(show)
+            self._heads[tid] = str(meta.get("head_sha") or "")
+            if self._already_escalated(tid, self._heads[tid]):
+                return "blocked:already_escalated"  # misma cabeza ya avisada y sin poder bloquearse: no se repite
             if not meta:
                 return self._block(h, task, "transient", "review sin metadata de implementación (branch/head_sha)",
                                    public="falta la metadata de implementación")

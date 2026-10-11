@@ -24,7 +24,8 @@ import logging
 import threading
 from typing import Callable
 
-from .hermes import answer_progress, hermes_answer_text, last_needs_input_block, pending_hermes_answer, resume
+from .hermes import (answer_progress, hermes_answer_text, is_guard_limit, last_needs_input_block,
+                     pending_hermes_answer, resume)
 from .notices import truncate
 
 
@@ -98,6 +99,8 @@ class HermesAnswers:
             return False
         from .renotify import ACTIONS_HEADER, block_questions  # perezoso: renotify arrastra runner/review
         reason = (last_needs_input_block(show).get("payload") or {}).get("reason") or ""
+        if is_guard_limit(reason):
+            return False  # limitación permanente del guard: no es una pregunta, requiere consola (/tomar-tarea)
         if len(reason) >= REASON_CUT and ACTIONS_HEADER not in reason:
             # Motivo cortado por el límite de `hermes block` justo en las preguntas: la última puede faltar o estar a
             # medias. Fail-closed: sigue en /decisiones, pero no se desbloquea sola.

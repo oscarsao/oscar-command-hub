@@ -182,15 +182,19 @@ def age_label(since: float | None, now: float) -> str:
 
 
 def summary_text(entries: list[dict], now: float) -> str:
-    """entries: [{emoji, pr, title, state, since}]. Una línea por PR, la más antigua primero."""
+    """entries: [{emoji, pr, title, state, since, repo?, url?, card?}]. Una línea por PR, la más antigua primero.
+    `repo` (nombre corto) se muestra junto al número (el panel mezcla repos), `url` enlaza el PR y `card` la tarjeta."""
     if not entries:
         return SUMMARY_EMPTY
     e = html.escape
     rows = sorted(entries, key=lambda x: (float(x.get("since") or now), int(x.get("pr") or 0)))
     lines = [f"<b>🚦 PENDIENTE DE INTEGRAR ({len(rows)})</b>"]
     for x in rows:
-        line = (f"{x.get('emoji') or '•'} PR #{int(x.get('pr') or 0)} · {e(truncate(x.get('title'), SUMMARY_TITLE_MAX))}"
-                f" · {e(x.get('state') or '?')} · {e(age_label(x.get('since'), now))}")  # "<1 h" rompería el HTML
+        pr = (f"{e(str(x['repo']))}#" if x.get("repo") else "#") + str(int(x.get("pr") or 0))
+        pr = f'<a href="{e(x["url"], quote=True)}">{pr}</a>' if x.get("url") else pr
+        card = f' · <a href="{e(x["card"], quote=True)}">🗂</a>' if x.get("card") else ""
+        line = (f"{x.get('emoji') or '•'} PR {pr} · {e(truncate(x.get('title'), SUMMARY_TITLE_MAX))}"
+                f" · {e(x.get('state') or '?')} · {e(age_label(x.get('since'), now))}{card}")  # "<1 h" rompería el HTML
         if len("\n".join(lines + [line])) > TEXT_MAX - 40:
             lines.append(f"… y {len(rows) - len(lines) + 1} más")
             break

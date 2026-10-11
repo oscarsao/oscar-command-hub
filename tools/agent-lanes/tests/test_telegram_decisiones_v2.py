@@ -80,6 +80,7 @@ def test_new_button_on_a_card_sends_a_new_message_to_the_topic_and_the_dm(tmp_pa
     assert [(m["chat"], m["thread"]) for m in sent] == [("-100", "231"), (str(ti.OSCAR), None)]
     for m in sent:
         assert m["text"].startswith("🔔 t_1") and "Ahora puedes pulsar: 🚀 Desplegar" in m["text"]
+        assert "\nPR #" in m["text"] and "/pull/" in m["text"]  # el PR va enlazado en el aviso del botón
         assert ti.buttons(m["markup"]) == ["🚀 Desplegar"]
     assert len({markup_token(m["markup"]) for m in sent}) == 1
     # el mismo teclado no se vuelve a anunciar

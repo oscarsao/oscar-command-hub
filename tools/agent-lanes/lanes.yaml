@@ -18,6 +18,8 @@ runner:
 #   3. TELEGRAM_CHAT_ID / TELEGRAM_THREAD_ID del .env (Gestión t5).
 # Grupo Gestión -1003530490339: t5 Operaciones · General, t230 Operaciones · MigraTeam, t231 Operaciones · Píldora.
 telegram:
+  # Los user_id del equipo (tools/telegram/people.yaml) NO van aquí: su DM no es un origen genérico y debe volver a
+  # su chat (requiere añadirlos a TELEGRAM_ALLOWED_CHATS en .env; cambio manual de Oscar).
   generic_origins:
     - {chat: 6744452215}              # DM de Oscar (cualquier hilo)
     - {chat: -1003530490339, thread: 5}  # Gestión · Operaciones General
