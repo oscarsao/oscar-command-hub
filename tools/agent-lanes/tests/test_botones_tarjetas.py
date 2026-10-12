@@ -67,7 +67,8 @@ def test_card_with_options_has_letter_buttons_recommended_snooze_and_park(tmp_pa
     decisiones(desk)
     msg = bot.sent[-1]
     assert "<b>B)</b> 19 euros" in msg["text"] and "⭐ Recomendada: B" in msg["text"] and "Contexto:" in msg["text"]
-    assert texts(msg["markup"]) == ["A", "B", "C", "✅ La recomendada (B)", "⏳ Aplazar 7 d", "🗄 Aparcar"]
+    assert texts(msg["markup"]) == ["A · 9 euros", "B · 19 euros", "C · Gratis un año", "✅ La recomendada (B)",
+                                    "⏳ Aplazar 7 d", "🗄 Aparcar", "✍️ Responder"]
 
 
 def test_pressing_an_option_records_the_answer_completes_and_is_idempotent(tmp_path):
@@ -152,7 +153,7 @@ def test_snooze_hides_the_card_from_decisiones_and_cards_for_reminders_until_it_
                                         "t_d0000002": card("t_d0000002", "[DECISIÓN] Otra", body=BODY)})
     desk.snoozes = CardSnoozes(tmp_path / "snooze.json", clock=lambda: clock[0])
     decisiones(desk)
-    press(desk, bot.sent[-2], 4)  # ⏳ Aplazar 7 d de la 1.ª
+    press(desk, next(m for m in bot.sent if "t_d0000001" in m["text"]), 4)  # ⏳ Aplazar 7 d de la 1.ª
     assert "APLAZADA-OSCAR" in comments_of(h, "comment")[0][2] and not comments_of(h, "complete")
     assert [c["task"]["id"] for c in cc.decision_cards()] == ["t_d0000002"]
     bot.sent.clear()
@@ -198,7 +199,7 @@ def test_preparar_writes_a_comment_and_resends_the_card_with_options(tmp_path):
     assert seen[0]["title"] == "[DECISIÓN] Precio" and seen[0]["body"] == "Solo título"
     last = bot.sent[-1]
     assert "<b>C)</b> Gratis" in last["text"] and "⭐ Recomendada: C" in last["text"] and "Borrador preparado" in last["text"]
-    assert texts(last["markup"])[:4] == ["A", "B", "C", "✅ La recomendada (C)"]
+    assert texts(last["markup"])[:4] == ["A · 9 euros", "B · 19 euros", "C · Gratis", "✅ La recomendada (C)"]
     assert h.shows["t_d0000001"]["task"]["body"] == "Solo título"  # el cuerpo no se toca
     press(desk, last, 2)  # C
     assert comments_of(h, "comment")[-1][2] == "RESPUESTA-OSCAR: C) Gratis"
@@ -208,7 +209,8 @@ def test_preparar_todas_skips_cards_with_options_and_respects_the_cap(tmp_path, 
     import agent_lanes.commands as cmds
     monkeypatch.setattr(cmds, "PREPARE_MAX", 2)
     shows = {"t_d0000001": card("t_d0000001", body=BODY), "t_d0000002": card("t_d0000002", created_at=1.0),
-             "t_d0000003": card("t_d0000003", created_at=2.0), "t_d0000004": card("t_d0000004", created_at=3.0)}
+             "t_d0000003": card("t_d0000003", "[DECISIÓN] Plazo", created_at=2.0),
+             "t_d0000004": card("t_d0000004", "[DECISIÓN] Marca", created_at=3.0)}
     cc, desk, bot, h = setup(tmp_path, shows)
     calls = []
     cc._preparer = lambda ctx: calls.append(ctx["task_id"]) or prepared_block()

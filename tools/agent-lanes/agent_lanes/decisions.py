@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Callable
 
 from . import proc as _proc
+from .bandeja import VetoBook
 from .config import ROOT
 from .card_options import LETTERS as CARD_LETTERS
 from .hermes import (ANSWER_PREFIX, HERMES_ANSWER_PREFIX, OSCAR_AUTHOR, REVIEW_AUTHOR, answer_progress,
@@ -62,7 +63,10 @@ CARD_DONE = "card_done"       # ✅ Hecho (tarjeta sin opciones)
 CARD_SNOOZE = "card_snooze"   # ⏳ Aplazar 7 d: comentario + oculta de /decisiones y recordatorios 7 días
 CARD_PARK = "card_park"       # 🗄 Aparcar: comentario + archive
 CARD_ASK = "card_ask"         # ✍️ Responder: force_reply; el texto es la respuesta
+CARD_VETO = "card_veto"       # ⛔ Vetar: la tarjeta reversible deja de ejecutarse sola (no consume el teclado)
+CARD_ACCEPT_ALL = "card_accept_all"  # ✅ Aceptar las recomendadas del lote de tarjetas de /decisiones
 SNOOZE_DAYS = 7
+BUTTON_OPTION_MAX = 22  # caracteres del texto de la opción en su botón ("A · Aprobar el PR")
 REPLY_ACTIONS = (CHANGES, OTHER, CARD_ASK)  # piden texto a Oscar con force_reply
 EXPLAIN_BUTTON = {"text": "💬 Explícame más", "action": EXPLAIN}
 DEFAULT_OPTION_LABELS = ("✅ Sí, adelante", "❌ No")  # botones de una pregunta sin opciones (DEFAULT_OPTIONS)
@@ -115,20 +119,25 @@ def keyboard_spec(state: str, *, block_kind: str | None = None, questions=None,
     return None
 
 
-def card_keyboard_spec(n_options: int, recommended: int | None) -> list[list[dict]]:
-    """Botones de una tarjeta de decisión. Con opciones: solo la letra (A/B/C van escritas en el mensaje), la
-    recomendada, aplazar y aparcar. Sin opciones: botones genéricos."""
+def card_keyboard_spec(n_options: int, recommended: int | None, options=None, veto: bool = False) -> list[list[dict]]:
+    """Botones de una tarjeta de decisión. Con opciones: un botón por opción con su texto corto ("A · Aprobar el PR";
+    sin los textos, solo la letra), la recomendada, aplazar y aparcar (+ ⛔ Vetar si la tarjeta es reversible y corre
+    el plazo de veto). La respuesta libre ("A, pero con X") es ✍️ Responder. Sin opciones: botones genéricos."""
     snooze = {"text": f"⏳ Aplazar {SNOOZE_DAYS} d", "action": CARD_SNOOZE}
     park = {"text": "🗄 Aparcar", "action": CARD_PARK}
+    ask = {"text": "✍️ Responder", "action": CARD_ASK}
     if n_options < 2:
-        return [[{"text": "✅ Hecho", "action": CARD_DONE}, snooze],
-                [park, {"text": "✍️ Responder", "action": CARD_ASK}]]
+        return [[{"text": "✅ Hecho", "action": CARD_DONE}, snooze], [park, ask]]
     n = min(n_options, len(CARD_LETTERS))
-    rows = [[{"text": CARD_LETTERS[i], "action": CARD_OPTION, "index": i} for i in range(n)]]
+    texts = list(options or ())
+    rows = [[{"text": f"{CARD_LETTERS[i]} · {truncate(texts[i], BUTTON_OPTION_MAX)}"
+              if i < len(texts) and texts[i] else CARD_LETTERS[i], "action": CARD_OPTION, "index": i}]
+            for i in range(n)]
     if isinstance(recommended, int) and 0 <= recommended < n:
         rows.append([{"text": f"✅ La recomendada ({CARD_LETTERS[recommended]})", "action": CARD_REC,
                       "index": recommended}])
     rows.append([snooze, park])
+    rows.append([ask] + ([{"text": "⛔ Vetar", "action": CARD_VETO}] if veto else []))
     return rows
 
 
@@ -301,6 +310,7 @@ class DecisionDesk:
         self.explainer = explainer or (lambda rec: _explain(rec, runner=self._run))
         # Aplazadas 7 días: junto a los teclados (.state/), así los tests con tmp_path no escriben en el .state real.
         self.snoozes = snoozes or CardSnoozes(Path(store.root).parent / "card_snooze.json")
+        self.vetos = VetoBook(Path(store.root).parent / "card_veto.json")  # plazo de veto de las tarjetas reversibles
 
     # --- teclados -------------------------------------------------------------------------------------
 
@@ -356,12 +366,32 @@ class DecisionDesk:
         rec = {"task_id": "bandeja", "board": "", "lane": "", "accept_all": members}
         return self.store.issue(rec, [[{"text": "✅ Aceptar todo lo recomendado", "action": ACCEPT_ALL}]])[1]
 
-    def card_markup(self, card: dict, options: list[str], recommended: int | None, head: str) -> dict:
+    def card_markup(self, card: dict, options: list[str], recommended: int | None, head: str,
+                    veto: bool = False) -> dict:
         """Teclado de la tarjeta de decisión `card` ({board, task}); `head` = su mensaje HTML (se reedita al pulsar)."""
         t = card["task"]
         rec = {"task_id": t["id"], "board": card["board"], "lane": "", "card": True, "title": t.get("title") or "",
-               "options": list(options[:len(CARD_LETTERS)]), "head": head}
-        return self.store.issue(rec, card_keyboard_spec(len(options), recommended))[1]
+               "options": list(options[:len(CARD_LETTERS)]), "head": head, "recommended": recommended}
+        return self.store.issue(rec, card_keyboard_spec(len(options), recommended, options, veto))[1]
+
+    def card_accept_all_markup(self, members: list[dict]) -> dict:
+        """[✅ Aceptar las recomendadas (N)] sobre el lote de tarjetas: cada miembro {task_id, board, options,
+        recommended}; al pulsar solo se aplican las que siguen pendientes."""
+        rec = {"task_id": "bandeja", "board": "", "lane": "", "card_accept_all": members}
+        return self.store.issue(rec, [[{"text": f"✅ Aceptar las recomendadas ({len(members)})",
+                                        "action": CARD_ACCEPT_ALL}]])[1]
+
+    @staticmethod
+    def expand_free_text(text: str, options: list[str]) -> str:
+        """Respuesta libre "A, pero con X" -> "A) <texto de la opción> — pero con X". Si no empieza por una letra
+        válida, se anota tal cual."""
+        text = (text or "").strip()
+        # La letra debe ir sola o seguida de puntuación ("A, pero…"): "A mí me da igual" no elige la A.
+        m = re.match(r"^([A-Ca-c])(?:\s*[,.:;)\-–—]\s*|\s*$)(.*)$", text, re.S)
+        if not m or CARD_LETTERS.index(m.group(1).upper()) >= len(options):
+            return text
+        idx, rest = CARD_LETTERS.index(m.group(1).upper()), m.group(2).strip()
+        return f"{CARD_LETTERS[idx]}) {options[idx]}" + (f" — {rest}" if rest else "")
 
     def see_all_markup(self, brand: str | None) -> dict:
         """[📋 Ver todas] bajo la línea "N más" de /decisiones: reenvía la bandeja completa."""
@@ -473,6 +503,10 @@ class DecisionDesk:
         if button["action"] == EXPLAIN:  # no consume el teclado: los demás botones siguen valiendo
             answer(cq.get("id"), "Te lo explico en un momento")
             self._spawn(lambda: self._explain(rec, where))
+            return
+        if button["action"] == CARD_VETO:  # tampoco consume: solo apaga la ejecución automática
+            answer(cq.get("id"), "Vetada: no se aplicará sola")
+            self._spawn(lambda: self._veto(token, rec, where))
             return
         if button["action"] in REPLY_ACTIONS:
             answer(cq.get("id"), "Responde al mensaje que te envío")
@@ -610,6 +644,8 @@ class DecisionDesk:
             return bool(self.commands) and self.commands.hazlo_choice(rec, button, where)
         if action in (DEPLOY_ASK, DEPLOY_NO):  # /desplegar: confirmación previa al int_deploy
             return bool(self.commands) and self.commands.deploy_step(action, rec, where, self)
+        if action == CARD_ACCEPT_ALL:
+            return self._card_accept_all(rec, where)
         if action == ACCEPT_ALL:
             return self._accept_all(rec, where)
         if action == ACCEPT_CARD:
@@ -685,7 +721,7 @@ class DecisionDesk:
         elif action == CARD_DONE:
             answer = "Hecho"
         elif action == CARD_ASK and text:
-            answer = text.strip()
+            answer = self.expand_free_text(text, opts)
         else:
             return False
         if not note(f"{HERMES_ANSWER_PREFIX} {answer}"):
@@ -698,6 +734,48 @@ class DecisionDesk:
             return False
         self._edit(rec, where, None, f"✅ Elegida: {truncate(answer, 200)}")
         return True
+
+    def card_rec_for(self, member: dict) -> dict:
+        """Registro de tarjeta de decisión (el de `card_markup`) reconstruido desde un miembro del lote o del veto."""
+        tid = member["task_id"]
+        return {"task_id": tid, "board": member.get("board") or "", "lane": "", "card": True,
+                "title": member.get("title") or "", "options": list(member.get("options") or ()),
+                "head": f"📌 <code>{_esc(tid)}</code> · <b>{_esc(truncate(member.get('title'), 80))}</b>"}
+
+    def apply_recommended(self, member: dict, where: dict | None = None) -> bool:
+        """Aplica la opción recomendada de una tarjeta (misma ruta que ✅ La recomendada)."""
+        idx = member.get("recommended")
+        if not isinstance(idx, int) or isinstance(idx, bool):
+            return False
+        return self._card_act(self.card_rec_for(member), {"action": CARD_REC, "index": idx}, where)
+
+    def _card_accept_all(self, rec: dict, where: dict) -> bool:
+        """✅ Aceptar las recomendadas del lote: cada tarjeta pendiente recibe su ⭐; las ya decididas se saltan solas
+        (_card_act es idempotente) y las que fallan no paran a las demás."""
+        done, failed = [], []
+        for m in rec.get("card_accept_all") or ():
+            try:
+                ok = self.apply_recommended(m)
+            except Exception as exc:
+                log.warning("%s: aceptar la recomendada falló: %s", m.get("task_id"), exc)
+                ok = False
+            (done if ok else failed).append(m["task_id"])
+            if ok:
+                self._retire(m)
+        self._edit_text(where, f"✅ Aplicada la recomendada en {len(done)} tarjeta{'s' if len(done) != 1 else ''}"
+                        + (f" ({', '.join(done)})" if done else "")
+                        + (f" · fallaron: {', '.join(failed)}" if failed else ""))
+        return bool(done) or not failed
+
+    def _veto(self, token: str, rec: dict, where: dict) -> None:
+        """⛔ Vetar: la tarjeta reversible ya no se ejecuta sola. No consume el teclado: A/B/C siguen valiendo."""
+        tid = rec["task_id"]
+        self.vetos.set_state(tid, "vetoed")
+        try:
+            self._hermes(rec).comment(tid, "VETO-OSCAR: no se aplica sola la recomendada; decide Oscar", author=OSCAR_AUTHOR)
+            self._edit(rec, where, None, "⛔ vetada: no se aplicará sola", markup=self.store.markup(token, rec))
+        except Exception as exc:
+            log.warning("%s: veto anotado solo en local: %s", tid, exc)
 
     def _option_answer(self, rec: dict, where, idx) -> bool:
         return self._option_step(rec, where, idx)[0]

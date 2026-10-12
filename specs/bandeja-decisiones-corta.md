@@ -35,6 +35,13 @@ agrupación y desduplicado; top-N + "N más"; auto-aplazar solo baja prioridad y
 umbrales desde el fichero de ajustes con defaults si falta; botones con texto corto; "A, pero con X"; aceptar lote;
 veto: no ejecuta antes del plazo, ejecuta tras él, ⛔ lo cancela, nunca sin `reversible`.
 
+## Estado: implementada (decisiones de Oscar 13-10)
+Ajustes en `tools/agent-lanes/bandeja.yaml` (nuevo; `lanes.yaml` intacto): `top`, `dedupe`, `autosnooze_dias`,
+`autosnooze_aplazar_dias`, `prioridad_baja_max`, `veto_horas`, `veto_modo` (`aviso` | `ejecutar`). Se leen al arrancar el
+runner; fichero ausente o valor inválido = defaults. El veto arranca en modo `aviso` (avisa, no ejecuta). La línea
+`Reversible: sí` solo cuenta en el cuerpo de la tarjeta. Medición con datos reales: no hecha por el carril (`.state/`
+vetado); hay que mirar las cifras tras aplicar.
+
 ## Riesgos
 Auto-ejecutar con veto cambia lo que hace el bot sin pulsación de Oscar: exige su OK explícito y que el flag
 `reversible` lo ponga quien crea la tarjeta, no el worker.

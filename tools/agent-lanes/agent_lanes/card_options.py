@@ -61,6 +61,7 @@ class CardSpec:
     recommended: int | None = None
     dropped: int = 0         # opciones de más (>3) que no se pueden pulsar
     prepared: bool = False   # vienen de un comentario PREPARADO-POR-CLAUDE (no del cuerpo)
+    reversible: bool = False  # el cuerpo dice `Reversible: sí`: candidata al plazo de veto (bandeja.py)
 
     @property
     def has_options(self) -> bool:
@@ -132,10 +133,13 @@ def parse_card(body: str | None, comments=()) -> CardSpec:
     """Opciones de una tarjeta: primero las del cuerpo; si no hay (≥2), el comentario PREPARADO-POR-CLAUDE más reciente
     del autor del preparador. Nunca lanza."""
     try:
+        from .bandeja import is_reversible  # import tardío: bandeja importa notices, que este módulo ya usa
+        reversible = is_reversible(body)
         context, options, rec, dropped, _ = _parse_block(body)
         if len(options) >= MIN_OPTIONS:
-            return CardSpec(context, options, rec if rec is not None and rec < len(options) else None, dropped)
-        spec = CardSpec(context=context)
+            return CardSpec(context, options, rec if rec is not None and rec < len(options) else None, dropped,
+                            reversible=reversible)
+        spec = CardSpec(context=context, reversible=reversible)
         for c in reversed(list(comments or ())):
             text = (c or {}).get("body")
             if (c or {}).get("author") != PREPARED_AUTHOR or not isinstance(text, str) \
@@ -144,7 +148,7 @@ def parse_card(body: str | None, comments=()) -> CardSpec:
             pctx, popts, prec, pdrop, _ = _parse_block(text[len(PREPARED_PREFIX):])
             if len(popts) >= MIN_OPTIONS:
                 return CardSpec(pctx or context, popts, prec if prec is not None and prec < len(popts) else None,
-                                pdrop, prepared=True)
+                                pdrop, prepared=True, reversible=reversible)
         return spec
     except Exception:  # un cuerpo raro nunca tumba /decisiones
         return CardSpec()
