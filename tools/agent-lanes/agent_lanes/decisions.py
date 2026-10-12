@@ -295,6 +295,7 @@ class DecisionDesk:
         self.promoter = None      # promote.Promoter: /promover y botones promo_* (producción de MigraTeam)
         self.commands = None      # CommandCenter: /hoy, /decisiones, /aprobar, /tareas, /tarea
         self.collab = None        # CollabIntake: DM de colaboradores (people.yaml) -> tarjeta [IDEA]; None = como antes
+        self._help_at: dict[str, float] = {}  # chat -> instante de la última ayuda (enfriamiento)
         self.tree = None          # deps.TreeReader: líneas 🔗/⏸/↳ al redibujar un aviso (opcional)
         # 💬 Explícame más: rec -> texto llano (claude -p --model haiku sin herramientas); inyectable en tests.
         self.explainer = explainer or (lambda rec: _explain(rec, runner=self._run))
@@ -373,16 +374,79 @@ class DecisionDesk:
         if update.get("callback_query"):
             self._callback(update["callback_query"])
         elif update.get("message"):
-            msg = update["message"]
-            if self.collab and self.collab.claims(msg, self.owner_id):
-                # DM privado de alguien que no es Oscar: nunca llega a los comandos ni a _reply (hermes: segundos).
-                self._spawn(lambda: self.collab.handle(msg))
-                return
-            if self.commands and (msg.get("text") or "").startswith("/"):
-                # Los comandos llaman a la CLI de hermes (segundos): fuera del hilo de escucha.
-                self._spawn(lambda: self.commands.handle(msg) or self._reply(msg))
-                return
-            self._reply(msg)
+            self._message(update["message"])
+
+    @staticmethod
+    def _mask(chat_id) -> str:
+        """Id de chat para el log: solo los últimos 4 dígitos (si tiene más de 4)."""
+        digits = "".join(ch for ch in str(chat_id) if ch.isdigit())
+        return "***" + digits[-4:] if len(digits) > 4 else "***"  # ids cortos: enteros fuera
+
+    def _log_update(self, chat_id, kind: str, name: str | None, result: str) -> None:
+        """Una línea INFO por update: chat enmascarado, tipo, comando/acción y resultado. Nunca el texto ni tokens."""
+        safe = re.sub(r"[^A-Za-z0-9_]", "", str(name or ""))[:32] or "-"
+        log.info("update chat=%s tipo=%s cmd=%s resultado=%s", self._mask(chat_id), kind, safe, result)
+
+    def _message(self, msg: dict) -> None:
+        from .commands import command_target  # import diferido: commands importa este módulo
+        text = msg.get("text") or ""
+        chat = msg.get("chat") or {}
+        is_cmd = text.lstrip().startswith("/")
+        kind = "comando" if is_cmd else ("texto" if text else "otro")
+        target = command_target(text, getattr(self.commands, "bot_username", None)) if is_cmd else None
+        name = target[0] if target else None
+        is_owner = str((msg.get("from") or {}).get("id")) == self.owner_id
+        if self.collab and self.collab.claims(msg, self.owner_id):
+            # DM privado de alguien que no es Oscar: nunca llega a los comandos ni a _reply (hermes: segundos).
+            self._log_update(chat.get("id"), kind, None, "respondido")  # sin nombre: lo escribe un desconocido
+            self._spawn(lambda: self.collab.handle(msg))
+            return
+        if self.commands and target and target[1]:
+            self._log_update(chat.get("id"), kind, name, "respondido" if is_owner else "rechazado")
+            # Los comandos llaman a la CLI de hermes (segundos): fuera del hilo de escucha.
+            self._spawn(lambda: self.commands.handle(msg) or self._reply(msg))
+            return
+        if self._reply(msg):  # respuesta a un force_reply pendiente
+            self._log_update(chat.get("id"), kind, name, "respondido")
+            return
+        result = "ignorado"
+        if is_owner and not (msg.get("from") or {}).get("is_bot") and self._wants_help(msg, is_cmd, target):
+            result = self._help(msg, name if is_cmd else None)
+        self._log_update(chat.get("id"), kind, name, result)
+
+    @staticmethod
+    def _wants_help(msg: dict, is_cmd: bool, target) -> bool:
+        """Ayuda solo para el dueño: texto libre en su DM, o un /comando desconocido dirigido a este bot (en grupo, solo
+        con el sufijo @bot explícito: sin él puede ser para Hermes)."""
+        private = (msg.get("chat") or {}).get("type") == "private"
+        if is_cmd:
+            return bool(target) and not target[1] and (private or target[2])
+        return private and bool(msg.get("text"))
+
+    HELP_COOLDOWN = 30.0  # s: un único aviso de ayuda por chat en ese plazo (sin ráfagas ni bucles)
+
+    def _help(self, msg: dict, cmd: str | None) -> str:
+        """Responde con la ayuda: qué entendió, comandos y /hazlo. 'respondido' | 'ignorado' (enfriamiento)."""
+        from .commands import CommandCenter
+        chat_id = str((msg.get("chat") or {}).get("id"))
+        stamp = time.monotonic()
+        last = self._help_at.get(chat_id)
+        if last is not None and stamp - last < self.HELP_COOLDOWN:
+            return "ignorado"
+        self._help_at[chat_id] = stamp
+        if cmd:
+            seen = f"Entendí /{re.sub(r'[^A-Za-z0-9_]', '', cmd)[:32]}, pero no es un comando que conozca."
+        else:
+            seen = "Recibí tu mensaje, pero no es un comando y no tengo una respuesta pendiente tuya."
+        text = (seen + "\n\n" + CommandCenter.help_text()
+                + "\n\nPara pedirme algo escribe /hazlo <texto>, por ejemplo: /hazlo revisar el aviso de despliegue.")
+        thread = str(msg.get("message_thread_id") or 0) if msg.get("is_topic_message") else "0"
+        try:
+            self.notifier.send_to(chat_id, thread, text, html=False)
+        except Exception as exc:
+            log.warning("no pude enviar la ayuda: %s", exc)
+            return "ignorado"
+        return "respondido"
 
     @staticmethod
     def _where(msg: dict) -> dict:
@@ -391,17 +455,21 @@ class DecisionDesk:
 
     def _callback(self, cq: dict) -> None:
         answer = self.notifier.answer_callback
+        chat = ((cq.get("message") or {}).get("chat") or {}).get("id")
         if str((cq.get("from") or {}).get("id")) != self.owner_id:
             answer(cq.get("id"), NOT_OWNER, alert=True)
+            self._log_update(chat, "callback", None, "rechazado")
             return
         token, _, n = (cq.get("data") or "").partition(":")
         rec = self.store.get(token)
         buttons = (rec or {}).get("buttons") or []
         if not rec or not n.isdigit() or int(n) >= len(buttons):
             answer(cq.get("id"), "Esta decisión ya no está activa")
+            self._log_update(chat, "callback", None, "ignorado")
             return
         button = buttons[int(n)]
         where = self._where(cq.get("message") or {})
+        self._log_update(chat, "callback", button.get("action"), "respondido")
         if button["action"] == EXPLAIN:  # no consume el teclado: los demás botones siguen valiendo
             answer(cq.get("id"), "Te lo explico en un momento")
             self._spawn(lambda: self._explain(rec, where))
@@ -416,25 +484,26 @@ class DecisionDesk:
         answer(cq.get("id"), "Hecho, lo aplico")
         self._spawn(lambda: self._safe(token, rec, where, lambda: self._act(rec, button, where)))
 
-    def _reply(self, msg: dict) -> None:
-        """Respuesta de Oscar a un force_reply: pedir cambios o respuesta libre."""
+    def _reply(self, msg: dict) -> bool:
+        """Respuesta de Oscar a un force_reply: pedir cambios o respuesta libre. True si había una pendiente."""
         if str((msg.get("from") or {}).get("id")) != self.owner_id:
-            return
+            return False
         replied = msg.get("reply_to_message") or {}
         text = (msg.get("text") or "").strip()
         if not replied or not text:
-            return
+            return False
         chat_id = (msg.get("chat") or {}).get("id")
         pending = self.store.pop_reply(chat_id, replied.get("message_id"))
         if not pending:
-            return
+            return False
         token, rec, button, where = pending["token"], pending["rec"], pending["button"], pending["where"]
         if not self.store.consume(token):  # ya se decidió con otro botón
             self._cleanup_messages(chat_id, [replied.get("message_id"), msg.get("message_id")])
-            return
+            return True
         self._spawn(lambda: self._safe(token, rec, where, lambda: self._apply_reply(rec, button, where, text),
                                        after=lambda: self._cleanup_messages(
                                            chat_id, [replied.get("message_id"), msg.get("message_id")])))
+        return True
 
     # --- acciones -------------------------------------------------------------------------------------
 

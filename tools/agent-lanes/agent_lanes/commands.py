@@ -110,6 +110,18 @@ def parse_command(text: str | None, bot_username: str | None = None) -> tuple[st
     return cmd, args
 
 
+def command_target(text: str | None, bot_username: str | None = None) -> tuple[str, bool, bool] | None:
+    """"/foo@pildora_carriles_bot x" -> ("foo", conocido, con_sufijo_nuestro). None si no es un comando o va dirigido a
+    otro bot (Hermes). Distingue los desconocidos para poder contestarlos con ayuda."""
+    m = _CMD_RE.match((text or "").strip())
+    if not m:
+        return None
+    cmd, at = m.group(1).lower(), m.group(2)
+    if at and (not bot_username or at.lower() != bot_username.lower()):
+        return None
+    return cmd, cmd in ({c for c, _ in COMMANDS} | set(HELP_ALIASES)), bool(at)
+
+
 def scope_brand(chat_id, thread_id, lanes: dict, generic_origins=()) -> str | None:
     """Marca del tema donde se escribió el comando (None = todo): la de los carriles cuyo destino es ese tema."""
     key = (str(chat_id), str(thread_id or 0))
