@@ -41,7 +41,7 @@ class Bandeja:
     dedupe: bool = True
     autosnooze_dias: float = 14
     autosnooze_aplazar_dias: float = 7
-    prioridad_baja_max: int = 0
+    prioridad_baja_max: int = -1
     veto_horas: float = 48
     veto_modo: str = VETO_AVISO
 
@@ -119,13 +119,14 @@ def dedupe(cards: list[dict]) -> list[dict]:
 
 
 def split_low_priority(cards: list[dict], cfg: Bandeja, now: float) -> tuple[list[dict], list[dict]]:
-    """(resto, a aplazar): prioridad informada y <= prioridad_baja_max, con más de autosnooze_dias días de espera."""
+    """(resto, a aplazar): prioridad explícitamente negativa y <= prioridad_baja_max, con más de autosnooze_dias días de espera.
+    La prioridad 0 (la de por defecto) o sin informar nunca se aplaza sola."""
     if cfg.autosnooze_dias <= 0:
         return list(cards), []
     keep, low = [], []
     for c in cards:
         p, since = priority(c["task"]), c.get("since")
-        if p is not None and p <= cfg.prioridad_baja_max and since and now - since >= cfg.autosnooze_dias * 86400:
+        if p is not None and p < 0 and p <= cfg.prioridad_baja_max and since and now - since >= cfg.autosnooze_dias * 86400:
             low.append(c)
         else:
             keep.append(c)

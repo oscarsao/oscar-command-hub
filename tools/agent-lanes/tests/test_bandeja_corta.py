@@ -91,14 +91,16 @@ def test_low_priority_old_cards_snooze_themselves_once_with_a_notice(tmp_path):
     shows = {"t_d0000001": card("t_d0000001", "[DECISIÓN] Baja vieja", created_at=1000.0, body=BODY),
              "t_d0000002": card("t_d0000002", "[DECISIÓN] Alta vieja", created_at=1000.0, body=BODY),
              "t_d0000003": card("t_d0000003", "[DECISIÓN] Sin prioridad", created_at=1000.0, body=BODY),
-             "t_d0000004": card("t_d0000004", "[DECISIÓN] Baja reciente", created_at=1000.0 + 20 * 86400, body=BODY)}
-    for tid, p in (("t_d0000001", 0), ("t_d0000002", 3), ("t_d0000004", -1)):
+             "t_d0000004": card("t_d0000004", "[DECISIÓN] Baja reciente", created_at=1000.0 + 20 * 86400, body=BODY),
+             "t_d0000005": card("t_d0000005", "[DECISIÓN] Prioridad 0 vieja", created_at=1000.0, body=BODY)}
+    for tid, p in (("t_d0000001", -1), ("t_d0000002", 3), ("t_d0000004", -1), ("t_d0000005", 0)):
         shows[tid]["task"]["priority"] = p
     cc, desk, bot, h = setup(tmp_path, shows)
     cc._now = lambda: 1000.0 + 20 * 86400 + 5
     cc.bandeja = Bandeja(autosnooze_dias=14)
     ids = [c["task"]["id"] for c in cc.decision_cards()]
-    assert ids == ["t_d0000002", "t_d0000003", "t_d0000004"]  # la de prioridad alta primero; solo la 1 se aplaza
+    assert sorted(ids) == ["t_d0000002", "t_d0000003", "t_d0000004", "t_d0000005"]  # solo la 1 (prio -1) se aplaza; la 5 (prio 0, 20 días) no
+    assert ids[0] == "t_d0000002"
     assert "t_d0000001" in desk.snoozes.hidden()
     [notice] = _dm(bot)
     assert "Aplazadas solas 1 tarjeta" in notice and "t_d0000001" in notice
@@ -108,11 +110,23 @@ def test_low_priority_old_cards_snooze_themselves_once_with_a_notice(tmp_path):
 
 def test_autosnooze_can_be_switched_off_and_never_touches_unknown_priority(tmp_path):
     shows = {"t_d0000001": card("t_d0000001", created_at=1.0, body=BODY)}
-    shows["t_d0000001"]["task"]["priority"] = 0
+    shows["t_d0000001"]["task"]["priority"] = -1
     cc, desk, bot, h = setup(tmp_path, shows)
     cc._now = lambda: 1000.0 * 86400
     cc.bandeja = Bandeja(autosnooze_dias=0)
     assert len(cc.decision_cards()) == 1 and not _dm(bot)
+
+
+def test_default_priority_zero_card_waiting_30_days_is_not_snoozed_with_defaults(tmp_path):
+    shows = {"t_d0000001": card("t_d0000001", created_at=1.0, body=BODY),
+             "t_d0000002": card("t_d0000002", "[DECISIÓN] Sin prioridad", created_at=1.0, body=BODY)}
+    shows["t_d0000001"]["task"]["priority"] = 0
+    cc, desk, bot, h = setup(tmp_path, shows)
+    cc._now = lambda: 1.0 + 30 * 86400
+    cc.bandeja = Bandeja()
+    assert len(cc.decision_cards()) == 2 and not _dm(bot) and not desk.snoozes.hidden()
+    cc.bandeja = Bandeja(prioridad_baja_max=5)  # aunque se suba el umbral, la 0 nunca se aplaza sola
+    assert len(cc.decision_cards()) == 2
 
 
 # --- botones con texto corto y respuesta libre -----------------------------------------------------------

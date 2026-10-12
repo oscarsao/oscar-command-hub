@@ -9,11 +9,12 @@ top: 5
 dedupe: true
 
 # Auto-aplazar tarjetas de PRIORIDAD BAJA que llevan esperando más de `autosnooze_dias` días (0 = desactivado).
-# Prioridad baja = prioridad del kanban <= `prioridad_baja_max`. Una tarjeta sin prioridad informada nunca se aplaza sola.
+# Prioridad baja = prioridad del kanban NEGATIVA y <= `prioridad_baja_max`. Las de prioridad 0 (la de por defecto) o sin
+# informar nunca se aplazan solas.
 # Se aplazan `autosnooze_aplazar_dias` días, con un único aviso; una aplazada no vuelve a salir hasta entonces.
 autosnooze_dias: 14
 autosnooze_aplazar_dias: 7
-prioridad_baja_max: 0
+prioridad_baja_max: -1
 
 # Plazo de veto de las decisiones reversibles (la tarjeta lleva la línea `Reversible: sí` y una recomendada).
 # Pasadas `veto_horas` horas sin respuesta de Oscar (0 = desactivado):
