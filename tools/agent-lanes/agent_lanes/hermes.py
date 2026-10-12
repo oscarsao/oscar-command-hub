@@ -3,13 +3,22 @@ from __future__ import annotations
 
 import difflib
 import json
+import logging
 import os
 import re
 import subprocess
 import tempfile
+import time
 
 from . import proc as _proc
 from pathlib import Path
+
+log = logging.getLogger("agent_lanes")
+
+# Fallo transitorio de SQLite en kanban.db-shm (1-2 veces/día): se reintenta. WinError 4551 es OTRO problema: no.
+READONLY_MARK = "is read-only for this user"
+NO_RETRY_MARK = "WinError 4551"
+READONLY_BACKOFF = (1.0, 2.0)  # esperas entre los 3 intentos
 
 HERMES_EXE = Path.home() / "AppData/Local/hermes/bin/hermes.exe"
 HERMES_AGENT_DIR = Path.home() / "AppData/Local/hermes/hermes-agent"
@@ -293,20 +302,36 @@ def resume(h, tid: str) -> str | None:
     return (requeue(tid) if requeue else None) or None
 
 
+def _transient_readonly(cp) -> bool:
+    text = f"{getattr(cp, 'stderr', '') or ''} {getattr(cp, 'stdout', '') or ''}"
+    return READONLY_MARK in text and NO_RETRY_MARK not in text
+
+
 class HermesError(RuntimeError):
     pass
 
 
 class HermesCLI:
-    def __init__(self, board: str, exe: Path = HERMES_EXE, runner=_proc.run, author: str = "agent-lanes"):
+    def __init__(self, board: str, exe: Path = HERMES_EXE, runner=_proc.run, author: str = "agent-lanes",
+                 sleep=time.sleep, backoff: tuple[float, ...] = READONLY_BACKOFF):
+        self._sleep = sleep
+        self._backoff = backoff
         self.board = board
         self.exe = str(exe)
         self._run = runner
         self.author = author
 
     def _call(self, *args: str, timeout: int = 120) -> subprocess.CompletedProcess:
-        return self._run([self.exe, "kanban", "--board", self.board, *args],
-                         capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
+        cmd = [self.exe, "kanban", "--board", self.board, *args]
+        for attempt in range(len(self._backoff) + 1):
+            cp = self._run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
+            if cp.returncode == 0 or attempt >= len(self._backoff) or not _transient_readonly(cp):
+                return cp  # agotados los reintentos se devuelve el resultado original, igual que antes
+            wait = self._backoff[attempt]
+            log.warning("hermes kanban %s: base de datos read-only (transitorio); reintento %d/%d en %gs",
+                        args[0] if args else "?", attempt + 1, len(self._backoff), wait)
+            self._sleep(wait)
+        return cp  # pragma: no cover
 
     def list_status(self, assignee: str, status: str, sort: str = "priority") -> list[dict]:
         cp = self._call("list", "--assignee", assignee, "--status", status, "--json", "--sort", sort)
