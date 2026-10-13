@@ -16,19 +16,19 @@
 people:
   maria:
     name: María
-    user_id: null   # TODO(Oscar): user_id numerico de Telegram de Maria (COO, acceso como Oscar salvo produccion)
+    user_id: "5516823836"   # María (COO, acceso como Oscar salvo produccion); dado por Oscar 13-10
     role: coo
     brands: [Píldora, MigraTeam]
     can: []         # [carril] reservado; desactivado por defecto
   ingerber:
     name: Ingerber
-    user_id: null   # TODO(Oscar): user_id numerico de Telegram de Ingerber (CMO Pildora)
+    user_id: "8847860660"   # Ingerber (CMO Pildora); confirmado por nombre en los registros 13-10
     role: cmo
     brands: [Píldora]
     can: []
   andrea:
     name: Andrea
-    user_id: null   # TODO(Oscar): user_id numerico de Telegram de Andrea (marketing, a prueba)
+    user_id: "8313932936"   # Andrea (marketing, a prueba); dado por Oscar 13-10
     role: marketing
     brands: [Píldora]
     can: []
