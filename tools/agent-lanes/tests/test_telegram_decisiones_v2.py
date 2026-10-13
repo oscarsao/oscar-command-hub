@@ -134,7 +134,7 @@ def test_decisiones_ranks_agent_blockers_before_oscar_cards_and_keeps_up_to_5_as
     body = [m["text"] for m in bot.sent]
     assert sum(t.startswith("❓ t_aaaaaa") for t in body) == 4  # primero lo que bloquea agentes
     assert sum(t.startswith("📌 ") for t in body) == 1 and "t_cccccc00" in body[-2]  # luego la tarjeta más antigua
-    assert body[-1] == "➕ 2 más · ver todas"
+    assert body[-1] == "➕ 2 más (MigraTeam 2) · ver todas"  # el resto, resumido por origen
 
     cc, desk, bot, h, _ = center(tmp_path / "few", _pending(5))
     command(desk, "/decisiones")

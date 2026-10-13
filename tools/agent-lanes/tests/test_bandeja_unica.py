@@ -177,7 +177,7 @@ def test_nothing_pending_only_when_both_lists_are_empty(tmp_path):
 
 
 def test_card_messages_are_capped_and_stay_inside_telegram_limit(tmp_path):
-    shows = {f"t_{i:08x}": card(f"t_{i:08x}", "[DECISIÓN] " + "x" * 80, created_at=10.0 + i) for i in range(30)}
+    shows = {f"t_{i:08x}": card(f"t_{i:08x}", "[DECISIÓN] " + "x" * 78 + f"{i:02d}", created_at=10.0 + i) for i in range(30)}
     cc, desk, bot, h, messages = center(tmp_path, shows)
     cc.cmd_decisiones((DM, "0"), "", None, show_all=True)
     assert "Muestro 20" in bot.sent[0]["text"] and len(bot.sent) == 21

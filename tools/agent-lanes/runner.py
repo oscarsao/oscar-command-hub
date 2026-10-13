@@ -14,6 +14,7 @@ import time
 from logging.handlers import RotatingFileHandler
 
 from agent_lanes import drain
+from agent_lanes.bandeja import load as load_bandeja
 from agent_lanes.config import ROOT, load_env, load_lanes, load_runner_settings, load_telegram_settings
 from agent_lanes.commands import CommandCenter, register_commands
 from agent_lanes.collab_intake import CollabIntake
@@ -103,13 +104,13 @@ def main(argv: list[str] | None = None) -> int:
             log.warning("getMe falló (los comandos con @sufijo no se reconocerán): %s", exc)
         commands = CommandCenter(notify, decisions, lanes=all_lanes, hermes_for=hermes_for, messages=messages,
                                  links=links, generic_origins=tg_settings["generic_origins"], bot_username=username,
-                                 owner_id=owner)
+                                 owner_id=owner, bandeja=load_bandeja())
         decisions.commands = commands
         decisions.collab = CollabIntake(notify, load_people(owner), hermes_for=hermes_for, state_path=COLLAB_STATE)
         log.info("comandos del bot registrados en: %s", register_commands(notify))
         UpdatePoller(notify, decisions, TG_OFFSET).start()
         Reminders(notify, owner, commands.pending_decisions, REMINDERS_STATE, cards=commands.decision_cards,
-                  stuck=commands.stuck_tasks, base_url=links.kanban_base_url).start()
+                  stuck=commands.stuck_tasks, base_url=links.kanban_base_url, veto=commands.veto_tick).start()
         log.info("bot de carriles activo (id %s, @%s): avisos con botones, comandos, escucha y recordatorios",
                  notify.bot_id, username)
     else:

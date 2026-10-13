@@ -1,0 +1,24 @@
+# Ajustes de la bandeja de decisiones (/decisiones y recordatorios de las 13:00 y 18:00).
+# Se leen al arrancar el runner-servicio (hace falta [🔁 Aplicar] tras editarlos). Si falta el fichero, o un valor
+# no es válido, se usa el valor por defecto de aquí abajo. No viven en lanes.yaml a propósito.
+
+# Tarjetas que se muestran de golpe; el resto sale como "➕ N más · ver todas" agrupado por origen.
+top: 5
+
+# Agrupar tarjetas repetidas (mismo título sin etiquetas + mismo origen) en una sola.
+dedupe: true
+
+# Auto-aplazar tarjetas de PRIORIDAD BAJA que llevan esperando más de `autosnooze_dias` días (0 = desactivado).
+# Prioridad baja = prioridad del kanban NEGATIVA y <= `prioridad_baja_max`. Las de prioridad 0 (la de por defecto) o sin
+# informar nunca se aplazan solas.
+# Se aplazan `autosnooze_aplazar_dias` días, con un único aviso; una aplazada no vuelve a salir hasta entonces.
+autosnooze_dias: 14
+autosnooze_aplazar_dias: 7
+prioridad_baja_max: -1
+
+# Plazo de veto de las decisiones reversibles (la tarjeta lleva la línea `Reversible: sí` y una recomendada).
+# Pasadas `veto_horas` horas sin respuesta de Oscar (0 = desactivado):
+#   aviso    -> solo avisa de que se habría aplicado la recomendada (no ejecuta nada). Modo inicial.
+#   ejecutar -> aplica la recomendada sola. Solo cuando Oscar lo active aquí, tras ver el modo aviso funcionar.
+veto_horas: 48
+veto_modo: aviso

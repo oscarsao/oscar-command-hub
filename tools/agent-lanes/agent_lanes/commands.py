@@ -45,6 +45,7 @@ from pathlib import Path
 from typing import Callable
 from urllib.parse import urlsplit
 
+from . import bandeja as _bandeja
 from .card_options import PREPARED_AUTHOR, PREPARED_PREFIX, CardSpec, card_message, parse_card
 from .decisions import DEPLOY_ASK, DEPLOY_NO, HAZLO, OWNER_TELEGRAM_ID
 from .deps import (ShowCache, child_bucket, dependency_order, family, pending_parents, tree_lines,
@@ -209,7 +210,9 @@ class CommandCenter:
                  owner_id: str | None = None, brief: Callable[[str | None], str] | None = None,
                  renotifier=None, now: Callable[[], float] = time.time,
                  health: Callable[[], str] | None = None, preparer: Callable[[dict], str | None] | None = None,
-                 sesiones=None, suggester: Callable[[dict], dict | None] | None = None):
+                 sesiones=None, suggester: Callable[[dict], dict | None] | None = None,
+                 bandeja: _bandeja.Bandeja | None = None):
+        self.bandeja = bandeja or _bandeja.Bandeja()  # umbrales de la bandeja (bandeja.yaml; el runner pasa load())
         self.notifier = notifier
         self.desk = desk
         self.lanes = lanes
@@ -326,7 +329,39 @@ class CommandCenter:
                         untagged.discard(t["id"])
                     else:
                         untagged.add(t["id"])
-        return sorted(found.values(), key=lambda c: (c["since"] or 0, c["task"]["id"])), len(untagged)
+        cards = sorted(found.values(), key=lambda c: (c["since"] or 0, c["task"]["id"]))
+        cfg = self.bandeja
+        if cfg.dedupe:
+            cards = _bandeja.dedupe(cards)  # la más antigua de cada grupo gana; las repetidas se enlazan en ella
+        cards, low = _bandeja.split_low_priority(cards, cfg, self._now())
+        self._auto_snooze(low)
+        return _bandeja.rank(cards), len(untagged)
+
+    def _auto_snooze(self, low: list[dict]) -> None:
+        """Aplaza solas las de prioridad baja con mucha espera, con UN aviso al DM de Oscar. Reutiliza CardSnoozes: una
+        aplazada ya no sale en /decisiones ni en los recordatorios (y por eso el aviso no se repite)."""
+        snoozes = getattr(self.desk, "snoozes", None)
+        if not low or not snoozes:
+            return
+        done = []
+        for c in low:
+            try:
+                snoozes.add(c["task"]["id"], self.bandeja.autosnooze_aplazar_dias)
+                done.append(c)
+            except OSError as exc:
+                log.warning("%s: no se pudo aplazar sola: %s", c["task"]["id"], exc)
+        if not done:
+            return
+        days = self.bandeja.autosnooze_aplazar_dias
+        lines = [f"⏳ Aplazadas solas {len(done)} tarjeta{'s' if len(done) != 1 else ''} de prioridad baja "
+                 f"(más de {self.bandeja.autosnooze_dias:g} d esperando); vuelven en {days:g} d:"]
+        lines += [f"• {c['task']['id']} · {_bandeja.origin(c)} · {truncate(c['task'].get('title'), 50)}" for c in done[:10]]
+        if len(done) > 10:
+            lines.append(f"… y {len(done) - 10} más")
+        try:
+            self.notifier.send_to(self.owner_id, None, "\n".join(lines), html=False)
+        except Exception as exc:
+            log.info("aviso de aplazadas solas no entregado: %s", exc)
 
     def _snoozed(self) -> set[str]:
         """Tarjetas aplazadas con [⏳ Aplazar 7 d]: no salen en /decisiones ni en los recordatorios hasta que pasa el plazo."""
@@ -380,7 +415,7 @@ class CommandCenter:
         stuck = self.stuck_tasks(brand)
         cards, untagged = self.oscar_cards(brand)
         total = len(group_pending(pendings)) + len(stuck) + len(cards)
-        if total > TOP_DECISIONS and not show_all:
+        if total > self.bandeja.top and not show_all:
             self._top_decisions(where, pendings, stuck, cards, now, brand, total)
             return
         scope = f" · {brand}" if brand else ""
@@ -402,17 +437,35 @@ class CommandCenter:
     def _top_decisions(self, where, pendings: list, stuck: list, cards: list[dict], now: float, brand: str | None,
                        total: int) -> None:
         scope = f" · {brand}" if brand else ""
-        n_q = min(len(group_pending(pendings)), TOP_DECISIONS)
-        n_s = min(len(stuck), TOP_DECISIONS - n_q)
-        n_c = TOP_DECISIONS - n_q - n_s
+        top = self.bandeja.top
+        n_q = min(len(group_pending(pendings)), top)
+        n_s = min(len(stuck), top - n_q)
+        n_c = top - n_q - n_s
         if n_q:
             self._agent_questions(where, pendings, now, scope, limit=n_q)
         if n_s:
             self._stuck_section(where, stuck[:n_s], now, scope)
-        for c in cards[:n_c]:
+        shown = cards[:n_c]
+        for c in shown:
             self._send_card(where, c, now)
-        self._send(where, f"➕ {total - TOP_DECISIONS} más · ver todas", html=False,
+        self._accept_cards_line(where, shown)
+        # El resto, resumido por origen ("MigraTeam 4 · Otros 3"): se ve entero con [📋 Ver todas].
+        rest = cards[n_c:]
+        by_origin = f" ({_bandeja.group_counts(rest)})" if rest else ""
+        self._send(where, f"➕ {total - top} más{by_origin} · ver todas", html=False,
                    markup=self.desk.see_all_markup(brand))
+
+    def _accept_cards_line(self, where, cards: list[dict]) -> None:
+        """[✅ Aceptar las recomendadas (N)] del lote de tarjetas enseñadas, si hay 2 o más con recomendada."""
+        members = []
+        for c in cards:
+            spec = self.card_spec(c)
+            if spec.has_options and spec.recommended is not None:
+                members.append({"task_id": c["task"]["id"], "board": c["board"], "title": c["task"].get("title") or "",
+                                "options": spec.options, "recommended": spec.recommended})
+        if len(members) >= 2:
+            self._send(where, f"⭐ {len(members)} tarjetas con recomendada", html=False,
+                       markup=self.desk.card_accept_all_markup(members))
 
     def _stuck_section(self, where, stuck: list, now: float, scope: str) -> None:
         """🧊 Atascadas: cabecera + una tarjeta por tarea con [🔄 Reintentar] [🗄 Aparcar]."""
@@ -443,8 +496,65 @@ class CommandCenter:
         """Una tarjeta de decisión = un mensaje con contexto, opciones escritas y botones."""
         spec = self.card_spec(c)
         text = card_message(c, spec, self.base_url, now)
-        markup = self.desk.card_markup(c, spec.options if spec.has_options else [], spec.recommended, text)
+        if c.get("duplicates"):  # avisos repetidos: una sola tarjeta, con sus gemelas enlazadas
+            text += f"\n<i>Repetida en: {html.escape(', '.join(c['duplicates'][:5]))}</i>"
+        veto = self.bandeja.veto_activo and spec.has_options and spec.recommended is not None and spec.reversible
+        if veto:
+            text += "\n" + self._veto_line(c["task"]["id"], spec)
+        markup = self.desk.card_markup(c, spec.options if spec.has_options else [], spec.recommended, text,
+                                       veto=bool(veto))
         self._mirror(c["task"]["id"], self._send(where, text, markup=markup), markup)
+
+    def _veto_line(self, tid: str, spec: CardSpec) -> str:
+        """Línea del plazo de veto de una tarjeta reversible (arranca la primera vez que se enseña)."""
+        cfg = self.bandeja
+        due = self.desk.vetos.arm(tid) + cfg.veto_horas * 3600
+        when = time.strftime("%d/%m %H:%M", time.localtime(due))
+        verbo = "se aplicará sola" if cfg.veto_modo == _bandeja.VETO_EJECUTAR else "te avisaré (aún no se aplica sola)"
+        return f"⏱ Reversible: si no decides antes del {when}, {verbo} la recomendada ({'ABC'[spec.recommended]}) · ⛔ Vetar"
+
+    def veto_tick(self) -> list[str]:
+        """Tarjetas reversibles cuyo plazo de veto ha vencido sin respuesta ni veto. Modo `aviso`: solo se lo cuenta a
+        Oscar (no ejecuta nada). Modo `ejecutar`: aplica la recomendada. Devuelve los ids tratados. Nunca lanza."""
+        cfg, book = self.bandeja, getattr(self.desk, "vetos", None)
+        if not cfg.veto_activo or book is None:
+            return []
+        try:
+            due = book.due(cfg.veto_horas)
+            if not due:
+                return []
+            pending = {c["task"]["id"]: c for c in self.oscar_cards()[0]}
+        except Exception as exc:
+            log.warning("veto: no se pudo comprobar: %s", exc)
+            return []
+        treated, lines = [], []
+        for tid in due:
+            c = pending.get(tid)
+            spec = self.card_spec(c) if c else None
+            if not c or not spec.reversible or not spec.has_options or spec.recommended is None:
+                book.set_state(tid, "cerrada")  # ya decidida, aplazada o ya no es reversible: nada que hacer
+                continue
+            title = truncate(c["task"].get("title"), 60)
+            answer = spec.answer_for(spec.recommended)
+            if cfg.veto_modo == _bandeja.VETO_EJECUTAR:
+                member = {"task_id": tid, "board": c["board"], "title": c["task"].get("title") or "",
+                          "options": spec.options, "recommended": spec.recommended}
+                ok = self.desk.apply_recommended(member)
+                book.set_state(tid, "ejecutada" if ok else "armed")
+                if not ok:
+                    continue
+                lines.append(f"⏱ Plazo de veto vencido: apliqué la recomendada en {tid} · {title}: {truncate(answer, 80)}")
+            else:
+                book.set_state(tid, "avisada")
+                lines.append(f"⏱ Plazo de veto vencido en {tid} · {title}. Modo aviso: no he aplicado nada; "
+                             f"habría elegido {truncate(answer, 80)}")
+            treated.append(tid)
+        if lines:
+            try:
+                self.notifier.send_to(self.owner_id, None, "\n".join(lines), html=False)
+            except Exception as exc:
+                log.info("aviso de veto no entregado: %s", exc)
+        return treated
 
     def _cards_section(self, where, cards: list[dict], now: float, scope: str) -> None:
         """Cabecera + una tarjeta por mensaje (hasta MAX_CARDS; el resto, en el panel)."""
@@ -454,6 +564,7 @@ class CommandCenter:
         self._send(where, head, html=False)
         for c in cards[:MAX_CARDS]:
             self._send_card(where, c, now)
+        self._accept_cards_line(where, cards[:MAX_CARDS])
 
     # --- /preparar ------------------------------------------------------------------------------------
 

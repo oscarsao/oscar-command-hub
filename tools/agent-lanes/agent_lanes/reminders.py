@@ -100,7 +100,7 @@ class Reminders:
     def __init__(self, notifier, owner_id: str, pending: Callable[[], list], state_path: Path | str, *,
                  now: Callable[[], datetime] = lambda: datetime.now(MADRID), interval: float = 60,
                  cards: Callable[[], list] | None = None, stuck: Callable[[], list] | None = None,
-                 base_url: str | None = None):
+                 base_url: str | None = None, veto: Callable[[], object] | None = None):
         """`pending()` -> preguntas de agentes con `.since` (la lista de /decisiones); `cards()` -> tarjetas de
         decisión de Oscar (la segunda sección de /decisiones); `stuck()` -> tareas 🧊 atascadas en triage."""
         self.notifier = notifier
@@ -108,6 +108,7 @@ class Reminders:
         self.pending = pending
         self.cards = cards
         self.stuck = stuck
+        self.veto = veto  # plazo de veto de las tarjetas reversibles (CommandCenter.veto_tick), en cada comprobación
         self.base_url = base_url  # KANBAN_BASE_URL: con ella el recordatorio lleva enlaces (HTML); sin ella, texto plano
         self.state_path = Path(state_path)
         self._now = now
@@ -176,6 +177,11 @@ class Reminders:
                 self.tick()
             except Exception as exc:  # nunca tumba el runner
                 log.warning("recordatorios: %s", exc)
+            if self.veto:
+                try:
+                    self.veto()
+                except Exception as exc:
+                    log.warning("veto: %s", exc)
             self._stop.wait(self.interval)
 
     def start(self) -> threading.Thread:
