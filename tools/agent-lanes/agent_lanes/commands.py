@@ -22,6 +22,9 @@ también como /cmd@<bot>. Un /cmd@otro_bot (p. ej. el de Hermes) se ignora.
     /sesion [nombre]     abre una sesión de correcciones: el texto libre del DM se acumula como puntos numerados;
                          /sesion fin [tablero] crea UNA tarjeta [CORRECCIONES] (con preguntas de clarificación y mejoras
                          de Claude), /sesion cancelar la descarta y /sesion estado cuenta los puntos (sesion.py)
+    /flujo <texto>       Claude propone hasta 8 tarjetas encadenadas (carril, dependencias, límites); no se crea nada
+                         hasta pulsar [Crear todo]. Las que piden merge/deploy/envío externo van a nombre de Oscar
+                         con [CONFIRMAR] (flujo.py)
 
 /decisiones también lista las 🧊 atascadas (tareas de carril que Hermes pasó a triage por bloquearse dos veces por
 lo mismo) con [🔄 Reintentar] (las devuelve a ready sin reescribirlas) y cuenta las tarjetas a nombre de Oscar sin
@@ -47,7 +50,7 @@ from urllib.parse import urlsplit
 
 from . import bandeja as _bandeja
 from .card_options import PREPARED_AUTHOR, PREPARED_PREFIX, CardSpec, card_message, parse_card
-from .decisions import DEPLOY_ASK, DEPLOY_NO, HAZLO, OWNER_TELEGRAM_ID
+from .decisions import DEPLOY_ASK, DEPLOY_NO, FLUJO, HAZLO, OWNER_TELEGRAM_ID
 from .deps import (ShowCache, child_bucket, dependency_order, family, pending_parents, tree_lines,
                    waiting_line)
 from .notices import (BOARD_BRANDS, BRANDS, DECISION_CARD_STATUSES, OSCAR_ASSIGNEE, TEXT_MAX, card_url,
@@ -71,6 +74,7 @@ COMMANDS = (
     ("salud", "Estado de runner, Hermes, servicios, MigraTeam y equipo"),
     ("ram", "Consumo de RAM ahora y qué procesos más gastan"),
     ("sesion", "Correcciones agrupadas: /sesion [nombre] abre; fin | cancelar | estado"),
+    ("flujo", "Una petición -> cadena de hasta 8 tarjetas (se crean al pulsar): /flujo <texto>"),
 )
 COMMAND_SCOPES = ("default", "all_private_chats", "all_group_chats")
 HELP_ALIASES = ("start", "ayuda", "help")
@@ -211,6 +215,7 @@ class CommandCenter:
                  renotifier=None, now: Callable[[], float] = time.time,
                  health: Callable[[], str] | None = None, preparer: Callable[[dict], str | None] | None = None,
                  sesiones=None, suggester: Callable[[dict], dict | None] | None = None,
+                 flow_planner: Callable[[str, dict], list[dict]] | None = None,
                  bandeja: _bandeja.Bandeja | None = None):
         self.bandeja = bandeja or _bandeja.Bandeja()  # umbrales de la bandeja (bandeja.yaml; el runner pasa load())
         self.notifier = notifier
@@ -229,6 +234,7 @@ class CommandCenter:
         self._shows = ShowCache(ttl=30)  # árbol padre/hijas: una lectura por tarea y comando, no una por línea
         self._preparer = preparer  # /preparar: ctx -> bloque Contexto/Opciones/Recomendada (None = card_prepare.prepare)
         self._sesiones = sesiones  # /sesion: sesion.Sesiones (None = .state/sesiones junto a callbacks/)
+        self._flow_planner = flow_planner  # /flujo: (texto, {carril: descripción}) -> tarjetas (None = flujo.propose)
         self._suggester = suggester  # /sesion fin: sesión -> {sección: [viñetas]} (None = sesion.suggest)
         self._health = health  # /salud: texto HTML ya montado (tests); None = health.build con lo real
 
@@ -798,6 +804,53 @@ class CommandCenter:
         self.sesiones.finish(ses)
         self._send(where, f"✅ Tarjeta <code>{html.escape(tid)}</code> creada en {html.escape(board)} con "
                           f"{len(ses['puntos'])} punto(s)" + ("" if sections else " (sin sugerencias de Claude)"))
+
+    # --- /flujo ---------------------------------------------------------------------------------------
+
+    def cmd_flujo(self, where, args: str, brand: str | None) -> None:
+        """/flujo <texto>: Claude (sonnet, sin herramientas, ≤0,5 $) propone hasta 8 tarjetas encadenadas; se muestran
+        numeradas con [Crear todo] / [Cancelar]. No se crea nada hasta pulsar."""
+        text = args.strip()
+        if not text:
+            self._send(where, "Uso: /flujo <petición>. Ej.: /flujo añadir exportación a CSV en MigraTeam con tests y doc",
+                       html=False)
+            return
+        from . import flujo
+        lanes = {n: f"{BRANDS.get(n, 'Sistema')} (tablero {self.lanes[n].board or 'default'})"
+                 for n in self._implement_lanes()}
+        self._send(where, "Claude está troceando la petición…", html=False)
+        cards = (self._flow_planner or flujo.propose)(text, lanes)
+        if not cards:
+            self._send(where, "No pude proponer un flujo válido (Claude no respondió o salió un plan inconsistente). "
+                              "Reformula la petición o usa /hazlo", html=False)
+            return
+        rec = {"task_id": "flujo", "board": "", "lane": "", "kind": "flujo", "cards": cards, "text_hash": text,
+               "origin": [where[0], where[1]], "slot": int(self._now() // 600)}
+        spec = [[{"text": "✅ Crear todo", "action": FLUJO, "index": 1}, {"text": "🚫 Cancelar", "action": FLUJO, "index": 0}]]
+        markup = self.desk.store.issue(rec, spec)[1]
+        self._send(where, flujo.render(cards), html=False, markup=markup)
+
+    def flujo_choice(self, rec: dict, button: dict, where: dict) -> bool:
+        """Botón de la propuesta de /flujo. True = hecho (creado o cancelado); False = hubo fallos (vuelven los botones;
+        reintentar no duplica: cada tarjeta lleva clave idempotente)."""
+        if button.get("index") != 1:
+            self.notifier.edit(where["chat_id"], where["message_id"], "🚫 Flujo cancelado, no he creado nada", html=False)
+            return True
+        from . import flujo
+        origin = tuple(rec.get("origin") or ()) or None
+        fid = flujo.flow_id(rec.get("text_hash") or "", *(origin or ("", "")), rec.get("slot") or 0)
+        results = flujo.create_all(rec.get("cards") or [], fid, self.lanes, self.hermes_for, origin)
+        by_n = {c["n"]: c for c in rec.get("cards") or []}
+        lines = []
+        for n, tid, info in results:
+            c = by_n[n]
+            lines.append(f"{n}. {c['titulo']} → " + (f"{tid} ({'a tu nombre, [CONFIRMAR]' if c['confirmar'] else c['carril']})"
+                                                     if tid else f"⚠️ {info}"))
+        failed = any(tid is None for _, tid, _ in results)
+        head = "⚠️ Flujo a medias; pulsa [Crear todo] otra vez para completar (no duplica):" if failed \
+            else f"✅ Flujo creado · {len(results)} tarjeta(s):"
+        self.notifier.edit(where["chat_id"], where["message_id"], head + "\n" + "\n".join(lines), html=False)
+        return not failed
 
     # --- /estado --------------------------------------------------------------------------------------
 
