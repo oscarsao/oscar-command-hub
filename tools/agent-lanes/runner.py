@@ -31,7 +31,7 @@ from agent_lanes.promote import Promoter, load_promote_configs
 from agent_lanes.review import ClaudeReviewer, ReviewRunner, sweep_done
 from agent_lanes.notices import LinkBuilder, MessageStore
 from agent_lanes.ops import OpsWorkspace, verify_ops
-from agent_lanes.runner import MESSAGES_DIR, LaneRunner
+from agent_lanes.runner import MESSAGES_DIR, STATE_DIR, LaneRunner
 from agent_lanes.service import Service, acquire_single_instance
 from agent_lanes.telegram import notifier_from_env
 from agent_lanes.verify import verify
@@ -125,13 +125,13 @@ def main(argv: list[str] | None = None) -> int:
     git = GitOps()
     impl = {n: l for n, l in selected.items() if l.kind == "implement"}
     # Candado de repos: un carril de código solo reclama si el remote de su repo es el `github:` de lanes.yaml.
-    runners: list = [LaneRunner(l, hermes=hermes_for(l.board), git=git, worker=ClaudeWorker(), verifier=verify,
-                                notify=notify, exclude=set(args.exclude), messages=messages, links=links,
+    runners: list = [LaneRunner(l, hermes=hermes_for(l.board), git=git, worker=ClaudeWorker(pid_dir=STATE_DIR),
+                                verifier=verify, notify=notify, exclude=set(args.exclude), messages=messages, links=links,
                                 decisions=decisions, tree=tree, repo_guard=github_slug_problem)
                      for l in impl.values()]
     # Carril ops: sin repo. Carpeta de trabajo por tarea + verificación por evidencias; siempre acaba en review para
     # Oscar (no está en `review.reviews`, y sweep_done no lo toca: el workspace se conserva).
-    runners += [LaneRunner(l, hermes=hermes_for(l.board), git=OpsWorkspace(), worker=ClaudeWorker(), verifier=verify_ops,
+    runners += [LaneRunner(l, hermes=hermes_for(l.board), git=OpsWorkspace(), worker=ClaudeWorker(pid_dir=STATE_DIR), verifier=verify_ops,
                            notify=notify, exclude=set(args.exclude), messages=messages, links=links, decisions=decisions,
                            tree=tree)
                 for l in selected.values() if l.kind == "ops"]
