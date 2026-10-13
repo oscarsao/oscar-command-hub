@@ -1,0 +1,11 @@
+# Ajustes de las preferencias aprendidas de /sesion (prototipo). Se leen al arrancar el runner-servicio
+# (hace falta [🔁 Aplicar] tras editarlos). Si falta el fichero o un valor no es válido, se usa el de aquí abajo.
+
+# false = no se inyecta ninguna preferencia en workers ni en /preparar (las aprobadas se conservan).
+activo: true
+
+# Sesiones DISTINTAS en que debe repetirse una regla antes de proponértela.
+min_sesiones: 2
+
+# Máximo de preferencias aprobadas que entran en un prompt (las más recientes).
+max_inyectadas: 10

@@ -6,6 +6,7 @@ import os
 import re
 import subprocess
 
+from . import preferencias
 from . import proc as _proc
 from dataclasses import dataclass
 from pathlib import Path
@@ -67,6 +68,7 @@ def build_prompt(task: dict, lane: Lane) -> str:
         + _coordinator_section(task.get("coordinator_notes"))
         + _feedback_section(task.get("review_feedback"))
         + _conflict_section(task.get("merge_conflict"), lane)
+        + preferencias.section_for("workers")
     )
 
 

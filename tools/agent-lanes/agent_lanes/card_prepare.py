@@ -16,6 +16,7 @@ import logging
 import subprocess
 import tempfile
 
+from . import preferencias
 from . import proc as _proc
 from .card_options import CONTEXT_MAX, format_block, parse_card
 from .notices import truncate
@@ -60,7 +61,7 @@ def build_prompt(ctx: dict) -> str:
         if ctx.get("parent_body"):
             lines.append("Descripción de la épica:\n" + str(ctx["parent_body"])[:PARENT_MAX])
     lines += [CLOSE, "\nRedacta el borrador de decisión para Oscar."]
-    return "\n".join(lines)
+    return "\n".join(lines) + preferencias.section_for("preparar")
 
 
 def claude_args() -> list[str]:
