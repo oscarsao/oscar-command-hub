@@ -424,6 +424,8 @@ class DecisionDesk:
         chat = msg.get("chat") or {}
         is_cmd = text.lstrip().startswith("/")
         kind = "comando" if is_cmd else ("texto" if text else "otro")
+        if not text and (msg.get("photo") or msg.get("document")):
+            kind = "adjunto"
         target = command_target(text, getattr(self.commands, "bot_username", None)) if is_cmd else None
         name = target[0] if target else None
         is_owner = str((msg.get("from") or {}).get("id")) == self.owner_id
@@ -442,6 +444,11 @@ class DecisionDesk:
             return
         result = "ignorado"
         owner_dm = is_owner and not (msg.get("from") or {}).get("is_bot")
+        if (kind == "adjunto" and owner_dm and self.commands and chat.get("type") == "private"
+                and getattr(self.commands, "capture", None)):
+            self._log_update(chat.get("id"), kind, None, "respondido")  # descarga + hermes: fuera del hilo de escucha
+            self._spawn(lambda: self.commands.capture(msg))
+            return
         if (owner_dm and not is_cmd and self.commands and chat.get("type") == "private"
                 and self.commands.session_note(msg)):  # /sesion abierta: el texto es un punto, no pide ayuda
             self._log_update(chat.get("id"), kind, None, "respondido")
