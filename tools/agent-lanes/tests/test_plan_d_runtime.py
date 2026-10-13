@@ -467,10 +467,16 @@ def test_state_file_is_written_right_after_the_claim(tmp_path):
     seen = {}
 
     class H(FakeHermes):
-        def drop_telegram_subs(self, task_id):
-            seen["state"] = (tmp_path / f"{task_id}.json").exists()
-            return super().drop_telegram_subs(task_id)
+        def claim(self, task_id, ttl):
+            seen.setdefault("before_claim", (tmp_path / f"{task_id}.json").exists())
+            return super().claim(task_id, ttl)
+
+    class N(FakeNotifier):
+        def send(self, *a, **kw):  # primer aviso (▶️), ya tras el claim
+            seen.setdefault("first_notice", (tmp_path / "t_1.json").exists())
+            return super().send(*a, **kw)
     LaneRunner(LANE, hermes=H(tasks=[{"id": "t_1", "title": "T", "body": "B"}]), git=FakeGit(),
-               worker=FakeWorker([ok_outcome()]), verifier=FakeVerifier(), notify=FakeNotifier(),
+               worker=FakeWorker([ok_outcome()]), verifier=FakeVerifier(), notify=N(),
                state_dir=tmp_path).run_once()
-    assert seen["state"] is True and not (tmp_path / "t_1.json").exists()
+    assert seen["before_claim"] is False and seen["first_notice"] is True
+    assert not (tmp_path / "t_1.json").exists()
