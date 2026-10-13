@@ -343,8 +343,9 @@ class HermesCLI:
         return self.list_status(assignee, "ready")
 
     def create(self, title: str, body: str, assignee: str, *, priority: int | None = None, key: str | None = None,
-               created_by: str | None = None) -> str:
-        """Crea una tarjeta y devuelve su id. --body-file: un cuerpo que empieza por "- " no se toma como flag."""
+               created_by: str | None = None, parents: list[str] | None = None) -> str:
+        """Crea una tarjeta y devuelve su id. --body-file: un cuerpo que empieza por "- " no se toma como flag.
+        `parents` = ids del mismo tablero de los que depende (un --parent por id)."""
         fd, tmp = tempfile.mkstemp(prefix="tarjeta-", suffix=".md")
         try:
             with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as fh:
@@ -355,6 +356,8 @@ class HermesCLI:
                 args += ["--priority", str(priority)]
             if key:
                 args += ["--idempotency-key", key]
+            for parent in parents or ():
+                args += ["--parent", parent]
             cp = self._call(*args, title)
         finally:
             os.remove(tmp)

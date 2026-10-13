@@ -52,6 +52,7 @@ APPROVE, CHANGES, PARK, RETRY, OPTION, OTHER = "approve", "changes", "park", "re
 EXPLAIN = "explain"        # 💬 Explícame más: responde con una explicación llana; no consume el teclado
 ACCEPT_ALL = "accept_all"  # cabecera de /decisiones: aplica la opción recomendada en todas las que la tienen
 HAZLO = "hazlo"            # /hazlo con duda: el botón elige el carril donde crear la tarea
+FLUJO = "flujo"            # /flujo: [Crear todo] / [Cancelar] sobre la propuesta de tarjetas encadenadas
 DEPLOY_ASK = "deploy_ask"  # /desplegar: 1.er toque = pide confirmar; el 2.º (✅ Sí) es el int_deploy del integrador
 DEPLOY_NO = "deploy_no"    # /desplegar: ✖ No en la confirmación
 ACCEPT_CARD = "accept_card"  # ✅ Acepto todas las recomendadas: las preguntas pendientes de ESTA tarjeta, de una vez
@@ -647,6 +648,8 @@ class DecisionDesk:
             return bool(self.promoter) and self.promoter.on_button(action, rec, where, self)
         if action == HAZLO:  # /hazlo con duda: el botón elige carril
             return bool(self.commands) and self.commands.hazlo_choice(rec, button, where)
+        if action == FLUJO:  # /flujo: crear o descartar la propuesta
+            return bool(self.commands) and self.commands.flujo_choice(rec, button, where)
         if action in (DEPLOY_ASK, DEPLOY_NO):  # /desplegar: confirmación previa al int_deploy
             return bool(self.commands) and self.commands.deploy_step(action, rec, where, self)
         if action == CARD_ACCEPT_ALL:
