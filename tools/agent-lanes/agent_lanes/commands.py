@@ -747,6 +747,48 @@ class CommandCenter:
         self._send(where, f"📝 Punto {n} anotado. /sesion fin para cerrar · /sesion estado", html=False)
         return True
 
+    def capture(self, msg: dict) -> bool:
+        """Foto o documento del dueño en su DM: se descarga a .state/adjuntos/ y se anota en la sesión /sesion abierta o
+        crea una tarjeta [CAPTURA] con la ruta. True si había adjunto (se responda lo que se responda)."""
+        from . import capturas
+        picked = capturas.pick(msg)
+        if not picked:
+            return False
+        where = self._where(msg)
+        file_id, size, ext = picked
+        try:
+            if size is not None and size > capturas.MAX_BYTES:
+                raise capturas.AttachmentError("pesa más de 10 MB")
+            dest = Path(self.desk.store.root).parent / "adjuntos" / capturas.safe_name(msg, ext, self._now())
+            try:
+                self.notifier.download_file(file_id, dest, capturas.MAX_BYTES)
+            except ValueError:
+                raise capturas.AttachmentError("pesa más de 10 MB") from None
+            except Exception as exc:
+                log.warning("captura: descarga fallida: %s", type(exc).__name__)
+                raise capturas.AttachmentError("no pude descargarlo; reenvíalo en un rato") from None
+            caption = capturas.caption_of(msg)
+            self._expire_session(where)
+            if self.sesiones.current():
+                n = self.sesiones.add(capturas.session_point(dest.resolve(), caption))
+                self._send(where, f"📎 Captura anotada como punto {n} de la sesión. /sesion fin para cerrar", html=False)
+                return True
+            chat = where[0]
+            key = "captura-" + hashlib.sha1(f"{chat}|{msg.get('message_id')}".encode()).hexdigest()[:16]
+            tid = self.hermes_for(self._session_board(self._scope_brand(where))).create(
+                truncate("[CAPTURA] " + caption, HAZLO_TITLE_MAX), capturas.card_body(dest.resolve(), caption),
+                OSCAR_ASSIGNEE, key=key, created_by="oscar")
+            self._send(where, f"Recibida, tarjeta <code>{html.escape(tid)}</code>")
+        except capturas.AttachmentError as exc:
+            self._send(where, f"No guardé la captura: {exc}", html=False)
+        except Exception as exc:
+            log.warning("captura: falló: %s", type(exc).__name__)
+            self._send(where, "No pude procesar la captura; detalle en el log", html=False)
+        return True
+
+    def _scope_brand(self, where) -> str | None:
+        return scope_brand(where[0], where[1], self.lanes, self.generic_origins)
+
     def cmd_sesion(self, where, args: str, brand: str | None) -> None:
         """/sesion [nombre] | fin [tablero] | cancelar | estado. Una sola sesión abierta; caduca a las 12 h."""
         self._expire_session(where)

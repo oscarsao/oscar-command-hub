@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import urllib.error
 import urllib.request
+from pathlib import Path
 
 # Contract with W3b (Hermes topics): a task created from a Telegram topic carries this line in its body,
 # and every lane notice for that task goes back to that chat/thread. thread=0 means the group's General.
@@ -241,6 +243,33 @@ class TelegramNotifier:
             payload["offset"] = int(offset)
         result = self._api("getUpdates", payload, timeout=timeout + 15)
         return result if isinstance(result, list) else []
+
+    def download_file(self, file_id: str, dest: Path, max_bytes: int) -> int:
+        """getFile + descarga a `dest` (escritura atómica). Devuelve los bytes. TelegramAPIError/RuntimeError/ValueError
+        sin la URL (lleva el token); nunca deja un fichero a medias ni pasado de `max_bytes`."""
+        info = self._api("getFile", {"file_id": file_id})
+        remote = info.get("file_path") if isinstance(info, dict) else None
+        if not isinstance(remote, str) or not remote or ".." in remote.split("/"):
+            raise RuntimeError("telegram no dio ruta de descarga")
+        if isinstance(info.get("file_size"), int) and info["file_size"] > max_bytes:
+            raise ValueError("archivo demasiado grande")
+        tmp = dest.with_name(dest.name + ".part")
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            with urllib.request.urlopen(f"https://api.telegram.org/file/bot{self._token}/{remote}",
+                                        timeout=self.timeout * 2) as resp:
+                data = resp.read(max_bytes + 1)
+            if len(data) > max_bytes:
+                raise ValueError("archivo demasiado grande")
+            tmp.write_bytes(data)
+            os.replace(tmp, dest)
+        except urllib.error.HTTPError as exc:
+            raise RuntimeError(f"telegram HTTP {exc.code} al descargar") from None
+        except urllib.error.URLError as exc:
+            raise RuntimeError(f"telegram no alcanzable ({type(exc.reason).__name__})") from None
+        finally:
+            tmp.unlink(missing_ok=True)
+        return len(data)
 
     def get_me(self) -> dict:
         """getMe: {id, username, ...} del bot (para aceptar /cmd@<username> en los grupos)."""
