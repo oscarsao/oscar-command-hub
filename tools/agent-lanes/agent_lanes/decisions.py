@@ -410,7 +410,12 @@ class DecisionDesk:
             self._log_update(chat.get("id"), kind, name, "respondido")
             return
         result = "ignorado"
-        if is_owner and not (msg.get("from") or {}).get("is_bot") and self._wants_help(msg, is_cmd, target):
+        owner_dm = is_owner and not (msg.get("from") or {}).get("is_bot")
+        if (owner_dm and not is_cmd and self.commands and chat.get("type") == "private"
+                and self.commands.session_note(msg)):  # /sesion abierta: el texto es un punto, no pide ayuda
+            self._log_update(chat.get("id"), kind, None, "respondido")
+            return
+        if owner_dm and self._wants_help(msg, is_cmd, target):
             result = self._help(msg, name if is_cmd else None)
         self._log_update(chat.get("id"), kind, name, result)
 
