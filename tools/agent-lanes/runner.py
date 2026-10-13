@@ -15,6 +15,7 @@ from logging.handlers import RotatingFileHandler
 
 from agent_lanes import drain
 from agent_lanes.bandeja import load as load_bandeja
+from agent_lanes.board_guard import BoardGuardTicker
 from agent_lanes.config import ROOT, load_env, load_lanes, load_runner_settings, load_telegram_settings
 from agent_lanes.commands import CommandCenter, register_commands
 from agent_lanes.collab_intake import CollabIntake
@@ -167,6 +168,13 @@ def main(argv: list[str] | None = None) -> int:
         if isinstance(r, LaneRunner) and (orphans := r.reconcile()):
             log.warning("reconciliación %s: bloqueadas por runner reiniciado: %s", r.lane.name, orphans)
     draining_logged = False
+    guard = None
+    if not args.once:  # guarda de tablero (ADR-036): tarjetas en un tablero que su carril no lee
+        owner_dm = env.get("OWNER_TELEGRAM_ID") or OWNER_TELEGRAM_ID
+        guard = BoardGuardTicker(all_lanes, hermes_for, apply=env.get("BOARD_GUARD_APPLY", "").lower() == "true",
+                                 send=lambda text: notify.send_to(owner_dm, None, text, html=False),
+                                 state_path=ROOT / ".state" / "board_guard.json",
+                                 minutes=float(env.get("BOARD_GUARD_MINUTES") or 10))
     while True:
         shows.clear()
         # Reinicio ordenado (lanes.py restart --drain): entre pasadas, sin reclamar nada; el acuse dice si queda
@@ -195,6 +203,8 @@ def main(argv: list[str] | None = None) -> int:
                     log.info("integrador: %s", integrated)
             except Exception as exc:
                 log.warning("integrador falló: %s", exc)
+        if guard:
+            guard.tick()
         results = service.run_pass()
         if results:
             log.info("pasada: %s", results)
