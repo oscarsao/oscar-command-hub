@@ -44,6 +44,8 @@ class Bandeja:
     prioridad_baja_max: int = -1
     veto_horas: float = 48
     veto_modo: str = VETO_AVISO
+    resumen_carriles: bool = True   # /hoy y las 8:00: hecho / bloqueado / esperando a Oscar por carril
+    resumen_coste: bool = True      # y el coste estimado de IA (por carril y total) si hay datos
 
     @property
     def veto_activo(self) -> bool:
@@ -75,6 +77,8 @@ def load(path: Path | str | None = None) -> Bandeja:
         prioridad_baja_max=_num(raw.get("prioridad_baja_max"), d.prioridad_baja_max, lo=-1000, integer=True),
         veto_horas=_num(raw.get("veto_horas"), d.veto_horas),
         veto_modo=modo if modo in (VETO_AVISO, VETO_EJECUTAR) else VETO_AVISO,  # ante la duda, solo avisar
+        resumen_carriles=raw["resumen_carriles"] if isinstance(raw.get("resumen_carriles"), bool) else d.resumen_carriles,
+        resumen_coste=raw["resumen_coste"] if isinstance(raw.get("resumen_coste"), bool) else d.resumen_coste,
     )
 
 

@@ -193,3 +193,31 @@ def test_untagged_oscar_cards_go_to_backlog_not_decisions():
              item("default", task("t_dec", "ready", "oscar", 1, "[DECISIÓN] Kill-switch"))]
     sec = classify(items, now)
     assert [i["task"]["id"] for i in sec["decide"]] == ["t_dec"] and sec["backlog"] == 1
+
+
+def test_per_lane_summary_and_cost():
+    sec = classify(SAMPLE, NOW)
+    oh = sec["by_lane"]["claude-oscarhq"]
+    assert (oh["done"], oh["blocked"], oh["waiting"], oh["cost"]) == (1, 1, 1, 0.5)
+    assert "oscar" not in sec["by_lane"]
+    text = render(sec, LANES, NOW, BASE)
+    assert "🟢 claude-oscarhq · libre · cola 3 · ✔ 1 hecha · ⛔ 1 bloqueada · ❓ 1 espera a Oscar · 💸 ~0,5 $" in text
+    assert "claude-migrateam · ocupado (t_run1) · cola 1 · review 1 · ✔ 1 hecha\n" in text + "\n"
+
+
+def test_lane_summary_respects_settings():
+    from agent_lanes.bandeja import Bandeja
+    sec = classify(SAMPLE, NOW)
+    sin_coste = render(sec, LANES, NOW, BASE, cfg=Bandeja(resumen_coste=False))
+    assert "💸" not in sin_coste and "✔ 1 hecha" in sin_coste
+    sin_lineas = render(sec, LANES, NOW, BASE, cfg=Bandeja(resumen_carriles=False))
+    assert "✔" not in sin_lineas and "💸 Coste de ayer: 0,5 $" in sin_lineas
+
+
+def test_bandeja_yaml_resumen_flags(tmp_path):
+    from agent_lanes.bandeja import load
+    assert load(tmp_path / "no.yaml").resumen_carriles and load(tmp_path / "no.yaml").resumen_coste
+    f = tmp_path / "b.yaml"
+    f.write_text("resumen_carriles: false\nresumen_coste: 'x'\n", encoding="utf-8")
+    cfg = load(f)
+    assert cfg.resumen_carriles is False and cfg.resumen_coste is True  # inválido -> por defecto
