@@ -19,6 +19,9 @@ también como /cmd@<bot>. Un /cmd@otro_bot (p. ej. el de Hermes) se ignora.
     /salud               runner y carriles, gateway de Hermes, servicios y alertas (del monitor), develop↔master de
                          MigraTeam, RAM/CPU y decisiones pendientes; sin peticiones HTTP (agent_lanes/health.py)
     /ram                 RAM ahora y los 5 procesos que más gastan (el monitor lo manda solo al DM cada 4 h)
+    /sesion [nombre]     abre una sesión de correcciones: el texto libre del DM se acumula como puntos numerados;
+                         /sesion fin [tablero] crea UNA tarjeta [CORRECCIONES] (con preguntas de clarificación y mejoras
+                         de Claude), /sesion cancelar la descarta y /sesion estado cuenta los puntos (sesion.py)
 
 /decisiones también lista las 🧊 atascadas (tareas de carril que Hermes pasó a triage por bloquearse dos veces por
 lo mismo) con [🔄 Reintentar] (las devuelve a ready sin reescribirlas) y cuenta las tarjetas a nombre de Oscar sin
@@ -38,6 +41,7 @@ import logging
 import re
 import threading
 import time
+from pathlib import Path
 from typing import Callable
 from urllib.parse import urlsplit
 
@@ -66,6 +70,7 @@ COMMANDS = (
     ("lote", "Montar ya el lote de un proyecto: /lote migrateam|oscarhq"),
     ("salud", "Estado de runner, Hermes, servicios, MigraTeam y equipo"),
     ("ram", "Consumo de RAM ahora y qué procesos más gastan"),
+    ("sesion", "Correcciones agrupadas: /sesion [nombre] abre; fin | cancelar | estado"),
 )
 COMMAND_SCOPES = ("default", "all_private_chats", "all_group_chats")
 HELP_ALIASES = ("start", "ayuda", "help")
@@ -205,6 +210,7 @@ class CommandCenter:
                  owner_id: str | None = None, brief: Callable[[str | None], str] | None = None,
                  renotifier=None, now: Callable[[], float] = time.time,
                  health: Callable[[], str] | None = None, preparer: Callable[[dict], str | None] | None = None,
+                 sesiones=None, suggester: Callable[[dict], dict | None] | None = None,
                  bandeja: _bandeja.Bandeja | None = None):
         self.bandeja = bandeja or _bandeja.Bandeja()  # umbrales de la bandeja (bandeja.yaml; el runner pasa load())
         self.notifier = notifier
@@ -222,6 +228,8 @@ class CommandCenter:
         self._now = now
         self._shows = ShowCache(ttl=30)  # árbol padre/hijas: una lectura por tarea y comando, no una por línea
         self._preparer = preparer  # /preparar: ctx -> bloque Contexto/Opciones/Recomendada (None = card_prepare.prepare)
+        self._sesiones = sesiones  # /sesion: sesion.Sesiones (None = .state/sesiones junto a callbacks/)
+        self._suggester = suggester  # /sesion fin: sesión -> {sección: [viñetas]} (None = sesion.suggest)
         self._health = health  # /salud: texto HTML ya montado (tests); None = health.build con lo real
 
     # --- entrada --------------------------------------------------------------------------------------
@@ -262,6 +270,7 @@ class CommandCenter:
     def help_text() -> str:
         return ("Comandos del bot de trabajos:\n" + "\n".join(f"/{c} · {d}" for c, d in COMMANDS)
                 + "\n\nCon /hazlo la tarea se crea ya, con prioridad alta y tope de 15 minutos; te aviso al terminar."
+                + "\nCon /sesion abres una sesión: lo que escribas aquí se acumula y /sesion fin lo agrupa en UNA tarjeta."
                 + "\n/desplegar pide dos toques (🚀 y ✅ Sí); /promover también pide doble confirmación.")
 
     # --- datos ----------------------------------------------------------------------------------------
@@ -693,6 +702,102 @@ class CommandCenter:
         text = self.create_quick(names[idx], rec.get("text") or "", (where["chat_id"], where["thread_id"]))
         self.notifier.edit(where["chat_id"], where["message_id"], text)
         return True
+
+    # --- /sesion --------------------------------------------------------------------------------------
+
+    @property
+    def sesiones(self):
+        if self._sesiones is None:
+            from .sesion import Sesiones
+            self._sesiones = Sesiones(Path(self.desk.store.root).parent / "sesiones", now=self._now)
+        return self._sesiones
+
+    def _known_boards(self) -> list[str]:
+        return list(dict.fromkeys([l.board for l in self.lanes.values() if l.board] + list(EXTRA_BOARDS)))
+
+    def _session_board(self, marca: str | None) -> str:
+        """Tablero de la tarjeta: el del carril de la marca; sin marca (o sin carril), el default."""
+        for n in self._implement_lanes():
+            if marca and BRANDS.get(n) == marca and self.lanes[n].board:
+                return self.lanes[n].board
+        return EXTRA_BOARDS[0]
+
+    def _expire_session(self, where) -> None:
+        ses = self.sesiones.expire()
+        if ses:
+            self._send(where, f"⌛ La sesión «{ses['nombre']}» caducó a las 12 h con {len(ses['puntos'])} punto(s) sin "
+                              "cerrar. No he creado ninguna tarjeta; el borrador queda guardado en .state/sesiones.",
+                       html=False)
+
+    def session_note(self, msg: dict) -> bool:
+        """Texto libre del dueño en su DM: con una sesión abierta lo anota como punto y devuelve True (sin ayuda del #16)."""
+        where = self._where(msg)
+        self._expire_session(where)
+        text = (msg.get("text") or "").strip()
+        if not text:
+            return False
+        try:
+            n = self.sesiones.add(text)
+        except Exception as exc:
+            log.warning("sesión: no pude anotar el punto: %s", type(exc).__name__)
+            self._send(where, "No pude anotar el punto en la sesión; cierra con /sesion fin o mira el log", html=False)
+            return True
+        if n is None:
+            return False
+        self._send(where, f"📝 Punto {n} anotado. /sesion fin para cerrar · /sesion estado", html=False)
+        return True
+
+    def cmd_sesion(self, where, args: str, brand: str | None) -> None:
+        """/sesion [nombre] | fin [tablero] | cancelar | estado. Una sola sesión abierta; caduca a las 12 h."""
+        self._expire_session(where)
+        first, _, rest = args.strip().partition(" ")
+        sub, rest = first.casefold(), rest.strip()
+        cur = self.sesiones.current()
+        if sub == "estado":
+            self._send(where, f"📝 Sesión «{cur['nombre']}»: {len(cur['puntos'])} punto(s). /sesion fin para cerrarla"
+                       if cur else "No hay ninguna sesión abierta. /sesion [nombre] abre una", html=False)
+        elif sub == "cancelar":
+            if cur:
+                self.sesiones.finish(cur, cancelled=True)
+            self._send(where, f"🚫 Sesión «{cur['nombre']}» descartada" if cur else "No hay ninguna sesión abierta",
+                       html=False)
+        elif sub == "fin":
+            self._session_end(where, cur, rest)
+        elif cur:
+            self._send(where, f"Ya hay una sesión abierta («{cur['nombre']}», {len(cur['puntos'])} punto(s)). "
+                              "Ciérrala con /sesion fin o descártala con /sesion cancelar", html=False)
+        else:
+            marca = BRAND_ARGS.get(sub)  # "/sesion migrateam Revisión del lunes": la marca elige el tablero
+            ses = self.sesiones.start(rest if marca else args, marca or brand)
+            self._send(where, f"📝 Sesión «{ses['nombre']}» abierta" + (f" · {ses['marca']}" if ses["marca"] else "")
+                       + ". Escribe tus correcciones como mensajes sueltos; /sesion fin las agrupa en una tarjeta "
+                         "(caduca a las 12 h)", html=False)
+
+    def _session_end(self, where, ses: dict | None, board_arg: str) -> None:
+        if not ses:
+            self._send(where, "No hay ninguna sesión abierta", html=False)
+            return
+        if not ses["puntos"]:
+            self._send(where, "La sesión no tiene puntos; escribe alguno o usa /sesion cancelar", html=False)
+            return
+        board = board_arg.split()[0].casefold() if board_arg else self._session_board(ses.get("marca"))
+        if board not in self._known_boards():
+            self._send(where, "Tablero desconocido; usa uno de: " + ", ".join(self._known_boards()), html=False)
+            return
+        self._send(where, f"Cerrando «{ses['nombre']}» ({len(ses['puntos'])} puntos)… Claude redacta preguntas y mejoras",
+                   html=False)
+        from . import sesion
+        try:
+            sections = (self._suggester or sesion.suggest)(ses)
+        except Exception as exc:
+            log.warning("sesión %s: sugerencias fallidas: %s", ses["id"], type(exc).__name__)
+            sections = None
+        tid = self.hermes_for(board).create(truncate(f"[CORRECCIONES] {ses['nombre']}", HAZLO_TITLE_MAX),
+                                            sesion.card_body(ses, sections), OSCAR_ASSIGNEE,
+                                            key="sesion-" + ses["id"], created_by="oscar")
+        self.sesiones.finish(ses)
+        self._send(where, f"✅ Tarjeta <code>{html.escape(tid)}</code> creada en {html.escape(board)} con "
+                          f"{len(ses['puntos'])} punto(s)" + ("" if sections else " (sin sugerencias de Claude)"))
 
     # --- /estado --------------------------------------------------------------------------------------
 
