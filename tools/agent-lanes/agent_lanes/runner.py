@@ -115,6 +115,7 @@ class LaneRunner:
         self.pid_alive = pid_alive
         self.exclude = set(exclude or ())
         self._active: dict[str, dict] = {}  # tid -> task being processed (for notice routing)
+        self._subs_dropped: set[str] = set()  # tareas con la suscripción de Hermes ya quitada (listado o claim)
         self._reasked: set[str] = set()  # tareas relanzadas UNA vez porque el worker repitió una pregunta ya respondida
 
     def notify(self, state: str, tid: str, task: dict | None, status: str, *, alert: bool = False,
@@ -148,8 +149,11 @@ class LaneRunner:
 
     def _drop_hermes_subs(self, tid: str) -> None:
         """Hermes suscribe el hilo de origen al crear la tarea desde Telegram; su notificador duplicaría los avisos."""
+        if tid in self._subs_dropped:
+            return
         try:
             dropped = self.hermes.drop_telegram_subs(tid)
+            self._subs_dropped.add(tid)
             if dropped:
                 log.info("%s: quitadas suscripciones de Hermes %s (avisa el runner)", tid, dropped)
         except Exception as exc:  # best effort: never blocks the claim
@@ -194,6 +198,8 @@ class LaneRunner:
                     self._repo_warned = True
                 return []
         ready = [t for t in self.hermes.list_ready(self.lane.name) if t["id"] not in self.exclude]
+        for t in ready:  # antes del claim: el notificador de Hermes ya duplicó un aviso en la ventana claim -> baja
+            self._drop_hermes_subs(t["id"])
         return [(t["id"], lambda t=t: self.process(t)) for t in ready[: self.lane.max_parallel]]
 
     def run_once(self) -> dict[str, str]:
