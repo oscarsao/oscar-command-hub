@@ -939,12 +939,17 @@ class CommandCenter:
         out += running[:10] or ["nada en curso"]
         if len(running) > 10:
             out.append(f"  +{len(running) - 10} más en /tareas")
+        stuck = self.stuck_tasks(brand)
         waiting = [(len(self.pending_decisions(brand)), "decisiones de agentes", "/decisiones"),
-                   (len(self.stuck_tasks(brand)), "atascadas", "/decisiones"),
+                   (len(stuck), "atascadas", "/decisiones"),
                    (len(self.ready_to_approve(brand)), "listas para integrar", "/aprobar"),
                    (len(self.decision_cards(brand)), "tarjetas de decisión", "/decisiones")]
         out.append("\n<b>Esperan a Oscar</b>")
         out += [f"❓ {n} {label} · {cmd}" for n, label, cmd in waiting if n] or ["nada 🎉"]
+        out += [f"🧊 {self._task_ref(p.lane, p.task, True)} · {e(p.lane.name)} · 🔄 Reintentar en /decisiones"
+                for p in stuck[:5]]
+        if len(stuck) > 5:
+            out.append(f"  +{len(stuck) - 5} atascadas más en /decisiones")
         pend = self.undeployed(brand)
         out.append("\n<b>Pendiente de desplegar</b>")
         out += [e(l) for l in pend] if pend else (["nada"] if pend is not None else ["sin integrador activo: no lo sé"])
