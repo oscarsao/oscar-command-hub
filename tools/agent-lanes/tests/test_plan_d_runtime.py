@@ -197,6 +197,13 @@ def test_decisiones_lists_stuck_tasks_with_reason_and_retry(tmp_path):
     assert messages.all_messages("t_eeeeeee5")  # copia registrada: decidir aquí edita las demás
 
 
+def test_estado_lists_stuck_tasks_and_points_to_retry(tmp_path):
+    cc, desk, bot, h, _ = triage_center(tmp_path, {"t_eeeeeee5": stuck("t_eeeeeee5")})
+    text = cc.estado_text(None)
+    assert "1 atascadas" in text
+    assert "🧊" in text and "t_eeeeeee5" in text and "Reintentar en /decisiones" in text
+
+
 def test_retry_on_a_stuck_task_requeues_it_without_rewriting(tmp_path):
     cc, desk, bot, h, _ = triage_center(tmp_path, {"t_eeeeeee5": stuck("t_eeeeeee5")})
     command(desk, "/decisiones")
