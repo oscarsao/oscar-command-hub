@@ -75,6 +75,7 @@ Todas de **solo lectura salvo las marcadas**; se registran en el registro de her
 | **C** | `ejecutar_crew` y `crear_tarjeta` con tope y botones | `claude-oscarhq` | tras B |
 | **F** | **Estado operativo visible desde la nube.** El hub (productor) empuja cada pocos minutos a la tabla `ohq_ops_state` (solo lectura para el resto) un resumen sin secretos: tarjetas, lotes con PRs incluidos/excluidos y motivo en lenguaje llano, PRs abiertos, pasos pendientes de una salida y última auditoría. Consumidores: herramienta `estado_operativo` del asistente y página "Operaciones" del panel, siempre con la antigüedad del dato | productor `claude-hub`; consumidores `claude-oscarhq` | tras P y B |
 | **E** | Topología de bots: quién contesta dónde (Hermes en grupos, mudo del bot de Carriles, evitar doble respuesta) | decide Oscar | con los hallazgos de `t_dddcc232` y el bug `t_22de53c2` |
+| **G** | Mover el plano de control (runner, integrador, kanban, monitor, túnel) al **mini PC como servidor 24/7** (decisión de Oscar 15-10, a medio plazo). Primero inventariar qué hay ya en el mini PC y parametrizar las rutas absolutas `C:/Users/oscar/...` de `lanes.yaml`; migrar en dos pasos (servicios no críticos, luego control) con vuelta atrás | decide Oscar | **tras P, A y F** |
 
 Orden: **P, A (en marcha), B, C, F, E**.
 
