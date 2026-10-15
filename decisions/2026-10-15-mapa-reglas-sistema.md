@@ -41,7 +41,9 @@ Fuente única **[OBJETIVO ya en marcha]**: tabla `ohq_people` (Supabase Oscar HQ
 - Hoy: Oscar → CEO; María → COO; Andrea e Ingerber → CMO. El DM de Oscar con el CMO no tiene mensajes previos a hoy.
 - El **bot de carriles** (@pildora_carriles_bot) acepta DMs de Oscar y de las tres personas del equipo; un DM de no-owner solo crea una tarjeta `[IDEA]` asignada a Oscar [HOY]. **Decidido [OBJETIVO]:** el equipo crea tarjetas directas en el tablero de su marca (sin pasar por `[IDEA]`); producción sigue siendo solo de Oscar.
 
-### 3.2 Grupo Gestión (`-1003530490339`)
+### 3.2 Grupo Gestión (`-1003530490339`, 5 miembros)
+Temas reales vistos en Telegram el 15-10 (los ids no se ven en la interfaz): Integración y despliegue · Operaciones · General · Dirección · CEO · Operaciones · Píldora · Operaciones · MigraTeam · Finanzas · CFO · Marketing · Decisiones · Ventas · CSO. Falta casar cada nombre con su id (5, 6, 7, 148, 230, 231, 355).
+
 Sombreros por tema según `role_routes` **[HOY, nombres de temas SIN VERIFICAR]**:
 
 | Tema | Sombrero | Quién contesta libre |
@@ -57,7 +59,9 @@ Sombreros por tema según `role_routes` **[HOY, nombres de temas SIN VERIFICAR]*
 
 Avisos de leads nuevos: van a este grupo desde `ohq_system_settings.telegram_lead_alert_chat_ids` (ya no hay `ALERT_CHAT_ID` hardcodeado).
 
-### 3.3 Grupo Marketing (`-1004277259008`)
+### 3.3 Grupo Marketing (`-1004277259008`, 6 miembros)
+Temas reales vistos el 15-10: General · CMO · Píldora · Contenido · MigraTeam · Contenido · Recursos · Planificación y calendario.
+
 - Sombrero **CMO** en todos los temas. En `role_routes`: temas 74 (CMO), 77 (CMO · MigraTeam), 80 (CMO · Píldora), 83 (CMO). [HOY]
 - **Discrepancia:** el directorio de canales de Hermes lista los temas 1, 5, 6 y 7. Los ids de `role_routes` y los del directorio **no coinciden** [SIN VERIFICAR cuál es el real]. Comprobarlo con `getForumTopic`/la lista de temas antes de editar rutas.
 
@@ -71,7 +75,7 @@ Avisos de leads nuevos: van a este grupo desde `ohq_system_settings.telegram_lea
 |---|---|---|---|---|
 | **@PildoraD_BOT** (equipo; nombre «Oscar HQ Avisos») | Railway (nube) | Asistente conversacional del equipo con herramientas | Texto libre y fotos | [HOY] Herramientas abiertas para miembros activos; memoria en base; troceo de respuestas largas |
 | **@pildora_carriles_bot** (Trabajos) | PC de Oscar (hub) | Panel de control de Oscar: aprobar, lotes, estado, producción | Comandos y botones. [OBJETIVO P1] texto libre cuenta como respuesta a la única decisión pendiente del tema | [HOY] solo comandos/botones; ignora texto libre salvo reply a un `force_reply` |
-| **Hermes gateway** | PC de Oscar | Asistente con herramientas amplias; intake de peticiones | Libre en t5/230/231 y DM de Oscar; resto con @mención o reply | [HOY] `require_mention: true`; usa un único token de bot (usuario **SIN VERIFICAR**) |
+| **Hermes gateway** | PC de Oscar | Asistente con herramientas amplias; intake de peticiones | Libre en t5/230/231 y DM de Oscar; resto con @mención o reply | [HOY] `require_mention: true`; usa un único token de bot: **@oscarsaoBot** («Pildora Digital», verificado en Telegram Web el 15-10); no está en el grupo Gestión salvo mención o los temas t5/t230/t231 |
 
 Reglas comunes **[HOY]**:
 - Herramientas del bot del equipo: `generar_imagen`, `redactar_texto`, `avisar_a_oscar`, `leer_handbook`, `consultar_brand_brain`, `ver_web`, `estado_tarjeta`, cola de outreach. Fase C añade `ejecutar_crew` y `crear_tarjeta` **sin botón de confirmación** (decisión de Oscar 15-10; el aviso a Oscar es opcional) y con topes. [OBJETIVO]
