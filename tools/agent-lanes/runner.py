@@ -97,7 +97,7 @@ def main(argv: list[str] | None = None) -> int:
     if lanes_bot and notify.enabled and not args.once:
         owner = env.get("OWNER_TELEGRAM_ID") or OWNER_TELEGRAM_ID
         decisions = DecisionDesk(notify, CallbackStore(CALLBACKS_DIR), lanes=all_lanes, hermes_for=hermes_for,
-                                 links=links, owner_id=owner, messages=messages)
+                                 links=links, owner_id=owner, messages=messages, free_text=tg_settings["free_text"])
         username = None
         try:
             username = notify.get_me().get("username")

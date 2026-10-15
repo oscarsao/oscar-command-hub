@@ -23,6 +23,11 @@ telegram:
   generic_origins:
     - {chat: 6744452215}              # DM de Oscar (cualquier hilo)
     - {chat: -1003530490339, thread: 5}  # Gestión · Operaciones General
+  # Texto libre de Oscar = respuesta a la decisión pendiente de ESE tema (auditoría t_dddcc232, P1). Con una sola
+  # pendiente la toma como respuesta (eco + Deshacer); con varias pregunta cuál. Nunca promueve/fusiona/despliega.
+  # window_hours: solo cuentan avisos enviados en las últimas N horas. max_choices: botones del selector.
+  # Quitar el bloque apaga la función.
+  free_text: {window_hours: 72, max_choices: 5}
 
 # Tema de Integración (28-09, Oscar): TODO aviso de PR/merge/deploy (tarjeta done con ✅ Aprobar, "Listo para integrar",
 # gates fallidos, en espera, fusionado, desplegado, fallo de deploy) va aquí como ficha con cabecera por riesgo
