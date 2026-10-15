@@ -15,6 +15,7 @@ from logging.handlers import RotatingFileHandler
 
 from agent_lanes import drain
 from agent_lanes.bandeja import load as load_bandeja
+from agent_lanes.board_guard import BoardGuardTicker
 from agent_lanes.config import ROOT, load_env, load_lanes, load_runner_settings, load_telegram_settings
 from agent_lanes.commands import CommandCenter, register_commands
 from agent_lanes.collab_intake import CollabIntake
@@ -31,7 +32,7 @@ from agent_lanes.promote import Promoter, load_promote_configs
 from agent_lanes.review import ClaudeReviewer, ReviewRunner, sweep_done
 from agent_lanes.notices import LinkBuilder, MessageStore
 from agent_lanes.ops import OpsWorkspace, verify_ops
-from agent_lanes.runner import MESSAGES_DIR, LaneRunner
+from agent_lanes.runner import MESSAGES_DIR, STATE_DIR, LaneRunner
 from agent_lanes.service import Service, acquire_single_instance
 from agent_lanes.telegram import notifier_from_env
 from agent_lanes.verify import verify
@@ -125,13 +126,13 @@ def main(argv: list[str] | None = None) -> int:
     git = GitOps()
     impl = {n: l for n, l in selected.items() if l.kind == "implement"}
     # Candado de repos: un carril de código solo reclama si el remote de su repo es el `github:` de lanes.yaml.
-    runners: list = [LaneRunner(l, hermes=hermes_for(l.board), git=git, worker=ClaudeWorker(), verifier=verify,
-                                notify=notify, exclude=set(args.exclude), messages=messages, links=links,
+    runners: list = [LaneRunner(l, hermes=hermes_for(l.board), git=git, worker=ClaudeWorker(pid_dir=STATE_DIR),
+                                verifier=verify, notify=notify, exclude=set(args.exclude), messages=messages, links=links,
                                 decisions=decisions, tree=tree, repo_guard=github_slug_problem)
                      for l in impl.values()]
     # Carril ops: sin repo. Carpeta de trabajo por tarea + verificación por evidencias; siempre acaba en review para
     # Oscar (no está en `review.reviews`, y sweep_done no lo toca: el workspace se conserva).
-    runners += [LaneRunner(l, hermes=hermes_for(l.board), git=OpsWorkspace(), worker=ClaudeWorker(), verifier=verify_ops,
+    runners += [LaneRunner(l, hermes=hermes_for(l.board), git=OpsWorkspace(), worker=ClaudeWorker(pid_dir=STATE_DIR), verifier=verify_ops,
                            notify=notify, exclude=set(args.exclude), messages=messages, links=links, decisions=decisions,
                            tree=tree)
                 for l in selected.values() if l.kind == "ops"]
@@ -152,6 +153,7 @@ def main(argv: list[str] | None = None) -> int:
         if decisions:
             decisions.integrator = integrator
         log.info("integrador activo: %s", list(integrator.settings.policies))
+        drain.mark_integrator_active()  # lo comprueba `lanes.py restart --drain` tras reiniciar
         if decisions and notify:  # /promover y [🚀 Promover a producción]: sección `promote:` de lanes.yaml
             configs = load_promote_configs()
             if configs:
@@ -167,6 +169,13 @@ def main(argv: list[str] | None = None) -> int:
         if isinstance(r, LaneRunner) and (orphans := r.reconcile()):
             log.warning("reconciliación %s: bloqueadas por runner reiniciado: %s", r.lane.name, orphans)
     draining_logged = False
+    guard = None
+    if not args.once:  # guarda de tablero (ADR-036): tarjetas en un tablero que su carril no lee
+        owner_dm = env.get("OWNER_TELEGRAM_ID") or OWNER_TELEGRAM_ID
+        guard = BoardGuardTicker(all_lanes, hermes_for, apply=env.get("BOARD_GUARD_APPLY", "").lower() == "true",
+                                 send=lambda text: notify.send_to(owner_dm, None, text, html=False),
+                                 state_path=ROOT / ".state" / "board_guard.json",
+                                 minutes=float(env.get("BOARD_GUARD_MINUTES") or 10))
     while True:
         shows.clear()
         # Reinicio ordenado (lanes.py restart --drain): entre pasadas, sin reclamar nada; el acuse dice si queda
@@ -195,6 +204,8 @@ def main(argv: list[str] | None = None) -> int:
                     log.info("integrador: %s", integrated)
             except Exception as exc:
                 log.warning("integrador falló: %s", exc)
+        if guard:
+            guard.tick()
         results = service.run_pass()
         if results:
             log.info("pasada: %s", results)

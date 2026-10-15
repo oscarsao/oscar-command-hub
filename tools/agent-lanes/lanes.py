@@ -5,9 +5,12 @@
     py -3.12 lanes.py close <task_id> "<resumen>"  # verificación mecánica + request-review (nunca merge)
     py -3.12 lanes.py renotify [--lane X] [--task t_id] [--dry-run] [--force]
                                                    # reenvía con botones los avisos pendientes de decisión
+    py -3.12 lanes.py doctor-boards [--apply]      # tarjetas abiertas en un tablero que su carril no lee (dry-run
+                                                   # por defecto; --apply las recoloca en el tablero correcto)
     py -3.12 lanes.py restart --drain [--timeout 3600]
                                                    # reinicio ordenado: deja de reclamar, espera a los workers y
                                                    # reinicia la tarea programada "agent-lanes runner"
+    py -3.12 lanes.py reload [--timeout 3600]      # alias de `restart --drain`
     py -3.12 lanes.py integrator reset <task_id>   # fuerza reevaluar un PR failed/pr_problem/sent_back
     py -3.12 lanes.py integrator migration-applied <task_id>
                                                    # la migración de esa ficha fusionada YA está aplicada (autor
@@ -93,7 +96,7 @@ def restart(argv: list[str]) -> int:
                     help="obligatorio: nunca se reinicia con workers vivos (incidente 27-09)")
     ap.add_argument("--timeout", type=int, default=3600, help="segundos máximos esperando a los workers")
     args = ap.parse_args(argv)
-    return drain.Restarter(pid_alive=pid_alive).restart(timeout=args.timeout)
+    return drain.Restarter(pid_alive=pid_alive, repo=drain.LIVE_REPO, alert=drain.dm_alert()).restart(timeout=args.timeout)
 
 
 def main(argv: list[str]) -> int:
@@ -111,8 +114,13 @@ def main(argv: list[str]) -> int:
     if argv[:2] == ["integrator", "migration-applied"] and len(argv) == 3:
         from agent_lanes.integrator import migration_applied_cli
         return migration_applied_cli(argv[2])
+    if argv[:1] == ["doctor-boards"]:
+        from agent_lanes import board_guard
+        return board_guard.main(argv[1:])
     if argv[:1] == ["restart"]:
         return restart(argv[1:])
+    if argv[:1] == ["reload"]:  # alias de `restart --drain`: recarga el runner sin cortar workers
+        return restart(["--drain", *argv[1:]])
     if argv[:1] != ["status"]:
         print(__doc__)
         return 2

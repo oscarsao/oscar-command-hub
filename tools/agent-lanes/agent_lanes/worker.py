@@ -6,6 +6,7 @@ import os
 import re
 import subprocess
 
+from . import preferencias
 from . import proc as _proc
 from dataclasses import dataclass
 from pathlib import Path
@@ -67,6 +68,7 @@ def build_prompt(task: dict, lane: Lane) -> str:
         + _coordinator_section(task.get("coordinator_notes"))
         + _feedback_section(task.get("review_feedback"))
         + _conflict_section(task.get("merge_conflict"), lane)
+        + preferencias.section_for("workers")
     )
 
 
@@ -130,7 +132,14 @@ def _feedback_section(feedback: list[str] | None, ops: bool = False) -> str:
             f"Esta tarea vuelve de review. {how}\n\n{items}\n")
 
 
-def base_args(lane: Lane, session_flag: list[str]) -> list[str]:
+# Presupuesto POR TAREA (t_ad46ae34): `max_budget_usd` del carril es el tope de toda la tarea, no de cada invocación
+# (t_5ef35468 gastó 3,19 USD con tope 3: run + resumes sumaban más). La 1ª llamada se queda con FIRST_CALL_SHARE y
+# el resto se reparte entre los resumes que quedan; con menos de MIN_CALL_BUDGET_USD no se llama a claude.
+FIRST_CALL_SHARE = 0.6
+MIN_CALL_BUDGET_USD = 0.10
+
+
+def base_args(lane: Lane, session_flag: list[str], budget: float | None = None) -> list[str]:
     return [
         "claude", "-p", *session_flag,
         "--settings", str(render_settings()),
@@ -141,14 +150,14 @@ def base_args(lane: Lane, session_flag: list[str]) -> list[str]:
         *(["--allowedTools", *lane.allowed_tools] if lane.allowed_tools else []),
         "--append-system-prompt-file", str(lane.role_path),
         "--json-schema", SCHEMA_PATH.read_text(encoding="utf-8"),
-        "--max-budget-usd", str(lane.max_budget_usd),
+        "--max-budget-usd", str(round(lane.max_budget_usd if budget is None else budget, 4)),
         "--model", lane.model,
         "--effort", lane.effort,
         "--output-format", "json",
     ]
 
 
-def ops_args(lane: Lane, session_flag: list[str], add_dirs: list[str]) -> list[str]:
+def ops_args(lane: Lane, session_flag: list[str], add_dirs: list[str], budget: float | None = None) -> list[str]:
     """Worker ops. Sin --strict-mcp-config: así cargan los conectores de claude.ai (en -p se cargan salvo con
     --strict-mcp-config/--bare). El filtro real es contract/ops_guard.py (lista blanca de herramientas MCP de lectura;
     exit 2 bloquea en cualquier modo); ops-worker-settings.json añade deny explícitos y --allowedTools las de lectura."""
@@ -161,7 +170,7 @@ def ops_args(lane: Lane, session_flag: list[str], add_dirs: list[str]) -> list[s
         *dirs,
         "--append-system-prompt-file", str(lane.role_path),
         "--json-schema", OPS_SCHEMA_PATH.read_text(encoding="utf-8"),
-        "--max-budget-usd", str(lane.max_budget_usd),
+        "--max-budget-usd", str(round(lane.max_budget_usd if budget is None else budget, 4)),
         "--model", lane.model,
         "--effort", lane.effort,
         "--output-format", "json",
@@ -189,12 +198,15 @@ def parse_result(stdout: str) -> WorkerOutcome:
                          None if ok else f"subtype={subtype} is_error={data.get('is_error')}")
 
 
-def run_claude(runner, args: list[str], prompt: str, cwd: str, timeout: float, env_extra: dict) -> WorkerOutcome:
+def run_claude(runner, args: list[str], prompt: str, cwd: str, timeout: float, env_extra: dict,
+               on_start=None) -> WorkerOutcome:
     # AGENT_LANES_TASK switches on the "MODO WORKER" section of ~/.claude/CLAUDE.md.
     env = {**os.environ, **env_extra}
+    # `on_start(pid)` solo se pasa si hay quien lo recoja (los dobles de los tests no lo conocen).
+    extra = {"on_start": on_start} if on_start else {}
     try:
         cp = runner(args, input=prompt, cwd=cwd, env=env, capture_output=True, text=True,
-                    encoding="utf-8", errors="replace", timeout=timeout)
+                    encoding="utf-8", errors="replace", timeout=timeout, **extra)
     except subprocess.TimeoutExpired:
         return WorkerOutcome(False, "runner_timeout", None, None, f"claude superó {int(timeout)}s")
     out = parse_result(cp.stdout)
@@ -203,37 +215,90 @@ def run_claude(runner, args: list[str], prompt: str, cwd: str, timeout: float, e
     return out
 
 
+def record_worker_pid(state_path: Path, pid: int) -> None:
+    """Apunta en el estado de la tarea (.state/tasks/<id>.json) el PID del `claude` y su hora de creación. Si el
+    runner muere (schtasks /End no mata a los hijos), el siguiente arranque sabe qué proceso es suyo y lo mata en vez
+    de dejarlo huérfano o lanzar un segundo worker sobre el mismo worktree (incidente 27-09, t_bdee05fe)."""
+    try:
+        state = json.loads(Path(state_path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return  # sin estado de la tarea (p. ej. consola interactiva): nada que actualizar
+    if not isinstance(state, dict):
+        return
+    state["worker_pid"] = pid
+    state["worker_created"] = _proc.created_at(pid)
+    tmp = Path(state_path).with_suffix(f".{os.getpid()}.tmp")
+    tmp.write_text(json.dumps(state), encoding="utf-8")
+    os.replace(tmp, state_path)
+
+
 class ClaudeWorker:
-    def __init__(self, runner=_proc.run):
+    def __init__(self, runner=_proc.run, pid_dir: Path | None = None):
         self._run = runner
+        self._pid_dir = pid_dir  # carpeta de los estados de tarea; None = no se apunta el PID
         self._ops: dict[str, tuple[dict, list[str]]] = {}  # session_id -> (env, add_dirs) del run() ops, para resume
+        self._spent: dict[str, float] = {}   # session_id -> USD gastados en la tarea (run + resumes)
+        self._resumes: dict[str, int] = {}   # session_id -> resumes ya lanzados
+
+    def _budget_for(self, lane: Lane, session_id: str, first: bool) -> float:
+        remaining = max(0.0, lane.max_budget_usd - self._spent.get(session_id, 0.0))
+        if first:
+            return remaining * FIRST_CALL_SHARE if lane.max_resumes > 0 else remaining
+        return remaining / max(1, lane.max_resumes - self._resumes.get(session_id, 0))
+
+    def _account(self, session_id: str, out: WorkerOutcome) -> WorkerOutcome:
+        """Suma el coste de la llamada al de la tarea; `cost_usd` del resultado pasa a ser el total acumulado."""
+        total = self._spent.get(session_id, 0.0) + (out.cost_usd or 0.0)
+        self._spent[session_id] = total
+        out.cost_usd = total if (out.cost_usd is not None or total) else None
+        return out
+
+    def _exhausted(self, lane: Lane, session_id: str) -> WorkerOutcome:
+        spent = self._spent.get(session_id, 0.0)
+        return WorkerOutcome(False, "error_max_budget_usd", None, spent or None,
+                             f"presupuesto de la tarea agotado ({spent:.2f} de {lane.max_budget_usd:.2f} USD)")
 
     def _exec(self, args: list[str], prompt: str, cwd: str, timeout: float, lane: Lane, task_id: str,
               extra_env: dict | None = None) -> WorkerOutcome:
+        on_start = None
+        if self._pid_dir:
+            state_path = Path(self._pid_dir) / f"{task_id}.json"
+            on_start = lambda pid: record_worker_pid(state_path, pid)  # noqa: E731
         return run_claude(self._run, args, prompt, cwd, timeout,
-                          {"AGENT_LANES_TASK": task_id, "AGENT_LANES_LANE": lane.name, **(extra_env or {})})
+                          {"AGENT_LANES_TASK": task_id, "AGENT_LANES_LANE": lane.name, **(extra_env or {})},
+                          on_start=on_start)
 
     def run(self, lane: Lane, task: dict, cwd: str, session_id: str, timeout: float) -> WorkerOutcome:
         flag = ["--session-id", session_id, "--name", f"task-{task['id']}"]
+        budget = self._budget_for(lane, session_id, first=True)
+        if budget < MIN_CALL_BUDGET_USD:
+            return self._exhausted(lane, session_id)
         if lane.kind == "ops":
             from .ops import task_targets, worker_env
             origins, dests, _ = task_targets(lane, task)
             env, dirs = worker_env(lane, task, cwd), [*dests, *origins]
             self._ops[session_id] = (env, dirs)
-            return self._exec(ops_args(lane, flag, dirs), build_ops_prompt(task, lane, cwd, origins, dests), cwd,
-                              timeout, lane, task["id"], env)
-        args = base_args(lane, flag)
+            return self._account(session_id, self._exec(
+                ops_args(lane, flag, dirs, budget), build_ops_prompt(task, lane, cwd, origins, dests), cwd,
+                timeout, lane, task["id"], env))
+        args = base_args(lane, flag, budget)
         env = {"AGENT_LANES_MERGE_OK": json.dumps(merge_refs(lane, task))}
         self._ops[session_id] = (env, [])
-        return self._exec(args, build_prompt(task, lane), cwd, timeout, lane, task["id"], env)
+        return self._account(session_id, self._exec(args, build_prompt(task, lane), cwd, timeout, lane, task["id"], env))
 
     def resume(self, lane: Lane, cwd: str, session_id: str, timeout: float, task_id: str,
                prompt: str | None = None) -> WorkerOutcome:
         """`prompt`: mensaje de reanudación a medida (p. ej. "Oscar ya respondió esto: …"); por defecto el genérico."""
+        budget = self._budget_for(lane, session_id, first=False)
+        if budget < MIN_CALL_BUDGET_USD:
+            return self._exhausted(lane, session_id)
+        self._resumes[session_id] = self._resumes.get(session_id, 0) + 1
         if lane.kind == "ops":
             # Sin el entorno del run() (proceso reiniciado) el hook no tiene workspace: bloquea toda escritura.
             env, dirs = self._ops.get(session_id, ({"AGENT_LANES_ROLE": "ops"}, []))
-            return self._exec(ops_args(lane, ["--resume", session_id], dirs), prompt or OPS_RESUME_PROMPT, cwd, timeout, lane,
-                              task_id, env)
+            return self._account(session_id, self._exec(
+                ops_args(lane, ["--resume", session_id], dirs, budget), prompt or OPS_RESUME_PROMPT, cwd, timeout, lane,
+                task_id, env))
         env = self._ops.get(session_id, ({"AGENT_LANES_MERGE_OK": json.dumps([f"{lane.remote}/{lane.base}".lower()])}, []))[0]
-        return self._exec(base_args(lane, ["--resume", session_id]), prompt or RESUME_PROMPT, cwd, timeout, lane, task_id, env)
+        return self._account(session_id, self._exec(
+            base_args(lane, ["--resume", session_id], budget), prompt or RESUME_PROMPT, cwd, timeout, lane, task_id, env))

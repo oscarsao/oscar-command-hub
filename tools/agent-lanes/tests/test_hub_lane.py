@@ -93,11 +93,12 @@ def hub(tmp_path, *, probe=True):
 
     def launch(argv, cwd):
         # el reinicio puede parar este proceso al arrancar: todo registrado ANTES de lanzar
-        assert integ._state("t_1")["status"] == "applied"
-        assert any(t.startswith("APLICADO ") for _, t, _a in h.comments)
+        assert integ._state("t_1")["status"] == "applying"
+        assert not any(t.startswith("APLICADO ") for _, t, _a in h.comments)  # solo tras verificar
         assert "reinicio ordenado lanzado" in tg.edits[-1]["text"]
         launched.append((argv, cwd))
     integ._launch = launch
+    integ.apply_result_path = tmp_path / "apply_result.json"
     integ._apply_probe = lambda kind: probe
     return integ, w, h, tg, d, launched
 
@@ -120,8 +121,8 @@ def test_merge_offers_apply_and_apply_launches_restart_drain(tmp_path):
     press(d, tg)
     assert launched == [(["py", "-3.12", "lanes.py", "restart", "--drain"], str(ROOT))]
     assert APPLY_ARGV["restart_drain"] == launched[0][0]
-    assert integ._state("t_1")["status"] == "applied"
-    assert any(a == INTEGRATOR_AUTHOR and t.startswith(f"APLICADO {MERGE}") for _, t, a in h.comments)
+    assert integ._state("t_1")["status"] == "applying"
+    assert not any(t.startswith("APLICADO") for _, t, _a in h.comments)
     assert "reinicio ordenado lanzado" in tg.edits[-1]["text"]
     # nunca toca git en el checkout vivo ni empuja nada
     assert not [a for a, _ in w.calls if a[0] == "git" and ("push" in a or "pull" in a or "checkout" in a)]

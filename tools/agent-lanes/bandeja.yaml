@@ -22,3 +22,9 @@ prioridad_baja_max: -1
 #   ejecutar -> aplica la recomendada sola. Solo cuando Oscar lo active aquí, tras ver el modo aviso funcionar.
 veto_horas: 48
 veto_modo: aviso
+
+# Resumen de las 8:00 y /hoy: por cada carril, una línea con lo hecho ayer, lo bloqueado y lo que espera a Oscar.
+resumen_carriles: true
+# Añade el coste estimado de IA (por carril y total de ayer) cuando los datos de las ejecuciones lo traen.
+# false = ni el coste por carril ni la línea "Coste de ayer".
+resumen_coste: true

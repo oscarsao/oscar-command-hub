@@ -61,7 +61,8 @@ DB_MIN_MEM_PCT = 15   # AVISO si la memoria disponible baja de esto
 LIST_FAIL = "no se pudieron listar tareas"
 LIST_FAIL_AFTER = 600  # s de fallos seguidos listando tareas (hermes/WinError) antes de abrir ALTA
 RETRY_TASKS = ("Resumen diario Hermes", "Auditor diario carriles")  # tareas programadas a relanzar si fallaron
-LIST_FAIL_GAP = 240   # s sin fallos nuevos = recuperado (el runner lista cada ~60 s)
+LIVE_LAG_AFTER = 30 * 60  # s con el checkout vivo por detrás de origin/main antes de avisar
+LIST_FAIL_GAP = 240  # s sin fallos nuevos = recuperado (el runner lista cada ~60 s)
 
 
 RAM_REPORT_EVERY = 4 * 3600  # s entre informes de RAM al DM (antes: aviso repetido cada hora mientras RAM > 88 %)
@@ -450,6 +451,34 @@ class Monitor:
         self._drift_text = f"MigraTeam develop↔master: {'✅ al día' if not behind else f'❌ develop -{behind}'}"
         return self._drift_text
 
+    def refresh_live_lag(self) -> str:
+        """Checkout vivo del hub (el que ejecuta el runner) frente a origin/main. Por detrás más de LIVE_LAG_AFTER s =
+        el runner corre código viejo (1-5/10: PR #2, #3, #4, #7 y #10 fusionados sin ejecutarse). El botón
+        [🔁 Aplicar] lo pone el integrador en el DM; aquí queda el aviso visible en el panel y en alerts.log."""
+        if time.time() - getattr(self, "_lag_at", 0) < 300:
+            return getattr(self, "_lag_text", "")
+        self._lag_at = time.time()
+        repo = LANES.parents[1]
+        try:
+            self.run(["git", "-C", str(repo), "fetch", "-q", "origin", "main"])
+            behind = int((self.run(["git", "-C", str(repo), "rev-list", "--count", "HEAD..origin/main"]).stdout
+                          or "0").strip() or 0)
+        except Exception:
+            self._lag_text = "Checkout vivo del hub: ?"
+            return self._lag_text
+        if not behind:
+            self._lag_since = None
+            self._lag_text = "Checkout vivo del hub: ✅ en origin/main"
+            return self._lag_text
+        self._lag_since = getattr(self, "_lag_since", None) or time.time()
+        mins = (time.time() - self._lag_since) / 60
+        if mins * 60 > LIVE_LAG_AFTER:
+            self.alert("MEDIA", f"El runner ejecuta código viejo: el checkout vivo va {behind} commit(s) por detrás de "
+                        f"origin/main desde hace {mins:.0f} min. Pulsa 🔁 Aplicar (DM del bot de Trabajos).",
+                        "live-lag", every=3600)
+        self._lag_text = f"Checkout vivo del hub: ❌ -{behind} vs origin/main ({mins:.0f} min)"
+        return self._lag_text
+
     def hermes_gateway(self) -> str:
         """gateway_state.json (JSON: pid, gateway_state, active_agents, updated_at)."""
         import json
@@ -482,7 +511,8 @@ class Monitor:
         t.append(self.hermes_gateway() + "\n")
         t.append("Servicios: ", style="bold")
         t.append("  ".join(f"{k} {v}" for k, v in self.health.items()) + "\n")
-        t.append(self.refresh_branch_drift() + "\n\n")
+        t.append(self.refresh_branch_drift() + "\n")
+        t.append(self.refresh_live_lag() + "\n\n")
         lines = [ln for ln in self.lanes_text.splitlines() if not ln.startswith("---")]
         for ln in lines[:8]:
             style = "yellow" if "ocupado" in ln else ("red" if "huérfano" in ln else None)

@@ -205,7 +205,10 @@ herramientas y ≤0,5 $ por tarjeta (`card_prepare.py`). Código: `card_options.
   ("arrancando" = claim recién hecho con el runner vivo; "huérfano" solo con el runner parado).
 - Reiniciar el runner: SIEMPRE `py -3.12 lanes.py restart --drain [--timeout 3600]`, nunca `schtasks /End` a pelo
   (incidente 27-09). Deja de reclamar, espera a que acaben workers/deploys, reinicia la tarea "agent-lanes runner".
-  Un `.state/drain.json` de más de 2 h se ignora.
+  Un `.state/drain.json` de más de 2 h se ignora. `lanes.py reload` es alias de `restart --drain`.
+  Si el runner muere igualmente (`schtasks /End`, fallo), el PID de cada `claude` queda en `.state/tasks/<id>.json`
+  (`worker_pid`): al arrancar, el runner mata al worker huérfano (comprobando que el PID sigue siendo ese proceso) y
+  bloquea la tarea; y no lanza un segundo `claude` sobre una tarea cuyo worker sigue vivo.
 - Candado de repos: cada carril de código declara `github: owner/repo`; si el remote del repo no coincide (o falta),
   el carril no reclama y el log dice ERROR una vez. Un carril nuevo sin `github:` queda parado.
 - /salud en el bot de carriles: runner, Hermes, servicios y alertas del monitor, develop↔master de MigraTeam, RAM/CPU
@@ -218,3 +221,12 @@ herramientas y ≤0,5 $ por tarjeta (`card_prepare.py`). Código: `card_options.
   porque la tarea instalada se registró con `install-service.ps1 -MaxWorkers 2` (el ejemplo de su cabecera). Para
   alinearlo: reinstalar el servicio SIN `-MaxWorkers` (lo hace Oscar; los `.ps1` quedan fuera del alcance de los
   workers) y reiniciar el runner. El log de arranque (`runner: carriles=… max_workers=N`) dice el valor real.
+
+## Guarda de tablero (ADR-036)
+`hermes kanban create` sin `--board` cae en `default`, y cada carril solo lee el tablero de su `board:` en `lanes.yaml`.
+`agent_lanes/board_guard.py` detecta tarjetas abiertas cuyo carril no lee su tablero y las recoloca (recrea con mismo
+título, cuerpo, assignee y prioridad, `idempotency-key` = id original, copia comentarios y archiva la original con
+«movida a <tablero>:<id>»). Solo mueve `ready`/`todo` sin claim ni padres/hijas; lo demás se avisa. Las de `oscar` nunca.
+- Manual: `py -3.12 lanes.py doctor-boards` (dry-run) / `--apply`.
+- Runner: cada `BOARD_GUARD_MINUTES` (10) y aviso al DM de Oscar una vez por tarjeta. Solo mueve con
+  `BOARD_GUARD_APPLY=true` en `.env`; sin ello avisa en dry-run.

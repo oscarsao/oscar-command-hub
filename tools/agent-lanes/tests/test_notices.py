@@ -260,12 +260,13 @@ def test_review_status_line_has_files_tests_and_cost():
     assert "ok" not in n.edits[-1][1].split("\n")[1:]  # el resumen del worker no va a Telegram
 
 
-def test_runner_drops_hermes_subscription_after_claim_and_survives_failure():
+def test_runner_drops_hermes_subscription_before_claim_and_survives_failure():
     h = FakeHermes(tasks=[{"id": "t_1", "title": "T", "body": "B"}])
     LaneRunner(LANE, hermes=h, git=FakeGit(), worker=FakeWorker([ok_outcome()]), verifier=FakeVerifier(),
                notify=FakeNotifier()).run_once()
     kinds = h.kinds()
-    assert kinds.index("claim") < kinds.index("drop_subs")
+    assert kinds.index("drop_subs") < kinds.index("claim")
+    assert kinds.count("drop_subs") == 1  # el claim no repite la baja ya hecha en el listado
 
     class Broken(FakeHermes):
         def drop_telegram_subs(self, tid):
