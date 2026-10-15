@@ -198,12 +198,15 @@ def parse_result(stdout: str) -> WorkerOutcome:
                          None if ok else f"subtype={subtype} is_error={data.get('is_error')}")
 
 
-def run_claude(runner, args: list[str], prompt: str, cwd: str, timeout: float, env_extra: dict) -> WorkerOutcome:
+def run_claude(runner, args: list[str], prompt: str, cwd: str, timeout: float, env_extra: dict,
+               on_start=None) -> WorkerOutcome:
     # AGENT_LANES_TASK switches on the "MODO WORKER" section of ~/.claude/CLAUDE.md.
     env = {**os.environ, **env_extra}
+    # `on_start(pid)` solo se pasa si hay quien lo recoja (los dobles de los tests no lo conocen).
+    extra = {"on_start": on_start} if on_start else {}
     try:
         cp = runner(args, input=prompt, cwd=cwd, env=env, capture_output=True, text=True,
-                    encoding="utf-8", errors="replace", timeout=timeout)
+                    encoding="utf-8", errors="replace", timeout=timeout, **extra)
     except subprocess.TimeoutExpired:
         return WorkerOutcome(False, "runner_timeout", None, None, f"claude superó {int(timeout)}s")
     out = parse_result(cp.stdout)
@@ -212,9 +215,27 @@ def run_claude(runner, args: list[str], prompt: str, cwd: str, timeout: float, e
     return out
 
 
+def record_worker_pid(state_path: Path, pid: int) -> None:
+    """Apunta en el estado de la tarea (.state/tasks/<id>.json) el PID del `claude` y su hora de creación. Si el
+    runner muere (schtasks /End no mata a los hijos), el siguiente arranque sabe qué proceso es suyo y lo mata en vez
+    de dejarlo huérfano o lanzar un segundo worker sobre el mismo worktree (incidente 27-09, t_bdee05fe)."""
+    try:
+        state = json.loads(Path(state_path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return  # sin estado de la tarea (p. ej. consola interactiva): nada que actualizar
+    if not isinstance(state, dict):
+        return
+    state["worker_pid"] = pid
+    state["worker_created"] = _proc.created_at(pid)
+    tmp = Path(state_path).with_suffix(f".{os.getpid()}.tmp")
+    tmp.write_text(json.dumps(state), encoding="utf-8")
+    os.replace(tmp, state_path)
+
+
 class ClaudeWorker:
-    def __init__(self, runner=_proc.run):
+    def __init__(self, runner=_proc.run, pid_dir: Path | None = None):
         self._run = runner
+        self._pid_dir = pid_dir  # carpeta de los estados de tarea; None = no se apunta el PID
         self._ops: dict[str, tuple[dict, list[str]]] = {}  # session_id -> (env, add_dirs) del run() ops, para resume
         self._spent: dict[str, float] = {}   # session_id -> USD gastados en la tarea (run + resumes)
         self._resumes: dict[str, int] = {}   # session_id -> resumes ya lanzados
@@ -239,8 +260,13 @@ class ClaudeWorker:
 
     def _exec(self, args: list[str], prompt: str, cwd: str, timeout: float, lane: Lane, task_id: str,
               extra_env: dict | None = None) -> WorkerOutcome:
+        on_start = None
+        if self._pid_dir:
+            state_path = Path(self._pid_dir) / f"{task_id}.json"
+            on_start = lambda pid: record_worker_pid(state_path, pid)  # noqa: E731
         return run_claude(self._run, args, prompt, cwd, timeout,
-                          {"AGENT_LANES_TASK": task_id, "AGENT_LANES_LANE": lane.name, **(extra_env or {})})
+                          {"AGENT_LANES_TASK": task_id, "AGENT_LANES_LANE": lane.name, **(extra_env or {})},
+                          on_start=on_start)
 
     def run(self, lane: Lane, task: dict, cwd: str, session_id: str, timeout: float) -> WorkerOutcome:
         flag = ["--session-id", session_id, "--name", f"task-{task['id']}"]

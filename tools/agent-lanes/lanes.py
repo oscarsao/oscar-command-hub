@@ -8,6 +8,7 @@
     py -3.12 lanes.py restart --drain [--timeout 3600]
                                                    # reinicio ordenado: deja de reclamar, espera a los workers y
                                                    # reinicia la tarea programada "agent-lanes runner"
+    py -3.12 lanes.py reload [--timeout 3600]      # alias de `restart --drain`
     py -3.12 lanes.py integrator reset <task_id>   # fuerza reevaluar un PR failed/pr_problem/sent_back
     py -3.12 lanes.py integrator migration-applied <task_id>
                                                    # la migración de esa ficha fusionada YA está aplicada (autor
@@ -113,6 +114,8 @@ def main(argv: list[str]) -> int:
         return migration_applied_cli(argv[2])
     if argv[:1] == ["restart"]:
         return restart(argv[1:])
+    if argv[:1] == ["reload"]:  # alias de `restart --drain`: recarga el runner sin cortar workers
+        return restart(["--drain", *argv[1:]])
     if argv[:1] != ["status"]:
         print(__doc__)
         return 2

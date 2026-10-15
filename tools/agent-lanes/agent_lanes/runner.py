@@ -10,6 +10,7 @@ import uuid
 from pathlib import Path
 from typing import Callable
 
+from . import proc as _proc
 from .config import ROOT, Lane
 from .hermes import GUARD_LIMIT_MARK, looks_like_guard_limit
 from .notices import (MessageStore, TaskNotices, files_label, money, normalize_questions, question_text,
@@ -96,8 +97,12 @@ class LaneRunner:
                  pid_alive: Callable[[int], bool] = pid_alive, exclude: set[str] | None = None,
                  messages: MessageStore | None = None, links: Callable | None = None, decisions=None,
                  tree: Callable | None = None,
-                 repo_guard: Callable[[Lane], str | None] | None = None):
+                 repo_guard: Callable[[Lane], str | None] | None = None,
+                 kill: Callable[[int], None] = _proc.kill_tree,
+                 created_at: Callable[[int], float | None] = _proc.created_at):
         self.lane = lane
+        self._kill = kill
+        self._created_at = created_at
         self._tree = tree  # deps.TreeReader: líneas 🔗/⏸/↳ (padre e hijas) en cada aviso; None = sin árbol
         # Candado de repos (git_ops.github_slug_problem): motivo por el que NO se reclama, o None. Solo carriles de
         # código; el ERROR se registra una vez por arranque (este objeto vive lo que vive el runner).
@@ -162,6 +167,28 @@ class LaneRunner:
     def _state_path(self, tid: str) -> Path:
         return self.state_dir / f"{tid}.json"
 
+    def _read_state(self, tid: str) -> dict:
+        try:
+            state = json.loads(self._state_path(tid).read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {}
+        return state if isinstance(state, dict) else {}
+
+    def _live_worker(self, state: dict) -> int | None:
+        """PID del `claude` apuntado en el estado si SIGUE vivo y es el mismo proceso (no un PID reutilizado)."""
+        pid = state.get("worker_pid")
+        try:
+            pid = int(pid)
+        except (TypeError, ValueError):
+            return None
+        if not self.pid_alive(pid):
+            return None
+        recorded = state.get("worker_created")
+        now = self._created_at(pid)
+        if recorded is not None and now is not None and abs(float(recorded) - now) > 2:
+            return None  # el PID lo tiene ahora otro proceso
+        return pid
+
     def reconcile(self) -> list[str]:
         """At startup: block this lane's `running` tasks whose runner is gone, instead of waiting for the TTL.
 
@@ -171,15 +198,16 @@ class LaneRunner:
         for task in self.hermes.list_status(self.lane.name, "running"):
             tid = task["id"]
             path = self._state_path(tid)
-            state = {}
-            if path.exists():
-                try:
-                    state = json.loads(path.read_text(encoding="utf-8"))
-                except (OSError, json.JSONDecodeError):
-                    state = {}
+            state = self._read_state(tid)
             pid = state.get("pid")
             if pid and self.pid_alive(int(pid)):
                 continue
+            # schtasks /End mata al runner pero no a su `claude`: sin runner no habría quien recoja su resultado, y
+            # dejarlo seguir lo haría escribir en el worktree a la vez que el reintento (t_9d33b178, t_761326d7).
+            worker = self._live_worker(state)
+            if worker:
+                log.warning("%s: mato el worker huérfano (pid %s) del runner anterior", tid, worker)
+                self._kill(worker)
             session = state.get("session_id")
             self._block(tid, "transient", "runner reiniciado: la tarea quedó en running sin proceso vivo"
                         + (f" (session_id={session}; se puede retomar con --resume)" if session else ""),
@@ -236,6 +264,12 @@ class LaneRunner:
     def process(self, task: dict) -> str:
         tid = task["id"]
         lane = self.lane
+        # Ya hay un `claude` vivo sobre esta tarea (runner anterior caído, otro proceso): no se lanza un segundo sobre
+        # el mismo worktree (t_761326d7). Sin reclamar: la tarea sigue ready y se reintenta en la próxima pasada.
+        alive = self._live_worker(self._read_state(tid))
+        if alive and alive != os.getpid():
+            log.warning("%s: ya hay un worker vivo (pid %s) sobre la tarea; no se lanza otro", tid, alive)
+            return "worker_vivo"
         if not self.hermes.claim(tid, lane.claim_ttl_seconds):
             log.info("%s: claim perdido (otro runner o ya no está ready)", tid)
             return "claim_lost"
