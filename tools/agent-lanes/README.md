@@ -221,3 +221,12 @@ herramientas y ≤0,5 $ por tarjeta (`card_prepare.py`). Código: `card_options.
   porque la tarea instalada se registró con `install-service.ps1 -MaxWorkers 2` (el ejemplo de su cabecera). Para
   alinearlo: reinstalar el servicio SIN `-MaxWorkers` (lo hace Oscar; los `.ps1` quedan fuera del alcance de los
   workers) y reiniciar el runner. El log de arranque (`runner: carriles=… max_workers=N`) dice el valor real.
+
+## Guarda de tablero (ADR-036)
+`hermes kanban create` sin `--board` cae en `default`, y cada carril solo lee el tablero de su `board:` en `lanes.yaml`.
+`agent_lanes/board_guard.py` detecta tarjetas abiertas cuyo carril no lee su tablero y las recoloca (recrea con mismo
+título, cuerpo, assignee y prioridad, `idempotency-key` = id original, copia comentarios y archiva la original con
+«movida a <tablero>:<id>»). Solo mueve `ready`/`todo` sin claim ni padres/hijas; lo demás se avisa. Las de `oscar` nunca.
+- Manual: `py -3.12 lanes.py doctor-boards` (dry-run) / `--apply`.
+- Runner: cada `BOARD_GUARD_MINUTES` (10) y aviso al DM de Oscar una vez por tarjeta. Solo mueve con
+  `BOARD_GUARD_APPLY=true` en `.env`; sin ello avisa en dry-run.
