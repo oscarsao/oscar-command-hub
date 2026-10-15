@@ -102,6 +102,11 @@ def load_runner_settings(path: Path | None = None) -> dict:
     return {"max_workers": 1, "interval_seconds": 60, **(_load(path).get("runner") or {})}
 
 
+def load_notice_limits(path: Path | None = None) -> dict:
+    """Bloque `notices:` de lanes.yaml: topes de los avisos de Telegram (ver notices.LIMITS). Vacío = de fábrica."""
+    return dict(_load(path).get("notices") or {})
+
+
 def load_env(path: Path | None = None) -> dict[str, str]:
     """Minimal KEY=VALUE parser for agent-lanes/.env (never logged)."""
     env: dict[str, str] = {}

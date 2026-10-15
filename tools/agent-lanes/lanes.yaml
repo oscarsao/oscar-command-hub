@@ -32,6 +32,16 @@ telegram:
 # Sin esta clave, los avisos siguen en el tema del carril con el formato de siempre.
 integration_telegram: {chat: -1003530490339, thread: 398}   # Gestión · 🚦 Integración y despliegues
 
+# Topes de los avisos de Telegram (los de fábrica están en notices.LIMITS). Nada se recorta en silencio: lo que no cabe
+# se marca ("➕ +2 preguntas más", "[…recortado]") y el resto va en un segundo mensaje o en la tarjeta.
+notices:
+  questions_max_items: 5     # preguntas por aviso
+  questions_max_chars: 1200  # bloque de preguntas completo
+  question_max_chars: 280    # cada pregunta
+  option_max_chars: 40       # cada opción (A/B/C/D)
+  reason_max: 1500           # motivo del bloqueo en la tarjeta (hermes block)
+  text_max: 4000             # mensaje de Telegram (admite 4096): se parte por aquí
+
 defaults:
   max_resumes: 2
   heartbeat_seconds: 240

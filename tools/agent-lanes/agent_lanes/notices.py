@@ -30,6 +30,20 @@ TEXT_MAX = 4000  # sendMessage admite 4096: margen para no cortar nunca el HTML 
 QUESTIONS_MAX_ITEMS = 5
 QUESTIONS_MAX_CHARS = 1200  # total del bloque: Oscar debe poder responder desde Telegram sin abrir la tarjeta
 QUESTION_MAX_CHARS = 280   # cada viñeta; 5 x 280 < límite de Telegram (4096) con el resto del mensaje
+REASON_MAX = 1500  # motivo del bloqueo que se guarda en la tarjeta (`hermes block`)
+CUT_MARK = "[…recortado]"  # SIEMPRE que se recorta un motivo o una pregunta se deja esta marca
+# Topes de los avisos. Los valores de arriba son los de fábrica; el bloque `notices:` de lanes.yaml los sobrescribe
+# (configure, que llama runner.py al arrancar) para no tocar código al ajustarlos.
+LIMITS = {"questions_max_items": QUESTIONS_MAX_ITEMS, "questions_max_chars": QUESTIONS_MAX_CHARS,
+          "question_max_chars": QUESTION_MAX_CHARS, "option_max_chars": OPTION_MAX, "reason_max": REASON_MAX,
+          "text_max": TEXT_MAX}
+
+
+def configure(cfg: dict | None) -> None:
+    """Aplica los topes de `notices:` (lanes.yaml). Valores no enteros o <1 se ignoran: nunca rompen un aviso."""
+    for k, v in (cfg or {}).items():
+        if k in LIMITS and isinstance(v, int) and not isinstance(v, bool) and v >= 1:
+            LIMITS[k] = v
 # Marca de cada carril (segunda línea del aviso). Un carril sin marca muestra solo su nombre.
 BRANDS = {"claude-migrateam": "MigraTeam", "claude-oscarhq": "Píldora", "claude-scraper": "Píldora",
           "claude-nextjobs": "NextJobs"}
@@ -99,16 +113,23 @@ def normalize_questions(questions) -> list[dict]:
         if isinstance(q, dict):
             text = str(q.get("question") or "").strip()
             opts = q.get("options")
-            opts = [truncate(str(o), OPTION_MAX) for o in opts] if isinstance(opts, list) else []
+            given = opts if isinstance(opts, list) and opts else None
+            opts = [truncate(str(o), LIMITS["option_max_chars"]) for o in opts] if isinstance(opts, list) else []
+            dropped = False
             if not 2 <= len(opts) <= 4 or not all(opts):
+                dropped = given is not None  # había opciones y no cumplen el contrato: se avisa, no se oculta
                 opts = []
             rec = q.get("recommended")
             ok = isinstance(rec, int) and not isinstance(rec, bool) and 0 <= rec < len(opts)
             rec = rec if ok else None
         else:
-            text, opts, rec = str(q or "").strip(), [], None
+            text, opts, rec, dropped, given = str(q or "").strip(), [], None, False, None
         if text:
             item = {"question": text, "options": opts, "recommended": rec}
+            if dropped:
+                item["options_dropped"] = len(given)
+            elif isinstance(q, dict) and isinstance(q.get("options_dropped"), int) and not opts:
+                item["options_dropped"] = q["options_dropped"]  # ya normalizada: se conserva el aviso
             if isinstance(q, dict) and q.get("default_options") and opts:
                 item["default_options"] = True  # ya pasó por with_default_options (rec de un teclado guardado)
             out.append(item)
@@ -157,16 +178,89 @@ def option_lines(q: dict) -> list[str]:
             for i, o in enumerate(q.get("options") or ()) if i < len(OPTION_LETTERS)]
 
 
+class Bullets(list):
+    """Viñetas de `questions_block`. `overflow` = lo que no cupo (preguntas omitidas o textos recortados) como
+    líneas de texto plano: el aviso lo manda en un segundo mensaje (publish(followup=...))."""
+
+    overflow: list[str] = ()
+
+
+def _plural(n: int, one: str, many: str) -> str:
+    return f"{n} {one if n == 1 else many}"
+
+
+def _full(q: dict) -> list[str]:
+    return [f"• {' '.join(q['question'].split())}", *(x.strip() for x in option_lines(q))]
+
+
 def questions_block(questions) -> list[str]:
-    """Máximo 5 preguntas y 1200 caracteres en total (contando saltos de línea). Cada pregunta lleva debajo sus
-    opciones A) B) C) con la recomendada marcada ⭐: Oscar decide leyendo el mensaje y pulsa solo la letra."""
-    lines: list[str] = []
-    for q in normalize_questions(questions)[:QUESTIONS_MAX_ITEMS]:
-        chunk = ["• " + truncate(q["question"], QUESTION_MAX_CHARS), *option_lines(q)]
-        if len("\n".join(lines + chunk)) > QUESTIONS_MAX_CHARS:
+    """Máximo `questions_max_items` preguntas y `questions_max_chars` caracteres en total (contando saltos de línea).
+    Cada pregunta lleva debajo sus opciones A) B) C) con la recomendada marcada ⭐: Oscar decide leyendo el mensaje
+    y pulsa solo la letra. Nada se recorta en silencio: una pregunta cortada acaba en CUT_MARK, las que no caben se
+    cuentan en una línea final ("➕ +2 preguntas más") y su texto completo va en `.overflow` (segundo mensaje)."""
+    lines = Bullets()
+    over: list[str] = []
+    qs = normalize_questions(questions)
+    shown = 0
+    maxq = LIMITS["question_max_chars"]
+    for q in qs[:LIMITS["questions_max_items"]]:
+        cut = len(" ".join(q["question"].split())) > maxq
+        text = truncate(q["question"], maxq - len(CUT_MARK) - 1) + " " + CUT_MARK if cut else q["question"]
+        note = [f"   ⚠️ {_plural(q['options_dropped'], 'opción descartada', 'opciones descartadas')} por no cumplir "
+                "2-4 textos: responde con texto libre"] if q.get("options_dropped") else []
+        chunk = ["• " + text, *option_lines(q), *note]
+        reserve = 60 if len(qs) > shown + 1 else 0  # sitio para la línea de «más preguntas»
+        if lines and len("\n".join(lines + chunk)) + reserve > LIMITS["questions_max_chars"]:
             break
         lines += chunk
+        shown += 1
+        if cut:
+            over += _full(q)
+    rest = qs[shown:]
+    if rest:
+        lines.append(f"➕ +{_plural(len(rest), 'pregunta más', 'preguntas más')} (completas en la tarjeta)")
+        for q in rest:
+            over += _full(q)
+    lines.overflow = over
     return lines
+
+
+def split_text(lines, limit: int | None = None) -> list[str]:
+    """Líneas -> mensajes de como mucho `limit` (text_max) caracteres, cortando entre líneas; una línea más larga que
+    el tope se parte. Para mandar el resto de un aviso sin pasar de lo que admite Telegram (4096)."""
+    limit = limit or LIMITS["text_max"]
+    out, cur = [], ""
+    for line in lines:
+        while len(line) > limit:
+            if cur:
+                out.append(cur)
+                cur = ""
+            out.append(line[:limit])
+            line = line[limit:]
+        if cur and len(cur) + 1 + len(line) > limit:
+            out.append(cur)
+            cur = ""
+        cur = f"{cur}\n{line}" if cur else line
+    if cur:
+        out.append(cur)
+    return out
+
+
+def fit_reason(reason: str, limit: int | None = None) -> str:
+    """Motivo de bloqueo para la tarjeta, de como mucho `limit` (reason_max) caracteres. Si no cabe se recorta el
+    cuerpo (las preguntas) y se deja CUT_MARK; el final con «Acciones propuestas» y la línea «Para Oscar:» se
+    conserva, porque es la acción que espera Oscar."""
+    limit = limit or LIMITS["reason_max"]
+    if len(reason) <= limit:
+        return reason
+    idx = [i for i in (reason.find("\nAcciones propuestas"), reason.find("\nPara Oscar:")) if i > 0]
+    cut_at = min(idx) if idx else len(reason)
+    tail = reason[cut_at:]
+    mark = f"\n{CUT_MARK}"
+    if len(tail) > limit // 2:  # un final enorme tampoco cabe: se recorta, pero sin perder su cabecera
+        tail = tail[: limit // 2 - len(CUT_MARK) - 2].rstrip() + f" {CUT_MARK}"
+    head = reason[:cut_at][: max(0, limit - len(tail) - len(mark))].rstrip()
+    return head + mark + tail
 
 
 # --- URLs -------------------------------------------------------------------------------------------
@@ -361,8 +455,15 @@ def render(state: str, task_id: str, title: str | None, lane: str, status: str,
     if links:
         tail.append(" · ".join(f'<a href="{e(url, quote=True)}">{e(label)}</a>' for label, url in links))
     bullets = [e(b) for b in bullets or ()]
-    while bullets and len("\n".join(head + bullets + tail)) > TEXT_MAX:  # recorta viñetas, nunca el HTML
+    text_max = LIMITS["text_max"]
+    dropped = False
+    while bullets and len("\n".join(head + bullets + tail)) > text_max:  # recorta viñetas, nunca el HTML
         bullets.pop()
+        dropped = True
+    if dropped:  # nunca en silencio: una línea final lo dice (y cabe, porque se libera sitio)
+        bullets.append("➕ " + e(CUT_MARK) + " (completo en la tarjeta)")
+        while len(bullets) > 1 and len("\n".join(head + bullets + tail)) > text_max:
+            bullets.pop(-2)
     return "\n".join(head + bullets + tail)
 
 
@@ -463,9 +564,12 @@ class TaskNotices:
 
     def publish(self, tid: str, text: str, target=None, lane_target=None, *, alert: bool = False,
                 reply_markup: dict | None = None, mirror_to: str | None = None, channel: str | None = None,
-                leave_behind: Callable[[dict], str] | None = None) -> None:
+                leave_behind: Callable[[dict], str] | None = None, followup: list[str] | None = None) -> None:
         """`mirror_to`: chat (DM de Oscar) que recibe además una copia del aviso, con los mismos botones. Si el aviso
         principal ya cayó en ese chat, no se duplica.
+
+        `followup`: líneas (texto plano) con lo que no cupo en el aviso (questions_block(...).overflow). Con `alert`
+        salen en mensajes aparte, partidos por el límite de Telegram, tras el aviso (y tras su copia al DM).
 
         `channel`: canal del aviso (None = tema del carril; "integration" = tema de Integración). Un aviso de otro
         canal nunca edita el mensaje del anterior: se envía uno nuevo. `leave_behind(sent)`: al pasar una alerta a otro
@@ -525,10 +629,26 @@ class TaskNotices:
                 log.info("%s: no se pudo dejar la línea de enlace: %s", tid, exc)
         self.store.put(tid, {**sent, **({"mirrors": mirrors} if mirrors else {}),
                              **({"channel": channel} if channel else {}), **({"trail": trail} if trail else {})})
+        dm = None
         if alert and mirror_to and hasattr(self.notifier, "send_to") and str(sent.get("chat_id")) != str(mirror_to):
             try:
                 copy = self.notifier.send_to(str(mirror_to), None, text, **extra)
+                self.store.add_mirror(tid, copy, token=token, bot=bot)
+                dm = str(mirror_to)
             except Exception as exc:  # DM sin /start ("chat not found", 403): no rompe el aviso del tema
                 log.info("%s: no se pudo enviar la copia al DM: %s", tid, exc)
-                return
-            self.store.add_mirror(tid, copy, token=token, bot=bot)
+        if alert and followup:
+            self._send_followup(tid, followup, target, lane_target, dm)
+
+    def _send_followup(self, tid: str, lines: list[str], target, lane_target, dm: str | None) -> None:
+        """El resto de las preguntas en mensajes aparte (sin notificación), al tema y, si hubo copia, al DM."""
+        for chunk in split_text([html.escape(line) for line in lines]):
+            try:
+                self.notifier.send(chunk, target, lane_target, silent=True)
+            except Exception as exc:
+                log.info("%s: no se pudo enviar el resto de las preguntas: %s", tid, exc)
+            if dm:
+                try:
+                    self.notifier.send_to(dm, None, chunk)
+                except Exception as exc:
+                    log.info("%s: no se pudo enviar el resto al DM: %s", tid, exc)

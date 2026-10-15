@@ -13,10 +13,11 @@ import sys
 import time
 from logging.handlers import RotatingFileHandler
 
-from agent_lanes import drain
+from agent_lanes import drain, notices
 from agent_lanes.bandeja import load as load_bandeja
 from agent_lanes.board_guard import BoardGuardTicker
-from agent_lanes.config import ROOT, load_env, load_lanes, load_runner_settings, load_telegram_settings
+from agent_lanes.config import (ROOT, load_env, load_lanes, load_notice_limits, load_runner_settings,
+                                load_telegram_settings)
 from agent_lanes.commands import CommandCenter, register_commands
 from agent_lanes.collab_intake import CollabIntake
 from agent_lanes.people import load_people
@@ -66,6 +67,7 @@ def main(argv: list[str] | None = None) -> int:
 
     all_lanes = load_lanes()
     settings = load_runner_settings()
+    notices.configure(load_notice_limits())
     selected = all_lanes if args.all else {args.lane: all_lanes[args.lane]}
     hermes_cache: dict[str, HermesCLI] = {}
 
@@ -122,7 +124,7 @@ def main(argv: list[str] | None = None) -> int:
     if decisions:
         decisions.tree = tree
     if not args.once:  # RESPUESTA-OSCAR vía Hermes: hilo propio (el bucle puede esperar horas a un worker)
-        HermesAnswers(all_lanes, hermes_for=hermes_for, desk=decisions).start()
+        HermesAnswers(all_lanes, hermes_for=hermes_for, desk=decisions, alert=drain.dm_alert(env)).start()
     git = GitOps()
     impl = {n: l for n, l in selected.items() if l.kind == "implement"}
     # Candado de repos: un carril de código solo reclama si el remote de su repo es el `github:` de lanes.yaml.
