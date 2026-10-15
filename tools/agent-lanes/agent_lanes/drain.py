@@ -166,9 +166,12 @@ def dm_alert(env: dict | None = None) -> Callable[[str], None] | None:
     from .telegram import notifier_from_env
 
     env = load_env() if env is None else env
-    if not (env.get("CARRILES_BOT_TOKEN") or env.get("TELEGRAM_BOT_TOKEN")):
+    token = env.get("CARRILES_BOT_TOKEN") or env.get("TELEGRAM_BOT_TOKEN")
+    if not token:
         return None
-    notifier, owner = notifier_from_env(env, {"generic_origins": set()})[0], env.get("OWNER_TELEGRAM_ID") or OWNER_TELEGRAM_ID
+    # notifier_from_env es el único constructor del notificador (protege los DMs de colaboradores).
+    notifier, _ = notifier_from_env(env, {"generic_origins": set()})
+    owner = env.get("OWNER_TELEGRAM_ID") or OWNER_TELEGRAM_ID
     return lambda text: notifier.send_to(owner, None, text, html=False)
 
 
