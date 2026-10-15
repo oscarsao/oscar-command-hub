@@ -1,0 +1,53 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 1060" width="1600" height="1060" font-family="Segoe UI, Arial, sans-serif">
+<style>
+.t{font-size:15px;fill:#1b2430}.h{font-size:19px;font-weight:700;fill:#0b2a4a}.s{font-size:13px;fill:#4a5668}.w{font-size:15px;font-weight:700;fill:#fff}
+.box{fill:#fff;stroke:#9fb3c8;stroke-width:1.5}.blue{fill:#0b4a8f}.gold{fill:#e09a2e}.green{fill:#1f7a55}.grey{fill:#eef2f6;stroke:#c6d1dc}
+.ar{stroke:#5b6b7f;stroke-width:2;fill:none;marker-end:url(#a)}
+</style>
+<defs><marker id="a" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto"><path d="M0,0 L10,4 L0,8 z" fill="#5b6b7f"/></marker></defs>
+<rect width="1600" height="1060" fill="#f7f9fb"/>
+<text x="40" y="44" class="h" style="font-size:26px">Mapa del sistema Píldora / MigraTeam — 15-oct-2026</text>
+<text x="40" y="68" class="s">Quién habla, por dónde, con qué bot, qué se ejecuta, qué fuentes usa y dónde decide Oscar</text>
+
+<rect x="30" y="90" width="300" height="400" rx="14" class="grey"/><text x="50" y="118" class="h">1 · Personas</text>
+<rect x="46" y="132" width="268" height="62" rx="10" class="box"/><text x="60" y="158" class="t" font-weight="700">Oscar · fundador</text><text x="60" y="180" class="s">todo, salvo lo que decida él · 20 USD/día</text>
+<rect x="46" y="204" width="268" height="62" rx="10" class="box"/><text x="60" y="230" class="t" font-weight="700">María · COO</text><text x="60" y="252" class="s">ambas marcas · 3 USD/día</text>
+<rect x="46" y="276" width="268" height="62" rx="10" class="box"/><text x="60" y="302" class="t" font-weight="700">Andrea · marketing</text><text x="60" y="324" class="s">sin marca por defecto · 5 USD/día</text>
+<rect x="46" y="348" width="268" height="62" rx="10" class="box"/><text x="60" y="374" class="t" font-weight="700">Ingerber · CMO Píldora</text><text x="60" y="396" class="s">marca Píldora · 10 USD/día</text>
+<text x="50" y="446" class="s">Fuente única: ohq_people (se edita en el panel)</text>
+
+<rect x="360" y="90" width="300" height="400" rx="14" class="grey"/><text x="380" y="118" class="h">2 · Canales Telegram</text>
+<rect x="376" y="132" width="268" height="62" rx="10" class="box"/><text x="390" y="158" class="t" font-weight="700">DM de cada persona</text><text x="390" y="180" class="s">sombrero por defecto de la persona</text>
+<rect x="376" y="204" width="268" height="140" rx="10" class="box"/><text x="390" y="230" class="t" font-weight="700">Grupo Gestión</text><text x="390" y="252" class="s">General CEO · t5/t230/t231 CTO</text><text x="390" y="272" class="s">t6 CSO · t7 CMO · t355 CFO · t148 (?)</text><text x="390" y="296" class="s">t5/230/231: Hermes responde libre</text><text x="390" y="316" class="s">resto: bot del equipo</text>
+<rect x="376" y="354" width="268" height="124" rx="10" class="box"/><text x="390" y="380" class="t" font-weight="700">Grupo Marketing</text><text x="390" y="402" class="s">sombrero CMO en todos los temas</text><text x="390" y="422" class="s">t77 MigraTeam · t80 Píldora</text><text x="390" y="442" class="s">ids de temas por verificar</text>
+
+<rect x="690" y="90" width="330" height="400" rx="14" class="grey"/><text x="710" y="118" class="h">3 · Bots</text>
+<rect x="706" y="132" width="298" height="106" rx="10" class="box"/><path d="M706 142 a10 10 0 0 1 10 -10 h278 a10 10 0 0 1 10 10 v20 h-298z" class="blue"/><text x="720" y="153" class="w">@PildoraD_BOT · equipo (nube)</text><text x="720" y="184" class="s">Conversa libre. Sombreros CEO/CMO/CTO…</text><text x="720" y="204" class="s">Herramientas: imagen, texto, avisar,</text><text x="720" y="222" class="s">handbook, Brand Brain, web, tarjetas</text>
+<rect x="706" y="250" width="298" height="106" rx="10" class="box"/><path d="M706 260 a10 10 0 0 1 10 -10 h278 a10 10 0 0 1 10 10 v20 h-298z" class="gold"/><text x="720" y="271" class="w">@pildora_carriles_bot (PC)</text><text x="720" y="302" class="s">Panel de control de Oscar: aprobar,</text><text x="720" y="322" class="s">lotes, estado, producción. Botones.</text><text x="720" y="342" class="s">Texto libre = respuesta a decisión (P1)</text>
+<rect x="706" y="368" width="298" height="110" rx="10" class="box"/><path d="M706 378 a10 10 0 0 1 10 -10 h278 a10 10 0 0 1 10 10 v20 h-298z" class="green"/><text x="720" y="389" class="w">Hermes gateway (PC)</text><text x="720" y="420" class="s">Asistente con herramientas amplias.</text><text x="720" y="440" class="s">Libre en t5/230/231 y DM de Oscar.</text><text x="720" y="460" class="s">Resto: con @mención.</text>
+
+<rect x="1050" y="90" width="520" height="400" rx="14" class="grey"/><text x="1070" y="118" class="h">4 · Reglas</text>
+<text x="1070" y="148" class="t" font-weight="700">Flexible por defecto</text><text x="1070" y="168" class="s">Miembro activo = todas las herramientas salvo las excluidas.</text>
+<text x="1070" y="198" class="t" font-weight="700">Sombrero</text><text x="1070" y="218" class="s">Manda el tema; si no hay, el de la persona; /rol cambia (fundadores).</text>
+<text x="1070" y="248" class="t" font-weight="700">Topes</text><text x="1070" y="268" class="s">USD/día por persona y límite de tarjetas/crews: panel y base.</text>
+<text x="1070" y="298" class="t" font-weight="700">Equipo y carriles</text><text x="1070" y="318" class="s">Crean tarjetas en su marca; no fusionan ni despliegan.</text>
+<rect x="1066" y="338" width="488" height="138" rx="10" fill="#fdeeea" stroke="#d9a79d"/><text x="1082" y="364" class="t" font-weight="700" style="fill:#8a2d1d">Raíles de código — solo Oscar, ninguna config los abre</text><text x="1082" y="390" class="s" style="fill:#6b2a1f">enviar · publicar · desplegar · fusionar</text><text x="1082" y="412" class="s" style="fill:#6b2a1f">variables de entorno · borrar</text><text x="1082" y="438" class="s" style="fill:#6b2a1f">Producción: botón de Oscar (promover con doble confirmación)</text><text x="1082" y="460" class="s" style="fill:#6b2a1f">Migraciones y despliegues: aprobados en la conversación</text>
+
+<rect x="30" y="520" width="1540" height="250" rx="14" class="grey"/><text x="50" y="548" class="h">5 · Del pedido a producción</text>
+<rect x="50" y="566" width="190" height="90" rx="10" class="box"/><text x="62" y="594" class="t" font-weight="700">Pedido</text><text x="62" y="616" class="s">frase en Telegram</text><text x="62" y="636" class="s">[IDEA] o crear_tarjeta</text>
+<rect x="290" y="566" width="230" height="90" rx="10" class="box"/><text x="302" y="594" class="t" font-weight="700">Tablero (4)</text><text x="302" y="616" class="s">oscarhq · migrateam</text><text x="302" y="636" class="s">default · personal</text>
+<rect x="570" y="566" width="270" height="90" rx="10" class="box"/><text x="582" y="594" class="t" font-weight="700">Carril (Claude, tu cuenta)</text><text x="582" y="616" class="s">oscarhq · migrateam · scraper</text><text x="582" y="636" class="s">nextjobs · hub · ops</text>
+<rect x="890" y="566" width="200" height="90" rx="10" class="box"/><text x="902" y="594" class="t" font-weight="700">PR + revisión</text><text x="902" y="616" class="s">tests, revisor,</text><text x="902" y="636" class="s">validación aparte</text>
+<rect x="1140" y="566" width="190" height="90" rx="10" fill="#fff4dc" stroke="#e09a2e" stroke-width="2.5"/><text x="1152" y="594" class="t" font-weight="700">Oscar fusiona</text><text x="1152" y="616" class="s">en GitHub,</text><text x="1152" y="636" class="s">siempre humano</text>
+<rect x="1380" y="566" width="170" height="90" rx="10" class="box"/><text x="1392" y="594" class="t" font-weight="700">Despliegue</text><text x="1392" y="616" class="s">con OK de Oscar</text><text x="1392" y="636" class="s">Railway · Vercel</text>
+<path class="ar" d="M240 611 H288"/><path class="ar" d="M520 611 H568"/><path class="ar" d="M840 611 H888"/><path class="ar" d="M1090 611 H1138"/><path class="ar" d="M1330 611 H1378"/>
+<text x="50" y="700" class="s">Blog (fase H): artículo por Telegram → aprobación con botón (cualquiera de marketing) → el bot abre PR en pildora-website → Oscar fusiona.</text>
+<text x="50" y="724" class="s">Imágenes y textos: los genera el bot del equipo dentro del tope diario; el resultado queda en ohq_image_library / ohq_text_library.</text>
+<text x="50" y="748" class="s">Hoy todo el plano de control corre en el PC de Oscar; el mini PC lo hará 24/7 (fase G), una sola máquina a la vez.</text>
+
+<rect x="30" y="800" width="1540" height="230" rx="14" class="grey"/><text x="50" y="828" class="h">6 · Fuentes de información (y quién las edita)</text>
+<rect x="50" y="846" width="350" height="164" rx="10" class="box"/><text x="62" y="872" class="t" font-weight="700">Supabase Oscar HQ (nube)</text><text x="62" y="894" class="s">ohq_people · ohq_telegram_configs (rutas)</text><text x="62" y="914" class="s">ohq_system_settings (avisos) · ohq_tool_audit</text><text x="62" y="934" class="s">ohq_telegram_messages (memoria) · ohq_*_library</text><text x="62" y="954" class="s">Se edita en el panel de Oscar HQ</text>
+<rect x="420" y="846" width="350" height="164" rx="10" class="box"/><text x="432" y="872" class="t" font-weight="700">Conocimiento de marca</text><text x="432" y="894" class="s">Brand Brain · memory/brands/*.md</text><text x="432" y="914" class="s">Handbook (GitHub, solo lectura, PR-only)</text><text x="432" y="934" class="s">Webs propias (lista blanca, solo lectura)</text><text x="432" y="954" class="s">Se edita por PR, nunca por el bot</text>
+<rect x="790" y="846" width="350" height="164" rx="10" class="box"/><text x="802" y="872" class="t" font-weight="700">Plano de control (PC de Oscar)</text><text x="802" y="894" class="s">kanban SQLite (4 tableros) · lanes.yaml</text><text x="802" y="914" class="s">people.yaml (respaldo hasta migrar)</text><text x="802" y="934" class="s">Hermes: config.yaml, logs, skills</text><text x="802" y="954" class="s">El bot de la nube lo ve vía snapshot (fase F)</text>
+<rect x="1160" y="846" width="390" height="164" rx="10" class="box"/><text x="1172" y="872" class="t" font-weight="700">Secretos (solo Railway / cifrados)</text><text x="1172" y="894" class="s">Tokens de bots, proveedor de imágenes,</text><text x="1172" y="914" class="s">HANDBOOK_GITHUB_TOKEN, token del blog</text><text x="1172" y="934" class="s">Nunca en la base, el panel ni los repos.</text><text x="1172" y="954" class="s">Lo demás: panel + base, sin hardcode.</text>
+</svg>
