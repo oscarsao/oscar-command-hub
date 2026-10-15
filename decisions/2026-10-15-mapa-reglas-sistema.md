@@ -142,7 +142,9 @@ Regla actual de `people.yaml`: la primera marca de la persona decide el tablero 
 | Imágenes: contexto de marca, sin dominios inventados | `t_d9360c8b` prioritaria, retenida |
 | Auditoría P1–P4 | `t_83278452`, `t_e71e7aca` en marcha; `t_c09d8034`, `t_56c47cf9` retenidas |
 | Tarjetas `ready` asignadas a Oscar creadas desde Telegram no le avisan (caso `t_8e370853`, 9,5 h sin aviso) | Anotado en P1 `t_83278452` |
-| Estado operativo en la nube (F) · Mini PC (G) · Topología de bots (E) · Blog (H, BLOG-02) | `t_b5e31b70`, `t_bf5cf039`, sin tarjeta E, `t_0a4d7616`, `t_01691915` |
+| Todo se gestiona hablando; comandos y botones solo como atajos (fase E, una puerta conversacional) | `t_6902e81a` (retenida) |
+| Resumen diario + avisos urgentes a Oscar y retorno de estado al equipo | `t_0e8bafd6` (retenida) |
+| Estado operativo en la nube (F) · Mini PC (G) · Blog (H, BLOG-02) | `t_b5e31b70`, `t_bf5cf039`, `t_0a4d7616`, `t_01691915` |
 | Seguimientos menores de P+D: no borrar al último fundador, auditar `/permisos`, validar `people` heredado | Sin tarjeta |
 | Ids de temas de Marketing no coinciden entre `role_routes` y Hermes; tema 148 de Gestión sin rol | Por verificar |
 | `pildora-website` sin carril, sin CI ni protección de rama (push directo a `main` = producción) | Decisión de Oscar pendiente |
@@ -161,4 +163,4 @@ Cuando algo cambie (persona nueva, marca nueva, tema nuevo, carril nuevo), el or
 Para una **revisión completa** de reglas: recorrer las secciones 2→6 de este documento comparando con la base (`ohq_people`, `ohq_telegram_configs`, `ohq_system_settings`), el panel y `lanes.yaml`, y marcar cada discrepancia como en la tabla de §7.
 
 ## 9. Decisiones de Oscar que fundamentan este documento (15-10)
-Configuración en panel + base (no variables de Railway ni SQL manual) · permisos y roles flexibles · mini PC como servidor 24/7 a medio plazo, todo en el PC hasta entonces · fusiones siempre de Oscar · blog: el bot abre PR y Oscar fusiona, aprueba cualquiera de marketing · María = COO · Andrea = sin marca por defecto · fuente única de personas = `ohq_people` · el equipo crea tarjetas directas en su marca · fase C sin botón de confirmación, aviso a Oscar opcional · sombrero de la persona/tema desde la base (propuesta pendiente de abrir como tarjeta).
+Configuración en panel + base (no variables de Railway ni SQL manual) · permisos y roles flexibles · mini PC como servidor 24/7 a medio plazo, todo en el PC hasta entonces · fusiones siempre de Oscar · blog: el bot abre PR y Oscar fusiona, aprueba cualquiera de marketing · María = COO · Andrea = sin marca por defecto · fuente única de personas = `ohq_people` · el equipo crea tarjetas directas en su marca · fase C sin botón de confirmación, aviso a Oscar opcional · sombrero de la persona/tema desde la base (`t_23afad48`) · topología: una puerta conversacional (@PildoraD_BOT) + bot de carriles solo para avisos con botones y atajos opcionales; comandos y botones nunca son la única vía · proactividad: resumen diario y avisos urgentes, y retorno automático más consulta libre para el equipo · Hermes: se mantiene solo para Oscar y los temas CTO mientras se arregla `clarify`; se evalúa absorber sus funciones útiles antes del mini PC (recomendación de Claude, pendiente de confirmar).
