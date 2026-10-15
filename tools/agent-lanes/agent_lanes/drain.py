@@ -163,13 +163,12 @@ def dm_alert(env: dict | None = None) -> Callable[[str], None] | None:
     """Aviso ALTA al DM de Oscar con el bot de carriles (token de .env; nunca se imprime). None sin token."""
     from .config import load_env
     from .decisions import OWNER_TELEGRAM_ID
-    from .telegram import TelegramNotifier
+    from .telegram import notifier_from_env
 
     env = load_env() if env is None else env
-    token = env.get("CARRILES_BOT_TOKEN") or env.get("TELEGRAM_BOT_TOKEN")
-    if not token:
+    if not (env.get("CARRILES_BOT_TOKEN") or env.get("TELEGRAM_BOT_TOKEN")):
         return None
-    notifier, owner = TelegramNotifier(token, None), env.get("OWNER_TELEGRAM_ID") or OWNER_TELEGRAM_ID
+    notifier, owner = notifier_from_env(env, {"generic_origins": set()})[0], env.get("OWNER_TELEGRAM_ID") or OWNER_TELEGRAM_ID
     return lambda text: notifier.send_to(owner, None, text, html=False)
 
 

@@ -57,6 +57,7 @@ DEPLOY_ASK = "deploy_ask"  # /desplegar: 1.er toque = pide confirmar; el 2.º (�
 DEPLOY_NO = "deploy_no"    # /desplegar: ✖ No en la confirmación
 ACCEPT_CARD = "accept_card"  # ✅ Acepto todas las recomendadas: las preguntas pendientes de ESTA tarjeta, de una vez
 SEE_ALL = "see_all"        # "N más · ver todas" de /decisiones
+FALTA = "falta"            # /falta: botón de un paso (fusionar lote, migración aplicada, desplegar)
 # Tarjetas de decisión de Oscar (/decisiones): su propio juego de acciones; no tocan las rutas de las tareas de carril.
 CARD_OPTION = "card_option"   # A/B/C: anota RESPUESTA-OSCAR con la opción y completa la tarjeta
 CARD_REC = "card_rec"         # ✅ La recomendada (misma ruta que CARD_OPTION con el índice recomendado)
@@ -72,7 +73,8 @@ REPLY_ACTIONS = (CHANGES, OTHER, CARD_ASK)  # piden texto a Oscar con force_repl
 EXPLAIN_BUTTON = {"text": "💬 Explícame más", "action": EXPLAIN}
 DEFAULT_OPTION_LABELS = ("✅ Sí, adelante", "❌ No")  # botones de una pregunta sin opciones (DEFAULT_OPTIONS)
 ALL_LABEL = "todas las preguntas"  # ✍️ de una escalada de review (= hermes.LEGACY_ALL_LABELS)
-EXPLAIN_FAILED = "💬 No pude generar la explicación ahora; mira la tarjeta o responde con ✍️"
+TEAM_NOTICE_TEXT = "Esto lo lleva el asistente del equipo: escríbele a él. Yo solo gestiono los trabajos de los carriles."
+EXPLAIN_FAILED ="💬 No pude generar la explicación ahora; mira la tarjeta o responde con ✍️"
 
 
 def keyboard_spec(state: str, *, block_kind: str | None = None, questions=None,
@@ -304,6 +306,7 @@ class DecisionDesk:
         self.messages = messages  # MessageStore: todas las copias de cada aviso (sincronización tema <-> DM)
         self.promoter = None      # promote.Promoter: /promover y botones promo_* (producción de MigraTeam)
         self.commands = None      # CommandCenter: /hoy, /decisiones, /aprobar, /tareas, /tarea
+        self.team_notice: dict | None = None  # telegram.team_notice de lanes.yaml (enabled, chats, text); None = apagado
         self.collab = None        # CollabIntake: DM de colaboradores (people.yaml) -> tarjeta [IDEA]; None = como antes
         self._help_at: dict[str, float] = {}  # chat -> instante de la última ayuda (enfriamiento)
         self.tree = None          # deps.TreeReader: líneas 🔗/⏸/↳ al redibujar un aviso (opcional)
@@ -453,7 +456,14 @@ class DecisionDesk:
                 and self.commands.session_note(msg)):  # /sesion abierta: el texto es un punto, no pide ayuda
             self._log_update(chat.get("id"), kind, None, "respondido")
             return
-        if owner_dm and self._wants_help(msg, is_cmd, target):
+        if (owner_dm and not is_cmd and kind == "texto" and chat.get("type") == "private"
+                and getattr(self.commands, "can_answer", False)):
+            self._log_update(chat.get("id"), kind, None, "respondido")  # claude -p tarda segundos: fuera del hilo
+            self._spawn(lambda: self.commands.free_text(msg))  # pregunta suelta: estado real, nunca ejecuta nada
+            return
+        if not is_owner and self._team_notice(msg, chat):
+            result = "respondido"
+        elif owner_dm and self._wants_help(msg, is_cmd, target):
             result = self._help(msg, name if is_cmd else None)
         self._log_update(chat.get("id"), kind, name, result)
 
@@ -466,7 +476,38 @@ class DecisionDesk:
             return bool(target) and not target[1] and (private or target[2])
         return private and bool(msg.get("text"))
 
-    HELP_COOLDOWN = 30.0  # s: un único aviso de ayuda por chat en ese plazo (sin ráfagas ni bucles)
+    TEAM_NOTICE_COOLDOWN = 60.0  # s: un aviso al equipo por chat en ese plazo
+
+    def _team_notice(self, msg: dict, chat: dict) -> bool:
+        """Grupo del equipo (telegram.team_notice en lanes.yaml, APAGADO por defecto): si le escriben a ESTE bot
+        (@mención o respuesta a un mensaje suyo), avisa de que esto lo lleva el asistente del equipo. Lo que hablan
+        entre ellos no se contesta. True = avisó."""
+        cfg = self.team_notice or {}
+        chat_id = str(chat.get("id"))
+        if not cfg.get("enabled") or chat_id not in {str(c) for c in cfg.get("chats") or ()}:
+            return False
+        text = msg.get("text") or ""
+        username = (getattr(self.commands, "bot_username", None) or "").lstrip("@").lower()
+        bot_id = getattr(self.notifier, "bot_id", None)
+        replied = ((msg.get("reply_to_message") or {}).get("from") or {}).get("id")
+        mentioned = bool(username) and f"@{username}" in text.lower()
+        if not (mentioned or (bot_id and replied is not None and str(replied) == str(bot_id))):
+            return False
+        stamp = time.monotonic()
+        last = self._help_at.get(f"team:{chat_id}")
+        if last is not None and stamp - last < self.TEAM_NOTICE_COOLDOWN:
+            return False
+        self._help_at[f"team:{chat_id}"] = stamp
+        thread = str(msg.get("message_thread_id") or 0) if msg.get("is_topic_message") else "0"
+        try:
+            self.notifier.send_to(chat_id, thread, cfg.get("text") or TEAM_NOTICE_TEXT, html=False,
+                                  reply_to=msg.get("message_id"))
+        except Exception as exc:
+            log.warning("no pude enviar el aviso al equipo: %s", exc)
+            return False
+        return True
+
+    HELP_COOLDOWN = 30.0 # s: un único aviso de ayuda por chat en ese plazo (sin ráfagas ni bucles)
 
     def _help(self, msg: dict, cmd: str | None) -> str:
         """Responde con la ayuda: qué entendió, comandos y /hazlo. 'respondido' | 'ignorado' (enfriamiento)."""
@@ -653,6 +694,8 @@ class DecisionDesk:
                 self.promoter.start(key, where)
                 return True
             return bool(self.promoter) and self.promoter.on_button(action, rec, where, self)
+        if action == FALTA:  # /falta: reenvía a la acción que ya existía
+            return bool(self.commands) and self.commands.falta_choice(rec, button, where, self)
         if action == HAZLO:  # /hazlo con duda: el botón elige carril
             return bool(self.commands) and self.commands.hazlo_choice(rec, button, where)
         if action == FLUJO:  # /flujo: crear o descartar la propuesta
