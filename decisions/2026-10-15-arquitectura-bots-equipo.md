@@ -69,11 +69,14 @@ Todas de **solo lectura salvo las marcadas**; se registran en el registro de her
 
 | Fase | Contenido | Carril | Cuándo |
 |---|---|---|---|
-| **A** | Carriles: motivos de exclusión en lenguaje llano con botones (🔧 arreglar falso positivo / 🔁 rebasar), `/falta <proyecto>` (checklist ordenado: fusionar → SQL → variables → desplegar), texto libre del DM contestado con el estado real | `claude-hub` | **ya** |
-| **B** | Herramientas de lectura del asistente (§4: handbook, Brand Brain, web, estado) | `claude-oscarhq` | tras el lote 2 (toca `telegram_bot.py`/`telegram_tools.py`) |
+| **P** (antes D) | Configuración en panel + BD, **sin variables de Railway ni SQL manual**: `ohq_people` (fuente única de personas), `ohq_tool_audit`, topes diarios, rutas por tema, destinatarios de avisos y `/permisos`; `role_routes.tools` pasa a exclusiones; pantallas en el panel de Oscar HQ. Fundida con la antigua fase D | `claude-oscarhq` | **primero** |
+| **A** | Carriles: motivos de exclusión en lenguaje llano con botones (🔧 arreglar falso positivo / 🔁 rebasar), `/falta <proyecto>` (checklist ordenado de la salida), texto libre del DM contestado | `claude-hub` | en marcha |
+| **B** | Herramientas de lectura del asistente (§4: handbook, Brand Brain, web, estado de tarjetas) | `claude-oscarhq` | tras P |
 | **C** | `ejecutar_crew` y `crear_tarjeta` con tope y botones | `claude-oscarhq` | tras B |
-| **D** | `ohq_people` + `ohq_tool_audit` + `/permisos`; `role_routes.tools` pasa a exclusiones | `claude-oscarhq` | tras B (puede ir en paralelo con C si no tocan los mismos ficheros) |
+| **F** | **Estado operativo visible desde la nube.** El hub (productor) empuja cada pocos minutos a la tabla `ohq_ops_state` (solo lectura para el resto) un resumen sin secretos: tarjetas, lotes con PRs incluidos/excluidos y motivo en lenguaje llano, PRs abiertos, pasos pendientes de una salida y última auditoría. Consumidores: herramienta `estado_operativo` del asistente y página "Operaciones" del panel, siempre con la antigüedad del dato | productor `claude-hub`; consumidores `claude-oscarhq` | tras P y B |
 | **E** | Topología de bots: quién contesta dónde (Hermes en grupos, mudo del bot de Carriles, evitar doble respuesta) | decide Oscar | con los hallazgos de `t_dddcc232` y el bug `t_22de53c2` |
+
+Orden: **P, A (en marcha), B, C, F, E**.
 
 Máximo 3 flujos de código activos a la vez (regla del hub).
 
@@ -90,3 +93,89 @@ Máximo 3 flujos de código activos a la vez (regla del hub).
 
 Producción (fusionar a `main`/`master`, desplegar, `alembic`/SQL, variables de entorno, borrados) sigue siendo **solo de
 Oscar con botón**, como en `~/.claude/CLAUDE.md`. Esta propuesta abre lo demás.
+
+## 9. Infraestructura actual y objetivo
+
+Marcas: **V** = verificado en esta revisión (fichero, comando o consulta de solo lectura); **S** = supuesto o tomado de documentación sin comprobar.
+
+### 9.1 Inventario actual
+
+| Componente | Dónde corre | Quién lo usa | Depende de | Con el PC apagado | Cómo se configura hoy |
+|---|---|---|---|---|---|
+| **Runner de carriles** (`agent-lanes`, integrador, bot @pildora_carriles_bot) | PC de Oscar, tarea programada "agent-lanes runner" (V) | Oscar, María | Hermes (CLI y kanban local), `claude -p`, git, gh, `.env` local | **Parado**: nadie reclama tarjetas, no hay lotes ni botones (V: la decisión de carriles lo dice) | `lanes.yaml`, `.env` y `.state/` en disco |
+| **Gateway de Hermes** (bot de Telegram del agente personal) | PC de Oscar, tarea "Hermes_Gateway" (V; estado `running`, 2 plataformas conectadas) | Oscar | `config.yaml`, modelos externos | **Parado** | `config.yaml` de Hermes + scripts `apply_*.py` de `tools/hermes-config` |
+| **Kanban de Hermes** (4 tableros: default, oscarhq, migrateam, personal) | SQLite local `kanban.db` en el PC (V) | Oscar, runner, panel | Ficheros locales | **No accesible** | Hermes CLI |
+| **Panel del kanban** `kanban.pildoradigital.com` | PC (tarea "Hermes Dashboard") publicado con **túnel de Cloudflare** `pildora-design` (V por `instalar-panel-y-tunel.ps1`) | Oscar y quien tenga enlace | PC encendido + `cloudflared` | **Caído** | `config-design.yml` en `~/.cloudflared` |
+| **Monitor / auditor / brief diario** | PC, tareas "Monitor Oscar (alertas)", "Auditor diario carriles", "Resumen diario Hermes" (V) | Oscar | PC | Parado | Scripts en `tools/monitor` y `agent-lanes/brief` |
+| **Snapshot del kanban a la nube** | PC, tarea "Kanban snapshot Oscar HQ" ejecuta `scripts/push_kanban_snapshot.py` (V) | El bot de roles (lee la tabla de snapshots en Supabase, V) | PC encendido y `.env` de oscar-hq | **Deja de actualizarse**; el bot responde con datos viejos sin avisar (S sobre la ausencia de aviso) | Script + tarea programada |
+| **Oscar HQ API + bot de roles + crews** | Railway, proyecto "Oscar HQ", entorno production (V) | Equipo (Andrea, Ingerber, María), Oscar | Supabase, proveedores de modelos | Funciona | Variables de Railway + tablas (`ohq_telegram_configs.role_routes`, `ohq_system_settings`) + código |
+| **Panel de Oscar HQ (dashboard)** | Next.js; despliegue Vercel o Railway (S) | Oscar y equipo | API de Railway | Funciona (S) | `/admin/settings` (clave-valor), página de Telegram (token, chats, webhook) |
+| **Supabase** (proyectos: Oscar HQ, MigraTeam, MigraTeam-staging, cartera) | Nube (V) | Todo | — | Funciona | Migraciones SQL (`supabase/migrations`; Alembic en MigraTeam) |
+| **Webs** pildoradigital.com, recursos.…, migrateam.com | Vercel / Railway (V por CLAUDE.md) | Público | Git push | Funciona | Repos en GitHub |
+| **MigraTeam** backend | Railway por push a `master`; frontend Vercel (V) | Clientes | GitHub | Funciona | Env en Railway/Vercel |
+| **Handbook** | Repo privado GitHub, PR-only (V) | Humanos; copia manual a `memory/brands` | — | Funciona | Git |
+| **Mini PC Minisforum** | Comprado el 24-09 para túneles, cron y CI (V: decisión escrita). **Sin evidencia de que ya aloje algo** (S) | — | — | — | — |
+
+### 9.2 Diagrama actual
+
+```
+   Equipo (Andrea, Ingerber, María)                Oscar
+        │  Telegram                                  │ Telegram / Claude Code / panel
+        ▼                                            ▼
+ ┌──────────────────┐   lee kanban (copia)   ┌──────────── PC DE OSCAR (debe estar ENCENDIDO) ────────────┐
+ │  Bot de roles    │◄───────────────────────│  runner carriles ─ integrador ─ bot @carriles               │
+ │  (Railway)       │   snapshot (tarea PC)  │  Hermes gateway ─ kanban.db (SQLite) ─ panel kanban         │
+ │  crews, Brand    │                        │  monitor / auditor / brief ─ cloudflared (túnel)            │
+ │  Brain, panel    │                        └────────────────────────────┬────────────────────────────────┘
+ └───────┬──────────┘                                                      │ git push, gh, railway up
+         ▼                                                                 ▼
+   Supabase (Oscar HQ)  ◄──────────────────────────────────────  GitHub ─► Railway / Vercel
+```
+
+### 9.3 Dependencias del PC encendido y duplicidades (hallazgos)
+
+1. **Todo el plano de control vive en un PC**: carriles, integrador, botones, kanban, panel y túnel. Si se apaga, el equipo no ve nada ni puede pedir nada (V).
+2. **El bot del equipo lee una copia del kanban** que sólo se refresca mientras el PC está encendido; no hay indicador de antigüedad en la respuesta (S).
+3. **Personas duplicadas**: `tools/telegram/people.yaml` (hub) y `role_routes.people` (BD de oscar-hq, inexistente hoy, V).
+4. **Configuración repartida en cinco sitios**: `lanes.yaml`, `.env` del hub, `config.yaml` de Hermes, variables de Railway y `role_routes`/`ohq_system_settings`; sólo la última tiene panel y aun así no cubre rutas ni personas (V).
+5. **Constantes en el código**, p. ej. el destino de las alertas de leads (V: `telegram_leads.py`).
+6. **El mini PC no aloja nada verificado**, aunque se compró para sacar estos servicios del portátil.
+
+### 9.4 Infraestructura objetivo
+
+Principio: **la nube es la fuente de verdad del estado y de la configuración; el PC es sólo un trabajador que ejecuta y empuja estado.**
+
+1. **Estado operativo en la nube (fase F).** El hub (productor, carril `claude-hub`) empuja cada pocos minutos un resumen **sin secretos** a la tabla de Supabase `ohq_ops_state` de oscar-hq, de solo lectura para el resto: tarjetas, lotes con PRs incluidos y excluidos y su motivo en lenguaje llano, PRs abiertos, pasos pendientes de una salida y la última auditoría. Ya existe el patrón (`push_kanban_snapshot.py`); se generaliza. Los consumidores viven en oscar-hq (carril `claude-oscarhq`): la herramienta `estado_operativo` del asistente del equipo y la página "Operaciones" del panel. **Siempre con la antigüedad del dato**; si el PC está apagado, lo dicen.
+2. **Configuración única en BD + panel (fase P)**: personas, rutas por tema, herramientas (exclusiones), topes, destinatarios de avisos y ajustes de crews, en `ohq_people`, `ohq_system_settings` y `role_routes`, con pantallas de panel y sin variables de Railway ni SQL manual. `people.yaml` y `lanes.yaml` pasan a semilla/defecto.
+3. **Secretos sólo en Railway o cifrados en BD** (como ya se hace con `bot_token_encrypted`). Ningún secreto en el panel en claro ni en ficheros del repo.
+4. **Ningún componente que el equipo necesite depende del PC.** Lo que sí puede seguir en el PC (ejecutar código con `claude -p`, worktrees, gh) es un trabajador: apagado, el estado dice "carril offline desde hace X" y las peticiones del equipo quedan en cola en la nube.
+5. **Mover los servicios no críticos para el equipo al mini PC** (encendido 24/7): runner, integrador, túnel y panel del kanban. Es una migración de hosting; se decide aparte.
+6. **Vigilancia**: el monitor publica un latido en `ohq_ops_state`; Railway alerta si se retrasa.
+
+### 9.5 Diagrama objetivo
+
+```
+ Equipo ──Telegram──► Asistente del equipo (Railway) ──lee──► Supabase: config + ohq_ops_state (con antigüedad)
+                          │ crews · Brand Brain · handbook · webs                  ▲
+                          │ pide trabajo (tarjeta a nombre de Oscar)               │ empuja estado + latido (fase F)
+ Oscar ──panel / Telegram─┴─► Panel Oscar HQ (config, personas, permisos, "Operaciones")
+                                                                          ┌───────┴────────── TRABAJADOR (PC o mini PC) ──────┐
+ Oscar ──Telegram──► Bot de control (carriles) ◄──── acciones y botones ──│ runner · integrador · Hermes · kanban local        │
+                                                                          └────────────────────────────────────────────────────┘
+```
+
+### 9.6 Riesgos de la migración
+
+| Riesgo | Impacto | Mitigación |
+|---|---|---|
+| Estado en la nube desactualizado y el bot lo da por bueno | Respuestas erróneas | Mostrar siempre "actualizado hace X"; pasado un umbral, decir que el PC está offline |
+| Duplicar la fuente de configuración durante la transición | Comportamientos distintos entre hub y oscar-hq | Una sola lectura de BD con respaldo a fichero; retirar el fichero tras verificar |
+| Mover el hub al mini PC rompe rutas absolutas (`C:/Users/oscar/...`) | Carriles no arrancan | Parametrizar rutas en `lanes.yaml`; probar con un carril antes de mover el resto |
+| Secretos copiados al mini PC | Superficie de ataque mayor | Secretos por carril con acceso mínimo; rotar tokens al migrar |
+| Exponer el panel sin el túnel actual | Panel inaccesible o expuesto | Mantener Cloudflare Tunnel con autenticación; no abrir puertos |
+| Tablas nuevas sin RLS | Fuga de datos entre marcas | RLS activo sin políticas y acceso por service_role, como el resto de tablas `ohq_*` |
+| El resumen empujado filtra información sensible | Fuga a la nube | Productor con lista blanca de campos; sin cuerpos de tarjeta ni rutas locales; revisión en el PR de la fase F |
+
+### 9.7 Orden recomendado
+
+P (config en BD y panel; incluye personas y permisos), A (en marcha), B, C, F, E. Detalle en §6.
