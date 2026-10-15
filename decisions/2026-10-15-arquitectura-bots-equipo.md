@@ -81,6 +81,15 @@ Orden: **P, A (en marcha), B, C, F, E**.
 
 Máximo 3 flujos de código activos a la vez (regla del hub).
 
+## 7bis. Restricción de la fase G: la cuenta de Claude de Oscar
+
+Los workers de carril (`claude -p`), las explicaciones del bot y las sesiones usan **la cuenta de Claude de Oscar** (login, no clave de API). Consecuencias para el mini PC:
+
+- **Hasta que llegue el mini PC, todo sigue corriendo en el PC de Oscar** (decisión de Oscar 15-10). La fase G solo deja el sistema *listo* para migrar: rutas parametrizadas, inventario, guion de migración y vuelta atrás.
+- El mini PC necesitará su propio inicio de sesión de Claude con esa cuenta, hecho por Oscar a mano; ninguna credencial se copia.
+- **Riesgo a verificar antes de migrar:** compartir un mismo login entre dos máquinas puede invalidar sesiones (en `config.yaml` de Hermes hay una nota sobre tokens de refresco de un solo uso). Hasta comprobarlo, el control corre en **una sola máquina a la vez**; se apaga en el PC antes de encender en el mini PC.
+- El consumo de la suscripción (límites de uso) es el mismo esté donde esté; la fase F debe mostrar el gasto.
+
 ## 7. Riesgos y decisiones abiertas
 
 - **Coste de `ejecutar_crew`**: sin tope diario por persona un crew mal pedido es caro. Propuesta inicial: tope por
