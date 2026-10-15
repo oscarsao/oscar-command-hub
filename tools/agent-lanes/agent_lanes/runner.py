@@ -15,6 +15,7 @@ from .config import ROOT, Lane
 from .hermes import GUARD_LIMIT_MARK, looks_like_guard_limit
 from .notices import (MessageStore, TaskNotices, files_label, money, normalize_questions, question_text,
                       questions_block, render, status_line, test_label)
+from .preflight import preflight_warnings
 from .telegram import telegram_target
 
 log = logging.getLogger("agent_lanes")
@@ -120,6 +121,7 @@ class LaneRunner:
         self.pid_alive = pid_alive
         self.exclude = set(exclude or ())
         self._active: dict[str, dict] = {}  # tid -> task being processed (for notice routing)
+        self._preflighted: set[str] = set()  # tareas ya avisadas por el chequeo previo (una vez por arranque)
         self._subs_dropped: set[str] = set()  # tareas con la suscripción de Hermes ya quitada (listado o claim)
         self._reasked: set[str] = set()  # tareas relanzadas UNA vez porque el worker repitió una pregunta ya respondida
 
@@ -309,9 +311,13 @@ class LaneRunner:
                 notes = self.hermes.coordinator_notes(tid) if hasattr(self.hermes, "coordinator_notes") else []
                 if notes:
                     task = {**task, "coordinator_notes": notes}
+                # Aviso previo (antes de gastar la pasada): lo que pide la tarjeta y los límites del carril no
+                # permiten. Solo informa, una vez por tarea y arranque; no bloquea ni toca la config.
+                warns = [] if tid in self._preflighted else self._preflight(lane, tid, task)
                 self.notify("running", tid, task,
                             status_line("en curso", f"aplicando cambios de revisión (ronda {len(feedback)})"
-                                        if feedback else None), branch_link=bool(feedback) and not ops)
+                                        if feedback else None), branch_link=bool(feedback) and not ops,
+                            alert=bool(warns), bullets=[f"⚠️ {w}" for w in warns] or None)
                 cwd = self.git.prepare_worktree(lane, tid, task) if ops else self.git.prepare_worktree(lane, tid)
                 if not ops and hasattr(self.git, "sync_base"):
                     # Antes de repetir nada: la lane al día con origin/<base>. Con conflicto se lo pasamos al worker
@@ -387,6 +393,18 @@ class LaneRunner:
                 "en review", files_label(len(result.get("changed_files") or [])), test_label(check.test_exit),
                 money(outcome.cost_usd)), changed_files=result.get("changed_files"), for_oscar=result.get("for_oscar"))
             return "review"
+
+    def _preflight(self, lane: Lane, tid: str, task: dict) -> list[str]:
+        """Avisos de permisos que faltan (ver preflight.py); quedan también como comentario de la tarjeta."""
+        self._preflighted.add(tid)
+        try:
+            warns = preflight_warnings(lane, task)
+            if warns:
+                self.hermes.comment(tid, "LANE aviso previo: " + "; ".join(warns))
+            return warns
+        except Exception as exc:  # el chequeo nunca impide trabajar
+            log.warning("%s: chequeo previo falló: %s", tid, exc)
+            return []
 
     def _reask_if_answered(self, lane: Lane, tid: str, cwd: str, session_id: str, deadline: float, outcome):
         """(outcome, nota). Si el worker pide decisión sobre algo que Oscar YA contestó en la tarjeta (otra redacción),
