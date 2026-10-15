@@ -94,13 +94,23 @@ def classify(items: list[dict], now: float) -> dict:
     since = now - DAY
     decide, integrate, errors, done, backlog = [], [], [], [], []
     cost = 0.0
+    by_lane: dict[str, dict] = {}
+
+    def lane_stat(assignee):
+        if not assignee or assignee == OSCAR:
+            return {}
+        return by_lane.setdefault(assignee, {"done": 0, "blocked": 0, "waiting": 0, "cost": 0.0})
+
     for it in items:
         t, d = it["task"], it.get("detail")
         status, assignee = t.get("status"), t.get("assignee")
+        ls = lane_stat(assignee)
         it = {**it, "brand": brand(it["board"], assignee)}
         kind = block_kind(d) if status == "blocked" else None
         if status == "blocked" and kind == "needs_input":
             decide.append({**it, "why": "needs_input", "since": decision_since(t, d)})
+            if ls:
+                ls["waiting"] += 1
         elif assignee == OSCAR and status in ("ready", "blocked"):
             # Solo lo marcado como decisión o de la semana pide atención hoy; el resto es su backlog.
             if is_decision_card(t):
@@ -109,6 +119,8 @@ def classify(items: list[dict], now: float) -> dict:
                 backlog.append(it)
         elif status == "blocked":  # transient o sin kind conocido
             errors.append(it)
+            if ls:
+                ls["blocked"] += 1
         if status in ("done", "review") and not _comments_start(d, "INTEGRADO"):
             if _comments_start(d, "APROBADO-OSCAR"):
                 integrate.append({**it, "why": "pr"})
@@ -116,9 +128,14 @@ def classify(items: list[dict], now: float) -> dict:
                 integrate.append({**it, "why": "review"})
         if status == "done" and (t.get("completed_at") or 0) >= since:
             done.append(it)
+            if ls:
+                ls["done"] += 1
         for r in (d or {}).get("runs") or ():
             if (r.get("ended_at") or 0) >= since:
-                cost += run_cost(r.get("metadata"))
+                c = run_cost(r.get("metadata"))
+                cost += c
+                if ls:
+                    ls["cost"] += c
     decide.sort(key=_prio)
     integrate.sort(key=lambda i: (i["why"] != "pr",) + _prio(i))
     errors.sort(key=_prio)
@@ -126,7 +143,8 @@ def classify(items: list[dict], now: float) -> dict:
     for it in sorted(done, key=lambda i: -(i["task"].get("completed_at") or 0)):
         by_brand.setdefault(it["brand"], []).append(it)
     return {"decide": decide, "integrate": integrate, "errors": errors, "backlog": len(backlog),
-            "done": {b: by_brand[b] for b in BRAND_ORDER if b in by_brand}, "cost": cost}
+            "done": {b: by_brand[b] for b in BRAND_ORDER if b in by_brand}, "cost": cost,
+            "by_lane": by_lane}
 
 
 # --- render (puro) ----------------------------------------------------------------------------------
@@ -157,8 +175,20 @@ def _more(n: int) -> list[str]:
     return [f"  +{n} más"] if n > 0 else []
 
 
+def lane_summary(stat: dict | None, show_cost: bool) -> str:
+    """" · ✔ 2 hechas · ⛔ 1 bloqueada · ❓ 1 espera a Oscar · 💸 ~1,5 $"; vacío si no hay nada que contar."""
+    stat = stat or {}
+    parts = [f"✔ {stat['done']} hecha{'s' if stat['done'] != 1 else ''}" if stat.get("done") else "",
+             f"⛔ {stat['blocked']} bloqueada{'s' if stat['blocked'] != 1 else ''}" if stat.get("blocked") else "",
+             f"❓ {stat['waiting']} espera{'n' if stat['waiting'] != 1 else ''} a Oscar" if stat.get("waiting") else ""]
+    cost = money(stat.get("cost") or 0) if show_cost else ""
+    if cost:
+        parts.append(f"💸 ~{cost}")
+    return "".join(f" · {p}" for p in parts if p)
+
+
 def _render(sec: dict, lanes: list[dict], now: float, base_url: str | None, caps: tuple, prueba: bool,
-            scope: str | None = None) -> str:
+            scope: str | None = None, cfg=None) -> str:
     c_dec, c_int, c_err, c_ids = caps
     out = [f"☀️ <b>Buenos días · {fecha(now)}</b>" + (f" · {html.escape(scope)}" if scope else "")
            + (" (prueba)" if prueba else "")]
@@ -192,9 +222,11 @@ def _render(sec: dict, lanes: list[dict], now: float, base_url: str | None, caps
         for r in lanes:
             busy = f" ({', '.join(r['running'])})" if r["running"] else ""
             out.append(f"{STATE_ICON.get(r['state'], '•')} {r['lane']} · {r['state']}{busy} · "
-                       f"cola {r['ready']}" + (f" · review {r['review']}" if r.get("review") else ""))
+                       f"cola {r['ready']}" + (f" · review {r['review']}" if r.get("review") else "")
+                       + (lane_summary(sec.get("by_lane", {}).get(r["lane"]), cfg is None or cfg.resumen_coste)
+                          if cfg is None or cfg.resumen_carriles else ""))
     cost = money(sec["cost"])
-    if cost:
+    if cost and (cfg is None or cfg.resumen_coste):
         out.append(f"\n💸 Coste de ayer: {cost}")
     return "\n".join(out)
 
@@ -204,25 +236,25 @@ def n_lines(text: str) -> int:
 
 
 def render(sec: dict, lanes: list[dict], now: float, base_url: str | None = None, *, prueba: bool = False,
-           scope: str | None = None) -> str:
+           scope: str | None = None, cfg=None) -> str:
     """El primer nivel de CAPS que cabe en MAX_LINES líneas con texto y TEXT_MAX caracteres."""
     text = ""
     for caps in CAPS:
-        text = _render(sec, lanes, now, base_url, caps, prueba, scope)
+        text = _render(sec, lanes, now, base_url, caps, prueba, scope, cfg)
         if n_lines(text) <= MAX_LINES and len(text) <= TEXT_MAX:
             return text
     if len(text) > TEXT_MAX:  # último recurso: sin enlaces (nunca cortar el HTML a medias)
-        text = _render(sec, lanes, now, None, CAPS[-1], prueba, scope)
+        text = _render(sec, lanes, now, None, CAPS[-1], prueba, scope, cfg)
     return text
 
 
 def compose(items: list[dict], lane_rows: list[dict], now: float, base_url: str | None = None, *,
-            brand_name: str | None = None, prueba: bool = False) -> str:
+            brand_name: str | None = None, prueba: bool = False, cfg=None) -> str:
     """Resumen completo; con `brand_name` (/hoy en el tema de una marca) solo esa marca y sus carriles."""
     if brand_name:
         items = [it for it in items if brand(it["board"], it["task"].get("assignee")) == brand_name]
         lane_rows = [r for r in lane_rows if BRANDS.get(r["lane"]) == brand_name]
-    return render(classify(items, now), lane_rows, now, base_url, prueba=prueba, scope=brand_name)
+    return render(classify(items, now), lane_rows, now, base_url, prueba=prueba, scope=brand_name, cfg=cfg)
 
 
 # --- IO: hermes -------------------------------------------------------------------------------------
@@ -287,6 +319,7 @@ def lane_status(lists: dict[str, list[dict]]) -> list[dict]:
 
 def build(now: float | None = None, *, prueba: bool = False, hermes_for=None, brand_name: str | None = None) -> str:
     """El resumen de las 8:00. Lo reutiliza /hoy del bot de carriles (con su `hermes_for` y la marca del tema)."""
+    from agent_lanes import bandeja
     from agent_lanes.config import load_env, load_lanes, load_telegram_settings
     from agent_lanes.hermes import HermesCLI
     now = time.time() if now is None else now
@@ -296,7 +329,8 @@ def build(now: float | None = None, *, prueba: bool = False, hermes_for=None, br
     lane_names = {n for n, l in load_lanes().items() if l.kind == "implement"}
     items, lists = collect(hermes_for, lane_names=lane_names, now=now)
     base = load_env().get("KANBAN_BASE_URL") or load_telegram_settings()["kanban_base_url"]
-    return compose(items, lane_status(lists), now, base, brand_name=brand_name, prueba=prueba)
+    return compose(items, lane_status(lists), now, base, brand_name=brand_name, prueba=prueba,
+                   cfg=bandeja.load())
 
 
 def notifiers() -> list:
