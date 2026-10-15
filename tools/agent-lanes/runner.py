@@ -153,6 +153,7 @@ def main(argv: list[str] | None = None) -> int:
         if decisions:
             decisions.integrator = integrator
         log.info("integrador activo: %s", list(integrator.settings.policies))
+        drain.mark_integrator_active()  # lo comprueba `lanes.py restart --drain` tras reiniciar
         if decisions and notify:  # /promover y [🚀 Promover a producción]: sección `promote:` de lanes.yaml
             configs = load_promote_configs()
             if configs:
