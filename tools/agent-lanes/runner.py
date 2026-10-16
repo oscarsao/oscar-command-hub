@@ -13,7 +13,7 @@ import sys
 import time
 from logging.handlers import RotatingFileHandler
 
-from agent_lanes import drain
+from agent_lanes import ciego, drain
 from agent_lanes.bandeja import load as load_bandeja
 from agent_lanes.board_guard import BoardGuardTicker
 from agent_lanes.config import ROOT, load_env, load_lanes, load_runner_settings, load_telegram_settings
@@ -98,7 +98,7 @@ def main(argv: list[str] | None = None) -> int:
     if lanes_bot and notify.enabled and not args.once:
         owner = env.get("OWNER_TELEGRAM_ID") or OWNER_TELEGRAM_ID
         decisions = DecisionDesk(notify, CallbackStore(CALLBACKS_DIR), lanes=all_lanes, hermes_for=hermes_for,
-                                 links=links, owner_id=owner, messages=messages)
+                                 links=links, owner_id=owner, messages=messages, free_text=tg_settings["free_text"])
         username = None
         try:
             username = notify.get_me().get("username")
@@ -171,6 +171,8 @@ def main(argv: list[str] | None = None) -> int:
         if isinstance(r, LaneRunner) and (orphans := r.reconcile()):
             log.warning("reconciliación %s: bloqueadas por runner reiniciado: %s", r.lane.name, orphans)
     draining_logged = False
+    # Runner ciego: mismo fallo al listar tareas durante `ciego_minutes` -> aviso ALTA al DM + restart --drain (1/hora).
+    watch = None if args.once else ciego.Vigilante(minutes=float(settings["ciego_minutes"]), alert=drain.dm_alert(env))
     guard = None
     if not args.once:  # guarda de tablero (ADR-036): tarjetas en un tablero que su carril no lee
         owner_dm = env.get("OWNER_TELEGRAM_ID") or OWNER_TELEGRAM_ID
@@ -209,6 +211,8 @@ def main(argv: list[str] | None = None) -> int:
         if guard:
             guard.tick()
         results = service.run_pass()
+        if watch:
+            watch.observe(service.list_errors)
         if results:
             log.info("pasada: %s", results)
         if args.once or (args.until_one and results):
