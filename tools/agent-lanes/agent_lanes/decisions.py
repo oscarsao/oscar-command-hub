@@ -32,6 +32,7 @@ from .card_options import LETTERS as CARD_LETTERS
 from .hermes import (ANSWER_PREFIX, HERMES_ANSWER_PREFIX, OSCAR_AUTHOR, REVIEW_AUTHOR, answer_progress,
                      is_guard_limit, last_needs_input_block, resume)
 from .explain import explain as _explain
+from .free_text import FREE_ACTIONS, FreeText
 from .notices import (DECISION_CARD_STATUSES, OPTION_LETTERS, card_url, normalize_questions, questions_block,
                       render, status_line, truncate, with_default_options)
 from .review import CHANGES_PREFIX
@@ -223,6 +224,13 @@ class CallbackStore:
         self.prune()
         return token, {"inline_keyboard": rows}
 
+    def live(self):
+        """(token, registro) de cada teclado aún sin usar (no las respuestas force_reply pendientes)."""
+        for p in self.root.glob("*.json"):
+            rec = None if p.name.startswith("reply-") else self._read(p)
+            if rec:
+                yield p.stem, rec
+
     def prune(self, max_age_days: float = 30) -> None:
         """Borra teclados y respuestas pendientes viejos (Telegram no deja editar mensajes de >48 h igualmente)."""
         cutoff = time.time() - max_age_days * 86400
@@ -289,7 +297,7 @@ class DecisionDesk:
                  links=None, owner_id: str = OWNER_TELEGRAM_ID, runner=_proc.run, gh_exe: str = GH_EXE,
                  spawn: Callable[[Callable[[], None]], None] = _spawn, now: Callable[[], datetime] = datetime.now,
                  messages=None, explainer: Callable[[dict], str | None] | None = None,
-                 snoozes: CardSnoozes | None = None):
+                 snoozes: CardSnoozes | None = None, free_text: dict | None = None):
         self.notifier = notifier
         self.store = store
         self.lanes = lanes
@@ -312,6 +320,8 @@ class DecisionDesk:
         # Aplazadas 7 días: junto a los teclados (.state/), así los tests con tmp_path no escriben en el .state real.
         self.snoozes = snoozes or CardSnoozes(Path(store.root).parent / "card_snooze.json")
         self.vetos = VetoBook(Path(store.root).parent / "card_veto.json")  # plazo de veto de las tarjetas reversibles
+        # Texto libre = respuesta a la decisión pendiente del tema (`telegram.free_text` de lanes.yaml); None = apagado.
+        self.free = FreeText(self, **free_text) if free_text else None
 
     # --- teclados -------------------------------------------------------------------------------------
 
@@ -453,6 +463,10 @@ class DecisionDesk:
                 and self.commands.session_note(msg)):  # /sesion abierta: el texto es un punto, no pide ayuda
             self._log_update(chat.get("id"), kind, None, "respondido")
             return
+        if (is_owner and not (msg.get("from") or {}).get("is_bot") and not is_cmd and text.strip() and self.free
+                and self.free.handle(msg)):  # texto libre con una decisión pendiente en este tema
+            self._log_update(chat.get("id"), kind, None, "respondido")
+            return
         if owner_dm and self._wants_help(msg, is_cmd, target):
             result = self._help(msg, name if is_cmd else None)
         self._log_update(chat.get("id"), kind, name, result)
@@ -559,7 +573,7 @@ class DecisionDesk:
         # Tokens de las copias ANTES de actuar: la acción puede emitir teclados nuevos para la misma tarea
         # (p. ej. [🚀 Desplegar] tras fusionar) y esos deben seguir vivos. Grupo y "aceptar todo" retiran por
         # miembro dentro de la acción, solo en los que salieron bien.
-        before = set() if (rec.get("group") or rec.get("accept_all")) else self._tokens(rec)
+        before = set() if (rec.get("group") or rec.get("accept_all") or self._free(rec)) else self._tokens(rec)
         try:
             ok = fn()
         except Exception as exc:
@@ -580,6 +594,11 @@ class DecisionDesk:
                 after()
             except Exception:
                 pass
+
+    @staticmethod
+    def _free(rec: dict) -> bool:
+        """Selector o eco del texto libre: mensajes propios, sin copias del aviso de la tarea."""
+        return any(rec.get(f) for f in FREE_ACTIONS)
 
     def _tokens(self, rec: dict) -> set[str]:
         """Tokens de teclado de todas las copias del aviso de una tarea (tema, DM, bandeja)."""
@@ -638,6 +657,8 @@ class DecisionDesk:
 
     def _act(self, rec: dict, button: dict, where: dict) -> bool:
         action = button["action"]
+        if action in FREE_ACTIONS:  # selector / Deshacer del texto libre
+            return bool(self.free) and self.free.on_button(action, rec, button, where)
         if rec.get("card"):  # tarjeta de decisión de Oscar (/decisiones)
             return self._card_act(rec, button, where)
         if action.startswith("int_"):  # 🔀 Fusionar / 🚀 Desplegar: solo con el Integrador activo
@@ -1164,7 +1185,7 @@ class DecisionDesk:
         if keep_text:  # solo devolver los botones
             self.notifier.edit_markup(where["chat_id"], where["message_id"], markup)
             return
-        if rec.get("group") or rec.get("accept_all"):  # tarjeta de grupo / cabecera: texto propio, sin copias
+        if rec.get("group") or rec.get("accept_all") or self._free(rec):  # grupo / cabecera / selector: texto propio
             self._edit_text(where, status or "")
             return
         if rec.get("card"):  # tarjeta de decisión: su mensaje HTML + lo que pasó, sin botones
