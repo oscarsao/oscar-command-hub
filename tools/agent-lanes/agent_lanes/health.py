@@ -185,7 +185,8 @@ def lane_line(row: dict) -> str:
 
 def build(*, runner: Callable[[], str], rows: Callable[[], list[dict]], gateway: Callable[[], str],
           monitor: Callable[[], tuple[str, list[str]]], drift: Callable[[], str], machine: Callable[[], str],
-          pending: Callable[[], tuple[int, int, int]], now: float | None = None) -> str:
+          pending: Callable[[], tuple[int, int, int]], now: float | None = None,
+          blind: Callable[[], str] | None = None) -> str:
     """Mensaje HTML de /salud. Cada argumento es una sección perezosa; si lanza, esa sección dice "no disponible"."""
     e = html.escape
 
@@ -200,6 +201,8 @@ def build(*, runner: Callable[[], str], rows: Callable[[], list[dict]], gateway:
     out = [f"🩺 <b>Salud</b> · {e(stamp)}", "", f"<b>Carriles</b> · {e(safe(runner, NA))}"]
     lane_rows = safe(rows, None)
     out += [f"• {e(lane_line(r))}" for r in lane_rows] if lane_rows is not None else [f"• {NA}"]
+    if blind and (blind_line := safe(blind, "")):  # episodio de runner ciego activo o el último (ciego.py)
+        out.append(f"<b>Runner ciego</b> · {e(blind_line)}")
     out.append(f"<b>Hermes</b> · {e(safe(gateway, NA))}")
     svc, alerts = safe(monitor, (NA, []))
     out.append(f"<b>Servicios</b> (monitor) · {e(svc)}")

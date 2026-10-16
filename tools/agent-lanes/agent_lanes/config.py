@@ -99,7 +99,7 @@ def load_telegram_settings(path: Path | None = None) -> dict:
 
 def load_runner_settings(path: Path | None = None) -> dict:
     """Top-level `runner:` block (global worker cap, poll interval)."""
-    return {"max_workers": 1, "interval_seconds": 60, **(_load(path).get("runner") or {})}
+    return {"max_workers": 1, "interval_seconds": 60, "ciego_minutes": 5, **(_load(path).get("runner") or {})}
 
 
 def load_env(path: Path | None = None) -> dict[str, str]:

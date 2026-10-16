@@ -24,6 +24,8 @@ class Service:
         # .state/busy.json mientras dura una pasada con trabajo: `lanes.py status` y /salud ven también al carril
         # review (no reclama ni escribe estado por tarea) y no dan "libre" con un worker en marcha (t_bdee05fe).
         self.busy_path = Path(busy_path) if busy_path else None
+        # Fallos al listar tareas en la última pasada (texto del error): los lee el vigilante de runner ciego.
+        self.list_errors: list[str] = []
 
     def _mark_busy(self, jobs: list[tuple[str, str]]) -> None:
         if not self.busy_path:
@@ -38,11 +40,13 @@ class Service:
 
     def run_pass(self) -> dict[str, str]:
         jobs, named = [], []
+        self.list_errors = []
         for lane in self.lanes:
             try:
                 found = lane.jobs()
             except Exception as exc:  # one broken lane (hermes/git error) must not stop the others
                 log.error("%s: no se pudieron listar tareas: %s", getattr(lane, "name", lane), exc)
+                self.list_errors.append(str(exc))
                 continue
             jobs += found
             name = getattr(getattr(lane, "lane", None), "name", "?")
