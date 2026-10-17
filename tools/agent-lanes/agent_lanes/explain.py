@@ -51,29 +51,52 @@ def build_prompt(rec: dict) -> str:
     return "\n".join(lines)
 
 
-def claude_args() -> list[str]:
+def claude_args(system: str = SYSTEM) -> list[str]:
     return ["claude", "-p", "--model", MODEL, "--tools", "", "--strict-mcp-config", "--mcp-config",
             '{"mcpServers":{}}', "--no-session-persistence", "--max-budget-usd", str(MAX_BUDGET_USD),
-            "--system-prompt", SYSTEM, "--output-format", "json"]
+            "--system-prompt", system, "--output-format", "json"]
+
+
+ASK_SYSTEM = ("Eres el asistente de carriles de Oscar, dueño de un negocio y no técnico. Te escribe una pregunta suelta "
+              "por Telegram. Responde SOLO con el estado real que aparece en el contexto (español de España, texto "
+              "plano, sin markdown, 3-6 líneas): qué falta, en qué orden y cuál es el siguiente paso. No ejecutas nada "
+              "ni prometes hacerlo: si hay una acción, nómbrala como botón o comando que Oscar puede pulsar (/falta, "
+              "/estado, /lote…). Si el contexto no responde a la pregunta, dilo y sugiere /falta. No inventes datos.")
+ASK_CONTEXT_MAX = 6000
+ASK_QUESTION_MAX = 800
+
+
+def build_ask_prompt(question: str, context: str) -> str:
+    return (f"Estado actual (de /falta y /estado):\n{(context or '')[:ASK_CONTEXT_MAX]}\n\n"
+            f"Pregunta de Oscar:\n{(question or '').strip()[:ASK_QUESTION_MAX]}")
 
 
 def explain(rec: dict, *, runner=_proc.run, cwd: str | None = None) -> str | None:
     """Texto plano para Telegram, o None si la llamada falla (timeout, coste, salida no JSON)."""
+    return _call(build_prompt(rec), SYSTEM, str(rec.get("task_id") or "-"), runner, cwd)
+
+
+def answer(question: str, context: str, *, runner=_proc.run, cwd: str | None = None) -> str | None:
+    """Texto libre del DM de Oscar: misma llamada barata y aislada, alimentada con el estado real. Nunca ejecuta nada."""
+    return _call(build_ask_prompt(question, context), ASK_SYSTEM, "texto-libre", runner, cwd)
+
+
+def _call(prompt: str, system: str, label: str, runner, cwd: str | None) -> str | None:
     try:
         # cwd neutro: sin CLAUDE.md/AGENTS.md de ningún repo (menos contexto, menos coste, sin arrastrar reglas).
-        cp = runner(claude_args(), input=build_prompt(rec), cwd=cwd or tempfile.gettempdir(), capture_output=True,
+        cp = runner(claude_args(system), input=prompt, cwd=cwd or tempfile.gettempdir(), capture_output=True,
                     text=True, encoding="utf-8", errors="replace", timeout=TIMEOUT_SECONDS)
     except (OSError, subprocess.SubprocessError) as exc:
-        log.warning("%s: explicación no generada: %s", rec.get("task_id"), exc)
+        log.warning("%s: explicación no generada: %s", label, exc)
         return None
     try:
         data = json.loads((cp.stdout or "").strip().splitlines()[-1])
     except (json.JSONDecodeError, IndexError):
-        log.warning("%s: explicación no generada (salida no JSON, rc=%s)", rec.get("task_id"), cp.returncode)
+        log.warning("%s: explicación no generada (salida no JSON, rc=%s)", label, cp.returncode)
         return None
     text = data.get("result") if isinstance(data, dict) else None
     if not isinstance(text, str) or not text.strip() or data.get("is_error"):
-        log.warning("%s: explicación no generada (subtype=%s)", rec.get("task_id"), (data or {}).get("subtype"))
+        log.warning("%s: explicación no generada (subtype=%s)", label, (data or {}).get("subtype"))
         return None
     text = text.strip()
     return text if len(text) <= ANSWER_MAX else text[: ANSWER_MAX - 1].rstrip() + "…"

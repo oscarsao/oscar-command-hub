@@ -12,6 +12,8 @@ también como /cmd@<bot>. Un /cmd@otro_bot (p. ej. el de Hermes) se ignora.
     /hazlo <texto>       crea una tarea pequeña (prioridad alta, tope 15 min): marca y carril salen del texto; con
                          duda, botones para elegir carril. El resultado vuelve a donde lo pediste
     /estado [marca]      en un solo mensaje: en curso, lo que espera a Oscar y lo pendiente de desplegar
+    /falta [marca]       checklist de lo que frena una salida (lote, ramas fuera, SQL, variables, deploy), con el
+                         siguiente paso arriba y botones donde ya existe la acción (falta.py)
     /desplegar <proyecto>  ficha de lo fusionado y sin desplegar con [🚀 Desplegar] → "¿Seguro?" → ✅ Sí (doble toque;
                          el despliegue es el mismo int_deploy del integrador, nunca otra vía)
     /promover migrateam  prepara el PR develop→master y pide la doble confirmación (promote.py)
@@ -50,7 +52,7 @@ from urllib.parse import urlsplit
 
 from . import bandeja as _bandeja
 from .card_options import PREPARED_AUTHOR, PREPARED_PREFIX, CardSpec, card_message, parse_card
-from .decisions import DEPLOY_ASK, DEPLOY_NO, FLUJO, HAZLO, OWNER_TELEGRAM_ID
+from .decisions import DEPLOY_ASK, DEPLOY_NO, FALTA, FLUJO, HAZLO, OWNER_TELEGRAM_ID
 from .deps import (ShowCache, child_bucket, dependency_order, family, pending_parents, tree_lines,
                    waiting_line)
 from .notices import (BOARD_BRANDS, BRANDS, DECISION_CARD_STATUSES, OSCAR_ASSIGNEE, TEXT_MAX, card_url,
@@ -68,6 +70,7 @@ COMMANDS = (
     ("preparar", "Claude redacta contexto y 3 opciones de una tarjeta de decisión: /preparar t_xxx | todas"),
     ("hazlo", "Crea una tarea pequeña (carril según el texto): /hazlo <texto>"),
     ("estado", "En curso, esperando a Oscar y pendiente de desplegar: /estado [marca]"),
+    ("falta", "Qué frena una salida, con el siguiente paso arriba: /falta [marca]"),
     ("desplegar", "Despliega lo fusionado de un proyecto, con doble confirmación: /desplegar oscarhq"),
     ("promover", "Promover MigraTeam a producción (doble confirmación): /promover migrateam"),
     ("lote", "Montar ya el lote de un proyecto: /lote migrateam|oscarhq"),
@@ -216,7 +219,7 @@ class CommandCenter:
                  health: Callable[[], str] | None = None, preparer: Callable[[dict], str | None] | None = None,
                  sesiones=None, suggester: Callable[[dict], dict | None] | None = None,
                  flow_planner: Callable[[str, dict], list[dict]] | None = None,
-                 bandeja: _bandeja.Bandeja | None = None):
+                 bandeja: _bandeja.Bandeja | None = None, asker: Callable[[str, str], str | None] | None = None):
         self.bandeja = bandeja or _bandeja.Bandeja()  # umbrales de la bandeja (bandeja.yaml; el runner pasa load())
         self.notifier = notifier
         self.desk = desk
@@ -236,6 +239,8 @@ class CommandCenter:
         self._sesiones = sesiones  # /sesion: sesion.Sesiones (None = .state/sesiones junto a callbacks/)
         self._flow_planner = flow_planner  # /flujo: (texto, {carril: descripción}) -> tarjetas (None = flujo.propose)
         self._suggester = suggester  # /sesion fin: sesión -> {sección: [viñetas]} (None = sesion.suggest)
+        self._asker = asker  # texto libre del DM: (pregunta, estado) -> respuesta (explain.answer); None = solo la ayuda
+        self._ask_lock = threading.Lock()  # una pregunta libre a la vez (cada una cuesta una llamada a haiku)
         self._health = health  # /salud: texto HTML ya montado (tests); None = health.build con lo real
 
     # --- entrada --------------------------------------------------------------------------------------
@@ -955,6 +960,142 @@ class CommandCenter:
         out += [e(l) for l in pend] if pend else (["nada"] if pend is not None else ["sin integrador activo: no lo sé"])
         return "\n".join(out)[:TEXT_MAX]
 
+    # --- /falta ---------------------------------------------------------------------------------------
+
+    def falta_data(self, brand: str | None) -> tuple[list[str], list[dict]] | None:
+        """(pasos HTML en orden, acciones con botón). Orden: fusionar → ramas fuera → SQL → variables → desplegar →
+        PRs sueltos. None = sin integrador activo (no se sabe)."""
+        from .batch import OPEN_STATUSES, brand_of
+        from .falta import env_pending, plain_reason
+        from .integrator import INT_BATCH_MERGE, INT_MIGRATION_APPLIED, MIGRATION_KINDS, pending_migration
+        integ = getattr(self.desk, "integrator", None)
+        if not integ or not integ.settings.enabled:
+            return None
+        e = html.escape
+        merge, excl, sql, env, deploy, loose, targets = [], [], [], [], [], [], []
+        env_tids: dict[str, tuple] = {}  # tid -> (lane, etiqueta): tarjetas cuyo cuerpo puede pedir variables
+        for name, policy in integ.settings.policies.items():
+            lane = self.lanes.get(name)
+            if lane is None or (brand and BRANDS.get(name) != brand):
+                continue
+            who = "" if brand else f" · {name.removeprefix('claude-')}"
+            if policy.batch:
+                for b in integ.batches.all():
+                    if b.get("lane") != name or b.get("status") not in OPEN_STATUSES:
+                        continue
+                    n = len(b.get("members") or ())
+                    stale = b.get("status") == "stale"
+                    merge.append(f"🔀 Fusionar el lote PR #{b.get('pr')} ({n} rama{'s' if n != 1 else ''}){e(who)}"
+                                 + (f" — está desfasado: /lote {brand_of(policy)} lo monta de nuevo" if stale else ""))
+                    if not stale and b.get("rec"):
+                        targets.append({"action": INT_BATCH_MERGE, "rec": b["rec"], "text": f"🔀 Fusionar lote #{b.get('pr')}"})
+                    if b.get("migration") in MIGRATION_KINDS:
+                        sql.append(f"🗄 Aplicar el SQL/migración ({e(b['migration'])}) del lote #{b.get('pr')}"
+                                   " cuando lo fusiones y antes de desplegar")
+                    for x in b.get("excluded") or ():
+                        excl.append(f"⏭ #{x.get('pr')} quedó fuera del lote: {e(plain_reason(x.get('reason')))}")
+                    for m in b.get("members") or ():
+                        env_tids[m["tid"]] = (lane, f"lote #{b.get('pr')}")
+                waiting = len(integ.batches._candidates(lane))
+                if waiting:
+                    merge.append(f"⏳ {waiting} rama{'s' if waiting != 1 else ''} aprobada{'s' if waiting != 1 else ''} "
+                                 f"esperando lote{e(who)} → /lote {brand_of(policy)}")
+            for tid, st in integ._merged_states(lane, ""):
+                mig, pr = pending_migration(st), st.get("pr", "?")
+                rec = {"kind": "integrate", "task_id": tid, "board": lane.board, "lane": name,
+                       "title": st.get("title") or "", "pr_number": st.get("pr"), "pr_url": st.get("pr_url") or "",
+                       "merge_sha": st.get("merge_sha"), "migration": mig}
+                env_tids[tid] = (lane, f"PR #{pr}")
+                if mig in MIGRATION_KINDS:
+                    sql.append(f"🗄 Aplicar el SQL/migración ({e(mig)}) de PR #{pr} ({e(tid)}){e(who)} y marcarla")
+                    targets.append({"action": INT_MIGRATION_APPLIED, "rec": rec, "text": f"✅ Migración aplicada #{pr}"})
+                elif policy.deploy == "railway_up":
+                    deploy.append(f"🚀 Desplegar PR #{pr} ({e(tid)}){e(who)}: fusionado y sin desplegar")
+                    targets.append({"action": DEPLOY_ASK, "rec": {**rec, "migration": None}, "text": f"🚀 Desplegar #{pr}"})
+                else:
+                    deploy.append(f"📦 PR #{pr} ({e(tid)}){e(who)} fusionado y sin aplicar")
+            for path in sorted(integ.state_dir.glob("t_*.json")):
+                st = integ._state(path.stem)
+                if st.get("lane") == name and st.get("status") == "offered" and not st.get("batch"):
+                    loose.append(f"🔀 PR #{st.get('pr', '?')} ({e(path.stem)}){e(who)} abierto, esperando tu "
+                                 "[🔀 Fusionar] en su ficha" + (" · PR del hub" if name == "claude-hub" else ""))
+        for tid, (lane, label) in env_tids.items():
+            try:
+                body = ((self._shows.show(self.hermes_for(lane.board), tid) or {}).get("task") or {}).get("body")
+            except Exception as exc:
+                log.warning("/falta: no se pudo leer %s: %s", tid, exc)
+                continue
+            vars_ = env_pending(body)
+            if vars_:
+                env.append("🔑 Poner en Railway (" + e(label) + "): "
+                           + ", ".join(f"<code>{e(n)}</code>" + (f"=<code>{e(v)}</code>" if v else "") for n, v in vars_))
+        return merge + excl + sql + env + deploy + loose, targets[:6]
+
+    def falta_text(self, brand: str | None) -> tuple[str, dict | None]:
+        """(mensaje HTML, teclado). Un solo mensaje; botones solo donde la acción ya existe."""
+        from .falta import falta_message
+        data = self.falta_data(brand)
+        if data is None:
+            return "🧭 <b>Qué falta</b>\nEl integrador está apagado: no sé qué PRs ni lotes hay.", None
+        steps, targets = data
+        text = falta_message(brand, steps)[:TEXT_MAX]
+        if not targets:
+            return text, None
+        rec = {"task_id": "falta", "board": "", "lane": "", "kind": "falta", "targets": targets}
+        spec = [[{"text": t["text"], "action": FALTA, "index": i}] for i, t in enumerate(targets)]
+        return text, self.desk.store.issue(rec, spec)[1]
+
+    def cmd_falta(self, where, args: str, brand: str | None) -> None:
+        if args:
+            brand = BRAND_ARGS.get(args.split()[0].lower())
+            if not brand:
+                self._send(where, "Marca desconocida: usa /falta migrateam, /falta pildora o /falta nextjobs",
+                           html=False)
+                return
+        text, markup = self.falta_text(brand)
+        self._send(where, text, markup=markup)
+
+    def falta_choice(self, rec: dict, button: dict, where: dict, desk) -> bool:
+        """Botón de /falta: ejecuta la acción que ya existía (fusionar lote, migración aplicada, desplegar)."""
+        idx, targets = button.get("index"), rec.get("targets") or []
+        if not isinstance(idx, int) or not 0 <= idx < len(targets):
+            return False
+        t = targets[idx]
+        if t["action"] == DEPLOY_ASK:
+            return self.deploy_step(DEPLOY_ASK, t["rec"], where, desk)
+        return bool(desk.integrator) and desk.integrator.on_button(t["action"], t["rec"], where, desk)
+
+    # --- texto libre ----------------------------------------------------------------------------------
+
+    @property
+    def can_answer(self) -> bool:
+        return self._asker is not None
+
+    def free_text(self, msg: dict) -> bool:
+        """Pregunta suelta del dueño en su DM (ni comando, ni /sesion abierta): responde con el estado real. Solo
+        informa: nunca ejecuta nada. False = no actúa (sin asker configurado: queda la ayuda de siempre)."""
+        text = (msg.get("text") or "").strip()
+        if not self._asker or not text:
+            return False
+        where = self._where(msg)
+        if not self._ask_lock.acquire(blocking=False):
+            self._send(where, "Sigo con tu pregunta anterior; dame un momento.", html=False)
+            return True
+        try:
+            try:
+                plain = lambda s: html.unescape(re.sub(r"<[^>]+>", "", s))
+                brand = scope_brand(where[0], where[1], self.lanes, self.generic_origins)
+                context = plain(self.falta_text(brand)[0]) + "\n\n" + plain(self.estado_text(brand))
+                answer = self._asker(text, context)
+            except Exception as exc:
+                log.warning("texto libre: no pude responder: %s", type(exc).__name__)
+                answer = None
+            self._send(where, f"💬 {answer}\n\n(Solo información: para actuar usa /falta o los botones.)" if answer
+                       else "💬 No pude generar la explicación ahora; prueba con /falta o /estado.", html=False)
+        finally:
+            self._ask_lock.release()
+        return True
+
     # --- /salud ---------------------------------------------------------------------------------------
 
     def cmd_salud(self, where, args: str, brand: str | None) -> None:
@@ -967,7 +1108,7 @@ class CommandCenter:
 
     def health_text(self) -> str:
         """Todo local (health.py): .state, `hermes kanban list`, ficheros del monitor y git sin fetch."""
-        from . import drain, health
+        from . import ciego, drain, health
         from .runner import STATE_DIR, pid_alive
         from .status import lane_rows, runner_alive, runner_line
         lock = drain.LOCK_FILE
@@ -982,7 +1123,7 @@ class CommandCenter:
             drift=lambda: health.migrateam_drift(mig.repo if mig else ""),
             machine=health.machine_line,
             pending=lambda: (len(self.pending_decisions()), len(self.stuck_tasks()), len(self.decision_cards())),
-            now=now)
+            now=now, blind=lambda: ciego.resumen(ciego.FILE, now))
 
     def _agent_questions(self, where, pendings: list, now: float, scope: str, limit: int = MAX_CARDS) -> None:
         """Preguntas de los agentes (tareas de carril en needs_input): cabecera + una tarjeta con botones por tarea.

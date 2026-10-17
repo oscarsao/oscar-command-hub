@@ -35,9 +35,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
+from .falta import CONFLICT, OTHER, classify, plain_reason
 from .integration import header, phase_for, repo_name, risk_of
-from .integrator import (INT_BATCH_MERGE, INTEGRATED_PREFIX, MERGE_RETRY_WAITS, NEEDS_MIGRATION, PR_URL_RE, TID_RE,
-                         GateResult, Policy, alembic_heads, safe_env)
+from .integrator import (INT_BATCH_FIX, INT_BATCH_MERGE, INT_BATCH_REBASE, INT_BATCH_SKIP, INTEGRATED_PREFIX,
+                         MERGE_RETRY_WAITS, NEEDS_MIGRATION, PR_URL_RE, TID_RE, GateResult, Policy, alembic_heads,
+                         safe_env)
 from .notices import TEXT_MAX, status_line, truncate
 from .verify import render_test_cmd
 
@@ -46,6 +48,8 @@ log = logging.getLogger("agent_lanes")
 BATCH_LABEL = "🔀 Fusionar lote"
 BATCH_BRANCH_RE = re.compile(r"release/lote-[a-z0-9]+(?:-[a-z0-9]+)*-\d{4}-\d{2}-\d{2}(?:-\d+)?")
 OPEN_STATUSES = ("offered", "stale")  # lote con PR abierto pendiente del botón
+EXCLUDED_TITLE_MAX = 80
+EXPLAIN_BUTTON = {"text": "💬 Explícame más", "action": "explain"}  # = decisions.EXPLAIN (sin importar decisions aquí)
 IDENT = ("-c", "user.name=agent-lanes-integrator", "-c", "user.email=agent-lanes@localhost", "-c", "commit.gpgsign=false")
 
 
@@ -71,7 +75,7 @@ def render_batch_ficha(*, risk, phase: str, rec: dict, status: str, repo: str, b
         out = [f"Incluye ({len(members)}):"] + [f"• #{e(str(n))} · {e(truncate(t, 60))}" for n, t in members]
         if excluded:
             out.append(f"Fuera del lote ({len(excluded)}):")
-            out += [f"• #{e(str(n))} · {e(truncate(t, 40))} — {e(truncate(r, 120))}" for n, t, r in excluded]
+            out += [f"• #{e(str(n))} · {e(truncate(t, 40))} — {e(plain_reason(r))}" for n, t, r in excluded]
         if gates:
             out.append("Gates: " + e(" · ".join(gates)))
         out.append("Riesgos: " + (e(" · ".join(risks)) if risks else "ninguno"))
@@ -276,6 +280,7 @@ class BatchPlanner:
         if not build["ok"]:
             for x in build["excluded"]:
                 self._note_excluded(lane, x, bid)
+                self._notice_excluded(lane, x, bid, branch, None)
             return (f"El lote de {brand} no se pudo montar: " + "; ".join(build["reasons"])) if build["reasons"] \
                 else f"El lote de {brand} quedó vacío: ninguna rama pasó los gates."
         return self._publish(lane, policy, slug, bid, branch, day, build)
@@ -487,12 +492,78 @@ class BatchPlanner:
         task = {"id": tids[0], "title": rec["title"], "body": None}
         i._publish(lane, task, i._text("done", lane, rec, status_line(f"🚦 Lote listo · PR #{number}", hint),
                                        phase="LISTO PARA INTEGRAR"), markup, link=f"🚦 Lote {brand} · PR #{number}")
+        for x in excluded:  # aviso propio por rama con su botón: pulsar uno no gasta el [🔀 Fusionar lote]
+            self._notice_excluded(lane, x, bid, branch, number)
         return f"Lote de {brand} montado: PR #{number} con {len(members)} rama(s)" + (
             f"; {len(excluded)} fuera" if excluded else "")
 
     def _note_excluded(self, lane, x: dict, bid: str) -> None:
         if not self.i.dry_run:
             self.i._comment(lane, x["tid"], f"INTEGRADOR: PR #{x['pr']} queda FUERA del lote {bid}: {x['reason']}")
+
+    def _notice_excluded(self, lane, x: dict, bid: str, branch: str, number: int | None) -> None:
+        """Aviso de una rama fuera del lote: el motivo en lenguaje llano y un botón según la causa. Aviso propio por
+        rama (no en la ficha del lote): pulsar uno no gasta el teclado de [🔀 Fusionar lote]."""
+        i = self.i
+        if i.dry_run or not i.desk:
+            return
+        kind, e = classify(x["reason"]), html.escape
+        plain = plain_reason(x["reason"])
+        rec = {"kind": "integrate", "task_id": x["tid"], "board": lane.board, "lane": lane.name, "title": x["title"],
+               "pr_number": x["pr"], "pr_url": x.get("url") or "", "batch_excluded_pr": x["pr"], "batch_id": bid,
+               "batch_branch": branch, "batch_pr": number, "excl_kind": kind, "reason": x["reason"],
+               "summary": f"Esta rama quedó fuera del lote. Motivo técnico: {x['reason']}. En llano: {plain}.",
+               "for_oscar": "Opciones: arreglarla o rebasarla en una tarjeta nueva, o dejarla para el siguiente lote."}
+        row = [{"text": "🔁 Rebasar", "action": INT_BATCH_REBASE}] if kind == CONFLICT else (
+            [{"text": "🔧 Arreglar", "action": INT_BATCH_FIX}] if kind != OTHER else [])
+        spec = ([row] if row else []) + [[{"text": "⏭ Dejar para el siguiente lote", "action": INT_BATCH_SKIP}],
+                                          [dict(EXPLAIN_BUTTON)]]
+        markup = i.desk.store.issue(rec, spec)[1]
+        offer = ("Puedes " + ("rebasarla sobre el lote" if kind == CONFLICT else "arreglarla")
+                 + " con una tarjeta nueva o dejarla para el siguiente lote.") if row else \
+            "Puedes dejarla para el siguiente lote."
+        text = (f"⏭ <b>Fuera del lote</b> · #{e(str(x['pr']))} · {e(truncate(x['title'], EXCLUDED_TITLE_MAX))}\n"
+                f"Motivo: {e(plain)}.\n{offer}")
+        i._publish(lane, {"id": x["tid"], "title": x["title"], "body": None}, text, markup,
+                   link=f"⏭ Fuera del lote · #{x['pr']}")
+
+    def on_excluded_button(self, action: str, lane, policy: Policy, rec: dict, where: dict, desk) -> bool:
+        """[🔧 Arreglar] / [🔁 Rebasar] crean una tarjeta para el carril de la rama; [⏭ Dejar…] la deja en la cola.
+        True = hecho (aviso editado); False = no se hizo nada y vuelven los botones."""
+        i, tid, pr = self.i, rec["task_id"], rec["batch_excluded_pr"]
+
+        def notify(text: str) -> None:
+            desk.notifier.edit(where["chat_id"], where["message_id"], text, html=False)
+
+        if action == INT_BATCH_SKIP:
+            notify(f"⏭ #{pr} se queda en la cola: entrará en el siguiente lote (si ya no choca ni falla).")
+            return True
+        rebase = action == INT_BATCH_REBASE
+        branch, lote = f"lane/{tid}", rec.get("batch_branch") or lane.base
+        what = (f"Rebasar la rama `{branch}` (PR #{pr}) sobre el lote `{lote}` y la base `{lane.base}`, resolviendo "
+                "los conflictos" if rebase else
+                f"Arreglar la rama `{branch}` (PR #{pr}), que quedó fuera del lote: {rec.get('reason')}")
+        how = (f"- Después `git merge origin/{lote}` (si existe; si no, `origin/{lane.base}`) y resuelve los conflictos "
+               "conservando la intención de ambas partes.\n" if rebase else
+               "- Si es un falso positivo del escáner de secretos (un dato de prueba), cámbialo para que no parezca una "
+               "clave real; si es un test o build roto, arréglalo de verdad.\n")
+        body = (f"## Objetivo\n{what}.\n\n## Cómo\n- Parte de la rama existente: `git fetch origin` y "
+                f"`git merge origin/{branch}` en tu rama (trae su trabajo; no la reescribas).\n{how}"
+                f"- Tu PR sustituye al #{pr}: dilo en `for_oscar`. Cambios mínimos.\n\n"
+                f"Origen: aviso «Fuera del lote» ({rec.get('batch_id')}).\n")
+        tag = "rebase" if rebase else "fix"
+        try:
+            new = i.hermes_for(lane.board).create(truncate(("Rebasar" if rebase else "Arreglar") + f" #{pr}: "
+                                                           + str(rec.get("title")), 70), body, lane.name, priority=10,
+                                                  key=f"lotefuera-{tag}-{rec.get('batch_id')}-{pr}", created_by="oscar")
+        except Exception as exc:
+            log.warning("%s: no se pudo crear la tarjeta de %s: %s", tid, tag, exc)
+            return False
+        i._save(tid, status="batch_replaced", replaced_by=new)  # sale de la cola: la tarjeta nueva la sustituye
+        i._comment(lane, tid, f"INTEGRADOR: PR #{pr} sustituido por la tarjeta {new} ({tag})")
+        notify(f"✅ Creada {new} en {lane.name} para {'rebasar' if rebase else 'arreglar'} #{pr}. "
+               "Cuando termine y la apruebes, entrará en un lote.")
+        return True
 
     def ficha(self, lane, rec: dict, state: str, status: str, *, phase: str | None = None,
               override: str | None = None) -> str:

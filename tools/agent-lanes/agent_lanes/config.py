@@ -93,13 +93,17 @@ def load_telegram_settings(path: Path | None = None) -> dict:
     cfg = data.get("telegram") or {}
     return {"generic_origins": {_chat_thread(o, "*") for o in cfg.get("generic_origins") or ()},
             "kanban_base_url": cfg.get("kanban_base_url") or None,
+            # Aviso al equipo en grupos (decisions._team_notice): {enabled, chats, text}; sin la clave = apagado.
+            "team_notice": cfg.get("team_notice") or {},
+            # Texto libre como respuesta a la decisión pendiente del tema ({window_hours, max_choices}); None = apagado.
+            "free_text": dict(cfg["free_text"]) if cfg.get("free_text") else None,
             # Tema de Integración (fichas de PR/merge/deploy + resumen fijado); None = tema del carril, como antes.
             "integration": _chat_thread(data.get("integration_telegram"))}
 
 
 def load_runner_settings(path: Path | None = None) -> dict:
     """Top-level `runner:` block (global worker cap, poll interval)."""
-    return {"max_workers": 1, "interval_seconds": 60, **(_load(path).get("runner") or {})}
+    return {"max_workers": 1, "interval_seconds": 60, "ciego_minutes": 5, **(_load(path).get("runner") or {})}
 
 
 def load_notice_limits(path: Path | None = None) -> dict:

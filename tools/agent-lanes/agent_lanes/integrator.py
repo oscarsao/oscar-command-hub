@@ -75,7 +75,10 @@ INT_MERGE, INT_DEPLOY, INT_MERGE_DEPLOY = "int_merge", "int_deploy", "int_merge_
 INT_MIGRATION_APPLIED = "int_mig_applied"  # ✅ Migración aplicada (ficha fusionada con migración pendiente)
 INT_APPLY = "int_apply"  # claude-hub: [🔁 Aplicar (reinicio ordenado)] tras fusionar
 INT_BATCH_MERGE = "int_batch_merge"  # [🔀 Fusionar lote] (política con `batch: daily`, ver batch.py)
-INT_ACTIONS = (INT_MERGE, INT_DEPLOY, INT_MERGE_DEPLOY, INT_MIGRATION_APPLIED, INT_APPLY, INT_BATCH_MERGE)
+INT_BATCH_FIX, INT_BATCH_REBASE, INT_BATCH_SKIP = "int_batch_fix", "int_batch_rebase", "int_batch_skip"  # rama fuera del lote
+BATCH_EXCLUDED_ACTIONS = (INT_BATCH_FIX, INT_BATCH_REBASE, INT_BATCH_SKIP)
+INT_ACTIONS = (INT_MERGE, INT_DEPLOY, INT_MERGE_DEPLOY, INT_MIGRATION_APPLIED, INT_APPLY, INT_BATCH_MERGE,
+               *BATCH_EXCLUDED_ACTIONS)
 MIGRATION_APPLIED_PREFIX = "MIGRACION-APLICADA"
 MIGRATION_KINDS = ("supabase", "alembic")  # "infra" no es una migración: no se da por aplicada con un botón
 MIGRATION_BUTTON = {"text": "✅ Migración aplicada", "action": INT_MIGRATION_APPLIED}
@@ -1057,6 +1060,8 @@ class Integrator:
             return False
         if action == INT_BATCH_MERGE and policy.batch and rec.get("batch"):
             return self.batches.on_merge_button(lane, policy, rec, where, desk)
+        if action in BATCH_EXCLUDED_ACTIONS and policy.batch and rec.get("batch_excluded_pr"):
+            return self.batches.on_excluded_button(action, lane, policy, rec, where, desk)
         if action == INT_MERGE and policy.deploy != DEPLOY_ON_MERGE:
             return self._merge(lane, policy, rec, where, desk)
         if action == INT_MERGE_DEPLOY and policy.deploy == DEPLOY_ON_MERGE and not rec.get("migration"):

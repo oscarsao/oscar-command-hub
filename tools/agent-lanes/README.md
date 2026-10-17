@@ -217,6 +217,13 @@ herramientas y ≤0,5 $ por tarjeta (`card_prepare.py`). Código: `card_options.
   `Origen-Telegram` del sitio donde se pidió); el carril sale de palabras clave del texto o de la marca del tema, y con
   duda pregunta con botones. /estado [marca]: en curso, lo que espera a Oscar y lo pendiente de desplegar, en un mensaje.
   /desplegar, /promover y /lote: pendientes de OK (specs/comandos-desplegar-promover-lote.md).
+  /falta [marca]: checklist de lo que frena una salida (lote por fusionar, ramas fuera y por qué, SQL, variables
+  `Env-Pendiente: NOMBRE=ejemplo` de la tarjeta, deploy), siguiente paso arriba y botones donde la acción ya existe.
+  Cada rama que queda fuera de un lote sale en su propio aviso con motivo llano y [🔧 Arreglar] / [🔁 Rebasar] (crean
+  una tarjeta que parte de esa rama) / [⏭ Dejar para el siguiente lote] / [💬 Explícame más]. Una pregunta suelta en el
+  DM de Oscar (ni comando ni /sesion abierta) se contesta con haiku sin herramientas y tope de coste, alimentado con
+  /falta y /estado; solo informa. `telegram.team_notice` en lanes.yaml (apagado) hace que el bot conteste en un grupo
+  «esto lo lleva el asistente del equipo» cuando le escriben a él.
 - max_workers: el argumento `--max-workers` del servicio manda sobre `lanes.yaml` (=1). El 30-09 el runner arrancó con 2
   porque la tarea instalada se registró con `install-service.ps1 -MaxWorkers 2` (el ejemplo de su cabecera). Para
   alinearlo: reinstalar el servicio SIN `-MaxWorkers` (lo hace Oscar; los `.ps1` quedan fuera del alcance de los
