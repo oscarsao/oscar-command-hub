@@ -8,6 +8,9 @@ runner:
   # 1 por defecto: hubo un OOM el 27-09 con varias sesiones abiertas.
   max_workers: 1
   interval_seconds: 60
+  # Vigilante de «runner ciego» (agent_lanes/ciego.py): si no se pueden listar tareas (p. ej. WinError 4551 de App
+  # Control) durante estos minutos seguidos, aviso ALTA al DM de Oscar y un `restart --drain` automático (máx. 1/hora).
+  ciego_minutes: 5
 
 # Avisos a Telegram. Destino de cada aviso de una tarea, por prioridad:
 #   1. La línea `Origen-Telegram: chat=<id> thread=<id>` del cuerpo, si el chat está en TELEGRAM_ALLOWED_CHATS (.env)
@@ -23,6 +26,18 @@ telegram:
   generic_origins:
     - {chat: 6744452215}              # DM de Oscar (cualquier hilo)
     - {chat: -1003530490339, thread: 5}  # Gestión · Operaciones General
+  # Aviso al equipo (APAGADO por defecto: sin esta clave, o con enabled: false, el bot ignora el texto de los grupos).
+  # Con enabled: true, si alguien escribe a ESTE bot en uno de los chats (@mención o respuesta a un mensaje suyo)
+  # contesta una vez por minuto «esto lo lleva el asistente del equipo». Lo que hablan entre ellos no se contesta.
+  # team_notice:
+  #   enabled: false
+  #   chats: [-100XXXXXXXXXX]   # id del grupo de Marketing (lo decide Oscar)
+  #   text: Esto lo lleva el asistente del equipo: escríbele a él.
+  # Texto libre de Oscar = respuesta a la decisión pendiente de ESE tema (auditoría t_dddcc232, P1). Con una sola
+  # pendiente la toma como respuesta (eco + Deshacer); con varias pregunta cuál. Nunca promueve/fusiona/despliega.
+  # window_hours: solo cuentan avisos enviados en las últimas N horas. max_choices: botones del selector.
+  # Quitar el bloque apaga la función.
+  free_text: {window_hours: 72, max_choices: 5}
 
 # Tema de Integración (28-09, Oscar): TODO aviso de PR/merge/deploy (tarjeta done con ✅ Aprobar, "Listo para integrar",
 # gates fallidos, en espera, fusionado, desplegado, fallo de deploy) va aquí como ficha con cabecera por riesgo
