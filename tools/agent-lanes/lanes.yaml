@@ -26,6 +26,13 @@ telegram:
   generic_origins:
     - {chat: 6744452215}              # DM de Oscar (cualquier hilo)
     - {chat: -1003530490339, thread: 5}  # Gestión · Operaciones General
+  # Aviso al equipo (APAGADO por defecto: sin esta clave, o con enabled: false, el bot ignora el texto de los grupos).
+  # Con enabled: true, si alguien escribe a ESTE bot en uno de los chats (@mención o respuesta a un mensaje suyo)
+  # contesta una vez por minuto «esto lo lleva el asistente del equipo». Lo que hablan entre ellos no se contesta.
+  # team_notice:
+  #   enabled: false
+  #   chats: [-100XXXXXXXXXX]   # id del grupo de Marketing (lo decide Oscar)
+  #   text: Esto lo lleva el asistente del equipo: escríbele a él.
   # Texto libre de Oscar = respuesta a la decisión pendiente de ESE tema (auditoría t_dddcc232, P1). Con una sola
   # pendiente la toma como respuesta (eco + Deshacer); con varias pregunta cuál. Nunca promueve/fusiona/despliega.
   # window_hours: solo cuentan avisos enviados en las últimas N horas. max_choices: botones del selector.
