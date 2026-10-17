@@ -13,7 +13,7 @@ from typing import Callable
 from . import proc as _proc
 from .config import ROOT, Lane
 from .hermes import GUARD_LIMIT_MARK, looks_like_guard_limit
-from .notices import (MessageStore, TaskNotices, files_label, money, normalize_questions, question_text,
+from .notices import (MessageStore, TaskNotices, files_label, fit_reason, money, normalize_questions, question_text,
                       questions_block, render, status_line, test_label)
 from .preflight import preflight_warnings
 from .telegram import telegram_target
@@ -149,6 +149,7 @@ class LaneRunner:
                                                     summary=summary, for_oscar=for_oscar, yes_no=yes_no,
                                                     q_index=q_index)
                 self._notices.publish(tid, text, target, self.lane.telegram, alert=alert, reply_markup=markup,
+                                      followup=list(getattr(bullets, "overflow", None) or ()) or None,
                                       **({"mirror_to": mirror} if mirror else {}))
                 return
             except Exception as exc:
@@ -243,7 +244,7 @@ class LaneRunner:
         if for_oscar:  # también a la tarjeta: renotify y /decisiones lo recuperan del motivo del bloqueo
             reason = f"{reason}\n{FOR_OSCAR_PREFIX} {' '.join(str(for_oscar).split())}"
         log.warning("%s bloqueada (%s): %s", tid, kind, reason)
-        blocked = self.hermes.block(tid, kind, reason[:1500])
+        blocked = self.hermes.block(tid, kind, fit_reason(reason))
         if not blocked:
             log.error("no se pudo bloquear %s (%s) en el kanban: la tarea sigue en running", tid, kind)
         task = task or self._active.get(tid)
@@ -433,7 +434,7 @@ class LaneRunner:
         autocuración ni Reintentar la devuelven al carril; el aviso (una vez) dice qué comando usar."""
         reason = f"{GUARD_LIMIT_MARK} el worker no puede hacerlo con el guard del carril:\n{detail}"
         log.warning("%s bloqueada (limitacion_guard): %s", tid, reason)
-        blocked = self.hermes.block(tid, "needs_input", reason[:1500])
+        blocked = self.hermes.block(tid, "needs_input", fit_reason(reason))
         if not blocked:
             log.error("no se pudo bloquear %s (limitacion_guard) en el kanban: la tarea sigue en running", tid)
         self.notify("blocked", tid, task or self._active.get(tid), status_line(

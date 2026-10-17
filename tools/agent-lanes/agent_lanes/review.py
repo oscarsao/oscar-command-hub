@@ -18,7 +18,7 @@ from typing import Callable
 from .config import ROOT, Lane
 from .hermes import REVIEW_AUTHOR
 from .integration import CHANNEL, link_line, render_ficha, repo_name, risk_of, risks_from_files
-from .notices import (MessageStore, TaskNotices, files_label, money, questions_block, render, status_line,
+from .notices import (MessageStore, TaskNotices, files_label, fit_reason, money, questions_block, render, status_line,
                       test_label, truncate)
 from .runner import dm_mirror
 from .telegram import telegram_target
@@ -148,6 +148,7 @@ class ReviewRunner:
                                           **({"mirror_to": owner} if owner else {}))
                     return
                 self._notices.publish(task["id"], text, target, lane_target, alert=alert, reply_markup=markup,
+                                      followup=list(getattr(bullets, "overflow", None) or ()) or None,
                                       **({"mirror_to": mirror} if mirror else {}))
                 return
             except Exception as exc:
@@ -191,7 +192,7 @@ class ReviewRunner:
                questions: list[str] | None = None) -> str:
         """`reason` (detalle técnico) va a la tarjeta y al log; a Telegram solo `public` (+ preguntas si needs_input)."""
         log.warning("%s bloqueada en review (%s): %s", task["id"], kind, reason)
-        blocked = h.block(task["id"], kind, reason[:1500])
+        blocked = h.block(task["id"], kind, fit_reason(reason))
         if not blocked:  # block solo mueve running/ready: una tarea en review puede no quedar bloqueada
             log.error("no se pudo bloquear %s (%s) en el kanban", task["id"], kind)
             # 9 alertas sin botones seguidas (escalada de review): se anota la cabeza y se emite UNA con botones.

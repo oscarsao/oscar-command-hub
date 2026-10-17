@@ -26,7 +26,7 @@ from typing import Callable
 
 from .hermes import (answer_progress, hermes_answer_text, is_guard_limit, last_needs_input_block,
                      pending_hermes_answer, resume)
-from .notices import truncate
+from .notices import CUT_MARK, truncate
 
 
 def answered_after_last_claim(show: dict | None) -> bool:
@@ -51,12 +51,16 @@ log = logging.getLogger("agent_lanes")
 
 ANSWERED_VIA_HERMES = "✅ respondido vía Hermes"
 HEALED = "💬 respondida"  # + " (N/N)": todas sus preguntas contestadas en la tarjeta
-REASON_CUT = 1490  # runner._block guarda reason[:1500] en la tarjeta
+REASON_CUT = 1490  # recorte heredado: antes runner._block guardaba reason[:1500] sin marca (ahora fit_reason la deja)
 
 
 class HermesAnswers:
-    def __init__(self, lanes: dict, *, hermes_for: Callable[[str], object], desk=None, interval: float = 60):
-        """`desk`: DecisionDesk (bot de carriles) para retirar botones y editar copias; sin él solo se desbloquea."""
+    def __init__(self, lanes: dict, *, hermes_for: Callable[[str], object], desk=None, interval: float = 60,
+                 alert: Callable[[str], None] | None = None):
+        """`desk`: DecisionDesk (bot de carriles) para retirar botones y editar copias; sin él solo se desbloquea.
+        `alert(texto)`: aviso al DM de Oscar (drain.dm_alert) cuando una tarea no se puede autocurar por motivo recortado."""
+        self.alert = alert
+        self._alerted: set[str] = set()
         self.lanes = {n: l for n, l in lanes.items() if getattr(l, "kind", "implement") in ("implement", "ops")}
         self.hermes_for = hermes_for
         self.desk = desk
@@ -101,9 +105,12 @@ class HermesAnswers:
         reason = (last_needs_input_block(show).get("payload") or {}).get("reason") or ""
         if is_guard_limit(reason):
             return False  # limitación permanente del guard: no es una pregunta, requiere consola (/tomar-tarea)
-        if len(reason) >= REASON_CUT and ACTIONS_HEADER not in reason:
-            # Motivo cortado por el límite de `hermes block` justo en las preguntas: la última puede faltar o estar a
-            # medias. Fail-closed: sigue en /decisiones, pero no se desbloquea sola.
+        if CUT_MARK in reason or (len(reason) >= REASON_CUT and ACTIONS_HEADER not in reason):
+            # Motivo cortado por el límite de `hermes block`: la última pregunta puede faltar o estar a medias.
+            # Fail-closed: sigue en /decisiones, pero no se desbloquea sola. Se distingue el recorte MARCADO
+            # (CUT_MARK, desde que el runner lo deja siempre) del heredado (>= REASON_CUT sin marca ni cabecera de
+            # acciones), y en ambos se avisa a Oscar una vez: antes se quedaba bloqueada sin que nadie lo supiera.
+            self._alert_cut(task, marked=CUT_MARK in reason)
             return False
         questions = block_questions(show)
         answers, nxt = answer_progress(show, questions)
@@ -130,6 +137,20 @@ class HermesAnswers:
             return False
         log.info("%s: autocuración hecha (queda en %s)", tid, status)
         return True
+
+    def _alert_cut(self, task: dict, *, marked: bool) -> None:
+        """Aviso (una vez por tarea y arranque) de que el motivo del bloqueo está recortado y no se autocura."""
+        tid = task.get("id") or ""
+        if not self.alert or tid in self._alerted:
+            return
+        self._alerted.add(tid)
+        how = "tiene una marca de recorte" if marked else "llega al límite de tamaño y puede estar cortado"
+        try:
+            self.alert(f"{tid}: el motivo del bloqueo {how}, así que no puedo comprobar que respondieras todas las "
+                       "preguntas y no la desbloqueo sola. Ábrela en /decisiones o en la tarjeta y respóndela o "
+                       "pulsa Reintentar.")
+        except Exception as exc:
+            log.warning("%s: no se pudo avisar del motivo recortado: %s", tid, exc)
 
     def apply(self, lane, h, show: dict, comment: dict) -> bool:
         task = show.get("task") or {}
