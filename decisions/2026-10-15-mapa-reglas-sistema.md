@@ -177,3 +177,9 @@ Configuración en panel + base (no variables de Railway ni SQL manual) · permis
 - **CRM y leads (t_4228655f):** leer, anotar y asignar; nunca enviar ni borrar. **Git (t_76ea8039):** abrir PR según la matriz, nunca push a main.
 - **Mejora continua (t_742fd89e):** registro de fallos + informe semanal (lunes) con reglas propuestas; Oscar aprueba con un clic y se aplica por tarjeta. Caso semilla: María, 17-10 (doble bot, comandos «Solo Oscar», lead aviso_legal sin herramienta de CRM).
 - **Asistente PM proactivo (17-10, tarjeta [PM]):** el bot del equipo (nube) hace de PM de todos —pendientes, carriles, calendario y seguimientos del CRM, propuesta de contacto a leads, reparto de tareas con [Acepto][No puedo][Luego]—; Hermes es el asesor personal de Oscar. Prepara ideas y Oscar libera (el riesgo bajo se libera solo, máx. 3 flujos). Redacta contactos, nunca envía.
+
+## 10. Temas verificados en Telegram (17-10, id ↔ nombre)
+
+**Gestión (-1003530490339):** t1 Dirección · CEO (sin ruta propia → sombrero por defecto CEO, contesta el bot del equipo) · t5 Operaciones · General (CTO, **hermes**) · t6 Ventas · CSO · t7 Marketing · Decisiones (CMO) · t230 Operaciones · MigraTeam (CTO, **hermes**, marca migrateam) · t231 Operaciones · Píldora (CTO, **hermes**, marca Píldora) · t355 Finanzas · CFO · **t398 Integración y despliegues (sin ruta: hoy cae a CEO; es donde el bot de Trabajos publica fichas de PR/merge/deploy)**. La ruta t148 de `role_routes` no corresponde a ningún tema actual (obsoleta).
+
+**Marketing (-1004277259008):** t1 General · CMO · t74 Planificación y calendario · t77 MigraTeam · Contenido (marca migrateam) · t80 Píldora · Contenido (marca Píldora) · t83 Recursos. Coincide con `role_routes`: el desajuste de ids que había por verificar queda descartado.
