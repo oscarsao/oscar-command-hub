@@ -60,10 +60,12 @@ def test_render_card_format_and_escapes_html():
 def test_questions_block_max_5_items_and_limit_total():
     qs = [f"pregunta {i} " + "z" * 200 for i in range(8)]
     block = questions_block(qs)
-    assert 2 <= len(block) <= 5 and len("\n".join(block)) <= notices.QUESTIONS_MAX_CHARS
-    assert all(b.startswith("• ") for b in block)
+    assert len("\n".join(block)) <= notices.QUESTIONS_MAX_CHARS
+    shown = [b for b in block if b.startswith("• ")]
+    assert 2 <= len(shown) <= 5 and block[-1].startswith("➕ +")  # lo omitido se cuenta, no se oculta
+    assert f"+{8 - len(shown)} preguntas más" in block[-1]
     short = questions_block([f"¿{i}?" for i in range(9)])
-    assert len(short) == 5
+    assert len(short) == 6 and short[-1] == "➕ +4 preguntas más (completas en la tarjeta)"
     assert questions_block([]) == []
 
 
@@ -229,11 +231,15 @@ def test_needs_input_alert_has_short_bullets_and_reply_hint():
     h = FakeHermes(tasks=[{"id": "t_1", "title": "T", "body": "B"}])
     n = FakeNotifier()
     LaneRunner(LANE, hermes=h, git=FakeGit(), worker=FakeWorker([out]), verifier=FakeVerifier(), notify=n).run_once()
-    alert = n.msgs[-1]
-    assert n.silent[-1] is False and alert.startswith("❓ t_1")
+    i = next(k for k, m in enumerate(n.msgs) if m.startswith("❓ t_1"))
+    alert = n.msgs[i]
+    assert n.silent[i] is False
     assert "responde en este hilo o a Hermes" in alert
     bullets = [l for l in alert.split("\n") if l.startswith("• ")]
     assert 1 <= len(bullets) <= 5 and len("\n".join(bullets)) <= notices.QUESTIONS_MAX_CHARS
+    assert notices.CUT_MARK in alert  # la pregunta recortada lo dice (secuencia: una pregunta por paso)
+    rest = "\n".join(n.msgs[i + 1:])  # y su texto completo va en un mensaje aparte, sin notificación
+    assert "detalle " * 39 + "detalle" in rest and n.silent[i + 1] is True
 
 
 def test_needs_input_passes_changed_files_to_links():
