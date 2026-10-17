@@ -87,9 +87,35 @@ resultados → confirma que no hay autoarranque.
 
 La primera vez, en esa ventana hay que hacer login en LexCloud una vez; el perfil dedicado lo recuerda.
 
-## 6. Qué necesito de Oscar (needs_input)
+## 6. Decisiones de Oscar (17-oct) y siguiente paso
 
-- Pegar la salida de los 3 comprobantes de la sección 3 para confirmar la causa raíz.
-- OK para que el siguiente paso sea la opción 2 (acceso directo en Inicio, lo crea Oscar a mano) y, si quieres, una
-  tarea para el aviso del monitor (opción 5). Las opciones 3 y 4 piden tocar tareas programadas o `config.yaml`:
-  no se hacen sin tu confirmación.
+- Autoarranque elegido: **acceso directo en Inicio** (opción 2).
+- Aviso del monitor si cae el 9222 (opción 5): **sí**, como tarea aparte (pendiente de abrir en el kanban).
+- Comprobantes de la sección 3: Oscar dijo que los pega, pero su salida no ha llegado al worker. La causa es A/B/C
+  (nada escucha en 9222); el paso siguiente la confirma solo.
+
+### Crear el acceso directo en Inicio (copiar y pegar en PowerShell, una vez)
+
+Crea el acceso directo en la carpeta Inicio (arranca al iniciar sesión) y lo lanza ahora. No toca Hermes,
+`config.yaml` ni servicios. Para deshacerlo, borra `Chrome automatizacion.lnk` de `shell:startup`.
+
+```powershell
+$chrome = @("$env:ProgramFiles\Google\Chrome\Application\chrome.exe","${env:ProgramFiles(x86)}\Google\Chrome\Application\chrome.exe","$env:LocalAppData\Google\Chrome\Application\chrome.exe") | Where-Object { Test-Path $_ } | Select-Object -First 1
+if (-not $chrome) { throw "No encuentro chrome.exe" }
+$perfil = "$env:USERPROFILE\.hermes\chrome-automation-profile"
+$lnk = "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup\Chrome automatizacion.lnk"
+$s = (New-Object -ComObject WScript.Shell).CreateShortcut($lnk)
+$s.TargetPath = $chrome
+$s.Arguments = "--remote-debugging-port=9222 --remote-allow-origins=* --user-data-dir=`"$perfil`" --no-first-run"
+$s.Save()
+Start-Process $lnk
+Start-Sleep 5
+netstat -ano | findstr :9222
+```
+
+Si la última línea muestra `LISTENING` en `127.0.0.1:9222`, funciona: relanza la tarea de LexCloud (t_63023435) y
+haz login en LexCloud una vez en esa ventana (el perfil propio lo recuerda). Si sale vacía, pega lo que devuelva y
+se revisa (causa C/D). También se comprueba abriendo `http://127.0.0.1:9222/json/version` en cualquier navegador.
+
+Límite: la ventana de Chrome queda abierta; si se cierra, `browser_exec` vuelve a fallar hasta relanzar el acceso
+directo. Por eso el aviso del monitor (opción 5) es el complemento.
