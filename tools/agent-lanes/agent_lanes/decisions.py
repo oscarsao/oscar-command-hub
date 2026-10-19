@@ -50,6 +50,7 @@ PARK_PROFILE = "oscar"
 PR_FOOTER = "🤖 Generated with [Claude Code](https://claude.com/claude-code)"
 
 APPROVE, CHANGES, PARK, RETRY, OPTION, OTHER = "approve", "changes", "park", "retry", "option", "other"
+UNTRIAGE = "untriage"      # 🧊 Sacar de triage: specify_triage_task sin reescribir la tarjeta (nunca unblock)
 EXPLAIN = "explain"        # 💬 Explícame más: responde con una explicación llana; no consume el teclado
 ACCEPT_ALL = "accept_all"  # cabecera de /decisiones: aplica la opción recomendada en todas las que la tienen
 HAZLO = "hazlo"            # /hazlo con duda: el botón elige el carril donde crear la tarea
@@ -118,8 +119,9 @@ def keyboard_spec(state: str, *, block_kind: str | None = None, questions=None,
         return [[park]]
     if state == "blocked" and block_kind == "transient":
         return [[{"text": "🔄 Reintentar", "action": RETRY}, park]]
-    if state == "stuck":  # 🧊 en triage por bloqueo repetido (block_loop_detected): unblock no vale, _retry lo saca
-        return [[{"text": "🔄 Reintentar", "action": RETRY}, park]]
+    if state == "stuck":  # 🧊 en triage por bloqueo repetido (block_loop_detected): unblock no vale, _untriage la saca
+        return [[{"text": "🧊 Sacar de triage", "action": UNTRIAGE}, {"text": "✍️ Responder", "action": OTHER},
+                 {"text": "🗄 Archivar", "action": PARK}]]
     return None
 
 
@@ -739,6 +741,8 @@ class DecisionDesk:
             return self._park(rec, where)
         if action == RETRY:
             return self._retry(rec, where)
+        if action == UNTRIAGE:
+            return self._untriage(rec, where)
         if action == OPTION:
             return self._option_answer(rec, where, button.get("index"))
         return False
@@ -1131,6 +1135,30 @@ class DecisionDesk:
             return True
         self._edit(rec, where, "blocked", "no se pudo reencolar: la tarea ya no está bloqueada ni en triage")
         return False
+
+    def _untriage(self, rec: dict, where: dict) -> bool:
+        """🧊 Sacar de triage: `requeue_triage` (specify_triage_task sin título ni cuerpo); nunca `unblock`, que Hermes
+        rechaza en triage. Siempre contesta: éxito, «ya estaba resuelta» o el fallo con su causa (False: `_safe`
+        devuelve los botones y el texto con la causa se queda). Idempotente: una segunda pulsación no hace nada."""
+        h, tid = self._hermes(rec), rec["task_id"]
+        try:
+            status = (h.show(tid).get("task") or {}).get("status")
+        except Exception:
+            status = None  # sin poder leerla se intenta igualmente: requeue_triage solo actúa sobre tareas en triage
+        if status and status != "triage":
+            self._edit(rec, where, "requeued", f"ya estaba resuelta (ahora en {status}); no hago nada más")
+            return True
+        if self._guard_limited(rec):
+            self._edit(rec, where, "stuck", f"requiere consola: /tomar-tarea {tid} (el guard del carril no lo permite)")
+            return False
+        self._edit(rec, where, "requeued", "🔄 sacando de triage…")
+        new = h.requeue_triage(tid)
+        if not new:
+            cause = getattr(h, "last_error", None) or "Hermes no la dejó salir de triage"
+            self._edit(rec, where, "stuck", f"⚠️ no se pudo sacar de triage: {cause}. Puedes volver a pulsar.")
+            return False
+        self._edit(rec, where, "requeued", "🔄 sacada de triage" + ("" if new == "ready" else f" · queda en {new}"))
+        return True
 
     def _guard_limited(self, rec: dict) -> bool:
         try:

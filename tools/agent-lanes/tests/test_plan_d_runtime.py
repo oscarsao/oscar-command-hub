@@ -193,7 +193,7 @@ def test_decisiones_lists_stuck_tasks_with_reason_and_retry(tmp_path):
     assert "atascada en triage · bloqueada 2 veces seguidas · verificación mecánica fallida" in first["text"]
     assert "test_cmd" not in first["text"]  # nada técnico a Telegram
     assert "pregunta repetida: ¿Borro la tabla vieja?" in second["text"]
-    assert texts(first["markup"]) == ["🔄 Reintentar", "🗄 Aparcar"]
+    assert texts(first["markup"]) == ["🧊 Sacar de triage", "✍️ Responder", "🗄 Archivar"]
     assert messages.all_messages("t_eeeeeee5")  # copia registrada: decidir aquí edita las demás
 
 
@@ -209,9 +209,9 @@ def test_retry_on_a_stuck_task_requeues_it_without_rewriting(tmp_path):
     command(desk, "/decisiones")
     card_msg = next(m for m in bot.sent if m["text"].startswith("🧊 t_eeeeeee5"))
     press(desk, card_msg, 0)
-    assert ("unblock", "t_eeeeeee5") in h.calls and ("requeue_triage", "t_eeeeeee5") in h.calls
+    assert ("requeue_triage", "t_eeeeeee5") in h.calls and not any(c[0] == "unblock" for c in h.calls)  # nunca unblock
     assert h.shows["t_eeeeeee5"]["task"]["status"] == "ready"
-    assert "🔄 reencolada" in bot.edits[-1]["text"]
+    assert "sacada de triage" in bot.edits[-1]["text"]
 
 
 def test_old_blocked_notice_retry_also_works_once_the_task_went_to_triage(tmp_path):
@@ -229,7 +229,8 @@ def test_retry_reports_when_the_task_is_neither_blocked_nor_in_triage(tmp_path):
     cc, desk, bot, h, _ = triage_center(tmp_path, shows)
     markup = desk.markup("stuck", task={"id": "t_eeeeeee5", "title": "T"}, lane=cc.lanes["claude-migrateam"])
     press(desk, {"chat_id": GESTION, "thread_id": "230", "message_id": 78, "markup": markup}, 0)
-    assert any("ni en triage" in e["text"] for e in bot.edits)
+    assert any("ya estaba resuelta" in e["text"] for e in bot.edits)
+    assert not any(c[0] in ("unblock", "requeue_triage") for c in h.calls)
 
 
 def test_hermes_requeue_triage_passes_ids_by_argv_and_reads_status():

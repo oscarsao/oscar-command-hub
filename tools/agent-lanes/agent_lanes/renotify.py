@@ -22,9 +22,10 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from . import proc as _proc
+from .aviso import AvisoAccionable, actions_of, mention, stuck_history
 from .config import Lane
 from .decisions import keyboard_spec
-from .hermes import OSCAR_AUTHOR, answer_progress, is_guard_limit, pending_hermes_answer
+from .hermes import ANSWER_PREFIX, OSCAR_AUTHOR, answer_progress, is_guard_limit, pending_hermes_answer
 from .notices import (
     MessageStore,
     decision_since,
@@ -32,6 +33,7 @@ from .notices import (
     money,
     normalize_questions,
     questions_block,
+    render,
     status_line,
     test_label,
     truncate,
@@ -166,6 +168,7 @@ class Pending:
     yes_no: bool = True  # False en escaladas de review: sin [✅ Sí, adelante] [❌ No] por defecto
     q_index: int = 0  # siguiente pregunta pendiente (las anteriores ya las respondió Oscar en esta ronda)
     answered: list[int] = field(default_factory=list)  # índices ya respondidos (derivado del kanban)
+    ronda: str = ""  # identifica la ronda del aviso (stuck: instante del block_loop_detected); clave de dedup
 
     def pending_questions(self) -> list[dict]:
         return [q for i, q in enumerate(self.questions) if i not in self.answered]
@@ -194,7 +197,7 @@ class Renotifier:
     def __init__(self, lanes: dict[str, Lane], *, hermes_for: Callable[[str], object], notifier,
                  messages: MessageStore, links, desk,
                  branch_state: Callable[[Lane, str, str | None], tuple[bool, bool]] = _git_branch_state,
-                 out: Callable[[str], None] = print, integration=None, tree=None):
+                 out: Callable[[str], None] = print, integration=None, tree=None, attention: dict | None = None):
         if not desk or not getattr(notifier, "bot_id", None):
             raise SystemExit("renotify necesita el bot de carriles (CARRILES_BOT_TOKEN): sin él no hay botones")
         self.lanes = lanes
@@ -209,6 +212,8 @@ class Renotifier:
         self.review_lane = next((l for l in lanes.values() if l.kind == "review"), None)
         self.integration = integration  # IntegrationRoute: las tarjetas done van al tema de Integración
         self.tree = tree  # deps.TreeReader: líneas 🔗/⏸/↳ en los avisos reenviados
+        # Tema «Atención» (lanes.yaml attention_telegram: {chat, thread, mention}): las 🧊 atascadas van aquí con @mención.
+        self.attention = attention if attention and attention.get("chat") else None
 
     # --- qué hay pendiente --------------------------------------------------------------------------
 
@@ -301,9 +306,25 @@ class Renotifier:
             why = public_reason(reason) or "el mismo bloqueo otra vez"
         times = payload.get("recurrences") or 2
         since = float(ev["created_at"]) if ev.get("created_at") else decision_since(task, show)
-        status = status_line("atascada en triage", f"bloqueada {times} veces seguidas", why)
-        return Pending(task["id"], lane, "stuck", task, status, block_kind=payload.get("kind"), since=since,
-                       for_oscar=plain)
+        # Historial: qué se preguntó (y cuántas veces), qué contestó Oscar y qué falta.
+        asks = [e for e in show.get("events") or [] if e.get("kind") == "blocked"
+                and (e.get("payload") or {}).get("kind") == payload.get("kind")]
+        last_ask = max((float(e["created_at"]) for e in asks if e.get("created_at")), default=None)
+        replies = [c for c in show.get("comments") or []
+                   if c.get("author") == OSCAR_AUTHOR and (c.get("body") or "").startswith(ANSWER_PREFIX)]
+        answers = [truncate((c.get("body") or "")[len(ANSWER_PREFIX):].strip(), 120) for c in replies]
+        answered_after = any(float(c.get("created_at") or 0) >= (last_ask or 0) for c in replies)
+        asked = parse_questions(reason) if payload.get("kind") == "needs_input" else []
+        first_q = asked[0]["question"] if asked else None
+        aviso = AvisoAccionable(
+            motivo=status_line("atascada en triage", f"bloqueada {times} veces seguidas", why),
+            contexto_corto=stuck_history(truncate(first_q, 160) if first_q else None, max(len(asks), times), last_ask,
+                                         answers, answered_after, payload.get("kind")),
+            acciones=actions_of(keyboard_spec("stuck"))).lint()
+        who = mention((self.attention or {}).get("mention"))
+        status = aviso.motivo + (f"  {who}" if who else "")
+        return Pending(task["id"], lane, "stuck", task, status, bullets=list(aviso.contexto_corto),
+                       block_kind=payload.get("kind"), since=since, for_oscar=plain, ronda=str(int(since or 0)))
 
     def _plan_done(self, lane: Lane, show: dict) -> Pending | None:
         task = show["task"]
@@ -363,6 +384,19 @@ class Renotifier:
                  f"chat {chat} tema {thread or 0}\n    {p.status}\n"
                  + "".join(f"    {b}\n" for b in p.bullets) + f"    botones: {buttons}")
 
+    def attention_target(self) -> tuple[str, str] | None:
+        a = self.attention
+        return (str(a["chat"]), str(a.get("thread") or "0")) if a else None
+
+    def remind_dm(self, p: Pending, hours: float) -> bool:
+        """Recordatorio al DM de Oscar tras `hours` h sin respuesta: el mismo aviso con sus botones. Solo recuerda: no
+        aprueba, no reintenta ni cambia nada (el silencio nunca es OK)."""
+        owner = getattr(self.desk, "owner_id", None)
+        markup = self.desk.markup("stuck", task=p.task, lane=p.lane, block_kind=p.block_kind)
+        text = (f"⏰ Sigue sin respuesta tras {int(hours)} h (recordatorio: no se ha hecho nada por ti)\n"
+                + render("stuck", p.tid, p.task.get("title"), p.lane.name, p.status.split("  @")[0], None, p.bullets))
+        return bool(owner and self.notifier.send_to(owner, None, text, reply_markup=markup))
+
     def _publish(self, p: Pending, old: dict | None) -> bool:
         # Aviso viejo de otro bot (Hermes): se olvida para que TaskNotices no intente editarlo ni borrarlo.
         if old:
@@ -380,7 +414,8 @@ class Renotifier:
                                 tree=self.tree)
                 lr.notify(p.state, p.tid, p.task, p.status, alert=True, bullets=p.bullets, buttons=True,
                           block_kind=p.block_kind, questions=p.questions, changed_files=p.changed_files,
-                          summary=p.summary, for_oscar=p.for_oscar, yes_no=p.yes_no, q_index=p.q_index)
+                          summary=p.summary, for_oscar=p.for_oscar, yes_no=p.yes_no, q_index=p.q_index,
+                          target_override=self.attention_target() if p.state == "stuck" else None)
         except Exception as exc:
             log.warning("%s: renotify falló: %s", p.tid, exc)
         new = self.messages.get(p.tid)

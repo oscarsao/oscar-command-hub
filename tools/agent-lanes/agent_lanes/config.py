@@ -98,7 +98,9 @@ def load_telegram_settings(path: Path | None = None) -> dict:
             # Texto libre como respuesta a la decisión pendiente del tema ({window_hours, max_choices}); None = apagado.
             "free_text": dict(cfg["free_text"]) if cfg.get("free_text") else None,
             # Tema de Integración (fichas de PR/merge/deploy + resumen fijado); None = tema del carril, como antes.
-            "integration": _chat_thread(data.get("integration_telegram"))}
+            "integration": _chat_thread(data.get("integration_telegram")),
+            # Tema «Atención» (avisos accionables con @mención) {chat, thread, mention, remind_hours}; None = apagado.
+            "attention": dict(data["attention_telegram"]) if (data.get("attention_telegram") or {}).get("chat") else None}
 
 
 def load_runner_settings(path: Path | None = None) -> dict:
