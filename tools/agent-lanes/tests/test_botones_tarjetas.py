@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 from agent_lanes import card_prepare
 from agent_lanes.card_options import PREPARED_AUTHOR, PREPARED_PREFIX
+from agent_lanes.commands import NOT_OWNER as NOT_OWNER_CMD
 from agent_lanes.decisions import NOT_OWNER, CardSnoozes
 from agent_lanes.hermes import OSCAR_AUTHOR
 from tests.test_commands import OSCAR, Bot, KanbanHermes, center, command, press, texts
@@ -232,7 +233,7 @@ def test_preparar_rejects_non_cards_bad_args_and_non_owner(tmp_path):
     command(desk, "/preparar")
     assert "no es una tarjeta" in bot.sent[0]["text"] and bot.sent[1]["text"].startswith("Uso:")
     command(desk, "/preparar t_d0000001", user=999, chat=999)
-    assert bot.sent[-1]["text"] == "Solo Oscar" and not comments_of(h, "comment")
+    assert bot.sent[-1]["text"] == NOT_OWNER_CMD and not comments_of(h, "comment")
 
 
 def test_forged_prepared_comment_from_another_author_is_ignored(tmp_path):

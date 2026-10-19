@@ -5,8 +5,9 @@ coinciden con el de Oscar -> la persona simplemente no existe (recibe el rechazo
 declara en el YAML: su id es OWNER_TELEGRAM_ID (decisions.py), que se pasa a `load_people`.
 
 Las capacidades por rol son CONSTANTES de código. El YAML solo puede activar `carril` y solo para `coo`; la
-capacidad `produccion` (desplegar, promover, aprobar, fusionar, migraciones, env vars) es exclusiva del owner y no
-sale nunca del YAML.
+capacidad `produccion` es exclusiva del owner y no sale nunca del YAML. Aparte, `operador: true` (booleano
+estricto) da a la persona el MISMO acceso que Oscar al bot de carriles (comandos, botones y aprobaciones; decisión de
+Oscar 19-10): se evalúa con `People.es_operador`, no con las capacidades.
 """
 from __future__ import annotations
 
@@ -38,6 +39,7 @@ class Person:
     role: str
     brands: tuple = ()
     caps: frozenset = field(default_factory=frozenset)
+    operador: bool = False  # people.yaml `operador: true`: mismo acceso que Oscar en el bot (comandos, botones, aprobaciones)
 
     def can(self, cap: str) -> bool:
         return cap in self.caps
@@ -59,6 +61,11 @@ class People:
         if uid == self.owner_id:
             return self.owner
         return self._by_id.get(uid)
+
+    def es_operador(self, user_id) -> bool:
+        """Oscar (owner) o una persona de people.yaml con `operador: true`. Única fuente de verdad del acceso al bot."""
+        person = self.lookup(user_id)
+        return bool(person and (person.is_owner or person.operador))
 
     def collaborator_ids(self) -> set[str]:
         return set(self._by_id)
@@ -111,5 +118,6 @@ def load_people(owner_id: str, path: Path | str | None = None) -> People:
         caps = BASE_CAPS[role] | (frozenset(str(c) for c in asked) & OPTIONAL_CAPS.get(role, frozenset()))
         brands = tuple(_clean(b) for b in (cfg.get("brands") or ()) if _clean(b)) if isinstance(
             cfg.get("brands"), (list, tuple)) else ()
-        persons.append(Person(_clean(key), _clean(cfg.get("name") or key) or _clean(key), uid, role, brands, caps))
+        persons.append(Person(_clean(key), _clean(cfg.get("name") or key) or _clean(key), uid, role, brands, caps,
+                              cfg.get("operador") is True))
     return People(owner_id, persons)

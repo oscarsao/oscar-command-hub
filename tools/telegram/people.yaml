@@ -8,8 +8,10 @@
 #   - Capacidades por rol (fijas en codigo): coo/cmo/marketing = consulta, estado, idea, contenido.
 #     `can` solo admite `carril` y solo para coo; hoy esta RESERVADO: aunque se active, todo DM de un no-owner
 #     sigue creando una tarjeta [IDEA] asignada a oscar, nunca una tarea de carril ejecutable.
-#   - PRODUCCION (/desplegar, /promover, /aprobar, /hazlo, botones int_*, fusionar, migraciones, env vars) es SOLO
-#     de Oscar; ningun valor de este fichero lo cambia.
+#   - `operador: true` (booleano estricto) = MISMO acceso que Oscar al bot de carriles: comandos, botones y
+#     aprobaciones (/aprobar, /desplegar, botones int_*, fusionar, migraciones...), por DM y en grupo. Decision de
+#     Oscar 19-10: hoy SOLO Maria. Sus acciones quedan firmadas con su nombre en el comentario de la tarjeta.
+#     Sin `operador: true` (Ingerber, Andrea) el acceso sigue siendo solo el DM de ideas.
 #   - Tras rellenar un user_id (Oscar, a mano): anadirlo a TELEGRAM_ALLOWED_CHATS en tools/agent-lanes/.env para que
 #     los avisos vuelvan a su DM, y que la persona envie /start al bot. NO anadirlo a generic_origins de lanes.yaml.
 #   - brands: la primera marca decide el tablero de sus tarjetas (Pildora -> oscarhq, MigraTeam -> migrateam).
@@ -20,6 +22,7 @@ people:
     role: coo
     brands: [Píldora, MigraTeam]
     can: []         # [carril] reservado; desactivado por defecto
+    operador: true  # mismo acceso que Oscar en el bot de carriles (comandos, botones, aprobaciones); decision de Oscar 19-10
   ingerber:
     name: Ingerber
     user_id: "8847860660"   # Ingerber (CMO Pildora); confirmado por nombre en los registros 13-10

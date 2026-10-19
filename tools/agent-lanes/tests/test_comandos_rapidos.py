@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent_lanes.commands import HAZLO_PRIORITY, CommandCenter
+from agent_lanes.commands import HAZLO_PRIORITY, NOT_OWNER, CommandCenter
 from agent_lanes.hermes import HermesCLI, HermesError
 from tests import test_commands as tc
 from tests.test_commands import GESTION, OSCAR, command, needs, press, texts
@@ -104,7 +104,7 @@ def test_hazlo_two_lane_keywords_asks(tmp_path):
 def test_hazlo_only_oscar(tmp_path):
     cc, desk, bot, h = center(tmp_path)
     command(desk, "/hazlo migrateam: x", user=1234)
-    assert h.created == [] and [m["text"] for m in bot.sent] == ["Solo Oscar"]
+    assert h.created == [] and [m["text"] for m in bot.sent] == [NOT_OWNER]
 
 
 def test_hazlo_creation_failure_is_reported_not_raised(tmp_path):

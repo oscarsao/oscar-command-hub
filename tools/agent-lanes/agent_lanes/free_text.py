@@ -98,7 +98,10 @@ class FreeText:
         found = self.candidates(chat_id, thread_id)
         if not found:
             return False
-        self.desk._spawn(lambda: self._run(msg, found))
+        sender = (msg.get("from") or {}).get("id")  # operador que no es Oscar: sus respuestas se firman con su nombre
+        run = lambda: self._run(msg, found)  # noqa: E731
+        wrap = getattr(self.desk, "_en_nombre_de", None)
+        self.desk._spawn(wrap(sender, run) if wrap else run)
         return True
 
     def _run(self, msg: dict, found: list[dict]) -> None:

@@ -11,8 +11,9 @@ from agent_lanes import telegram
 from agent_lanes.collab_intake import (BODY_MAX, NO_COMMANDS, PANEL_URL, REJECT_EVERY, REJECT_TEXT, CollabIntake,
                                        collab_view, mask_id, redact, sanitize)
 from agent_lanes.commands import COMMANDS, CommandCenter
+from agent_lanes.commands import NOT_OWNER as NOT_OWNER_CMD
 from agent_lanes.config import ROOT, load_telegram_settings
-from agent_lanes.decisions import CallbackStore, DecisionDesk
+from agent_lanes.decisions import NOT_OWNER, CallbackStore, DecisionDesk
 from agent_lanes.integrator import INT_ACTIONS
 from agent_lanes.notices import MessageStore
 from agent_lanes.people import load_people
@@ -279,7 +280,7 @@ def test_every_command_is_owner_only_in_groups(env, uid, cmd):
     msg = {"message_id": 1, "from": {"id": uid}, "chat": {"id": -100123, "type": "supergroup"},
            "text": f"/{cmd} oscarhq"}
     env.desk.handle_update({"message": msg})
-    assert [m["text"] for m in env.tg.sent] == ["Solo Oscar"]
+    assert [m["text"] for m in env.tg.sent] == [NOT_OWNER_CMD]
     assert env.h.created == [] and env.boards == []
 
 
@@ -303,7 +304,7 @@ def test_every_button_is_owner_only(env, uid):
         env.desk.handle_update({"callback_query": {"id": f"c{i}", "from": {"id": uid}, "data": btn["callback_data"],
                                                    "message": {"chat": {"id": uid}, "message_id": 1}}})
     assert len(env.tg.answers) == len(actions)
-    assert all(t == "Solo Oscar puede decidir" for _, t in env.tg.answers)
+    assert all(t == NOT_OWNER for _, t in env.tg.answers)
     assert env.h.created == [] and env.tg.edits == []
 
 
