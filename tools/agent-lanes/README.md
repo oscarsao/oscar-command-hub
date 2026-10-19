@@ -199,6 +199,23 @@ tarjeta; Aparcar comenta y archiva; Aplazar comenta y la oculta 7 días (`.state
 recordatorios). `/preparar t_xxx` o `/preparar todas` (tope 10) genera el borrador con `claude -p --model sonnet` sin
 herramientas y ≤0,5 $ por tarjeta (`card_prepare.py`). Código: `card_options.py`, `card_prepare.py`, `decisions.py`.
 
+## Aviso 🧊 de tarjeta atascada (autonomía F0, `aviso.py`)
+Una tarjeta que Hermes pasa a triage por `block_loop_detected` genera UN aviso accionable (contrato `AvisoAccionable`:
+motivo, contexto_corto, acciones, dueño, plazo, escalado; sin acciones el lint falla) con el historial (qué se preguntó,
+cuántas veces, qué contestó Oscar, qué falta) y tres botones: `[🧊 Sacar de triage]` (`requeue_triage` =
+`specify_triage_task` sin título ni cuerpo; nunca `unblock`), `[✍️ Responder]` (respuesta libre, queda como comentario y
+reabre) y `[🗄 Archivar]`. Todo callback contesta: éxito, «ya estaba resuelta» o el fallo con su causa (se edita el aviso y
+se conservan los botones). Un segundo toque no repite la acción.
+Dónde: bloque opcional `attention_telegram: {chat, thread, mention, remind_hours}` de `lanes.yaml` (sin él, nada cambia:
+el aviso sale donde siempre y sin mención). Con él, el vigilante (`StuckWatcher`, dentro del bucle de `reminders.py`)
+avisa una vez por `tarjeta:estado:ronda` (`.state/stuck_avisos.json`) en el tema Atención con `@mención` (usuario de la
+configuración; en un chat privado la mención no suena) y, pasadas 24 h sin respuesta, manda un recordatorio al DM de
+Oscar. El recordatorio no aprueba ni ejecuta nada: el silencio nunca es OK.
+
+## Prioridad del runner de oscar-hq
+En el runner de oscar-hq la prioridad va invertida respecto a lo habitual: **mayor número = más prioritario**. El hub no la
+cambia; cualquier cola, orden o escalada que se escriba aquí debe respetarla.
+
 ## Otros
 - Tests: `cd tools/agent-lanes && py -3.12 -m pytest -q`.
 - Una pasada de un carril: `py -3.12 runner.py --lane claude-ops --once`. Estado: `py -3.12 lanes.py status`

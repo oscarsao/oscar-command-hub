@@ -417,14 +417,18 @@ class HermesCLI:
         """Saca de `triage` una tarea que Hermes aparcó por bloquearse dos veces por lo mismo (block_loop_detected;
         desde ahí `unblock` falla): specify_triage_task con la API de Hermes en su venv, sin tocar título ni cuerpo.
         Devuelve el estado resultante ("ready", o "todo" si espera a un padre) o None si no estaba en triage/falló."""
+        self.last_error = None
         if not _TID_RE.match(task_id or "") or not _BOARD_RE.match(self.board or ""):
+            self.last_error = "id de tarea o tablero no válidos"
             return None
         try:
             cp = self._run([str(python), "-c", _REQUEUE_TRIAGE, self.board, task_id, author], capture_output=True,
                            text=True, encoding="utf-8", errors="replace", timeout=60, cwd=str(HERMES_AGENT_DIR))
         except (OSError, subprocess.SubprocessError):
+            self.last_error = "no se pudo ejecutar Hermes"
             return None
         if cp.returncode != 0 or (cp.stdout or "").strip().splitlines()[-1:] != ["ok"]:
+            self.last_error = "Hermes rechazó specify_triage_task (¿ya no está en triage?)"
             return None
         self.comment(task_id, "Reintentada por Oscar desde Telegram: sale de triage (bloqueo repetido) sin cambios",
                      author=author)

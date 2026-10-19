@@ -128,13 +128,14 @@ class LaneRunner:
     def notify(self, state: str, tid: str, task: dict | None, status: str, *, alert: bool = False,
                bullets: list[str] | None = None, branch_link: bool = True, changed_files=None,
                buttons: bool = False, block_kind: str | None = None, questions=None, summary: str | None = None,
-               for_oscar: str | None = None, yes_no: bool = True, q_index: int = 0) -> None:
+               for_oscar: str | None = None, yes_no: bool = True, q_index: int = 0,
+               target_override: tuple[str, str] | None = None) -> None:
         """Estado de la tarea en su único mensaje. `status` es texto público: nunca rutas, stderr ni trazas.
         `buttons`: añade los botones de decisión del estado (si hay bot de carriles). `for_oscar`: explicación llana
         del worker, sustituye al "Qué:" técnico; `summary`: último resumen del worker (lo usa 💬 Explícame más)."""
         task = {"id": tid, **(task or {})}
         # Origen-Telegram routes the notice back to that topic (contract with W3b); lane.telegram is the fallback.
-        target = telegram_target(task.get("body"))
+        target = target_override or telegram_target(task.get("body"))  # override = tema Atención (config de confianza)
         mirror = dm_mirror(self._decisions, target, alert, state)
         for attempt in (1, 2):  # un aviso que falla (red, Telegram) se reintenta UNA vez
             try:

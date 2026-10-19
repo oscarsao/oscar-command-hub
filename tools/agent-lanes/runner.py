@@ -26,6 +26,7 @@ from agent_lanes import explain
 from agent_lanes.deps import ShowCache, TreeReader
 from agent_lanes.hermes_answers import HermesAnswers
 from agent_lanes.reminders import Reminders
+from agent_lanes.aviso import REMIND_HOURS, StuckWatcher
 from agent_lanes.git_ops import GitOps, github_slug_problem
 from agent_lanes.hermes import HermesCLI
 from agent_lanes.integration import IntegrationRoute
@@ -43,6 +44,7 @@ from agent_lanes.worker import ClaudeWorker
 LOCK = ROOT / ".state" / "runner.lock"
 TG_OFFSET = ROOT / ".state" / "tg_offset"      # offset de getUpdates del bot de carriles
 REMINDERS_STATE = ROOT / ".state" / "reminders.json"  # franjas 13:00/18:00 ya enviadas
+STUCK_STATE = ROOT / ".state" / "stuck_avisos.json"  # avisos de 🧊 atascadas ya enviados (tarjeta:estado:ronda)
 COLLAB_STATE = ROOT / ".state" / "collab_reject.json"  # DM de desconocidos ya rechazados (1 cada 6 h)
 
 
@@ -114,8 +116,17 @@ def main(argv: list[str] | None = None) -> int:
         decisions.collab = CollabIntake(notify, load_people(owner), hermes_for=hermes_for, state_path=COLLAB_STATE)
         log.info("comandos del bot registrados en: %s", register_commands(notify))
         UpdatePoller(notify, decisions, TG_OFFSET).start()
+        watch = None
+        if tg_settings.get("attention"):  # tema Atención: aviso accionable de cada 🧊 y recordatorio al DM a las 24 h
+            att = tg_settings["attention"]
+            ren = commands.renotifier()
+            ren.attention = att
+            watcher = StuckWatcher(commands.stuck_tasks, lambda p: ren._publish(p, ren.messages.get(p.tid)),
+                                   ren.remind_dm, STUCK_STATE, hours=float(att.get("remind_hours") or REMIND_HOURS))
+            watch = watcher.tick
         Reminders(notify, owner, commands.pending_decisions, REMINDERS_STATE, cards=commands.decision_cards,
-                  stuck=commands.stuck_tasks, base_url=links.kanban_base_url, veto=commands.veto_tick).start()
+                  stuck=commands.stuck_tasks, base_url=links.kanban_base_url, veto=commands.veto_tick,
+                  watch=watch).start()
         log.info("bot de carriles activo (id %s, @%s): avisos con botones, comandos, escucha y recordatorios",
                  notify.bot_id, username)
     else:
