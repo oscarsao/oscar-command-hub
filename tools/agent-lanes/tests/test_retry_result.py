@@ -65,3 +65,26 @@ def test_failed_retry_explains_and_gives_the_buttons_back(tmp_path):
     press(desk, {"chat_id": GESTION, "thread_id": "230", "message_id": 78, "markup": markup}, 0)
     assert any("❌ el reintento falló" in e["text"] for e in bot.edits)
     assert bot.markups and bot.markups[-1][1] == 78  # los botones vuelven
+    assert desk.retries.get(TID) is None  # el ciclo de reintento se cierra al fallar el reencolado
+
+
+def test_block_after_successful_retry_and_review_has_no_verdict_nor_responder(tmp_path):
+    cc, desk, bot, h, messages = triage_center(tmp_path, {TID: stuck(TID)})
+    press_retry(desk, bot)
+    assert desk.retries.get(TID)
+    r = LaneRunner(LANE, hermes=h, git=None, worker=None, verifier=None, notify=bot, messages=messages, decisions=desk)
+    r._clear_retry(TID)  # el reintento salió: la tarea llegó a review
+    assert desk.retries.get(TID) is None
+    msg = rerun_block(desk, bot, messages, h, "worker status=failed")
+    assert "reintento" not in msg["text"]
+    assert "✍️ Responder" not in texts(msg["markup"])
+
+
+def test_needs_input_after_retry_has_no_retry_prefix(tmp_path):
+    cc, desk, bot, h, messages = triage_center(tmp_path, {TID: stuck(TID)})
+    press_retry(desk, bot)
+    h.block = lambda t, kind, why: True
+    r = LaneRunner(LANE, hermes=h, git=None, worker=None, verifier=None, notify=bot, messages=messages, decisions=desk)
+    r._block(TID, "needs_input", "pregunta", {"title": "T", "body": ""}, public="necesita una decisión",
+             questions=["¿A o B?"])
+    assert "el reintento no funcionó" not in bot.sent[-1]["text"]

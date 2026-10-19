@@ -231,6 +231,17 @@ class RetryBook:
         with self._lock:
             return self._load().get(task_id)
 
+    def clear(self, task_id: str) -> None:
+        """Cierra el ciclo de reintento (salió bien, falló al reencolar, o Oscar respondió/aparcó)."""
+        with self._lock:
+            data = self._load()
+            if task_id not in data:
+                return
+            del data[task_id]
+            tmp = self.path.with_suffix(f".{os.getpid()}.{threading.get_ident()}.tmp")
+            tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+            os.replace(tmp, self.path)
+
     def verdict(self, task_id: str, reason: str | None) -> str | None:
         """Frase pública si la tarea se reintentó y vuelve a estar bloqueada ("mismo motivo" u "otro motivo"); None si
         no hubo reintento reciente. El registro se conserva: el teclado lo usa para ofrecer ✍️ Responder."""
@@ -1162,6 +1173,7 @@ class DecisionDesk:
 
     def _park(self, rec: dict, where: dict) -> bool:
         tid, h = rec["task_id"], self._hermes(rec)
+        self.retries.clear(tid)
         self._edit(rec, where, "parked", "🗄 aparcada")
         if not h.assign(tid, PARK_PROFILE):
             self._edit(rec, where, "blocked", "no se pudo aparcar (¿la tarea está en curso?)")
@@ -1184,6 +1196,7 @@ class DecisionDesk:
             if status != "ready":
                 self._edit(rec, where, "requeued", f"🔄 sacada de triage · queda en {status} (espera a otra tarea)")
             return True
+        self.retries.clear(tid)
         self._edit(rec, where, "blocked", "❌ el reintento falló: no se pudo reencolar, la tarea ya no está bloqueada ni "
                    "en triage (quizá otra vía ya la movió: mira la tarjeta)")
         return False
@@ -1208,6 +1221,7 @@ class DecisionDesk:
         if not h.comment(tid, f"{ANSWER_PREFIX} {question} → {answer}"[:3000], author=OSCAR_AUTHOR):
             self._edit(rec, where, "blocked", "no se pudo guardar la respuesta en la tarjeta")
             return False
+        self.retries.clear(tid)
         self._edit(rec, where, "answered", f"💬 respondida: {truncate(answer, 120)}")
         if not self._resume(h, tid) and self._stuck(rec):  # en triage (bloqueo repetido): requeue_triage
             self._edit(rec, where, "answered", "💬 respuesta anotada · no se pudo desbloquear (mira la tarjeta)")
