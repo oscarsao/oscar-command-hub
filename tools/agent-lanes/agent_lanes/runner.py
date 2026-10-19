@@ -248,6 +248,10 @@ class LaneRunner:
         if not blocked:
             log.error("no se pudo bloquear %s (%s) en el kanban: la tarea sigue en running", tid, kind)
         task = task or self._active.get(tid)
+        retries = getattr(self._decisions, "retries", None)  # Reintentar pulsado en Telegram: decir cómo salió
+        verdict = retries.verdict(tid, reason) if (retries and blocked) else None
+        if verdict:
+            public = f"{verdict} ({public})"
         # Botones solo si el bloqueo quedó hecho: Reintentar/Responder hacen `unblock`.
         if kind == "needs_input":
             hint = "responde con un botón o en la tarjeta" if (blocked and self._decisions) else \
