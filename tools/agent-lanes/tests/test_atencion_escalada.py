@@ -2,7 +2,8 @@
 /atencion lista todo lo pendiente con los mismos botones que /decisiones. Dobles: sin red, sin hermes real."""
 from __future__ import annotations
 
-from agent_lanes.commands import COMMANDS, parse_command
+from agent_lanes.commands import COMMANDS, CommandCenter, fully_recommended, parse_command
+from agent_lanes.notices import normalize_questions
 from agent_lanes.runner import block_fingerprint
 
 from .test_runner_state import GOOD, FakeHermes, make, ok_outcome
@@ -44,6 +45,25 @@ def test_segundo_bloqueo_igual_escala_a_needs_input_con_botones():
     assert block[2] == "needs_input"
     assert "2 veces por lo mismo" in block[3] and SAME in block[3]  # otro motivo, con el detalle
     assert any("2 veces por lo mismo" in m for m in n.msgs)
+
+
+def test_pregunta_de_escalada_no_tiene_recomendada():
+    r, *_ = make([FAILED], hermes=HistoryHermes([_blocked(SAME)]))
+    seen = []
+    orig = r.notify
+    r.notify = lambda *a, **kw: (seen.append(kw.get("questions")), orig(*a, **kw))[1]
+    r.run_once()
+    qs = [q for q in seen if q][-1]
+    assert not fully_recommended(qs)
+    assert all(q["recommended"] is None for q in normalize_questions(qs))
+
+
+def test_atencion_invoca_decisiones_con_show_all():
+    calls = []
+    cc = object.__new__(CommandCenter)
+    cc.cmd_decisiones = lambda *a, **kw: calls.append((a, kw))
+    cc.cmd_atencion("w", "", "B")
+    assert calls == [(("w", "", "B"), {"show_all": True})]
 
 
 def test_bloqueo_distinto_no_escala():

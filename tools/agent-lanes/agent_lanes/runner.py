@@ -257,7 +257,7 @@ class LaneRunner:
                       f"Último detalle: {reason}")
             questions = [{"question": f"Se ha bloqueado {times + 1} veces por lo mismo: {public}. ¿Qué hacemos?",
                           "options": ["Reintentar tal cual", "Reintentar con mis instrucciones (✍️ Responder)"],
-                          "recommended": 1}]
+                          "recommended": None}]  # sin recomendada: ni «Sí, todo» ni vías automáticas la responden solas
             kind, public, notify_kind = "needs_input", f"bloqueada {times + 1} veces por lo mismo", None
             for_oscar = for_oscar or "El worker se bloquea una y otra vez por el mismo motivo; dime cómo seguir."
         if for_oscar:  # también a la tarjeta: renotify y /decisiones lo recuperan del motivo del bloqueo
