@@ -77,6 +77,50 @@ def stuck_history(question: str | None, times: int, last_ask: float | None, answ
     return tuple(lines)
 
 
+URGENT_PRIORITY = 8  # prioridad mínima de una tarjeta para que su bloqueo se avise al momento (t_bb92566e, prio 10, ~17 h callada)
+
+
+class UrgentBlockWatcher:
+    """Avisa AL MOMENTO (una vez por bloqueo) de las tarjetas bloqueadas con prioridad >= `min_priority`: no espera a
+    los recordatorios de las 13:00/18:00. `blocked()` da los Pending bloqueados (needs_input/transient/console) y
+    `alert(p)` devuelve True si el aviso (DM de Oscar + tema Atención) salió; si falla se reintenta en la siguiente
+    vuelta. Estado en un JSON (clave `tarjeta:estado:desde`): un reinicio no repite el aviso. Nunca ejecuta nada."""
+
+    def __init__(self, blocked: Callable[[], list], alert: Callable, state_path: Path | str, *,
+                 min_priority: int = URGENT_PRIORITY):
+        self.blocked, self.alert = blocked, alert
+        self.state_path = Path(state_path)
+        self.min_priority = min_priority
+
+    def _load(self) -> dict:
+        try:
+            data = json.loads(self.state_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    def tick(self) -> list[str]:
+        """Una pasada. Devuelve los ids avisados, para tests y log."""
+        done, seen = [], self._load()
+        for p in self.blocked():
+            prio = (getattr(p, "task", None) or {}).get("priority")
+            if isinstance(prio, bool) or not isinstance(prio, int) or prio < self.min_priority:
+                continue
+            key = f"{p.tid}:{p.state}:{int(getattr(p, 'since', None) or 0)}"
+            if key in seen:
+                continue
+            try:
+                if self.alert(p):
+                    seen[key] = {"at": time.time(), "priority": prio}
+                    done.append(p.tid)
+            except Exception as exc:
+                log.warning("%s: aviso urgente falló: %s", p.tid, exc)
+        if done:
+            self.state_path.parent.mkdir(parents=True, exist_ok=True)
+            self.state_path.write_text(json.dumps(seen, ensure_ascii=False, indent=1), encoding="utf-8")
+        return done
+
+
 class StuckWatcher:
     """Avisa de cada tarjeta atascada una vez por ronda (tema Atención) y, pasadas `hours` h sin respuesta, manda un
     recordatorio al DM de Oscar. `publish(p)` y `remind(p, hours)` devuelven True si se enviaron; `stuck()` da los

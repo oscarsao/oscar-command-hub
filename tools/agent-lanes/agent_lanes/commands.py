@@ -53,6 +53,7 @@ from typing import Callable
 from urllib.parse import urlsplit
 
 from . import bandeja as _bandeja
+from .aviso import UrgentBlockWatcher
 from .card_options import PREPARED_AUTHOR, PREPARED_PREFIX, CardSpec, card_message, parse_card
 from .decisions import DEPLOY_ASK, DEPLOY_NO, FALTA, FLUJO, HAZLO, OWNER_TELEGRAM_ID
 from .deps import (ShowCache, child_bucket, dependency_order, family, pending_parents, tree_lines,
@@ -62,6 +63,7 @@ from .notices import (BOARD_BRANDS, BRANDS, DECISION_CARD_STATUSES, OSCAR_ASSIGN
                       status_line, truncate)
 
 log = logging.getLogger("agent_lanes")
+URGENT_EVERY = 120  # s mínimos entre pasadas del aviso inmediato de bloqueos de prioridad alta
 
 COMMANDS = (
     ("hoy", "Resumen del día (el de las 8:00) ahora"),
@@ -537,9 +539,28 @@ class CommandCenter:
         verbo = "se aplicará sola" if cfg.veto_modo == _bandeja.VETO_EJECUTAR else "te avisaré (aún no se aplica sola)"
         return f"⏱ Reversible: si no decides antes del {when}, {verbo} la recomendada ({'ABC'[spec.recommended]}) · ⛔ Vetar"
 
+    def urgent_tick(self) -> list[str]:
+        """Aviso inmediato de los bloqueos de tarjetas con prioridad >= 8 (aviso.UrgentBlockWatcher). Se engancha al
+        tic del runner vía `veto_tick` (runner.py no se toca). Sin `urgent_state` no hace nada, salvo con el almacén de
+        mensajes real (`.state/messages`), donde guarda `.state/urgent_avisos.json`. Una pasada cada 2 min como mucho."""
+        state = getattr(self, "urgent_state", None)
+        root = getattr(self.messages, "root", None)
+        if state is None and root and Path(root).parent.name == ".state":
+            state = Path(root).parent / "urgent_avisos.json"
+        now = self._now()
+        if state is None or now - getattr(self, "_urgent_at", 0) < URGENT_EVERY:
+            return []
+        self._urgent_at = now
+        ren = self.renotifier()
+        return UrgentBlockWatcher(lambda: ren.collect(statuses=("blocked",)), ren.alert_urgent, state).tick()
+
     def veto_tick(self) -> list[str]:
         """Tarjetas reversibles cuyo plazo de veto ha vencido sin respuesta ni veto. Modo `aviso`: solo se lo cuenta a
         Oscar (no ejecuta nada). Modo `ejecutar`: aplica la recomendada. Devuelve los ids tratados. Nunca lanza."""
+        try:
+            self.urgent_tick()
+        except Exception as exc:
+            log.warning("avisos urgentes: %s", exc)
         cfg, book = self.bandeja, getattr(self.desk, "vetos", None)
         if not cfg.veto_activo or book is None:
             return []
