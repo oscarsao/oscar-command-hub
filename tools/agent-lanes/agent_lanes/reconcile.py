@@ -145,12 +145,12 @@ class Reconciler:
                 self.state.data["resolved"][key] = self.clock()  # aunque ya estuviera cerrada: no se reevalúa
                 if status in CLOSED_STATUSES or status == "running":
                     continue
-                self._resolve(self.hermes_for(board), tid, show, pr, outcome)
+                self._resolve(self.hermes_for(board), tid, show, pr, outcome, board)
                 done.append(tid)
             self.state.save()
         return done
 
-    def _resolve(self, h, tid: str, show: dict, pr: dict, outcome: str) -> None:
+    def _resolve(self, h, tid: str, show: dict, pr: dict, outcome: str, board: str = "default") -> None:
         n, url = pr.get("number"), pr.get("url") or ""
         title = (show.get("task") or {}).get("title") or ""
         if outcome == "merged":
@@ -160,10 +160,10 @@ class Reconciler:
             step = "ninguno: tarjeta cerrada" if ok else "ciérrala o archívala (no pude cerrarla sola)"
         else:
             where = f"PR #{n} (cerrado sin merge)"
-            h.comment(tid, f"RECONCILIACIÓN: su {where} está cerrado; tarjeta archivada {url}".strip(),
+            h.comment(tid, f"RECONCILIACIÓN: su {where} está cerrado; propongo archivarla {url}".strip(),
                       author="reconciliacion")
-            ok = h.archive(tid)
-            step = "ninguno: tarjeta archivada" if ok else "archívala (no pude hacerlo sola)"
+            self._propose(tid, board, title, f"su PR #{n} está cerrado sin merge")  # nunca archiva sola
+            return
         self.send(f"🔗 {tid} · {title[:60]}\nResuelta en {where}.\n➡️ Próximo paso: {step} · Lo da: el sistema", None)
 
     # --- (b) pasada diaria de obsolescencia ----------------------------------------------------------
@@ -198,21 +198,24 @@ class Reconciler:
                         proposals.append((tid, board, reason, show))
         sent = []
         for tid, board, reason, show in proposals[:MAX_PROPOSALS]:
-            title = (show.get("task") or {}).get("title") or ""
-            text = (f"🧹 {tid} · {title[:60]}\nPosiblemente obsoleta: {reason}.\n"
-                    "➡️ Próximo paso: archivarla o mantenerla (un toque) · Lo da: Oscar")
-            markup = None
-            if self.issue:
-                rec = {"task_id": tid, "board": board, "lane": self.lane_for(board), "title": title, "recon": True}
-                markup = self.issue(rec, [[{"text": "🗄 Archivar", "action": REC_ARCHIVE},
-                                           {"text": f"⏳ Mantener {KEEP_DAYS} d", "action": REC_KEEP}]])[1]
-            self.send(text, markup)
-            self.state.data["proposed"][tid] = now
+            self._propose(tid, board, (show.get("task") or {}).get("title") or "", reason)
             sent.append(tid)
         if len(proposals) > MAX_PROPOSALS:
             self.send(f"🧹 Hay {len(proposals) - MAX_PROPOSALS} tarjetas obsoletas más; las propongo mañana.", None)
         self.state.save()
         return sent
+
+    def _propose(self, tid: str, board: str, title: str, reason: str) -> None:
+        """Avisa con [🗄 Archivar]/[⏳ Mantener] y la marca como propuesta (no se repite)."""
+        text = (f"🧹 {tid} · {title[:60]}\nPosiblemente obsoleta: {reason}.\n"
+                "➡️ Próximo paso: archivarla o mantenerla (un toque) · Lo da: Oscar")
+        markup = None
+        if self.issue:
+            rec = {"task_id": tid, "board": board, "lane": self.lane_for(board), "title": title, "recon": True}
+            markup = self.issue(rec, [[{"text": "🗄 Archivar", "action": REC_ARCHIVE},
+                                       {"text": f"⏳ Mantener {KEEP_DAYS} d", "action": REC_KEEP}]])[1]
+        self.send(text, markup)
+        self.state.data["proposed"][tid] = self.clock()
 
     def _obsolete_reason(self, h, tid: str, show: dict, by_pr: dict, now: float) -> str | None:
         if tid in by_pr:
@@ -296,10 +299,11 @@ def record_decision(h, action: str, tid: str, author: str, text: str = "", *, pr
         ok, _ = h.complete(tid, text.strip() or f"Resuelta fuera del kanban (registrada por {author})",
                            {"registered_by": author})
     else:
-        ok = True
+        ok = h.comment(tid, note, author=author)
     if not ok:
         return False, f"{tid}: el kanban rechazó «{action}» (¿estado incompatible?)"
-    h.comment(tid, note, author=author)
+    if action != "comentar":
+        h.comment(tid, note, author=author)
     path = Path(audit or AUDIT_PATH)
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as fh:

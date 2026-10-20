@@ -8,7 +8,7 @@ siendo de Oscar):
 1. **Cierre automático.** Cada pasada del runner (`RECONCILE_MINUTES`, 10 por defecto) lee los PR recientes (`gh pr
    list --state all`). Vínculo *fuerte* con una tarjeta: rama `lane/<id>`, id `t_xxxxxxxx` en el título, o en el cuerpo
    tras `Cierra:`/`Resuelve:`/`Tarjeta:`/`Closes:`. (Un id suelto en el cuerpo, p. ej. «se apoya en t_x», NO cierra.)
-   PR mergeado → comentario + `complete` («resuelta en PR #n»); PR cerrado sin merge → comentario + archivar. Un solo
+   PR mergeado → comentario + `complete` («resuelta en PR #n»); PR cerrado sin merge → comentario + propuesta con [🗄 Archivar]/[⏳ Mantener] (nunca se archiva sola). Un solo
    aviso por tarjeta y PR (estado en `.state/reconcile.json`). Nunca toca tarjetas `running`.
 2. **Pasada diaria de obsolescencia.** Tarjetas abiertas con (a) PR mergeado/cerrado, (b) «cubierta por/duplicada de
    t_y» con t_y ya hecha, o (c) >72 h sin movimiento. Se propone con un mensaje por tarjeta y botones

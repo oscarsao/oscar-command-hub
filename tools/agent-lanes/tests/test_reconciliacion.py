@@ -80,14 +80,18 @@ def test_pr_mergeado_completa_la_tarjeta_y_avisa_una_vez(tmp_path):
     assert again.close_from_prs() == [] and len(sent) == 1
 
 
-def test_pr_cerrado_sin_merge_archiva_y_no_toca_running_ni_hechas(tmp_path):
+def test_pr_cerrado_sin_merge_propone_con_botones_y_no_archiva(tmp_path):
     cards = {"t_aaaaaaaa": {"status": "blocked"}, "t_bbbbbbbb": {"status": "running"}, "t_cccccccc": {"status": "done"}}
     prs = [pr(2, "CLOSED", branch="lane/t_aaaaaaaa"), pr(3, "MERGED", branch="lane/t_bbbbbbbb"),
            pr(4, "MERGED", branch="lane/t_cccccccc"), pr(5, "OPEN", branch="lane/t_aaaaaaaa")]
-    rec, h, sent, _ = make(tmp_path, cards, prs)
+    rec, h, sent, issued = make(tmp_path, cards, prs)
     assert rec.close_from_prs() == ["t_aaaaaaaa"]
-    assert ("archive", "t_aaaaaaaa") in h.calls and cards["t_bbbbbbbb"]["status"] == "running"
-    assert len(sent) == 1 and "cerrado sin merge" in sent[0][0]
+    assert not [c for c in h.calls if c[0] in ("archive", "complete")]
+    assert cards["t_aaaaaaaa"]["status"] == "blocked" and cards["t_bbbbbbbb"]["status"] == "running"
+    assert any(c[0] == "comment" and c[1] == "t_aaaaaaaa" for c in h.calls)
+    assert len(sent) == 1 and "cerrado sin merge" in sent[0][0] and sent[0][1] is not None
+    assert [a["action"] for a in issued[0][1][0]] == [REC_ARCHIVE, REC_KEEP]
+    assert rec.obsolete_pass() == []  # ya propuesta: la pasada diaria no la repite
 
 
 # --- (b) obsolescencia -----------------------------------------------------------------------------
@@ -171,6 +175,18 @@ def test_registro_de_decisiones_audita_con_autor(tmp_path):
     lines = [json.loads(l) for l in audit.read_text(encoding="utf-8").splitlines()]
     assert [l["action"] for l in lines] == ["archivar", "reasignar", "comentar", "resuelta"]
     assert all(l["author"] == "oscar-e2" and l["task"] == "t_aaaaaaaa" for l in lines) and ok and ok2
+
+
+def test_registro_comentar_falla_si_el_kanban_rechaza_el_comentario(tmp_path):
+    class NoComment(FakeHermes):
+        def comment(self, tid, text, author=None):
+            self.calls.append(("comment", tid, text, author))
+            return False
+
+    h, audit = NoComment({"t_aaaaaaaa": {"status": "ready"}}), tmp_path / "audit.jsonl"
+    ok, msg = record_decision(h, "comentar", "t_aaaaaaaa", "oscar-e2", "nota", audit=audit)
+    assert ok is False and "rechazó" in msg and not audit.exists()
+    assert len([c for c in h.calls if c[0] == "comment"]) == 1  # sin segundo intento
 
 
 def test_registro_rechaza_sin_autor_o_id_o_datos(tmp_path):
