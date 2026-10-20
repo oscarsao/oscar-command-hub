@@ -429,9 +429,33 @@ def context_line(lane: str, body: str | None) -> str:
     return status_line(BRANDS.get(lane), lane, oasp_mode(body))
 
 
+INTEGRADOR = "el integrador (oscar-e2)"
+
+
+def next_step(state: str, block_kind: str | None = None, *, ops: bool = False, buttons: bool = True) -> str | None:
+    """«➡️ Próximo paso: … · Lo da: …» de cada aviso: qué toca y quién lo hace. Si Oscar no puede actuar desde Telegram
+    (consola, guard, config) lo da el integrador. None = estado sin aviso propio."""
+    if state == "blocked" and block_kind in ("console", "config"):
+        what = "resolverlo en una consola con /tomar-tarea" if block_kind == "console" else \
+            "cambiar lanes.yaml (rutas o claims) y reabrirla"
+        return f"{what} (o pulsa «Que lo resuelva el integrador») · Lo da: {INTEGRADOR}"
+    table = {
+        "needs_input": ("responder con un botón" if buttons else "responder en este hilo o a Hermes", "Oscar"),
+        "blocked": ("reintentar o aparcar" if buttons else "reintentar desde la tarjeta", "Oscar"),
+        "stuck": ("sacar de triage o archivar", "Oscar"),
+        "done": ("aprobar o pedir cambios", "Oscar"),
+        "review": (("validar o pedir cambios", "Oscar") if ops else ("revisión automática, sin acción tuya", "carril review")),
+        "running": ("ninguno, sigue sola", "el carril"),
+        "changes": ("aplicar los cambios pedidos", "el carril"),
+    }
+    step = table.get(state)
+    return f"{step[0]} · Lo da: {step[1]}" if step else None
+
+
 def render(state: str, task_id: str, title: str | None, lane: str, status: str,
            links: list[tuple[str, str]] | None = None, bullets: list[str] | None = None, *,
-           body: str | None = None, for_oscar: str | None = None, tree: list[str] | None = None) -> str:
+           body: str | None = None, for_oscar: str | None = None, tree: list[str] | None = None,
+           next_step: str | None = None) -> str:
     """HTML (parse_mode=HTML). Unas 5 líneas, más el árbol (padre/hijas) y las viñetas de needs_input:
 
         <emoji> t_xxx · <título ≤60>
@@ -450,6 +474,8 @@ def render(state: str, task_id: str, title: str | None, lane: str, status: str,
     elif what:
         head.append("Qué: " + e(what))
     head.append(e(status))
+    if next_step:
+        head.append("➡️ Próximo paso: " + e(truncate(next_step, 300)))
     head += [e(truncate(line, 300)) for line in (tree or ())[:4]]
     tail = []
     if links:

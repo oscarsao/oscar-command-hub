@@ -26,6 +26,7 @@ from agent_lanes import explain
 from agent_lanes.deps import ShowCache, TreeReader
 from agent_lanes.hermes_answers import HermesAnswers
 from agent_lanes.reminders import Reminders
+from agent_lanes.reconcile import ReconcileTicker, Reconciler, gh_prs
 from agent_lanes.aviso import REMIND_HOURS, StuckWatcher
 from agent_lanes.git_ops import GitOps, github_slug_problem
 from agent_lanes.hermes import HermesCLI
@@ -187,6 +188,17 @@ def main(argv: list[str] | None = None) -> int:
     # Runner ciego: mismo fallo al listar tareas durante `ciego_minutes` -> aviso ALTA al DM + restart --drain (1/hora).
     watch = None if args.once else ciego.Vigilante(minutes=float(settings["ciego_minutes"]), alert=drain.dm_alert(env))
     guard = None
+    reconcile = None
+    if decisions and not args.once:  # PR resueltos -> tarjetas cerradas; propuesta diaria de obsoletas (con botón)
+        owner_dm = env.get("OWNER_TELEGRAM_ID") or OWNER_TELEGRAM_ID
+        boards = sorted({l.board for l in all_lanes.values() if l.board})
+        slugs = sorted({l.github for l in all_lanes.values() if l.github})
+        recon = Reconciler(hermes_for, boards, lambda: gh_prs(slugs),
+                           lambda text, markup=None: notify.send_to(owner_dm, None, text, html=False,
+                                                                    reply_markup=markup),
+                           issue=decisions.store.issue, state_path=ROOT / ".state" / "reconcile.json")
+        decisions.reconciler = recon
+        reconcile = ReconcileTicker(recon, minutes=float(env.get("RECONCILE_MINUTES") or 10))
     if not args.once:  # guarda de tablero (ADR-036): tarjetas en un tablero que su carril no lee
         owner_dm = env.get("OWNER_TELEGRAM_ID") or OWNER_TELEGRAM_ID
         guard = BoardGuardTicker(all_lanes, hermes_for, apply=env.get("BOARD_GUARD_APPLY", "").lower() == "true",
@@ -223,6 +235,8 @@ def main(argv: list[str] | None = None) -> int:
                 log.warning("integrador falló: %s", exc)
         if guard:
             guard.tick()
+        if reconcile:
+            reconcile.tick()
         results = service.run_pass()
         if watch:
             watch.observe(service.list_errors)
