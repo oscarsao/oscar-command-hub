@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from agent_lanes import explain
-from agent_lanes.commands import CommandCenter
+from agent_lanes.commands import NOT_OWNER, CommandCenter
 from agent_lanes.decisions import CallbackStore, DecisionDesk
 from agent_lanes.falta import classify, env_pending, falta_message, plain_reason
 from agent_lanes.notices import MessageStore
@@ -220,7 +220,7 @@ def test_falta_with_nothing_pending(env):
     say(cc, "/falta nadie")
     assert "Marca desconocida" in out.sent[-1]["text"]
     say(cc, "/falta", uid=1)
-    assert out.sent[-1]["text"] == "Solo Oscar"
+    assert out.sent[-1]["text"] == NOT_OWNER
 
 
 def test_falta_waiting_branches_point_to_lote(env):

@@ -12,6 +12,7 @@ import pytest
 from agent_lanes import proc as _proc
 from agent_lanes.batch import BATCH_BRANCH_RE, BATCH_LABEL, render_batch_ficha
 from agent_lanes.commands import COMMANDS, CommandCenter, parse_command
+from agent_lanes.commands import NOT_OWNER as NOT_OWNER_CMD
 from agent_lanes.config import Lane
 from agent_lanes.decisions import CallbackStore, DecisionDesk
 from agent_lanes.hermes import OSCAR_AUTHOR
@@ -385,7 +386,7 @@ def test_lote_command(env):
     assert "Dime de qué proyecto" in sent[0]
     sent.clear()
     cc.handle(msg("/lote oscarhq", uid=1))
-    assert sent == ["Solo Oscar"] and len(env.gh.created) == 1
+    assert sent == [NOT_OWNER_CMD] and len(env.gh.created) == 1
 
 
 # --- seguridad y prueba en seco -----------------------------------------------------------------------------

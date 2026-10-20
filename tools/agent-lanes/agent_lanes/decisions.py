@@ -20,6 +20,7 @@ import re
 import secrets
 import threading
 import time
+from contextlib import contextmanager
 from datetime import datetime
 from html import escape as _esc
 from pathlib import Path
@@ -33,6 +34,7 @@ from .hermes import (ANSWER_PREFIX, HERMES_ANSWER_PREFIX, OSCAR_AUTHOR, REVIEW_A
                      is_guard_limit, last_needs_input_block, resume)
 from .explain import explain as _explain
 from .free_text import FREE_ACTIONS, FreeText
+from .people import People, load_people
 from .notices import (DECISION_CARD_STATUSES, OPTION_LETTERS, card_url, normalize_questions, questions_block,
                       render, status_line, truncate, with_default_options)
 from .review import CHANGES_PREFIX
@@ -43,7 +45,8 @@ log = logging.getLogger("agent_lanes")
 # lo lee la escucha del runner-servicio.
 CALLBACKS_DIR = ROOT / ".state" / "callbacks"
 OWNER_TELEGRAM_ID = "6744452215"  # Oscar; configurable con OWNER_TELEGRAM_ID en .env
-NOT_OWNER = "Solo Oscar puede decidir"
+NOT_OWNER = ("Esto es solo para operadores. Pide a Oscar o a María que lo decida, o escribe tu petición en texto libre "
+             "y se la paso")
 GH_EXE = r"C:\Program Files\GitHub CLI\gh.exe"
 CALLBACK_DATA_MAX = 64  # bytes, límite de Telegram
 PARK_PROFILE = "oscar"
@@ -318,6 +321,8 @@ class DecisionDesk:
         self.commands = None      # CommandCenter: /hoy, /decisiones, /aprobar, /tareas, /tarea
         self.team_notice: dict | None = None  # telegram.team_notice de lanes.yaml (enabled, chats, text); None = apagado
         self.collab = None        # CollabIntake: DM de colaboradores (people.yaml) -> tarjeta [IDEA]; None = como antes
+        self.people: People | None = None  # people.yaml; None = se lee la primera vez que hace falta (el runner lo fija)
+        self._tl = threading.local()       # quién actúa en este hilo (nombre de un operador que no es Oscar)
         self._help_at: dict[str, float] = {}  # chat -> instante de la última ayuda (enfriamiento)
         self.tree = None          # deps.TreeReader: líneas 🔗/⏸/↳ al redibujar un aviso (opcional)
         # 💬 Explícame más: rec -> texto llano (claude -p --model haiku sin herramientas); inyectable en tests.
@@ -327,6 +332,60 @@ class DecisionDesk:
         self.vetos = VetoBook(Path(store.root).parent / "card_veto.json")  # plazo de veto de las tarjetas reversibles
         # Texto libre = respuesta a la decisión pendiente del tema (`telegram.free_text` de lanes.yaml); None = apagado.
         self.free = FreeText(self, **free_text) if free_text else None
+
+    # --- operadores (Oscar + people.yaml `operador: true`) ---------------------------------------------
+
+    def _people(self) -> People:
+        if self.people is None:
+            self.people = load_people(self.owner_id)
+        return self.people
+
+    def es_operador(self, user_id) -> bool:
+        """Mismo acceso que Oscar: él (OWNER_TELEGRAM_ID) o quien tenga `operador: true` en people.yaml."""
+        if str(user_id) == self.owner_id:
+            return True
+        return self._people().es_operador(user_id)
+
+    def operador_nombre(self, user_id) -> str | None:
+        """Nombre de un operador que NO es Oscar (para firmar sus acciones); None si es Oscar o no es operador."""
+        if str(user_id) == self.owner_id or not self.es_operador(user_id):
+            return None
+        person = self._people().lookup(user_id)
+        return person.name if person else None
+
+    @contextmanager
+    def actuando(self, user_id):
+        """Las acciones de este hilo se firman con el nombre del operador (si no es Oscar)."""
+        previo = getattr(self._tl, "name", None)
+        self._tl.name = self.operador_nombre(user_id)
+        try:
+            yield
+        finally:
+            self._tl.name = previo
+
+    def _en_nombre_de(self, user_id, fn: Callable[[], None]) -> Callable[[], None]:
+        """`fn` para otro hilo (_spawn): conserva quién la pidió."""
+        if not self.operador_nombre(user_id):
+            return fn
+
+        def run() -> None:
+            with self.actuando(user_id):
+                fn()
+        return run
+
+    def _who(self) -> str:
+        return getattr(self._tl, "name", None) or "Oscar"
+
+    def _by(self) -> str:
+        name = getattr(self._tl, "name", None)
+        return f" · por {name}" if name else ""
+
+    def _trace(self, h, tid: str) -> None:
+        """Rastro de quién decidió cuando no es Oscar. Comentario aparte: las respuestas `RESPUESTA-OSCAR: p → r` se
+        parsean y no admiten texto extra. La autoría sigue siendo la de Oscar (la leen las listas blancas)."""
+        name = getattr(self._tl, "name", None)
+        if name:
+            h.comment(tid, f"DECIDIDO-POR: {name} (operador) desde Telegram", author=OSCAR_AUTHOR)
 
     # --- teclados -------------------------------------------------------------------------------------
 
@@ -443,9 +502,9 @@ class DecisionDesk:
             kind = "adjunto"
         target = command_target(text, getattr(self.commands, "bot_username", None)) if is_cmd else None
         name = target[0] if target else None
-        is_owner = str((msg.get("from") or {}).get("id")) == self.owner_id
-        if self.collab and self.collab.claims(msg, self.owner_id):
-            # DM privado de alguien que no es Oscar: nunca llega a los comandos ni a _reply (hermes: segundos).
+        is_owner = self.es_operador((msg.get("from") or {}).get("id"))  # operador = Oscar o people.yaml `operador: true`
+        if self.collab and not is_owner and self.collab.claims(msg, self.owner_id):
+            # DM privado de alguien que no es operador: nunca llega a los comandos ni a _reply (hermes: segundos).
             self._log_update(chat.get("id"), kind, None, "respondido")  # sin nombre: lo escribe un desconocido
             self._spawn(lambda: self.collab.handle(msg))
             return
@@ -556,7 +615,8 @@ class DecisionDesk:
     def _callback(self, cq: dict) -> None:
         answer = self.notifier.answer_callback
         chat = ((cq.get("message") or {}).get("chat") or {}).get("id")
-        if str((cq.get("from") or {}).get("id")) != self.owner_id:
+        actor = (cq.get("from") or {}).get("id")
+        if not self.es_operador(actor):
             answer(cq.get("id"), NOT_OWNER, alert=True)
             self._log_update(chat, "callback", None, "rechazado")
             return
@@ -570,6 +630,9 @@ class DecisionDesk:
         button = buttons[int(n)]
         where = self._where(cq.get("message") or {})
         self._log_update(chat, "callback", button.get("action"), "respondido")
+        name = self.operador_nombre(actor)
+        if name:
+            log.info("%s: botón %s pulsado por %s (operador)", rec.get("task_id"), button.get("action"), name)
         if button["action"] == EXPLAIN:  # no consume el teclado: los demás botones siguen valiendo
             answer(cq.get("id"), "Te lo explico en un momento")
             self._spawn(lambda: self._explain(rec, where))
@@ -586,11 +649,13 @@ class DecisionDesk:
             answer(cq.get("id"), "Ya está en marcha")
             return
         answer(cq.get("id"), "Hecho, lo aplico")
-        self._spawn(lambda: self._safe(token, rec, where, lambda: self._act(rec, button, where)))
+        self._spawn(self._en_nombre_de(actor, lambda: self._safe(token, rec, where,
+                                                                 lambda: self._act(rec, button, where))))
 
     def _reply(self, msg: dict) -> bool:
         """Respuesta de Oscar a un force_reply: pedir cambios o respuesta libre. True si había una pendiente."""
-        if str((msg.get("from") or {}).get("id")) != self.owner_id:
+        actor = (msg.get("from") or {}).get("id")
+        if not self.es_operador(actor):
             return False
         replied = msg.get("reply_to_message") or {}
         text = (msg.get("text") or "").strip()
@@ -604,9 +669,9 @@ class DecisionDesk:
         if not self.store.consume(token):  # ya se decidió con otro botón
             self._cleanup_messages(chat_id, [replied.get("message_id"), msg.get("message_id")])
             return True
-        self._spawn(lambda: self._safe(token, rec, where, lambda: self._apply_reply(rec, button, where, text),
-                                       after=lambda: self._cleanup_messages(
-                                           chat_id, [replied.get("message_id"), msg.get("message_id")])))
+        self._spawn(self._en_nombre_de(actor, lambda: self._safe(
+            token, rec, where, lambda: self._apply_reply(rec, button, where, text),
+            after=lambda: self._cleanup_messages(chat_id, [replied.get("message_id"), msg.get("message_id")]))))
         return True
 
     # --- acciones -------------------------------------------------------------------------------------
@@ -775,6 +840,7 @@ class DecisionDesk:
             if self._has_comment(show, body):
                 return True
             if h.comment(tid, body[:3000], author=OSCAR_AUTHOR):
+                self._trace(h, tid)
                 return True
             self._edit(rec, where, "blocked", "no se pudo guardar la respuesta en la tarjeta")
             return False
@@ -782,12 +848,12 @@ class DecisionDesk:
         if action == CARD_SNOOZE:
             until = self.snoozes.add(tid, SNOOZE_DAYS)
             label = datetime.fromtimestamp(until).strftime("%d/%m")
-            if not note(f"APLAZADA-OSCAR hasta {label} ({SNOOZE_DAYS} d, desde Telegram)"):
+            if not note(f"APLAZADA-OSCAR hasta {label} ({SNOOZE_DAYS} d, desde Telegram){self._by()}"):
                 return False
             self._edit(rec, where, None, f"⏳ aplazada hasta el {label}")
             return True
         if action == CARD_PARK:
-            if not note("Aparcada por Oscar desde Telegram"):
+            if not note(f"Aparcada por {self._who()} desde Telegram"):
                 return False
             archive = getattr(h, "archive", None)
             if not archive or not archive(tid):
@@ -809,7 +875,7 @@ class DecisionDesk:
             return False
         if not note(f"{HERMES_ANSWER_PREFIX} {answer}"):
             return False
-        ok, err = h.complete(tid, f"Decidido por Oscar desde Telegram: {answer}"[:1500],
+        ok, err = h.complete(tid, f"Decidido por {self._who()} desde Telegram: {answer}"[:1500],
                              {"decided_by": OSCAR_AUTHOR, "at": stamp})
         if not ok:
             log.warning("%s: complete de la tarjeta falló: %s", tid, err)
@@ -947,6 +1013,7 @@ class DecisionDesk:
                 failed.append(tid)
                 self._edit(m, None, "blocked", "no se pudo guardar la respuesta en la tarjeta")
                 continue
+            self._trace(h, tid)
             answers = " · ".join(truncate(q["options"][q["recommended"]], 40) for q in todo)
             self._edit(m, card_where, "answered", f"💬 respondida (lo recomendado): {truncate(answers, 120)}")
             if not self._resume(h, tid):  # en triage (bloqueo repetido) unblock falla: requeue_triage
@@ -975,6 +1042,7 @@ class DecisionDesk:
         if not h.comment(tid, f"{ANSWER_PREFIX} {q.get('question') or ''} → {answer}"[:3000], author=OSCAR_AUTHOR):
             self._edit(rec, where, "blocked", "no se pudo guardar la respuesta en la tarjeta")
             return False, None
+        self._trace(h, tid)
         _, nxt = self._progress(rec, cur)
         qs = rec.get("questions") or []
         total = rec.get("n_questions") or len(qs) or 1
@@ -1053,7 +1121,7 @@ class DecisionDesk:
             return False
         number, url = pr
         stamp = self._now().strftime("%Y-%m-%d %H:%M")
-        if not self._hermes(rec).comment(tid, f"APROBADO-OSCAR {stamp} · PR {url}", author=OSCAR_AUTHOR):
+        if not self._hermes(rec).comment(tid, f"APROBADO-OSCAR {stamp} · PR {url}{self._by()}", author=OSCAR_AUTHOR):
             log.warning("%s: PR %s abierto pero no se pudo comentar la aprobación en la tarjeta", tid, url)
         if self.integrator:  # registro local PR + commit aprobado: lo único de lo que se fía el Integrador
             try:
@@ -1069,12 +1137,12 @@ class DecisionDesk:
         No ejecuta ninguna acción propuesta: eso queda como siguiente paso (ver README, carril ops)."""
         tid, h = rec["task_id"], self._hermes(rec)
         stamp = self._now().strftime("%Y-%m-%d %H:%M")
-        ok, err = h.complete(tid, "Validado por Oscar desde Telegram", {"validated_by": OSCAR_AUTHOR, "at": stamp})
+        ok, err = h.complete(tid, f"Validado por {self._who()} desde Telegram", {"validated_by": OSCAR_AUTHOR, "at": stamp})
         if not ok:
             log.warning("%s: complete (validación ops) falló: %s", tid, err)
             self._edit(rec, where, "blocked", "no se pudo validar: la tarea ya no está en review (mira la tarjeta)")
             return False
-        h.comment(tid, f"VALIDADO-OSCAR {stamp} (carril ops)", author=OSCAR_AUTHOR)
+        h.comment(tid, f"VALIDADO-OSCAR {stamp} (carril ops){self._by()}", author=OSCAR_AUTHOR)
         self._edit(rec, where, "approved", "✅ validada")
         return True
 
@@ -1116,7 +1184,7 @@ class DecisionDesk:
         if not h.assign(tid, PARK_PROFILE):
             self._edit(rec, where, "blocked", "no se pudo aparcar (¿la tarea está en curso?)")
             return False
-        h.comment(tid, "Aparcada por Oscar", author=OSCAR_AUTHOR)
+        h.comment(tid, f"Aparcada por {self._who()}", author=OSCAR_AUTHOR)
         return True
 
     def _retry(self, rec: dict, where: dict) -> bool:
@@ -1172,6 +1240,7 @@ class DecisionDesk:
         if not h.comment(tid, f"{ANSWER_PREFIX} {question} → {answer}"[:3000], author=OSCAR_AUTHOR):
             self._edit(rec, where, "blocked", "no se pudo guardar la respuesta en la tarjeta")
             return False
+        self._trace(h, tid)
         self._edit(rec, where, "answered", f"💬 respondida: {truncate(answer, 120)}")
         if not self._resume(h, tid) and self._stuck(rec):  # en triage (bloqueo repetido): requeue_triage
             self._edit(rec, where, "answered", "💬 respuesta anotada · no se pudo desbloquear (mira la tarjeta)")

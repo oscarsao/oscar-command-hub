@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from agent_lanes import renotify
-from agent_lanes.commands import COMMAND_SCOPES, CommandCenter, parse_command, register_commands, scope_brand
+from agent_lanes.commands import COMMAND_SCOPES, NOT_OWNER, CommandCenter, parse_command, register_commands, scope_brand
 from agent_lanes.config import Lane
 from agent_lanes.decisions import CallbackStore, DecisionDesk
 from agent_lanes.hermes import ANSWER_PREFIX, OSCAR_AUTHOR
@@ -179,7 +179,7 @@ def test_register_commands_in_three_scopes_with_spanish_descriptions():
 def test_only_oscar_can_use_commands(tmp_path):
     cc, desk, bot, h, _ = center(tmp_path, {"t_aaaaaaa1": needs("t_aaaaaaa1", Q_REC)})
     command(desk, "/decisiones@pildora_carriles_bot", user=1234, chat=GESTION, thread=230)
-    assert [m["text"] for m in bot.sent] == ["Solo Oscar"]
+    assert [m["text"] for m in bot.sent] == [NOT_OWNER]
     assert h.calls == []
 
 

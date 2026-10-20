@@ -1,6 +1,7 @@
 """Comandos del bot de carriles (@pildora_carriles_bot): decidir desde UN sitio sin ir cambiando de grupo.
 
-Deterministas (sin LLM) y solo para Oscar; a cualquier otro: "Solo Oscar". Funcionan en su DM y en los grupos,
+Deterministas (sin LLM) y solo para operadores (Oscar y las personas de people.yaml con `operador: true`, hoy María);
+a cualquier otro: NOT_OWNER (qué hacer en vez de un "no"). Funcionan en su DM y en los grupos,
 también como /cmd@<bot>. Un /cmd@otro_bot (p. ej. el de Hermes) se ignora.
 
     /hoy                 el resumen de las 8:00 bajo demanda (brief/brief_diario.py, mismo render y datos)
@@ -40,6 +41,7 @@ se eligen en el menú (setMyCommands). Sin sufijo, un /hoy puede ir a parar solo
 """
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import html
 import logging
@@ -81,7 +83,8 @@ COMMANDS = (
 )
 COMMAND_SCOPES = ("default", "all_private_chats", "all_group_chats")
 HELP_ALIASES = ("start", "ayuda", "help")
-NOT_OWNER = "Solo Oscar"
+NOT_OWNER = ("Este comando es solo para operadores. Pide a Oscar o a María que lo haga, o escribe tu petición en "
+             "texto libre y se la paso")
 BRAND_ARGS = {"migrateam": "MigraTeam", "pildora": "Píldora", "píldora": "Píldora", "nextjobs": "NextJobs"}
 TASK_ID_RE = re.compile(r"^t_[0-9a-f]{8}$")
 STATUS_TEXT = {"running": ("running", "en curso"), "ready": ("ready", "en cola"), "review": ("review", "en review"),
@@ -252,19 +255,29 @@ class CommandCenter:
             return False
         cmd, args = parsed
         where = self._where(msg)
-        if str((msg.get("from") or {}).get("id")) != self.owner_id:
+        actor = (msg.get("from") or {}).get("id")
+        if not self.es_operador(actor):
             self._send(where, NOT_OWNER, html=False)
             return True
         brand = scope_brand(where[0], where[1], self.lanes, self.generic_origins)
+        actuando = getattr(self.desk, "actuando", None)  # firma las acciones con el nombre del operador (no Oscar)
         try:
-            if cmd in HELP_ALIASES:
-                self._send(where, self.help_text(), html=False)
-            else:
-                getattr(self, f"cmd_{cmd}")(where, args, brand)
+            with actuando(actor) if actuando else contextlib.nullcontext():
+                if cmd in HELP_ALIASES:
+                    self._send(where, self.help_text(), html=False)
+                else:
+                    getattr(self, f"cmd_{cmd}")(where, args, brand)
         except Exception as exc:
             log.warning("/%s falló: %s", cmd, exc)
             self._send(where, f"No pude completar /{cmd}; detalle en el log", html=False)
         return True
+
+    def es_operador(self, user_id) -> bool:
+        """Oscar o un operador de people.yaml (`operador: true`): mismo acceso a los comandos."""
+        if str(user_id) == self.owner_id:
+            return True
+        check = getattr(self.desk, "es_operador", None)
+        return bool(check and check(user_id))
 
     @staticmethod
     def _where(msg: dict) -> tuple[str, str]:

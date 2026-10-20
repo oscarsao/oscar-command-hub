@@ -5,7 +5,7 @@ import json
 from types import SimpleNamespace
 
 from agent_lanes import flujo
-from agent_lanes.commands import COMMANDS, CommandCenter
+from agent_lanes.commands import COMMANDS, NOT_OWNER, CommandCenter
 from tests.test_commands import center, command, press
 
 LANES = ["claude-migrateam", "claude-oscarhq", "claude-nextjobs"]
@@ -170,7 +170,7 @@ def test_invalid_plan_and_empty_usage(tmp_path):
 def test_non_owner_cannot_use(tmp_path):
     cc, desk, bot, creates, _ = setup(tmp_path, parsed(card("A")))
     command(desk, "/flujo x", user=777, chat=777)
-    assert bot.sent[-1]["text"] == "Solo Oscar" and creates == []
+    assert bot.sent[-1]["text"] == NOT_OWNER and creates == []
 
 
 def test_hermes_create_passes_parent_flags():
