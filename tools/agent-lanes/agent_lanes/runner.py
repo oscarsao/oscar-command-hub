@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import threading
 import time
 import uuid
@@ -22,6 +23,13 @@ log = logging.getLogger("agent_lanes")
 
 STATE_DIR = ROOT / ".state" / "tasks"
 MESSAGES_DIR = ROOT / ".state" / "messages"  # message_id de Telegram por tarea (persiste entre carriles y reinicios)
+
+
+def block_fingerprint(reason: str | None) -> str:
+    """Huella del motivo de un bloqueo: primera línea sin session_id ni números, para reconocer el mismo bloqueo."""
+    first = (reason or "").strip().splitlines()[0] if (reason or "").strip() else ""
+    first = re.sub(r"\(session_id=[^)]*\)|\d+", "", first)
+    return " ".join(first.lower().split())[:120]
 
 
 def pid_alive(pid: int) -> bool:
@@ -243,6 +251,15 @@ class LaneRunner:
                questions: list | None = None, summary: str | None = None, for_oscar: str | None = None,
                notify_kind: str | None = None, changed_files=None) -> str:
         """`reason` (detalle técnico) va a la tarjeta y al log; a Telegram solo `public` (+ preguntas si needs_input)."""
+        times = self._same_block_times(tid, kind, reason) if kind == "transient" else 0
+        if times:  # 2º bloqueo igual: Hermes la mandaría a triage; se escala a Oscar con otro motivo y botones
+            reason = (f"Bloqueada {times + 1} veces por lo mismo ({public}); reintentar sin cambios no sirve.\n"
+                      f"Último detalle: {reason}")
+            questions = [{"question": f"Se ha bloqueado {times + 1} veces por lo mismo: {public}. ¿Qué hacemos?",
+                          "options": ["Reintentar tal cual", "Reintentar con mis instrucciones (✍️ Responder)"],
+                          "recommended": 1}]
+            kind, public, notify_kind = "needs_input", f"bloqueada {times + 1} veces por lo mismo", None
+            for_oscar = for_oscar or "El worker se bloquea una y otra vez por el mismo motivo; dime cómo seguir."
         if for_oscar:  # también a la tarjeta: renotify y /decisiones lo recuperan del motivo del bloqueo
             reason = f"{reason}\n{FOR_OSCAR_PREFIX} {' '.join(str(for_oscar).split())}"
         log.warning("%s bloqueada (%s): %s", tid, kind, reason)
@@ -265,6 +282,19 @@ class LaneRunner:
             self.notify("blocked", tid, task, status_line("bloqueada", public, "detalle en la tarjeta"), alert=True,
                         buttons=bool(blocked), block_kind=notify_kind or kind)
         return f"blocked:{kind}"
+
+    def _same_block_times(self, tid: str, kind: str, reason: str) -> int:
+        """Bloqueos anteriores de la tarjeta del mismo tipo y mismo motivo (BLOCK_RECURRENCE_LIMIT de Hermes = 2: al
+        repetirse pasa a triage). Sin poder leer la tarjeta, 0: se bloquea como siempre."""
+        try:
+            events = (self.hermes.show(tid) or {}).get("events") or []
+        except Exception as exc:
+            log.info("%s: historial de bloqueos no leído: %s", tid, exc)
+            return 0
+        key = block_fingerprint(reason)
+        return sum(1 for ev in events if ev.get("kind") == "blocked"
+                   and (ev.get("payload") or {}).get("kind") == kind
+                   and block_fingerprint((ev.get("payload") or {}).get("reason")) == key)
 
     def process(self, task: dict) -> str:
         tid = task["id"]

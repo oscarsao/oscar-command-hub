@@ -68,6 +68,7 @@ URGENT_EVERY = 120  # s mínimos entre pasadas del aviso inmediato de bloqueos d
 COMMANDS = (
     ("hoy", "Resumen del día (el de las 8:00) ahora"),
     ("decisiones", "Bandeja de decisiones pendientes con botones"),
+    ("atencion", "Todo lo que espera a Oscar, con botones para resolverlo aquí"),
     ("aprobar", "Tareas listas para integrar"),
     ("tareas", "En curso y en cola por carril: /tareas [migrateam|pildora|nextjobs]"),
     ("tarea", "Ficha de una tarea con sus botones: /tarea t_xxx"),
@@ -459,6 +460,10 @@ class CommandCenter:
             self._cards_section(where, cards, now, scope)
         if untagged:
             self._send(where, self.untagged_line(untagged))
+
+    def cmd_atencion(self, where, args: str, brand: str | None) -> None:
+        """Todo lo que espera a Oscar (preguntas, 🧊 atascadas y tarjetas de decisión) con sus botones, sin recorte."""
+        self.cmd_decisiones(where, args, brand, show_all=True)
 
     def _top_decisions(self, where, pendings: list, stuck: list, cards: list[dict], now: float, brand: str | None,
                        total: int) -> None:
