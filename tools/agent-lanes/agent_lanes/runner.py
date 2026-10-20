@@ -13,8 +13,8 @@ from typing import Callable
 from . import proc as _proc
 from .config import ROOT, Lane
 from .hermes import GUARD_LIMIT_MARK, looks_like_guard_limit
-from .notices import (MessageStore, TaskNotices, files_label, fit_reason, money, normalize_questions, question_text,
-                      questions_block, render, status_line, test_label)
+from .notices import (MessageStore, TaskNotices, files_label, fit_reason, money, next_step, normalize_questions,
+                      question_text, questions_block, render, status_line, test_label)
 from .preflight import preflight_warnings
 from .telegram import telegram_target
 
@@ -142,7 +142,8 @@ class LaneRunner:
                 links = self._links(self.lane, tid, branch=branch_link, changed_files=changed_files) if self._links else []
                 tree = self._tree(self.lane.board, tid) if self._tree else None
                 text = render(state, tid, task.get("title"), self.lane.name, status, links, bullets,
-                              body=task.get("body"), for_oscar=for_oscar, tree=tree)
+                              body=task.get("body"), for_oscar=for_oscar, tree=tree,
+                              next_step=next_step(state, block_kind, ops=self.lane.kind == "ops", buttons=buttons))
                 markup = None
                 if buttons and self._decisions:
                     markup = self._decisions.markup(state, task=task, lane=self.lane, block_kind=block_kind,

@@ -5,7 +5,10 @@
     py -3.12 lanes.py close <task_id> "<resumen>"  # verificación mecánica + request-review (nunca merge)
     py -3.12 lanes.py renotify [--lane X] [--task t_id] [--dry-run] [--force]
                                                    # reenvía con botones los avisos pendientes de decisión
-    py -3.12 lanes.py doctor-boards [--apply]      # tarjetas abiertas en un tablero que su carril no lee (dry-run
+    py -3.12 lanes.py tarjeta <comentar|archivar|reasignar|resuelta> <task_id> --autor <quien> [--a perfil] [texto]
+                                                   # el integrador registra en la tarjeta lo decidido en otro canal
+                                                   # (comentario REGISTRO por <autor> + .state/reconcile-audit.jsonl)
+    py -3.12 lanes.py doctor-boards [--apply]     # tarjetas abiertas en un tablero que su carril no lee (dry-run
                                                    # por defecto; --apply las recoloca en el tablero correcto)
     py -3.12 lanes.py restart --drain [--timeout 3600]
                                                    # reinicio ordenado: deja de reclamar, espera a los workers y
@@ -108,6 +111,9 @@ def main(argv: list[str]) -> int:
     if argv[:1] == ["renotify"]:
         from agent_lanes import renotify
         return renotify.main(argv[1:])
+    if argv[:1] == ["tarjeta"]:
+        from agent_lanes import reconcile
+        return reconcile.main(argv[1:])
     if argv[:2] == ["integrator", "reset"] and len(argv) == 3:
         from agent_lanes.integrator import reset_cli
         return reset_cli(argv[2])

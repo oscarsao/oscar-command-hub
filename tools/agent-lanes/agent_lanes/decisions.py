@@ -37,6 +37,7 @@ from .free_text import FREE_ACTIONS, FreeText
 from .people import People, load_people
 from .notices import (DECISION_CARD_STATUSES, OPTION_LETTERS, card_url, normalize_questions, questions_block,
                       render, status_line, truncate, with_default_options)
+from .reconcile import INTEGRATOR_PROFILE, REC_ARCHIVE, REC_KEEP
 from .review import CHANGES_PREFIX
 
 log = logging.getLogger("agent_lanes")
@@ -53,6 +54,7 @@ PARK_PROFILE = "oscar"
 PR_FOOTER = "🤖 Generated with [Claude Code](https://claude.com/claude-code)"
 
 APPROVE, CHANGES, PARK, RETRY, OPTION, OTHER = "approve", "changes", "park", "retry", "option", "other"
+TO_INTEGRADOR = "to_integrador"  # 🧑‍💻 Que lo resuelva el integrador: Oscar no puede actuar desde Telegram
 UNTRIAGE = "untriage"      # 🧊 Sacar de triage: specify_triage_task sin reescribir la tarjeta (nunca unblock)
 EXPLAIN = "explain"        # 💬 Explícame más: responde con una explicación llana; no consume el teclado
 ACCEPT_ALL = "accept_all"  # cabecera de /decisiones: aplica la opción recomendada en todas las que la tienen
@@ -119,7 +121,7 @@ def keyboard_spec(state: str, *, block_kind: str | None = None, questions=None,
     if state == "blocked" and block_kind == "review_stuck":  # tarea en review que no se pudo bloquear: decide Oscar
         return [[{"text": "✅ Aprobar", "action": APPROVE}, {"text": "🔁 Pedir cambios", "action": CHANGES}, park]]
     if state == "blocked" and block_kind in ("config", "console"):  # reintentar no arregla la config ni el guard: solo aparcar
-        return [[park]]
+        return [[park], [{"text": "🧑‍💻 Que lo resuelva el integrador", "action": TO_INTEGRADOR}]]
     if state == "blocked" and block_kind == "transient":
         return [[{"text": "🔄 Reintentar", "action": RETRY}, park]]
     if state == "stuck":  # 🧊 en triage por bloqueo repetido (block_loop_detected): unblock no vale, _untriage la saca
@@ -315,6 +317,7 @@ class DecisionDesk:
         self.gh_exe = gh_exe
         self._spawn = spawn
         self._now = now
+        self.reconciler = None  # reconcile.Reconciler: botones rec_archive / rec_keep
         self.integrator = None  # carril Integrador (INTEGRATOR_ENABLED): botones int_* de fusionar/desplegar
         self.messages = messages  # MessageStore: todas las copias de cada aviso (sincronización tema <-> DM)
         self.promoter = None      # promote.Promoter: /promover y botones promo_* (producción de MigraTeam)
@@ -771,6 +774,10 @@ class DecisionDesk:
             return self._card_act(rec, button, where)
         if action.startswith("int_"):  # 🔀 Fusionar / 🚀 Desplegar: solo con el Integrador activo
             return bool(self.integrator) and self.integrator.on_button(action, rec, where, self)
+        if action in (REC_ARCHIVE, REC_KEEP):  # propuesta de obsolescencia (reconcile.py)
+            return bool(self.reconciler) and self.reconciler.on_button(action, rec, where, self)
+        if action == TO_INTEGRADOR:
+            return self._to_integrador(rec, where)
         if action.startswith("promo_"):  # 🚀 Promover MigraTeam: Revisado / Sí, promover (promote.py)
             if action == "promo_start":
                 if not self.promoter:
@@ -1185,6 +1192,18 @@ class DecisionDesk:
             self._edit(rec, where, "blocked", "no se pudo aparcar (¿la tarea está en curso?)")
             return False
         h.comment(tid, f"Aparcada por {self._who()}", author=OSCAR_AUTHOR)
+        return True
+
+    def _to_integrador(self, rec: dict, where: dict) -> bool:
+        """Lo que Oscar no puede hacer desde Telegram (consola, guard, config) pasa al integrador: la tarjeta se
+        reasigna a su perfil y queda dicho en ella quién la tiene."""
+        tid, h = rec["task_id"], self._hermes(rec)
+        if not h.assign(tid, INTEGRATOR_PROFILE):
+            self._edit(rec, where, "blocked", "no se pudo pasar al integrador (¿la tarea está en curso?)")
+            return False
+        h.comment(tid, f"Pasada al integrador ({INTEGRATOR_PROFILE}) por {self._who()}: requiere consola",
+                  author=OSCAR_AUTHOR)
+        self._edit(rec, where, "parked", f"🧑‍💻 la tiene el integrador ({INTEGRATOR_PROFILE}); queda en su tarjeta")
         return True
 
     def _retry(self, rec: dict, where: dict) -> bool:
