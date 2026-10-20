@@ -269,6 +269,9 @@ integrator:
       risk_label: OSCAR HQ
       batch: daily                  # lote diario (agent_lanes/batch.py): un solo botón [🔀 Fusionar lote] a las 08:30 o con /lote oscarhq
       manual_migrations: [supabase/migrations/]
+      # Mismo gate que el build de Vercel (#172 dijo «tests OK» con el dashboard roto): tsc + vitest en un worktree limpio.
+      batch_frontend_paths: [dashboard/]
+      batch_frontend_cmd: cd dashboard && npm ci --no-audit --no-fund && npx tsc --noEmit && npx vitest run
       # Infraestructura de arranque/deploy: se puede fusionar, pero sin botón de deploy (lo revisa Oscar).
       sensitive_paths: [railway.json, railway.toml, nixpacks.toml, Procfile, Dockerfile, .railwayignore, requirements.txt, .github/]
       railway_dir: C:/Users/oscar/dev/oscar-hq

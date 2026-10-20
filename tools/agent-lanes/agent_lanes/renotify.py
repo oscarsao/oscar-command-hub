@@ -397,6 +397,36 @@ class Renotifier:
                 + render("stuck", p.tid, p.task.get("title"), p.lane.name, p.status.split("  @")[0], None, p.bullets))
         return bool(owner and self.notifier.send_to(owner, None, text, reply_markup=markup))
 
+    def alert_urgent(self, p: Pending) -> bool:
+        """Aviso inmediato de un bloqueo de prioridad alta: al DM de Oscar (con los botones de la tarjeta) y al tema
+        Atención (integrador), con la acción concreta: qué pregunta el worker y qué opciones hay. True si llegó al DM."""
+        prio = p.task.get("priority")
+        lines = [f"🚨 Prioridad {prio} bloqueada: {p.tid} · {truncate(p.task.get('title'), 80)}",
+                 f"{p.lane.name} · {p.status}"]
+        for q in p.pending_questions()[:3]:
+            lines.append(f"❓ {truncate(q.get('question'), 280)}")
+            opts = q.get("options") or []
+            if opts:
+                lines.append("   " + " · ".join(f"{'ABCD'[i]}) {truncate(str(o), 40)}" for i, o in enumerate(opts[:4])))
+        if not p.questions:
+            lines += [truncate(b, 280) for b in p.bullets[:3]]
+        lines.append("Acción: " + {"needs_input": "responde con los botones (✍️ Responder) o desde /decisiones",
+                                    "blocked": "pulsa 🔁 Reintentar o aparca la tarjeta",
+                                    }.get(p.state, "revisa la tarjeta"))
+        text = "\n".join(lines)
+        markup = self.desk.markup(p.state, task=p.task, lane=p.lane, block_kind=p.block_kind,
+                                  questions=p.questions, yes_no=p.yes_no, q_index=p.q_index)
+        owner = getattr(self.desk, "owner_id", None)
+        ok = bool(owner and self.notifier.send_to(owner, None, text, html=False, reply_markup=markup))
+        target = self.attention_target()
+        if target:  # integrador (oscar-e2) y resto del equipo: el mismo aviso, con @mención, sin botones
+            who = mention((self.attention or {}).get("mention"))
+            try:
+                self.notifier.send_to(target[0], target[1], text + (f"\n{who}" if who else ""), html=False)
+            except Exception as exc:
+                log.warning("%s: aviso urgente al tema Atención falló: %s", p.tid, exc)
+        return ok
+
     def _publish(self, p: Pending, old: dict | None) -> bool:
         # Aviso viejo de otro bot (Hermes): se olvida para que TaskNotices no intente editarlo ni borrarlo.
         if old:

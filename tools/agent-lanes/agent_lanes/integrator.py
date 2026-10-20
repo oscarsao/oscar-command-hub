@@ -243,8 +243,21 @@ def load_integrator_settings(path: Path | None = None, env: dict | None = None, 
                               batch_pending_days=int(cfg.get("batch_pending_days") or 3))
 
 
+# Texto de prueba ficticio (hub #171: «sk-ABCD…» en un test de redacción). Se admite si la COINCIDENCIA lleva ABCD,
+# XXXX o una palabra de ejemplo entre delimitadores (sk-ejemplo-…), o si la línea lleva la marca explícita
+# `secret-scan: allow`. Una clave real no lleva esas cadenas; la repetición de un solo carácter (ZZZZ…) NO cuenta.
+ALLOW_MARK = "secret-scan: allow"
+FICTITIOUS_RULES = frozenset({"clave sk-"})  # solo la de formato libre: AKIA…, ghp_… etc. tienen forma fija y no se exentan
+FICTITIOUS_RE = re.compile(r"(?-i:ABCD)|x{4,}|(?<![A-Za-z0-9])(?:ejemplo|example|fake|dummy|placeholder|ficticio)(?![A-Za-z0-9])",
+                           re.I)
+
+
+def _fictitious(match: str) -> bool:
+    return bool(FICTITIOUS_RE.search(match))
+
+
 # Versión de los gates: sube a mano si cambia su lógica (no solo las reglas del secret-scan, que van en la huella).
-GATE_VERSION = "1"
+GATE_VERSION = "2"  # 2: textos de prueba ficticios y marca `secret-scan: allow`
 
 
 def gate_fingerprint() -> str:
@@ -281,10 +294,12 @@ def scan_secrets(diff: str) -> list[tuple[str, int, str]]:
             line = int(m.group(1)) if m else 0
             continue
         if raw.startswith("+") and path:
-            for name, rx in SECRET_RULES:
-                if rx.search(raw[1:]):
-                    hits.append((path, line, name))
-                    break
+            if ALLOW_MARK not in raw:
+                for name, rx in SECRET_RULES:
+                    m = rx.search(raw[1:])
+                    if m and not (name in FICTITIOUS_RULES and _fictitious(m.group(0))):
+                        hits.append((path, line, name))
+                        break
             line += 1
         elif raw.startswith(" "):
             line += 1
