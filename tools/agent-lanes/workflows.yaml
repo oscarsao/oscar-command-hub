@@ -1,0 +1,11 @@
+# Ajustes de los workflows de Telegram y de la cola del integrador (entrega C). Editables sin tocar código:
+# `workflows.set_ajuste(clave, valor)` (botones/panel) o a mano aquí. Si falta o un valor no es válido, vale el de código.
+
+tope_eur: 8                 # tope de gasto por workflow (ampliable con botón)
+paso_ampliar_eur: 8         # cuánto sube el tope cada vez que se pulsa [➕ Ampliar]
+aviso_pct: 80               # % del tope en que se avisa (una sola vez)
+max_preguntas: 5            # preguntas previas como máximo
+max_tarjetas_activas: 5     # tarjetas de carril activas a la vez por workflow
+max_workstreams_codigo: 3   # workstreams de código en paralelo (todos los workflows)
+escalar_horas: 2            # cola del integrador: escalar a Oscar un bloqueo tras estas horas
+recordar_horas: 24          # y recordárselo tras estas
