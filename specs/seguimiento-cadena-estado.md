@@ -22,10 +22,21 @@ Fuente: `pitches/seguimiento-peticiones.md` (§4.1–4.4, §5 A1–A4). Código 
 completa, paginada a 4096 sin recortar). `/estado` conserva la vista previa por marca debajo.
 
 ## A3 Formato único de aviso (`formato_aviso.py` dentro de peticiones.py)
-`aviso_texto(proyecto, titulo, estado, proximo, quien, req=None)` + `botones_aviso(req)` (Integrar, Dar seguimiento,
-Aparcar, Explícame más) + pie «(o escríbeme aquí la respuesta)»; `resumir(texto)` devuelve (corto, tiene_mas) y «ver
-más» muestra el resto sin recortar. Tema por proyecto: `tema_de(proyecto)`. Aplicado a `notices.render`,
-`aviso` (stuck) y `resumen_carriles` añadiendo las líneas Estado/Próximo paso/Lo da.
+Implementado (no más): 
+- `notices.render` (todo aviso de tarjeta: runner, `aviso` stuck, recordatorio, `/atascadas`): línea de proyecto
+  (marca · carril · req), estado + `· paso N/6` (`PASO_ESTADO`), `➡️ Próximo paso … · Lo da: …` (`next_step`, ahora
+  también en el recordatorio y en `/atascadas`) y, si le toca a Oscar, el pie `PIE_TEXTO_LIBRE` tras los botones.
+  `for_oscar` largo se resume y remite a «💬 Explícame más» (el «ver más» de las tarjetas).
+- Avisos de PETICIÓN (`/estado`, parte de las 9:00): `aviso_texto`, `resumir`/`paginas` y el botón «💬 Ver más»
+  (`botones_aviso`). En la entrega A `botones_aviso` es SOLO «Ver más»: Integrar, Dar seguimiento y Aparcar los cablean
+  B y C sobre este esqueleto.
+- Tema por proyecto: `TaskNotices(tema_de=tema_por_texto(peticiones, lanes))` usa el tema del carril del proyecto de la
+  petición cuando el aviso no trae tema de origen. NO está conectado en `runner.py` (no-go de la tarjeta): conectarlo es
+  una línea al construir `TaskNotices` en `LaneRunner`; pendiente del OK de Oscar.
+- `resumen_carriles` lleva el pie de texto libre.
+- Texto libre en tema de foro (t_154c3748): `free_text` ya cubre temas (misma ruta que el DM: comentario en la tarjeta y
+  luego desbloqueo); novedad: un reply a un aviso decide a cuál responde cuando hay varios. La causa del «Clarification
+  cancelled» en foros está en el gateway de Hermes: ver `docs/propuesta-clarify-foro.md`.
 
 ## A4 Segundo parte de las 9:00
 `DailyRequestSummary` junto a `DailyLaneSummary`: no repite detalle de carril (solo «ver carriles»), no sale sin novedad

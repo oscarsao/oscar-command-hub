@@ -14,7 +14,7 @@ import re
 import subprocess
 
 from . import proc as _proc
-from .peticiones import vinculo_de
+from .peticiones import TOTAL_PASOS, vinculo_de
 import threading
 from pathlib import Path
 from typing import Callable
@@ -49,6 +49,9 @@ def configure(cfg: dict | None) -> None:
 BRANDS = {"claude-migrateam": "MigraTeam", "claude-oscarhq": "Píldora", "claude-scraper": "Píldora",
           "claude-nextjobs": "NextJobs"}
 OASP_MODES = ("Fast-Track", "Spec-Lite", "Pitch", "CTO-360")
+PIE_TEXTO_LIBRE = "(o escríbeme aquí la respuesta)"  # formato único de aviso (t_211c9902 A3); lo reexporta formato_aviso
+# Paso de la cadena (peticiones.TOTAL_PASOS: petición · tarjeta · carril · PR · integración · despliegue) por estado
+PASO_ESTADO = {"running": 3, "needs_input": 3, "blocked": 3, "stuck": 3, "changes": 3, "review": 4, "done": 4}
 FOR_OSCAR_MAX = 300  # `for_oscar` del worker: 1-2 frases llanas que sustituyen al "Qué:" técnico del aviso
 # Opciones por defecto de una pregunta que llega sin `options` (p. ej. "¿Doy luz verde a la spec?"): Oscar debe
 # poder decidir con un toque. La respuesta vuelve al worker como si fuera una opción del contrato.
@@ -471,18 +474,23 @@ def render(state: str, task_id: str, title: str | None, lane: str, status: str,
     head = [f"{EMOJI.get(state, '•')} {e(task_id)} · {e(truncate(title, TITLE_MAX))}",
             e(context_line(lane, body)) + (f" · {req}" if req else "")]
     plain = truncate(for_oscar, FOR_OSCAR_MAX) if for_oscar else ""
+    if plain and len(" ".join(str(for_oscar).split())) > FOR_OSCAR_MAX:  # resumido: el resto, tras «Explícame más»
+        plain += " (resto: 💬 Explícame más)"
     what = None if plain else objective(body)
     if plain:
         head.append("Para ti: " + e(plain))
     elif what:
         head.append("Qué: " + e(what))
-    head.append(e(status))
+    paso = PASO_ESTADO.get(state)  # formato único (t_211c9902 A3): estado · paso N/6 de la cadena de la petición
+    head.append(e(status) + (f" · paso {paso}/{TOTAL_PASOS}" if paso else ""))
     if next_step:
         head.append("➡️ Próximo paso: " + e(truncate(next_step, 300)))
     head += [e(truncate(line, 300)) for line in (tree or ())[:4]]
     tail = []
     if links:
         tail.append(" · ".join(f'<a href="{e(url, quote=True)}">{e(label)}</a>' for label, url in links))
+    if next_step and "Lo da: Oscar" in next_step:  # le toca a Oscar: botones arriba y, además, texto libre
+        tail.append(e(PIE_TEXTO_LIBRE))
     bullets = [e(b) for b in bullets or ()]
     text_max = LIMITS["text_max"]
     dropped = False
@@ -587,9 +595,13 @@ def markup_token(markup: dict | None) -> str | None:
 class TaskNotices:
     """Publica el estado de una tarea en su único mensaje (y en sus espejos)."""
 
-    def __init__(self, notifier, store: MessageStore | None = None):
+    def __init__(self, notifier, store: MessageStore | None = None, *,
+                 tema_de: Callable[[str], tuple[str, str] | None] | None = None):
         self.notifier = notifier
         self.store = store or MessageStore()
+        # tema del proyecto de la petición a la que pertenece el aviso (formato_aviso.tema_de); se usa solo si el aviso
+        # no trae un tema de origen. None = como siempre (tema del carril).
+        self.tema_de = tema_de
 
     def publish(self, tid: str, text: str, target=None, lane_target=None, *, alert: bool = False,
                 reply_markup: dict | None = None, mirror_to: str | None = None, channel: str | None = None,
@@ -624,6 +636,11 @@ class TaskNotices:
                         log.info("%s: no se pudo editar la copia %s: %s", tid, m.get("message_id"), exc)
                 return
             log.info("%s: no se pudo editar el mensaje %s; envío uno nuevo", tid, rec["message_id"])
+        if target is None and self.tema_de:
+            try:
+                target = self.tema_de(text)
+            except Exception as exc:  # el tema es una mejora: nunca tumba el aviso
+                log.info("%s: no se pudo resolver el tema del proyecto: %s", tid, exc)
         sent = self.notifier.send(text, target, lane_target, silent=not alert, **extra)
         if not sent:
             return

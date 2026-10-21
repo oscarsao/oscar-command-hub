@@ -61,8 +61,8 @@ from .decisions import DEPLOY_ASK, DEPLOY_NO, FALTA, FLUJO, HAZLO, OWNER_TELEGRA
 from .deps import (ShowCache, child_bucket, dependency_order, family, pending_parents, tree_lines,
                    waiting_line)
 from .notices import (BOARD_BRANDS, BRANDS, DECISION_CARD_STATUSES, OSCAR_ASSIGNEE, TEXT_MAX, card_url,
-                      decision_since, hours_ago, is_decision_card, markup_token, normalize_questions, render,
-                      status_line, truncate)
+                      decision_since, hours_ago, is_decision_card, markup_token, next_step, normalize_questions,
+                      render, status_line, truncate)
 
 log = logging.getLogger("agent_lanes")
 URGENT_EVERY = 120  # s mínimos entre pasadas del aviso inmediato de bloqueos de prioridad alta
@@ -698,7 +698,8 @@ class CommandCenter:
         for p in stuck[:MAX_CARDS]:
             status = status_line(p.status, f"hace {hours_ago(p.since, now)} h")
             text = render("stuck", p.tid, p.task.get("title"), p.lane.name, status, self._links_for(p.lane, p.tid),
-                          body=p.task.get("body"), for_oscar=p.for_oscar)
+                          body=p.task.get("body"), for_oscar=p.for_oscar,
+                          next_step=next_step("stuck", p.block_kind))
             markup = self.desk.markup("stuck", task=p.task, lane=p.lane, block_kind=p.block_kind)
             self._mirror(p.tid, self._send(where, text, markup=markup), markup)
 

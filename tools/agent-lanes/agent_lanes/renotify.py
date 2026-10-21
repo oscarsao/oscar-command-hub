@@ -32,6 +32,7 @@ from .notices import (
     decision_since,
     files_label,
     money,
+    next_step,
     normalize_questions,
     questions_block,
     render,
@@ -411,7 +412,8 @@ class Renotifier:
         owner = getattr(self.desk, "owner_id", None)
         markup = self.desk.markup("stuck", task=p.task, lane=p.lane, block_kind=p.block_kind)
         text = (f"⏰ Sigue sin respuesta tras {int(hours)} h (recordatorio: no se ha hecho nada por ti)\n"
-                + render("stuck", p.tid, p.task.get("title"), p.lane.name, p.status.split("  @")[0], None, p.bullets))
+                + render("stuck", p.tid, p.task.get("title"), p.lane.name, p.status.split("  @")[0], None, p.bullets,
+                          next_step=next_step("stuck", p.block_kind)))
         return bool(owner and self.notifier.send_to(owner, None, text, reply_markup=markup))
 
     def alert_urgent(self, p: Pending) -> bool:

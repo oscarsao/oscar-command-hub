@@ -12,10 +12,11 @@ Texto plano (sin HTML). Nada se recorta sin ofrecer el resto: `resumir` devuelve
 """
 from __future__ import annotations
 
-from .notices import TEXT_MAX, hours_ago, truncate
+import re
+
+from .notices import PIE_TEXTO_LIBRE, TEXT_MAX, hours_ago, truncate  # noqa: F401  (PIE_TEXTO_LIBRE: se reexporta)
 from .peticiones import INTEGRADO_RE, PROYECTOS, TOTAL_PASOS, Estado, _comentarios
 
-PIE_TEXTO_LIBRE = "(o escríbeme aquí la respuesta)"
 EMOJI_ESTADO = {"hecha": "✅", "en curso": "🛠", "esperándote": "⏳", "atascada": "🧊"}
 ORDEN_ESTADO = {"atascada": 0, "esperándote": 1, "en curso": 2, "hecha": 3}
 REQ_MAS = "req_mas"            # botón «Ver más» (decisions.py -> CommandCenter.req_choice)
@@ -30,6 +31,15 @@ PROYECTO_CARRIL = {"Hub": "claude-hub", "OHQ": "claude-oscarhq", "Pildora": "cla
 def tema_de(proyecto: str, lanes: dict) -> tuple[str, str] | None:
     """(chat, thread) del tema del proyecto según el carril que lo lleva; None si no tiene (-> Atención/DM)."""
     return getattr(lanes.get(PROYECTO_CARRIL.get(proyecto, "")), "telegram", None)
+
+
+def tema_por_texto(peticiones, lanes: dict):
+    """Callback para `TaskNotices(tema_de=...)`: del `req_<n>` que lleva el aviso al tema de su proyecto (o None)."""
+    def resolver(texto: str) -> tuple[str, str] | None:
+        found = re.search(r"\breq_\d+\b", texto or "")
+        req = peticiones.get(found.group(0)) if found else None
+        return tema_de(req["proyecto"], lanes) if req else None
+    return resolver
 
 
 def resumir(texto: str, n: int = RESUMEN_MAX) -> tuple[str, str | None]:
@@ -61,8 +71,9 @@ def paginas(texto: str, n: int = TEXT_MAX) -> list[str]:
 
 
 def botones_aviso(req_id: str | None) -> list[list[dict]]:
-    """Botones del aviso de una petición. Hoy solo «Ver más» está cableado; Integrar / Dar seguimiento / Aparcar los
-    añaden las entregas siguientes sin cambiar el esqueleto."""
+    """Botones del aviso de UNA PETICIÓN (no de una tarjeta). En la entrega A solo se cablea «Ver más»; Integrar, Dar
+    seguimiento y Aparcar los traen B y C sobre este mismo esqueleto. Los avisos de tarjeta ya llevan sus botones de
+    decisión (decisions.keyboard_spec, con «Explícame más»)."""
     return [[{"text": "💬 Ver más", "action": REQ_MAS}]] if req_id else []
 
 
