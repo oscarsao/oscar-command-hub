@@ -5,8 +5,9 @@
 
 runner:
   # Tope global de procesos claude vivos a la vez, sumando todos los carriles (review incluido).
-  # 1 por defecto: hubo un OOM el 27-09 con varias sesiones abiertas.
-  max_workers: 1
+  # 1 por defecto: hubo un OOM el 27-09 con varias sesiones abiertas. 2 desde el 21-10 (decisión de Oscar;
+  # el servicio ya arrancaba con --max-workers 2).
+  max_workers: 2
   interval_seconds: 60
   # Vigilante de «runner ciego» (agent_lanes/ciego.py): si no se pueden listar tareas (p. ej. WinError 4551 de App
   # Control) durante estos minutos seguidos, aviso ALTA al DM de Oscar y un `restart --drain` automático (máx. 1/hora).
@@ -154,6 +155,7 @@ lanes:
     max_budget_usd: 3.0
     test_cmd: py -3.12 "{AGENT_LANES_DIR}/agent_lanes/checks.py" {BASE} && py -3.12 -m pytest tools/agent-lanes/tests -q
     # La lista sustituye a la de defaults (no se fusiona): .github/workflows/ se repite a propósito.
+    max_parallel: 2  # 21-10: Oscar quiere las entregas A/B/C del pitch de seguimiento a la vez
     forbidden_paths:
       - .github/workflows/
       - tools/agent-lanes/.env
