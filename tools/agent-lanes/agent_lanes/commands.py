@@ -54,6 +54,7 @@ from typing import Callable
 from urllib.parse import urlsplit
 
 from . import bandeja as _bandeja
+from . import titulos
 from .aviso import UrgentBlockWatcher, mention
 from .card_options import PREPARED_AUTHOR, PREPARED_PREFIX, CardSpec, card_message, parse_card
 from .decisions import DEPLOY_ASK, DEPLOY_NO, FALTA, FLUJO, HAZLO, OWNER_TELEGRAM_ID
@@ -85,6 +86,10 @@ COMMANDS = (
     ("ram", "Consumo de RAM ahora y qué procesos más gastan"),
     ("sesion", "Correcciones agrupadas: /sesion [nombre] abre; fin | cancelar | estado"),
     ("flujo", "Una petición -> cadena de hasta 8 tarjetas (se crean al pulsar): /flujo <texto>"),
+    ("pendientes", "Tus pendientes (pasos «tuyo» y «decidir») con botones"),
+    ("epicas", "Vista de épicas (fuera de la cola de decisiones)"),
+    ("retenidas", "Vista de tarjetas retenidas"),
+    ("backlog", "Vista del backlog del bot del equipo"),
 )
 COMMAND_SCOPES = ("default", "all_private_chats", "all_group_chats")
 HELP_ALIASES = ("start", "ayuda", "help")
@@ -96,7 +101,8 @@ STATUS_TEXT = {"running": ("running", "en curso"), "ready": ("ready", "en cola")
                "done": ("done", "terminada"), "blocked": ("blocked", "bloqueada"), "todo": ("todo", "pendiente"),
                "triage": ("triage", "en triage"), "archived": ("archived", "archivada")}
 TOP_DECISIONS = 5    # /decisiones muestra las 5 más importantes; el resto con [📋 Ver todas]
-MAX_CARDS = 20     # tarjetas por /decisiones o /aprobar (el resto se cuenta en la cabecera)
+VIEW_STATUSES = ("triage", "todo", "ready", "running", "blocked", "review")  # vistas por paso: tarjetas no cerradas
+MAX_CARDS = 20    # tarjetas por /decisiones o /aprobar (el resto se cuenta en la cabecera)
 CARD_TITLE_MAX = 60  # título de una tarjeta de decisión de Oscar en /decisiones
 EXTRA_BOARDS = ("default",)  # además de los tableros de los carriles: donde viven muchas tarjetas de Oscar
 HAZLO_PRIORITY = 10  # prioridad alta (kanban: más alto = antes)
@@ -317,13 +323,15 @@ class CommandCenter:
 
     def pending_decisions(self, brand: str | None = None) -> list:
         """Tareas de carril en needs_input (la misma lista para /decisiones y los recordatorios), más antigua primero."""
-        found = [p for p in self.renotifier().collect(statuses=("blocked",)) if p.state == "needs_input"]
+        found = [p for p in self.renotifier().collect(statuses=("blocked",))
+                 if p.state == "needs_input" and titulos.is_live(p.task)]  # épicas/retenidas/backlog: vistas aparte
         return sorted(self._filter(found, brand), key=lambda p: (p.since or 0, p.tid))
 
     def stuck_tasks(self, brand: str | None = None) -> list:
         """🧊 Tareas de carril que Hermes pasó a triage por bloquearse dos veces por lo mismo (block_loop_detected):
         desde ahí `unblock` falla y nadie las ve. Más antigua primero; las cuentan también los recordatorios."""
-        found = [p for p in self.renotifier().collect(statuses=("triage",)) if p.state == "stuck" and not p.guard]
+        found = [p for p in self.renotifier().collect(statuses=("triage",)) if p.state == "stuck" and not p.guard
+                 and titulos.is_live(p.task)]
         return sorted(self._filter(found, brand), key=lambda p: (p.since or 0, p.tid))
 
     # --- cola del integrador (limitaciones del guard) y resumen de las 9:00 (t_f8f58acb) ------------------------
@@ -414,6 +422,8 @@ class CommandCenter:
                 for t in tasks:
                     t = {"assignee": OSCAR_ASSIGNEE, "status": status, **t}
                     if not t.get("id") or t["id"] in found or t["id"] in snoozed:
+                        continue
+                    if not titulos.is_live(t):  # épica/retenida/backlog bot: ni cola, ni recordatorios, ni «sin etiqueta»
                         continue
                     if is_decision_card(t):
                         found[t["id"]] = {"board": board, "task": t, "since": decision_since(t)}
@@ -528,6 +538,80 @@ class CommandCenter:
     def cmd_atencion(self, where, args: str, brand: str | None) -> None:
         """Todo lo que espera a Oscar (preguntas, 🧊 atascadas y tarjetas de decisión) con sus botones, sin recorte."""
         self.cmd_decisiones(where, args, brand, show_all=True)
+
+    # --- vistas por paso del título (titulos.py): fuera de la cola de Telegram ------------------------------------
+
+    def board_tasks(self, brand: str | None = None) -> list[dict]:
+        """[{board, task, since}] de todas las tarjetas vivas del kanban (sin hechas ni archivadas) de los tableros de
+        los carriles + default, sin duplicados por id. Un tablero ilegible no vacía la vista."""
+        found: dict[str, dict] = {}
+        for board in dict.fromkeys([l.board for l in self.lanes.values() if l.board] + list(EXTRA_BOARDS)):
+            if brand and BOARD_BRANDS.get(board, "Otros") != brand:
+                continue
+            h = self.hermes_for(board)
+            for status in VIEW_STATUSES:
+                try:
+                    tasks = h.list_status_all(status)
+                except Exception as exc:
+                    log.warning("vista del kanban: %s/%s no leído: %s", board, status, exc)
+                    continue
+                for t in tasks:
+                    t = {"status": status, **t}
+                    if t.get("id") and t["id"] not in found:
+                        found[t["id"]] = {"board": board, "task": t, "since": decision_since(t)}
+        return sorted(found.values(), key=lambda c: (c["since"] or 0, c["task"]["id"]))
+
+    def _step_view(self, where, brand: str | None, paso: str, titulo: str) -> None:
+        e = html.escape
+        rows = [c for c in self.board_tasks(brand) if titulos.step_of(c["task"]) == paso]
+        scope = f" · {brand}" if brand else ""
+        if not rows:
+            self._send(where, f"{titulo}{scope}: nada 🎉", html=False)
+            return
+        lines = [f"<b>{e(titulo)} ({len(rows)}){e(scope)}</b>"]
+        for c in rows[:MAX_CARDS]:
+            t = c["task"]
+            url = card_url(self.base_url, c["board"], t["id"])
+            ref = f'<a href="{e(url, quote=True)}">{t["id"]}</a>' if url else f"<code>{t['id']}</code>"
+            lines.append(f"• {ref} · {e(truncate(t.get('title'), CARD_TITLE_MAX))}")
+        if len(rows) > MAX_CARDS:
+            lines.append(f"… y {len(rows) - MAX_CARDS} más en el panel")
+        self._send(where, "\n".join(lines))
+
+    def cmd_epicas(self, where, args: str, brand: str | None) -> None:
+        self._step_view(where, brand, titulos.EPICA, "🏔 Épicas")
+
+    def cmd_retenidas(self, where, args: str, brand: str | None) -> None:
+        self._step_view(where, brand, titulos.RETENIDA, "⏸ Retenidas")
+
+    def cmd_backlog(self, where, args: str, brand: str | None) -> None:
+        self._step_view(where, brand, titulos.BACKLOG_BOT, "🗃 Backlog del bot del equipo")
+
+    def cmd_pendientes(self, where, args: str, brand: str | None) -> None:
+        """«Pendientes de Oscar»: assignee oscar con paso tuyo o decidir, una tarjeta por mensaje con sus botones. Las de
+        Oscar sin paso reconocible salen aparte como «sin clasificar» con aviso (nunca se ocultan)."""
+        now = self._now()
+        mine = [c for c in self.board_tasks(brand) if c["task"].get("assignee") == OSCAR_ASSIGNEE]
+        snoozed = self._snoozed()
+        pend = [c for c in mine if titulos.step_of(c["task"]) in titulos.OSCAR_STEPS and c["task"]["id"] not in snoozed]
+        loose = [c for c in mine if titulos.step_of(c["task"]) is None and c["task"]["id"] not in snoozed]
+        scope = f" · {brand}" if brand else ""
+        if not pend and not loose:
+            self._send(where, f"Nada pendiente de ti{scope} 🎉", html=False)
+            return
+        if pend:
+            self._send(where, f"🙋 Pendientes de Oscar ({len(pend)}){scope}", html=False)
+            for c in pend[:MAX_CARDS]:
+                self._send_card(where, c, now)
+            if len(pend) > MAX_CARDS:
+                self._send(where, f"Muestro {MAX_CARDS}; el resto, en el panel", html=False)
+        if loose:
+            e = html.escape
+            lines = [f"⚠️ {_plural(len(loose), 'tarjeta tuya', 'tarjetas tuyas')} sin clasificar: el título no acaba en "
+                     f"«· paso» ({e(', '.join(titulos.PASOS))})"]
+            lines += [f"• <code>{c['task']['id']}</code> · {e(truncate(c['task'].get('title'), CARD_TITLE_MAX))}"
+                      for c in loose[:MAX_CARDS]]
+            self._send(where, "\n".join(lines))
 
     def _top_decisions(self, where, pendings: list, stuck: list, cards: list[dict], now: float, brand: str | None,
                        total: int) -> None:
