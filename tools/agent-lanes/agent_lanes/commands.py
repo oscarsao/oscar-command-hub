@@ -69,6 +69,7 @@ log = logging.getLogger("agent_lanes")
 URGENT_EVERY = 120  # s mínimos entre pasadas del aviso inmediato de bloqueos de prioridad alta
 
 COMMANDS = (
+    ("ajustes", "Ajustes del hub con botones: avisos, atascos, lotes y carriles"),
     ("hoy", "Resumen del día (el de las 8:00) ahora"),
     ("integrador", "Estado del integrador, PR de sesiones interactivas y bloqueos de guard"),
     ("encolar", "Encola un PR de una sesión interactiva para tu OK: /encolar <repo> <PR>"),
@@ -402,7 +403,8 @@ class CommandCenter:
 
     def vis_ajustes(self):
         from . import integrador_visibilidad as iv
-        return iv.load_ajustes(getattr(self, "vis_settings", None))  # se relee: editar el YAML no pide reiniciar
+        from .ajustes_hub import aplicar_visibilidad  # el YAML y, encima, lo editado con /ajustes
+        return aplicar_visibilidad(iv.load_ajustes(getattr(self, "vis_settings", None)))  # se relee en cada uso
 
     def estado_integrador(self):
         from . import integrador_visibilidad as iv
@@ -1312,6 +1314,76 @@ class CommandCenter:
         dest = (str(where["chat_id"]), str(where.get("thread_id") or "0"))
         for page in paginas(cadena_texto(req, derivar(req, shows, ahora), shows, ahora)):
             self._send(dest, page, html=False)
+        return True
+
+    # --- /ajustes: configuración editable del hub (ajustes_hub.py; regla «nada hardcodeado») ----------------
+
+    def _quien(self) -> str:
+        """Nombre de quien actúa en este hilo (operador de people.yaml) o Oscar."""
+        return getattr(getattr(self.desk, "_tl", None), "name", None) or "Oscar"
+
+    def _ajustes_screen(self, where, screen: tuple, *, key: str | None = None, grupo: str | None = None) -> None:
+        text, items, spec = screen
+        markup = self.desk.store.issue({"task_id": "ajustes", "board": "", "lane": "",
+                                        "ajustes": {"items": items, "key": key, "grupo": grupo}}, spec)[1]
+        self._send(where, text, html=False, markup=markup)
+
+    def cmd_ajustes(self, where, args: str, brand: str | None) -> None:
+        """/ajustes -> botones; /ajustes <clave> <valor> -> modo avanzado; /ajustes historial [clave]."""
+        from . import ajustes_hub as ah, ajustes_ui as ui
+        store, parts = ah.almacen(), args.split(None, 1)
+        if not parts:
+            return self._ajustes_screen(where, ui.menu())
+        if parts[0].lower() == "historial":
+            return self._send(where, ui.historial(store, parts[1].strip() if len(parts) > 1 else None), html=False)
+        if parts[0] not in ah.SETTINGS:
+            return self._send(where, f"No existe el ajuste «{truncate(parts[0], 40)}». Usa /ajustes y elige con los botones.",
+                              html=False)
+        if len(parts) == 1:
+            return self._ajustes_screen(where, ui.detalle(store, parts[0]), key=parts[0], grupo=ah.SETTINGS[parts[0]].grupo)
+        self._ajustes_save(where, parts[0], parts[1])
+
+    def _ajustes_save(self, where, key: str, raw) -> None:
+        from . import ajustes_hub as ah
+        spec = ah.SETTINGS[key]
+        try:
+            aviso = ah.almacen().set(key, raw, self._quien())
+        except ah.AjusteInvalido as exc:
+            return self._send(where, f"❌ No lo he guardado: {exc}", html=False)
+        text = f"✅ {spec.etiqueta}: {spec.describe(ah.almacen().valor(key))}" + (f"\n{aviso}" if aviso else "")
+        self._send(where, text, html=False)
+
+    def ajustes_choice(self, rec: dict, button: dict, where: dict) -> bool:
+        """Botones de /ajustes: grupo -> ajuste -> valor (se guarda al pulsar) o «Valor por defecto»."""
+        from . import ajustes_hub as ah, ajustes_ui as ui
+        ctx = rec.get("ajustes") or {}
+        items, idx = ctx.get("items") or [], button.get("index")
+        if not isinstance(idx, int) or not 0 <= idx < len(items):
+            return False
+        item, store, key, grupo = items[idx], ah.almacen(), ctx.get("key"), ctx.get("grupo")
+        dest = (str(where["chat_id"]), str(where.get("thread_id") or "0"))
+        if key is None and grupo is None:  # menú de grupos
+            if item not in (*ah.GRUPOS, ah.AVANZADO):
+                return False
+            self._ajustes_screen(dest, ui.grupo(store, item), grupo=item)
+        elif key is None:  # lista de un grupo: ajuste elegido o «Grupos»
+            if item == ui.ATRAS:
+                self._ajustes_screen(dest, ui.menu())
+            elif item in ah.SETTINGS:
+                self._ajustes_screen(dest, ui.detalle(store, item), key=item, grupo=grupo)
+            else:
+                return False
+        elif key not in ah.SETTINGS:
+            return False
+        elif item == ui.ATRAS:
+            self._ajustes_screen(dest, ui.grupo(store, grupo), grupo=grupo)
+        elif item == ui.RESET:
+            spec = ah.SETTINGS[key]
+            hecho = store.reset(key, self._quien())
+            self._send(dest, f"↩️ {spec.etiqueta}: vuelve al valor por defecto ({spec.describe(spec.default)})." if hecho
+                       else f"{spec.etiqueta} ya estaba en su valor por defecto.", html=False)
+        else:
+            self._ajustes_save(dest, key, item)
         return True
 
     def cmd_estado(self, where, args: str, brand: str | None) -> None:

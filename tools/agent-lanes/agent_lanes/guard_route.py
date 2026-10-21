@@ -21,11 +21,13 @@ import time
 from pathlib import Path
 from typing import Callable
 
+from .ajustes_hub import valor
 from .aviso import mention
 from .notices import INTEGRADOR, hours_ago, truncate
 
 log = logging.getLogger("agent_lanes")
 
+# Valores por defecto; los vigentes se editan con /ajustes (ajustes_hub: atascos.escalado_guard_horas / aplazar_horas).
 WINDOW_HOURS = 2.0   # en la cola del integrador antes de pasar a Oscar
 SNOOZE_HOURS = 24.0  # lo que dura «Aplazar»
 DEFAULT_NEED = "el guard del carril no deja al worker hacerlo solo"
@@ -83,10 +85,12 @@ class GuardQueue:
         if data["entries"].pop(tid, None) is not None:
             self._save(data)
 
-    def snooze(self, tid: str, hours: float = SNOOZE_HOURS) -> bool:
-        """«Aplazar»: vuelve a la cola del integrador y no se escala a Oscar hasta dentro de `hours`. False = ya no está."""
+    def snooze(self, tid: str, hours: float | None = None) -> bool:
+        """«Aplazar»: vuelve a la cola del integrador y no se escala a Oscar hasta dentro de `hours` (por defecto el
+        ajuste vigente). False = ya no está."""
         if tid not in self.entries():
             return False
+        hours = valor("atascos.aplazar_horas") if hours is None else hours
         self.update(tid, snooze_until=self._now() + hours * 3600, escalated_at=None)
         return True
 
@@ -95,9 +99,10 @@ def command_for(tid: str) -> str:
     return f"/tomar-tarea {tid}"
 
 
-def integrator_text(entry: dict, who: str = "", hours: float = WINDOW_HOURS) -> str:
+def integrator_text(entry: dict, who: str = "", hours: float | None = None) -> str:
     """Mensaje a la cola del integrador: tarjeta, qué hace falta, comando exacto y quién lo ejecuta."""
     tid = entry["tid"]
+    hours = valor("atascos.escalado_guard_horas") if hours is None else hours
     rep = f"\n⚠️ Repetido: es la {entry['veces']}ª vez que esta tarjeta vuelve a bloquearse por lo mismo." \
         if int(entry.get("veces") or 1) > 1 else ""
     return (f"🧑‍💻 Cola del integrador · {tid} · {truncate(entry.get('title'), 80)}\n"
@@ -117,7 +122,7 @@ def oscar_text(entry: dict, now: float, who: str = "") -> str:
             f"Qué hace falta: {truncate(entry.get('need'), 300)}\n"
             f"Comando exacto: {command_for(tid)} (consola; no se puede desde Telegram)\n"
             f"➡️ Próximo paso: pulsa «Que lo resuelva el integrador» (se la paso a {INTEGRADOR}) o «Aplazar» "
-            f"({int(SNOOZE_HOURS)} h más en su cola) · Lo da: Oscar, con un toque")
+            f"({int(valor("atascos.aplazar_horas"))} h más en su cola) · Lo da: Oscar, con un toque")
 
 
 class GuardRouter:
@@ -125,9 +130,13 @@ class GuardRouter:
     `to_integrator(p, entry)` / `to_oscar(p, entry)` devuelven True si el aviso salió (si no, se reintenta)."""
 
     def __init__(self, collect: Callable[[], list], to_integrator: Callable, to_oscar: Callable, queue: GuardQueue, *,
-                 hours: float = WINDOW_HOURS, now: Callable[[], float] = time.time):
+                 hours: float | None = None, now: Callable[[], float] = time.time):
         self.collect, self.to_integrator, self.to_oscar = collect, to_integrator, to_oscar
         self.queue, self.hours, self._now = queue, hours, now
+
+    def window_hours(self) -> float:
+        """Horas hasta escalar a Oscar: la fijada al construir (tests) o el ajuste vigente (recarga en caliente)."""
+        return float(valor("atascos.escalado_guard_horas") if self.hours is None else self.hours)
 
     def tick(self) -> list[str]:
         """Devuelve lo hecho (`"cola t_x"` / `"oscar t_x"` / `"resuelta t_x"`), para tests y log."""
@@ -151,7 +160,7 @@ class GuardRouter:
                         self.queue.update(tid, announced=True)
                         done.append(f"cola {tid}")
                 elif (not entry.get("escalated_at") and now >= float(entry.get("snooze_until") or 0)
-                      and now - float(entry["queued_at"]) >= self.hours * 3600):
+                      and now - float(entry["queued_at"]) >= self.window_hours() * 3600):
                     if self.to_oscar(p, entry):
                         self.queue.update(tid, escalated_at=now)
                         done.append(f"oscar {tid}")
@@ -197,7 +206,7 @@ def queue_view(entries: dict[str, dict], now: float) -> str:
         return "🧑‍💻 La cola del integrador está vacía: no hay bloqueos de guard pendientes."
     lines = [f"🧑‍💻 Cola del integrador ({len(entries)})"]
     for e in sorted(entries.values(), key=lambda x: (x.get("queued_at") or 0, x["tid"])):
-        state = "ya escalada a Oscar" if e.get("escalated_at") else f"pasa a Oscar a las {int(WINDOW_HOURS)} h"
+        state = "ya escalada a Oscar" if e.get("escalated_at") else f"pasa a Oscar a las {int(valor('atascos.escalado_guard_horas'))} h"
         rep = f" · repetido ({e['veces']}ª)" if int(e.get("veces") or 1) > 1 else ""
         lines.append(f"• {e['tid']} · {e.get('lane')} · {truncate(e.get('title'), 50)} · hace "
                      f"{hours_ago(e.get('queued_at'), now)} h · {state}{rep}\n"
