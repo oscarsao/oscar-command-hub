@@ -200,12 +200,19 @@ def _libre(tmp_path, *, forum, extra_notice=False, reply_to=None):
 
 
 def test_clarify_en_tema_de_foro_con_texto_libre_se_comporta_como_en_dm(tmp_path):
+    # t_61a4baa6: el texto suelto ya no se toma como respuesta sin preguntar, ni en DM ni en el tema de foro.
     dm_calls, dm_sent = _libre(tmp_path / "dm", forum=False)
     foro_calls, foro_sent = _libre(tmp_path / "foro", forum=True)
-    assert foro_calls == dm_calls and [c[0] for c in foro_calls] == ["comment", "unblock"]  # anotada ANTES de confirmar
-    assert foro_calls[0][2] == "Respuesta de Oscar: ¿A o B? → la B, pero con tests"
-    assert foro_sent[-1]["text"] == dm_sent[-1]["text"] == "Entendido: «la B, pero con tests» para t_1"
-    assert foro_sent[-1]["thread"] == "231" and dm_sent[-1]["thread"] == "0"       # el eco vuelve al mismo hilo
+    assert foro_calls == dm_calls == []
+    assert foro_sent[-1]["text"] == dm_sent[-1]["text"]
+    assert "¿«la B, pero con tests» es tu respuesta" in foro_sent[-1]["text"]
+    assert foro_sent[-1]["thread"] == "231" and dm_sent[-1]["thread"] == "0"       # la pregunta vuelve al mismo hilo
+
+
+def test_reply_directo_al_aviso_se_aplica_sin_preguntar(tmp_path):
+    calls, sent = _libre(tmp_path, forum=True, reply_to=77)
+    assert [c[0] for c in calls] == ["comment", "unblock"]
+    assert sent[-1]["text"] == "Entendido: «la B, pero con tests» para t_1"
 
 
 def test_en_un_tema_con_dos_avisos_el_reply_decide_a_cual_responde(tmp_path):

@@ -118,7 +118,7 @@ def _actions(spec):
 
 def test_keyboard_per_state():
     assert _actions(keyboard_spec("done")) == [[APPROVE, CHANGES, PARK]]
-    assert _actions(keyboard_spec("blocked", block_kind="transient")) == [[RETRY, PARK]]
+    assert _actions(keyboard_spec("blocked", block_kind="transient")) == [[RETRY, PARK], ["detail"]]
     for state, kind in (("running", None), ("review", None), ("changes", None), ("blocked", "needs_input"),
                         ("blocked", "capability")):
         assert keyboard_spec(state, block_kind=kind) is None

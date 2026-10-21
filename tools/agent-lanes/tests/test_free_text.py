@@ -78,24 +78,38 @@ def _press(desk, markup, data_index, *, mid, thread=TOPIC):
         "message": {"message_id": mid, "chat": {"id": GROUP}, "message_thread_id": thread}}})
 
 
+def test_one_pending_decision_asks_before_taking_the_free_text(tmp_path):
+    desk, tg, h, messages = _setup(tmp_path)
+    _notice(desk, messages)
+    _say(desk, "otra cosa distinta")
+    assert h.calls == []  # no asume
+    ask = tg.sent[-1]
+    labels = [b["text"] for row in ask["reply_markup"]["inline_keyboard"] for b in row]
+    assert "es tu respuesta" in ask["text"] and "t_1" in ask["text"] and labels[-1] == "✖ Es un mensaje nuevo"
+    _press(desk, ask["reply_markup"], 1, mid=503)
+    assert h.calls == [] and "no lo tomo" in tg.edits[-1]["text"]
+
+
 def test_one_pending_decision_takes_the_free_text_as_answer_with_echo_and_undo(tmp_path):
     desk, tg, h, messages = _setup(tmp_path)
     _notice(desk, messages)
     _say(desk, "la B, pero con tests")
+    assert h.calls == []
+    _press(desk, tg.sent[-1]["reply_markup"], 0, mid=503)
     assert h.calls == [("comment", "t_1", "Respuesta de Oscar: ¿A o B? → la B, pero con tests", OSCAR_AUTHOR),
                        ("unblock", "t_1")]
-    echo = tg.sent[-1]
-    assert echo["text"] == "Entendido: «la B, pero con tests» para t_1"
-    assert (echo["chat"], echo["thread"], echo["reply_to"]) == (str(GROUP), str(TOPIC), 900)
-    assert [b["text"] for row in echo["reply_markup"]["inline_keyboard"] for b in row] == ["↩️ Deshacer"]
+    echo = tg.edits[-1]
+    assert echo["mid"] == 503 and echo["text"] == "Entendido: «la B, pero con tests» para t_1"
+    assert [b["text"] for row in echo["markup"]["inline_keyboard"] for b in row] == ["↩️ Deshacer"]
 
 
 def test_undo_reblocks_the_task_while_the_worker_has_not_picked_it_up(tmp_path):
     desk, tg, h, messages = _setup(tmp_path)
     old = _notice(desk, messages)
     _say(desk, "la B")
+    _press(desk, tg.sent[-1]["reply_markup"], 0, mid=500)
     h.calls.clear()
-    _press(desk, tg.sent[-1]["reply_markup"], 0, mid=501)
+    _press(desk, tg.edits[-1]["markup"], 0, mid=501)
     assert h.calls[0] == ("block", "t_1", "needs_input", "¿A o B?")
     assert h.calls[1][:2] == ("comment", "t_1") and h.calls[1][2].startswith("ANULADA-OSCAR:") and h.calls[1][3] == OSCAR_AUTHOR
     assert any("Deshecho" in e["text"] for e in tg.edits if e["mid"] == 501)
@@ -107,9 +121,10 @@ def test_undo_says_it_is_too_late_once_the_worker_took_the_task(tmp_path):
     desk, tg, h, messages = _setup(tmp_path)
     _notice(desk, messages)
     _say(desk, "la B")
+    _press(desk, tg.sent[-1]["reply_markup"], 0, mid=500)
     h.status["t_1"] = "running"
     h.calls.clear()
-    _press(desk, tg.sent[-1]["reply_markup"], 0, mid=501)
+    _press(desk, tg.edits[-1]["markup"], 0, mid=501)
     assert h.calls == []
     assert "ya no se puede deshacer" in tg.edits[-1]["text"]
 
@@ -221,9 +236,10 @@ def test_decision_card_takes_the_free_text_and_closes_without_undo(tmp_path):
     markup = desk.card_markup(card, ["Uno", "Dos"], 0, "<b>Elegir proveedor</b>")
     messages.put("t_c", {"chat_id": str(GROUP), "thread_id": str(TOPIC), "message_id": 90, "token": markup_token(markup)})
     _say(desk, "el dos, y que sea barato")
+    _press(desk, tg.sent[-1]["reply_markup"], 0, mid=504)
     assert h.calls[0][:2] == ("comment", "t_c") and h.calls[0][2].endswith("el dos, y que sea barato")
     assert h.calls[1] == ("complete", "t_c")
-    echo = tg.sent[-1]
+    echo = tg.edits[-1]
     assert echo["text"].startswith("Entendido: «el dos, y que sea barato» para t_c") and "reply_markup" not in echo
 
 

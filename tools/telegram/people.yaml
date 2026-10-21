@@ -35,3 +35,19 @@ people:
     role: marketing
     brands: [Píldora]
     can: []
+  mauredy:
+    name: Mauredy
+    user_id: null   # PENDIENTE - rellenar cuando Oscar confirme el Telegram ID (atencion cliente + desarrollo MigraTeam)
+    role: dev
+    brands: [MigraTeam]   # SOLO MigraTeam
+    can: []
+    # operador: true NO se activa todavia. Hoy `brands` solo decide el tablero de las ideas; NO limita lo que puede
+    # ejecutar un operador (aprobar, desplegar...), asi que podria actuar tambien en Pildora/OscarHQ.
+    # Activarlo solo cuando exista el operador acotado por marca (tarea aparte, decision de Oscar 21-10).
+  angel:
+    name: Angel
+    user_id: null   # PENDIENTE - rellenar cuando Oscar confirme el Telegram ID (apoyo tecnico OscarHQ y Signal)
+    role: dev
+    brands: [Píldora, Signal]   # SIN MigraTeam salvo que Oscar lo confirme; sin credenciales Railway/Supabase/Vercel
+    can: []
+    # operador: true NO se activa todavia: mismo motivo que Mauredy (ver arriba).
