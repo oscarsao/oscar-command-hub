@@ -1,5 +1,5 @@
 # Personas del equipo que pueden escribir por DM al bot de carriles (@pildora_carriles_bot).
-# Lo lee agent_lanes/people.py. Decision de Oscar 11-10: Ingerber (CMO Pildora), Andrea (marketing) y Maria (COO).
+# Lo lee agent_lanes/people.py. Decision de Oscar 11-10: Ingerber (CMO Pildora), Andrea (marketing) y Maria (socia/estrategia).
 #
 # Reglas (las aplica el codigo, no este fichero):
 #   - Oscar (owner) NO se declara aqui: su id es OWNER_TELEGRAM_ID (agent_lanes/decisions.py). Una entrada con
@@ -18,7 +18,7 @@
 people:
   maria:
     name: María
-    user_id: "5516823836"   # María (COO, acceso como Oscar salvo produccion); dado por Oscar 13-10
+    user_id: "5516823836"   # María (socia/estrategia, acceso como Oscar salvo produccion); dado por Oscar 13-10
     role: coo
     brands: [Píldora, MigraTeam]
     can: []         # [carril] reservado; desactivado por defecto
