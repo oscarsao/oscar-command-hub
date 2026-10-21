@@ -201,6 +201,10 @@ class IntegratorSettings:
     integration_telegram: tuple[str, str] | None = None
     # PR en batch_pending sin salida: pasados estos días (o con conflictos) se avisa UNA vez a Oscar.
     batch_pending_days: int = 3
+    # Repaso de PR de carriles abiertos (prlisto.py): avisa de los que llevan más de estas horas sin fusionar
+    # (0 = apagado) y no repite el mismo conjunto antes de `pr_watch_repeat_hours`.
+    pr_watch_hours: float = 2.0
+    pr_watch_repeat_hours: float = 6.0
 
 
 def _truthy(v) -> bool:
@@ -247,7 +251,9 @@ def load_integrator_settings(path: Path | None = None, env: dict | None = None, 
                               deploy_timeout_seconds=int(cfg.get("deploy_timeout_seconds") or 900),
                               poll_seconds=int(cfg.get("poll_seconds") or 20), policies=policies,
                               integration_telegram=_chat_thread(data.get("integration_telegram")),
-                              batch_pending_days=int(cfg.get("batch_pending_days") or 3))
+                              batch_pending_days=int(cfg.get("batch_pending_days") or 3),
+                              pr_watch_hours=float(2 if cfg.get("pr_watch_hours") is None else cfg["pr_watch_hours"]),
+                              pr_watch_repeat_hours=float(cfg.get("pr_watch_repeat_hours") or 6))
 
 
 # Texto de prueba ficticio (hub #171: «sk-ABCD…» en un test de redacción). Se admite si la COINCIDENCIA lleva ABCD,
@@ -422,6 +428,8 @@ class Integrator:
         from .batch import BatchPlanner  # import tardío: batch usa constantes de este módulo
         self.batches = BatchPlanner(self)  # lote diario: solo actúa en carriles con `batch: daily`
         self.autoresolve = AutoResolver(self)  # conflicto solo en ficheros append-only: unión en la rama del PR
+        from .prlisto import ReadyPRWatcher
+        self.pr_watch = ReadyPRWatcher(self)  # recordatorio de PR de carriles abiertos (MERGEABLE/CONFLICTING/UNKNOWN)
 
     # --- utilidades ----------------------------------------------------------------------------------
 
@@ -524,6 +532,7 @@ class Integrator:
             self.batches.run_due()
         except Exception as exc:  # el lote nunca tumba la pasada PR a PR de los demás carriles
             log.warning("integrador: lote diario falló: %s", exc)
+        self.pr_watch.tick()  # nunca lanza
         self.refresh_summary()
         return results
 
