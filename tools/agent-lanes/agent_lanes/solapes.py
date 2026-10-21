@@ -1,0 +1,293 @@
+"""Solape de alcance entre tarjetas activas del mismo repo (t_2bce5755): aviso ANTES de duplicar carriles.
+
+El lote del integrador y la detección de conflicto de PR son reactivos (cuando las ramas ya existen). Esto es proactivo:
+mira las tarjetas abiertas y avisa a Oscar de que varias van a tocar lo mismo, con la sugerencia «fusionar en una sola»
+o «dejarlas, se complementan». Oscar decide; aquí no se fusiona, mueve ni cierra nada.
+
+Dónde se comprueba: en una pasada periódica del runner (`SolapeTicker`), no en `HermesCLI.create`. Las tarjetas las crea
+también el Coordinador, otros workers o personas con `hermes kanban create` directo, que no pasan por este código; el
+barrido sobre el tablero las cubre todas, con el retraso de `minutos`.
+
+CRITERIO (sin IA; lo que se compara y nada más):
+1. Mismo repo: el repo del carril al que está asignada la tarjeta (`lanes.yaml`, `repo`). Las tarjetas de assignees que no
+   son un carril con repo (oscar, personas, claude-ops) no se comparan: su repo no se conoce de forma fiable.
+2. Estados vigilados (`estados`): ready, todo, running, blocked. review y done quedan fuera.
+3. De título + cuerpo se extraen rutas: algo con «/» y extensión de `extensiones` (`tools/agent-lanes/lanes.yaml`), un
+   nombre de fichero suelto (`commands.py`) o una carpeta con «/» final. Se ignoran URLs y, dentro de un camino
+   absoluto, el prefijo de la ruta del repo. Un identificador entre comillas inversas que no parezca ruta NO cuenta
+   (`create` casaría con todo).
+4. Solape = comparten fichero (misma ruta; un nombre suelto casa por nombre con cualquier ruta que lo termine) o, con
+   `nivel: modulo`, la carpeta contenedora (al menos `modulo_min_profundidad` tramos; así `src/` solo no cuenta).
+5. Hace falta solape entre 2 o más tarjetas. Dos tarjetas encadenadas (padre/hija, p. ej. de /flujo) son secuenciales a
+   propósito y no se avisan entre sí.
+Un conjunto de tarjetas se avisa una sola vez (clave = ids ordenados). Los ajustes viven en `solapes.yaml` (se relee en
+cada pasada; ausente o inválido = defaults de `Ajustes`).
+"""
+from __future__ import annotations
+
+import json
+import logging
+import re
+import time
+from dataclasses import dataclass, field, fields
+from pathlib import Path
+
+import yaml
+
+from .config import ROOT
+
+log = logging.getLogger("agent_lanes")
+
+SETTINGS_PATH = ROOT / "solapes.yaml"
+EXTENSIONES = ("py", "ts", "tsx", "js", "jsx", "yaml", "yml", "md", "json", "sql", "css", "html", "ps1", "sh", "toml")
+ESTADOS = ("ready", "todo", "running", "blocked")
+URL_RE = re.compile(r"https?://\S+")
+TOKEN_RE = re.compile(r"[\w.\-]+(?:/[\w.\-]+)*/?")
+MAX_ESTADO = 500  # claves recordadas en el fichero de estado
+
+
+@dataclass(frozen=True)
+class Ajustes:
+    activo: bool = True
+    minutos: float = 10               # cada cuánto se barre el tablero
+    nivel: str = "modulo"             # archivo = solo comparten fichero; modulo = también la misma carpeta
+    modulo_min_profundidad: int = 2   # tramos mínimos de una carpeta para que cuente como módulo
+    estados: tuple = ESTADOS
+    extensiones: tuple = EXTENSIONES
+    max_tarjetas: int = 8             # tarjetas que se listan en un aviso (el resto, «y N más»)
+    comparten_max: int = 5            # rutas compartidas que se citan en el aviso
+
+
+def load_ajustes(path: Path | str | None = None) -> Ajustes:
+    """Ajustes desde el YAML; lo que falte o no sea válido queda en su valor por defecto."""
+    try:
+        raw = yaml.safe_load(Path(path or SETTINGS_PATH).read_text(encoding="utf-8")) or {}
+    except (OSError, yaml.YAMLError):
+        return Ajustes()
+    if not isinstance(raw, dict):
+        return Ajustes()
+    d, out = Ajustes(), {}
+    for f in fields(Ajustes):
+        v = raw.get(f.name)
+        if v is None:
+            continue
+        if f.name == "activo" and isinstance(v, bool):
+            out[f.name] = v
+        elif f.name == "minutos" and isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0:
+            out[f.name] = float(v)
+        elif f.name == "nivel" and v in ("archivo", "modulo"):
+            out[f.name] = v
+        elif f.name in ("modulo_min_profundidad", "max_tarjetas", "comparten_max") \
+                and isinstance(v, int) and not isinstance(v, bool) and v >= 1:
+            out[f.name] = v
+        elif f.name in ("estados", "extensiones") and isinstance(v, list) and v \
+                and all(isinstance(x, str) and x for x in v):
+            out[f.name] = tuple(x.lower().lstrip(".") if f.name == "extensiones" else x for x in v)
+    return Ajustes(**{**{f.name: getattr(d, f.name) for f in fields(Ajustes)}, **out})
+
+
+def _norm_repo(path: str) -> str:
+    return (path or "").replace("\\", "/").rstrip("/").lower()
+
+
+def extraer_rutas(texto: str, ajustes: Ajustes, repo: str = "") -> set[str]:
+    """Rutas (ficheros y carpetas con «/» final) mencionadas en un texto, normalizadas en minúsculas y con «/»."""
+    exts = set(ajustes.extensiones)
+    base = re.sub(r"^[a-z]:/", "", _norm_repo(repo))  # el TOKEN_RE no recoge «c:»
+    out: set[str] = set()
+    for tok in TOKEN_RE.findall(URL_RE.sub(" ", (texto or "").replace("\\", "/")).lower()):
+        tok = tok.strip(".-")
+        if base and tok.startswith(base + "/"):
+            tok = tok[len(base) + 1:]
+        if not tok or tok.startswith("/"):
+            continue
+        es_dir = tok.endswith("/")
+        partes = [p for p in tok.strip("/").split("/") if p]
+        if not partes:
+            continue
+        ext = partes[-1].rsplit(".", 1)[-1] if "." in partes[-1] else ""
+        if es_dir:
+            if len(partes) >= 2 or re.sub(r"[_-]", "", partes[0]).isalpha():
+                out.add("/".join(partes) + "/")
+        elif ext in exts and len(partes[-1]) > len(ext) + 1:
+            out.add("/".join(partes))
+    return out
+
+
+def _carpeta(ruta: str) -> str | None:
+    if ruta.endswith("/"):
+        return ruta.rstrip("/")
+    return ruta.rsplit("/", 1)[0] if "/" in ruta else None
+
+
+def _casan_ficheros(a: str, b: str) -> bool:
+    if a.endswith("/") or b.endswith("/"):
+        return False
+    if a == b:
+        return True
+    return ("/" not in a and b.endswith("/" + a)) or ("/" not in b and a.endswith("/" + b))
+
+
+def compartido(a: set[str], b: set[str], ajustes: Ajustes) -> list[str]:
+    """Qué comparten dos conjuntos de rutas: ficheros comunes y, con nivel «modulo», carpetas comunes."""
+    found: list[str] = []
+    for x in sorted(a):
+        for y in sorted(b):
+            if _casan_ficheros(x, y):
+                found.append(f"archivo {max(x, y, key=len)}")
+    if ajustes.nivel == "modulo":
+        da = {c for c in map(_carpeta, a) if c}
+        db = {c for c in map(_carpeta, b) if c}
+        for c in sorted(da & db):
+            if len(c.split("/")) >= ajustes.modulo_min_profundidad:
+                found.append(f"carpeta {c}/")
+    return list(dict.fromkeys(found))
+
+
+@dataclass
+class Card:
+    tid: str
+    board: str
+    lane: str
+    status: str
+    title: str
+    rutas: set = field(default_factory=set)
+
+
+@dataclass
+class Grupo:
+    repo: str
+    cards: list
+    comparten: list
+
+
+def tarjetas_activas(lanes: dict, hermes_for, ajustes: Ajustes) -> dict[str, list[Card]]:
+    """repo -> tarjetas vigiladas con sus rutas. Un tablero ilegible no corta el resto."""
+    by_repo: dict[str, list[Card]] = {}
+    vistos: set[tuple[str, str]] = set()
+    boards = list(dict.fromkeys(l.board for l in lanes.values()
+                                if getattr(l, "board", "") and getattr(l, "kind", "") in ("implement",)))
+    for board in boards:
+        for status in ajustes.estados:
+            try:
+                tasks = hermes_for(board).list_status_all(status)
+            except Exception as exc:
+                log.warning("solapes: %s/%s no leído: %s", board, status, exc)
+                continue
+            for t in tasks:
+                lane = lanes.get(t.get("assignee"))
+                repo = getattr(lane, "repo", "") if lane is not None else ""
+                tid = t.get("id")
+                if not (repo and tid) or (board, tid) in vistos:
+                    continue
+                vistos.add((board, tid))
+                rutas = extraer_rutas(f"{t.get('title') or ''}\n{t.get('body') or ''}", ajustes, repo)
+                if rutas:
+                    by_repo.setdefault(_norm_repo(repo), []).append(
+                        Card(tid, board, t["assignee"], t.get("status") or status, t.get("title") or "", rutas))
+    return by_repo
+
+
+def _enlazadas(a: Card, b: Card, hermes_for, cache: dict) -> bool:
+    """¿Una es padre/hija de la otra? (cadenas de /flujo: secuenciales a propósito). Si no se puede saber, no."""
+    def rel(c: Card) -> set[str]:
+        if c.tid not in cache:
+            try:
+                show = hermes_for(c.board).show(c.tid)
+                cache[c.tid] = {str(x.get("id") if isinstance(x, dict) else x)
+                                for k in ("parents", "children") for x in (show.get(k) or [])}
+            except Exception:
+                cache[c.tid] = set()
+        return cache[c.tid]
+    return b.tid in rel(a) or a.tid in rel(b)
+
+
+def detectar(lanes: dict, hermes_for, ajustes: Ajustes | None = None) -> list[Grupo]:
+    """Conjuntos de 2+ tarjetas del mismo repo con solape (componentes conexos de los pares que solapan)."""
+    ajustes = ajustes or Ajustes()
+    grupos: list[Grupo] = []
+    cache: dict = {}
+    for repo, cards in sorted(tarjetas_activas(lanes, hermes_for, ajustes).items()):
+        parent = {c.tid: c.tid for c in cards}
+
+        def raiz(x):
+            while parent[x] != x:
+                parent[x] = parent[parent[x]]
+                x = parent[x]
+            return x
+        comun: dict[str, list[str]] = {}
+        for i, a in enumerate(cards):
+            for b in cards[i + 1:]:
+                c = compartido(a.rutas, b.rutas, ajustes)
+                if c and not _enlazadas(a, b, hermes_for, cache):
+                    parent[raiz(a.tid)] = raiz(b.tid)
+                    comun.setdefault(a.tid, []).extend(c)
+                    comun.setdefault(b.tid, []).extend(c)
+        comps: dict[str, list[Card]] = {}
+        for c in cards:
+            comps.setdefault(raiz(c.tid), []).append(c)
+        for miembros in comps.values():
+            if len(miembros) > 1:
+                comparten = list(dict.fromkeys(x for m in miembros for x in comun.get(m.tid, [])))
+                grupos.append(Grupo(repo, sorted(miembros, key=lambda m: m.tid), comparten))
+    return grupos
+
+
+def clave(g: Grupo) -> str:
+    return "|".join(c.tid for c in g.cards)
+
+
+def aviso(g: Grupo, ajustes: Ajustes | None = None) -> str:
+    ajustes = ajustes or Ajustes()
+    nombre = g.repo.rsplit("/", 1)[-1]
+    lines = [f"🔀 Posible solape · {nombre}: {len(g.cards)} tarjetas activas tocan lo mismo"]
+    for c in g.cards[:ajustes.max_tarjetas]:
+        lines.append(f"• {c.tid} «{c.title[:70]}» ({c.lane}, {c.status})")
+    if len(g.cards) > ajustes.max_tarjetas:
+        lines.append(f"  … y {len(g.cards) - ajustes.max_tarjetas} más")
+    lines.append("Comparten: " + "; ".join(g.comparten[:ajustes.comparten_max]))
+    lines.append("Sugerencia: fusionarlas en una sola (evita ramas paralelas que chocan al integrar) o dejarlas si se "
+                 "complementan. Decides tú; no se fusiona nada solo.")
+    return "\n".join(lines)
+
+
+class SolapeTicker:
+    """Pasada periódica en el bucle del runner. Avisa una vez por conjunto de tarjetas (estado en `state_path`); nunca
+    lanza: un fallo de Hermes, de Telegram o del YAML solo se registra."""
+
+    def __init__(self, lanes: dict, hermes_for, *, send, state_path: Path, settings_path: Path | str | None = None,
+                 clock=time.monotonic):
+        self.lanes, self.hermes_for, self.send = lanes, hermes_for, send
+        self.state_path, self.settings_path, self._clock = state_path, settings_path, clock
+        self._last: float | None = None
+
+    def _seen(self) -> list[str]:
+        try:
+            data = json.loads(self.state_path.read_text(encoding="utf-8"))
+            return [str(k) for k in data] if isinstance(data, list) else []
+        except (OSError, ValueError):
+            return []
+
+    def tick(self) -> list[Grupo]:
+        try:
+            ajustes = load_ajustes(self.settings_path)
+            now = self._clock()
+            if not ajustes.activo or (self._last is not None and now - self._last < ajustes.minutos * 60):
+                return []
+            self._last = now
+            grupos = detectar(self.lanes, self.hermes_for, ajustes)
+            seen = self._seen()
+            fresh = [g for g in grupos if clave(g) not in seen]
+            n = len(seen)
+            try:
+                for g in fresh:  # si un envío falla, ese conjunto se reintenta en la pasada siguiente
+                    self.send(aviso(g, ajustes))
+                    seen.append(clave(g))
+            finally:
+                if len(seen) > n:
+                    self.state_path.parent.mkdir(parents=True, exist_ok=True)
+                    self.state_path.write_text(json.dumps(seen[-MAX_ESTADO:]), encoding="utf-8")
+            return grupos
+        except Exception as exc:
+            log.warning("solapes falló: %s", exc)
+            return []
