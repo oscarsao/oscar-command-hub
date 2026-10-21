@@ -32,5 +32,7 @@ def test_argumento_cero_usa_el_yaml_y_positivo_lo_sobrescribe():
     assert runner.effective_max_workers(3, settings) == 3
 
 
-def test_max_parallel_por_carril_no_supera_uno():
-    assert all(lane.max_parallel == 1 for lane in load_lanes().values())
+def test_max_parallel_por_carril_no_supera_el_tope_global():
+    # 21-10 (Oscar): claude-hub lleva 2 en paralelo (entregas A/B/C del pitch); ningún carril puede pasar de max_workers.
+    tope = load_runner_settings()["max_workers"]
+    assert all(1 <= lane.max_parallel <= tope for lane in load_lanes().values())
