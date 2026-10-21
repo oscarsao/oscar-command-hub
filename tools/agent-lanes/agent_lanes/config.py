@@ -66,7 +66,10 @@ def _load(path: Path | None) -> dict:
 
 def load_lanes(path: Path | None = None) -> dict[str, Lane]:
     data = _load(path)
-    defaults = data.get("defaults", {})
+    defaults = dict(data.get("defaults", {}))
+    from .ajustes_hub import valor  # max_parallel por defecto editado con /ajustes (rige al arrancar el runner)
+    if valor("carriles.max_parallel") is not None:
+        defaults["max_parallel"] = valor("carriles.max_parallel")
     lanes = {}
     for name, cfg in data["lanes"].items():
         merged = {**defaults, **cfg}
@@ -105,12 +108,15 @@ def load_telegram_settings(path: Path | None = None) -> dict:
 
 def load_runner_settings(path: Path | None = None) -> dict:
     """Top-level `runner:` block (global worker cap, poll interval)."""
-    return {"max_workers": 1, "interval_seconds": 60, "ciego_minutes": 5, **(_load(path).get("runner") or {})}
+    from .ajustes_hub import aplicar_runner  # lo editado con /ajustes manda sobre lanes.yaml (rige al arrancar el runner)
+    return aplicar_runner({"max_workers": 1, "interval_seconds": 60, "ciego_minutes": 5,
+                           **(_load(path).get("runner") or {})})
 
 
 def load_notice_limits(path: Path | None = None) -> dict:
     """Bloque `notices:` de lanes.yaml: topes de los avisos de Telegram (ver notices.LIMITS). Vacío = de fábrica."""
-    return dict(_load(path).get("notices") or {})
+    from .ajustes_hub import aplicar_topes
+    return aplicar_topes(dict(_load(path).get("notices") or {}))
 
 
 def load_env(path: Path | None = None) -> dict[str, str]:

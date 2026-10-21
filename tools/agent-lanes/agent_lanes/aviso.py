@@ -13,6 +13,7 @@ import json
 import logging
 import re
 import time
+from .ajustes_hub import valor
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -127,11 +128,15 @@ class StuckWatcher:
     Pending 🧊. Cualquier fallo se reintenta en la siguiente vuelta; nunca tumba el runner."""
 
     def __init__(self, stuck: Callable[[], list], publish: Callable, remind: Callable, state_path: Path | str, *,
-                 hours: float = REMIND_HOURS, now: Callable[[], float] = time.time):
+                 hours: float | None = None, now: Callable[[], float] = time.time):
         self.stuck, self.publish, self.remind = stuck, publish, remind
         self.state_path = Path(state_path)
-        self.hours = hours
+        self._hours = hours  # None = el ajuste vigente (avisos.recordatorio_atascadas_horas), releído en cada vuelta
         self._now = now
+
+    @property
+    def hours(self) -> float:
+        return float(valor("avisos.recordatorio_atascadas_horas") if self._hours is None else self._hours)
 
     def _load(self) -> dict:
         try:
