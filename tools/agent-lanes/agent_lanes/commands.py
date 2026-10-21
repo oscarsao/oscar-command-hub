@@ -44,6 +44,7 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import html
+import json
 import logging
 import re
 import threading
@@ -69,7 +70,8 @@ URGENT_EVERY = 120  # s mínimos entre pasadas del aviso inmediato de bloqueos d
 
 COMMANDS = (
     ("hoy", "Resumen del día (el de las 8:00) ahora"),
-    ("integrador", "Cola del integrador: bloqueos de guard que requieren consola"),
+    ("integrador", "Estado del integrador, PR de sesiones interactivas y bloqueos de guard"),
+    ("encolar", "Encola un PR de una sesión interactiva para tu OK: /encolar <repo> <PR>"),
     ("decisiones", "Bandeja de decisiones pendientes con botones"),
     ("atencion", "Todo lo que espera a Oscar, con botones para resolverlo aquí"),
     ("aprobar", "Tareas listas para integrar"),
@@ -377,7 +379,8 @@ class CommandCenter:
         """Resumen de las 9:00 por carril (resumen_carriles). Barato fuera de la franja: solo mira la hora."""
         from . import resumen_carriles as rc
         path = self._state_file("daily_state", "resumen_carriles.json")
-        if path is None or rc.due_date(datetime.fromtimestamp(self._now(), rc.MADRID), set()) is None:
+        hour = self.vis_ajustes().hora_parte
+        if path is None or rc.due_date(datetime.fromtimestamp(self._now(), rc.MADRID), set(), hour) is None:
             return None
         att = self.renotifier().attention
         who = mention((att or {}).get("oscar_mention") or (att or {}).get("mention"))
@@ -392,7 +395,32 @@ class CommandCenter:
         return rc.DailyLaneSummary(
             lambda: rc.collect_rows(self.lanes, self.hermes_for), lambda: self.pending_decisions() + self.stuck_tasks(),
             lambda: len(queue.entries()) if queue else 0, send, path, who=who,
-            now=lambda: datetime.fromtimestamp(self._now(), rc.MADRID)).tick()
+            now=lambda: datetime.fromtimestamp(self._now(), rc.MADRID), hour=hour,
+            extra=lambda: self.integrador_resumen()[0]).tick()
+
+    # --- visibilidad del integrador (t_5624611d): estado, PR de sesiones interactivas, «ver más» ---------------
+
+    def vis_ajustes(self):
+        from . import integrador_visibilidad as iv
+        return iv.load_ajustes(getattr(self, "vis_settings", None))  # se relee: editar el YAML no pide reiniciar
+
+    def estado_integrador(self):
+        from . import integrador_visibilidad as iv
+        return iv.leer_estado(self._state_file("estado_path", iv.ESTADO_FILE))
+
+    def cola_externos(self):
+        from . import integrador_visibilidad as iv
+        path = self._state_file("externos_state", iv.EXTERNOS_FILE)
+        return iv.ColaExternos(path, self._now) if path else None
+
+    def integrador_resumen(self) -> tuple[str, bool]:
+        """(texto corto, hay «ver más»): estado del integrador (o su falta) y los PR de sesiones interactivas."""
+        from . import integrador_visibilidad as iv
+        aj, now = self.vis_ajustes(), self._now()
+        text, mas = iv.resumen(self.estado_integrador(), aj, now)
+        cola = self.cola_externos()
+        ext = iv.vista_externos(cola.items() if cola else {}, now)
+        return "\n".join(x for x in (text, ext) if x), mas
 
     # --- seguimiento de peticiones req_<n> (t_211c9902): /estado, «Ver más» y segundo parte de las 9:00 ----------------
 
@@ -440,9 +468,95 @@ class CommandCenter:
             now=lambda: datetime.fromtimestamp(self._now(), rc.MADRID)).tick()
 
     def cmd_integrador(self, where, args: str, brand: str | None) -> None:
+        from .decisions import ESTADO_MAS
         from .guard_route import queue_view
         queue = self.guard_queue()
-        self._send(where, queue_view(queue.entries() if queue else {}, self._now()), html=False)
+        text, mas = self.integrador_resumen()
+        markup = None
+        if mas:
+            rec = {"task_id": "estado-integrador", "board": "", "lane": ""}
+            markup = self.desk.store.issue(rec, [[{"text": "📖 Ver más", "action": ESTADO_MAS}]])[1]
+        self._send(where, text + "\n\n" + queue_view(queue.entries() if queue else {}, self._now()), html=False,
+                   markup=markup)
+
+    def estado_mas(self, where: dict) -> bool:
+        """Botón «Ver más» de /integrador: todos los pasos del estado, en un mensaje nuevo."""
+        from . import integrador_visibilidad as iv
+        text = iv.detalle(self.estado_integrador(), self.vis_ajustes(), self._now())
+        self._send((where["chat_id"], where["thread_id"]), text, html=False)
+        return True
+
+    def repos_encolables(self) -> dict[str, str]:
+        """alias -> owner/repo que se pueden encolar: los del YAML o, sin ellos, los repos de los carriles."""
+        aj = self.vis_ajustes()
+        if aj.repos:
+            return dict(aj.repos)
+        out = {}
+        for name, lane in self.lanes.items():
+            slug = self.links.repo_slug(lane) if self.links else None
+            if slug:
+                out[name.removeprefix("claude-").lower()] = slug
+        return out
+
+    def cmd_encolar(self, where, args: str, brand: str | None) -> None:
+        """/encolar <repo> <PR>: mete un PR de una sesión interactiva en la cola, con el botón de Oscar (sin él no se
+        fusiona nada). Aquí no se fusiona ni se despliega."""
+        from . import integrador_visibilidad as iv
+        from .decisions import EXT_DROP, EXT_OK
+        repos = self.repos_encolables()
+        parsed = iv.parse_encolar(args)
+        cola = self.cola_externos()
+        if not parsed or parsed[0] not in repos:
+            self._send(where, "Uso: /encolar <repo> <PR>. Repos: " + (", ".join(sorted(repos)) or "(ninguno configurado)"),
+                       html=False)
+            return
+        if cola is None:
+            self._send(where, "No puedo encolar: no hay carpeta .state configurada.", html=False)
+            return
+        alias, number = parsed
+        slug = repos[alias]
+        cp = self.desk._gh("pr", "view", str(number), "--repo", slug, "--json", "number,title,headRefOid,state")
+        try:
+            pr = json.loads(cp.stdout or "{}") if cp.returncode == 0 else {}
+        except ValueError:
+            pr = {}
+        if pr.get("state") != "OPEN" or not re.fullmatch(r"[0-9a-f]{40}", pr.get("headRefOid") or ""):
+            self._send(where, f"No encuentro el PR #{number} abierto en {slug}.", html=False)
+            return
+        key, it = cola.add(alias, slug, number, pr.get("title") or "", pr["headRefOid"])
+        rec = {"task_id": key, "board": "", "lane": "", "ext": key}
+        markup = self.desk.store.issue(rec, [[{"text": "✅ Dar OK a fusionar", "action": EXT_OK},
+                                              {"text": "🗄 Quitar", "action": EXT_DROP}]])[1]
+        self._send(where, f"🔀 En la cola del integrador: {alias} #{number} · {truncate(it['title'], 80)} · "
+                          f"{it['sha'][:9]}\n➡️ Próximo paso: pulsa «Dar OK» (vale solo para este commit; si el PR "
+                          "cambia, vuelve a pedirlo) · Lo da: Oscar. Sin tu OK no se fusiona nada.", html=False,
+                   markup=markup)
+
+    def externo_step(self, action: str, rec: dict, where: dict) -> bool:
+        """Botones de /encolar. El OK se ata al commit que Oscar vio; si el PR cambió, se avisa y no vale."""
+        from .decisions import EXT_OK
+        cola, key = self.cola_externos(), rec.get("ext") or ""
+        it = (cola.items() if cola else {}).get(key)
+        dest = (where["chat_id"], where["thread_id"])
+        if not it:
+            self._send(dest, f"{key}: ya no está en la cola.", html=False)
+            return True
+        if action != EXT_OK:
+            cola.quitar(key)
+            self._send(dest, f"🗄 {key} fuera de la cola; no se ha tocado el PR.", html=False)
+            return True
+        cp = self.desk._gh("pr", "view", str(it["pr"]), "--repo", it["slug"], "--json", "headRefOid,state")
+        try:
+            pr = json.loads(cp.stdout or "{}") if cp.returncode == 0 else {}
+        except ValueError:
+            pr = {}
+        if pr.get("state") != "OPEN" or not cola.dar_ok(key, pr.get("headRefOid") or ""):
+            self._send(dest, f"⚠️ {key} cambió desde que lo viste (o ya no está abierto): vuelve a lanzar "
+                             f"/encolar {it['repo']} {it['pr']} y confirma el commit nuevo.", html=False)
+            return True
+        self._send(dest, f"✅ OK registrado para {key} ({it['sha'][:9]}). El integrador puede fusionarlo; "
+                         "el OK vale solo para este commit.", html=False)
+        return True
 
     def decision_cards(self, brand: str | None = None) -> list[dict]:
         """Tarjetas de decisión de Oscar (no son de carril): asignadas a `oscar`, en ready/blocked y con etiqueta

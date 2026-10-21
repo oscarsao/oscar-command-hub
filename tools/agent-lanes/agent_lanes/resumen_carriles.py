@@ -56,12 +56,16 @@ def render_lane(row: dict) -> str:
     return f"{icon} {row['name']}: {what} · cola {row['queue']} · bloqueos {row['blocked']}"
 
 
-def render_summary(rows: list[dict], decisions: list, guard_n: int, now: float, who: str = "") -> str:
-    """El mensaje: una línea por carril (también los vacíos) y las decisiones de Oscar con su próximo paso."""
-    lines = ["☀️ Resumen de las 9:00 por carril"]
+def render_summary(rows: list[dict], decisions: list, guard_n: int, now: float, who: str = "", extra: str = "",
+                   hour: int = SLOT_HOUR) -> str:
+    """El mensaje: una línea por carril (también los vacíos) y las decisiones de Oscar con su próximo paso.
+    `extra`: líneas del integrador (estado de sus consolas y PR de sesiones interactivas), ya compuestas."""
+    lines = [f"☀️ Resumen de las {hour}:00 por carril"]
     lines += [render_lane(r) for r in rows] or ["(no hay carriles configurados)"]
     if guard_n:
         lines.append(f"🧑‍💻 {guard_n} en la cola del integrador (/integrador)")
+    if extra:
+        lines.append(extra)
     lines.append("")
     if not decisions:
         lines.append("Decisiones pendientes de Oscar: ninguna. ➡️ Próximo paso: ninguno · Lo da: nadie")
@@ -76,11 +80,11 @@ def render_summary(rows: list[dict], decisions: list, guard_n: int, now: float, 
     return "\n".join(lines)
 
 
-def due_date(now: datetime, sent: set[str]) -> str | None:
-    """Clave AAAA-MM-DD si toca enviar (desde las 9:00 hasta las 11:00 de Madrid, todos los días) y no está enviada."""
+def due_date(now: datetime, sent: set[str], hour: int = SLOT_HOUR) -> str | None:
+    """Clave AAAA-MM-DD si toca enviar (desde `hour`:00 hasta 2 h después, hora de Madrid, todos los días) y no está enviada."""
     now = now.astimezone(MADRID)
     key = f"{now:%Y-%m-%d}"
-    return key if SLOT_HOUR <= now.hour < SLOT_HOUR + WINDOW_HOURS and key not in sent else None
+    return key if hour <= now.hour < hour + WINDOW_HOURS and key not in sent else None
 
 
 class DailyLaneSummary:
@@ -89,9 +93,11 @@ class DailyLaneSummary:
 
     def __init__(self, rows: Callable[[], list], decisions: Callable[[], list], guard_n: Callable[[], int],
                  send: Callable[[str, bool], bool], state_path: Path | str, *, who: str = "",
-                 now: Callable[[], datetime] = lambda: datetime.now(MADRID)):
+                 now: Callable[[], datetime] = lambda: datetime.now(MADRID), hour: int = SLOT_HOUR,
+                 extra: Callable[[], str] = lambda: ""):
         self.rows, self.decisions, self.guard_n, self.send = rows, decisions, guard_n, send
         self.state_path, self.who, self._now = Path(state_path), who, now
+        self.hour, self.extra = hour, extra
 
     def _sent(self) -> set[str]:
         try:
@@ -102,11 +108,12 @@ class DailyLaneSummary:
     def tick(self) -> str | None:
         """Una comprobación. Devuelve el texto enviado (o None)."""
         now = self._now()
-        key = due_date(now, self._sent())
+        key = due_date(now, self._sent(), self.hour)
         if not key:
             return None
         decisions = self.decisions()
-        text = render_summary(self.rows(), decisions, self.guard_n(), now.timestamp(), self.who if decisions else "")
+        text = render_summary(self.rows(), decisions, self.guard_n(), now.timestamp(), self.who if decisions else "",
+                              self.extra(), self.hour)
         if not self.send(text, bool(decisions)):
             return None
         self.state_path.parent.mkdir(parents=True, exist_ok=True)

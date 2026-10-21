@@ -1565,8 +1565,10 @@ class Integrator:
             extra = self._count(lane, f"{sha}..{tip}") if tip != sha else 0
             before = self._deployments(policy)
             if before is None:
+                self._railway_incident(lane, tip, abrir=True)
                 self._edit(desk, lane, rec, where, "blocked", "⛔ no se despliega: Railway no responde")
                 return False
+            self._railway_incident(lane, tip, abrir=False)  # Railway responde: si había incidencia abierta, se cierra
             self._edit(desk, lane, rec, where, "running", status_line(
                 f"🚀 desplegando {tip[:7]}…", f"lo último de {lane.base}, {extra} commit(s) después de esta fusión"
                 if extra else None))
@@ -1610,6 +1612,26 @@ class Integrator:
             self._comment(lane, tid, f"DEPLOY-FALLIDO {tip} · railway deployment {dep_id} {why}")
             self._edit(desk, lane, rec, where, "blocked", status_line("⛔ deploy falló", why, "revisa Railway"))
         return True
+
+    def _railway_incident(self, lane, sha: str, *, abrir: bool) -> None:
+        """«Despliegue en cola por incidencia de Railway» (repo y SHA) al abrirse y otro aviso al normalizarse, por el
+        mismo canal que las fichas (tema de Integración o DM de Oscar). Una sola vez por incidencia. Nunca lanza."""
+        if self.dry_run or not self.notifier:
+            return
+        try:
+            from .integrador_visibilidad import INCIDENCIA_FILE, IncidenciaRailway, load_ajustes
+            inc = IncidenciaRailway(self.state_dir / INCIDENCIA_FILE, load_ajustes(), self._now)
+            repo = repo_name(lane)
+            text = inc.abrir(repo, sha) if abrir else inc.cerrar(repo)
+            if not text:
+                return
+            target = self.settings.integration_telegram
+            owner = str(getattr(self.desk, "owner_id", "") or "") if self.desk else ""
+            chat, thread = target if target else (owner, None)
+            if chat:
+                self.notifier.send_to(str(chat), str(thread) if thread else None, text, html=False)
+        except Exception as exc:
+            log.warning("aviso de incidencia de Railway falló: %s", exc)
 
     def busy(self) -> list[str]:
         """Lo que un reinicio ordenado (drain) debe esperar fuera del pool de workers: deploy o gates en marcha."""
