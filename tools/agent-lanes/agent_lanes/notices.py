@@ -6,12 +6,14 @@ los llamantes pasan una frase pública y el detalle va al log y a la tarjeta del
 """
 from __future__ import annotations
 
+import hashlib
 import html
 import json
 import logging
 import os
 import re
 import subprocess
+import time
 
 from . import proc as _proc
 from .peticiones import TOTAL_PASOS, vinculo_de
@@ -592,6 +594,13 @@ def markup_token(markup: dict | None) -> str | None:
     return None
 
 
+DEDUP_WINDOW = 120  # s: ventana en la que un aviso idéntico no se repite
+
+
+def text_signature(text: str, channel: str | None = None) -> str:
+    return hashlib.sha1(f"{channel or ''}\0{text}".encode("utf-8", "replace")).hexdigest()
+
+
 class TaskNotices:
     """Publica el estado de una tarea en su único mensaje (y en sus espejos)."""
 
@@ -617,6 +626,14 @@ class TaskNotices:
         canal, el mensaje anterior no se borra sino que se edita con esta línea corta (enlace al nuevo)."""
         rec = self.store.get(tid)
         bot = getattr(self.notifier, "bot_id", None)
+        # Idempotencia: el mismo aviso de la misma tarea, dos veces seguidas (dos pasadas, o el runner viejo y el
+        # nuevo tras un reinicio ordenado), sale una sola vez. La firma se guarda con el mensaje, así que vale
+        # también entre procesos.
+        sig = text_signature(text, channel)
+        if (alert and rec and rec.get("message_id") and rec.get("sig") == sig
+                and 0 <= time.time() - float(rec.get("sig_at") or 0) < DEDUP_WINDOW):
+            log.info("%s: aviso idéntico ya enviado hace <%ss; no se repite", tid, DEDUP_WINDOW)
+            return
         # Un bot solo edita/borra sus propios mensajes: si el aviso anterior es de otro bot (se pasó a
         # CARRILES_BOT_TOKEN), se envía uno nuevo y el viejo se deja como está.
         same_bot = bool(rec) and (not rec.get("bot") or not bot or str(rec.get("bot")) == str(bot))
@@ -673,7 +690,7 @@ class TaskNotices:
                 self.notifier.edit(trail["chat_id"], trail["message_id"], leave_behind(sent))
             except Exception as exc:
                 log.info("%s: no se pudo dejar la línea de enlace: %s", tid, exc)
-        self.store.put(tid, {**sent, **({"mirrors": mirrors} if mirrors else {}),
+        self.store.put(tid, {**sent, "sig": sig, "sig_at": time.time(), **({"mirrors": mirrors} if mirrors else {}),
                              **({"channel": channel} if channel else {}), **({"trail": trail} if trail else {})})
         dm = None
         if alert and mirror_to and hasattr(self.notifier, "send_to") and str(sent.get("chat_id")) != str(mirror_to):
