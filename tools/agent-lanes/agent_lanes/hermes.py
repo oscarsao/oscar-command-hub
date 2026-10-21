@@ -412,6 +412,9 @@ class HermesCLI:
     def assign(self, task_id: str, profile: str) -> bool:
         return self._call("assign", task_id, profile).returncode == 0
 
+    def set_priority(self, task_id: str, priority: int) -> bool:
+        return self._call("edit", task_id, "--priority", str(int(priority))).returncode == 0
+
     def unblock(self, task_id: str) -> bool:
         return self._call("unblock", task_id).returncode == 0
 
