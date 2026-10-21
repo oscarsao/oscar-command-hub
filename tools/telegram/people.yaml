@@ -14,13 +14,15 @@
 #     Sin `operador: true` (Ingerber, Andrea) el acceso sigue siendo solo el DM de ideas.
 #   - Tras rellenar un user_id (Oscar, a mano): anadirlo a TELEGRAM_ALLOWED_CHATS en tools/agent-lanes/.env para que
 #     los avisos vuelvan a su DM, y que la persona envie /start al bot. NO anadirlo a generic_origins de lanes.yaml.
-#   - brands: la primera marca decide el tablero de sus tarjetas (Pildora -> oscarhq, MigraTeam -> migrateam).
+#   - brands: la primera marca decide el tablero de sus tarjetas (Pildora -> oscarhq, MigraTeam -> migrateam). Ademas
+#     limita lo que ejecuta un operador: solo actua (comandos, botones, aprobaciones, fusiones, despliegues) en esas
+#     marcas; "*" = todas (Maria). Sin "*" y sin marca clara en el destino, se rechaza. OscarHQ cuenta como Pildora.
 people:
   maria:
     name: María
     user_id: "5516823836"   # María (socia/estrategia, acceso como Oscar salvo produccion); dado por Oscar 13-10
     role: coo
-    brands: [Píldora, MigraTeam]
+    brands: [Píldora, MigraTeam, "*"]   # "*" = opera en TODAS las marcas (la primera decide el tablero de sus ideas)
     can: []         # [carril] reservado; desactivado por defecto
     operador: true  # mismo acceso que Oscar en el bot de carriles (comandos, botones, aprobaciones); decision de Oscar 19-10
   ingerber:
@@ -41,13 +43,11 @@ people:
     role: dev
     brands: [MigraTeam]   # SOLO MigraTeam
     can: []
-    # operador: true NO se activa todavia. Hoy `brands` solo decide el tablero de las ideas; NO limita lo que puede
-    # ejecutar un operador (aprobar, desplegar...), asi que podria actuar tambien en Pildora/OscarHQ.
-    # Activarlo solo cuando exista el operador acotado por marca (tarea aparte, decision de Oscar 21-10).
+    operador: true  # acotado: solo actua en las marcas de `brands` (el codigo rechaza el resto); decision de Oscar 21-10
   angel:
     name: Angel
     user_id: null   # PENDIENTE - rellenar cuando Oscar confirme el Telegram ID (apoyo tecnico OscarHQ y Signal)
     role: dev
     brands: [Píldora, Signal]   # SIN MigraTeam salvo que Oscar lo confirme; sin credenciales Railway/Supabase/Vercel
     can: []
-    # operador: true NO se activa todavia: mismo motivo que Mauredy (ver arriba).
+    operador: true  # acotado a Pildora (=OscarHQ) y Signal: nada en MigraTeam ni en lo demas

@@ -36,8 +36,8 @@ from .hermes import (ANSWER_PREFIX, HERMES_ANSWER_PREFIX, OSCAR_AUTHOR, REVIEW_A
 from .explain import explain as _explain
 from .free_text import FREE_ACTIONS, FreeText
 from .people import People, load_people
-from .notices import (DECISION_CARD_STATUSES, OPTION_LETTERS, card_url, normalize_questions, questions_block,
-                      render, status_line, truncate, with_default_options)
+from .notices import (BOARD_BRANDS, BRANDS, DECISION_CARD_STATUSES, OPTION_LETTERS, card_url, normalize_questions,
+                      questions_block, render, status_line, truncate, with_default_options)
 from .tipo_peticion import A_ASK as PEDIR_ASK, KIND as PEDIR_KIND
 from .reconcile import INTEGRATOR_PROFILE, REC_ARCHIVE, REC_KEEP
 from .review import CHANGES_PREFIX
@@ -50,6 +50,10 @@ CALLBACKS_DIR = ROOT / ".state" / "callbacks"
 OWNER_TELEGRAM_ID = "6744452215"  # Oscar; configurable con OWNER_TELEGRAM_ID en .env
 NOT_OWNER = ("Esto es solo para operadores. Pide a Oscar o a María que lo decida, o escribe tu petición en texto libre "
              "y se la paso")
+NOT_BRAND = ("No tienes permiso para actuar en {marca}: tu acceso de operador está limitado a {tuyas}. "
+             "Pídeselo a Oscar o a María")
+_REC_MEMBER_KEYS = ("group", "accept_all", "card_accept_all", "members", "cards", "targets",
+                     "candidates")  # listas de recs anidados
 GH_EXE = r"C:\Program Files\GitHub CLI\gh.exe"
 CALLBACK_DATA_MAX = 64  # bytes, límite de Telegram
 PARK_PROFILE = "oscar"
@@ -445,6 +449,53 @@ class DecisionDesk:
             return True
         return self._people().es_operador(user_id)
 
+    def restringido(self, user_id) -> bool:
+        """Operador acotado por marca (ni Oscar ni `brands: ["*"]`)."""
+        return str(user_id) != self.owner_id and self._people().restringido(user_id)
+
+    def puede_en(self, user_id, marca) -> bool:
+        """Operador con permiso sobre `marca` (people.yaml `brands`). Oscar y `"*"`: todas. Marca None = sin marca conocida."""
+        if str(user_id) == self.owner_id:
+            return True
+        return self._people().puede_en(user_id, marca)
+
+    @staticmethod
+    def rec_marcas(rec: dict) -> set:
+        """Marcas a las que apunta un teclado (rec): la de su carril, o la de su tablero. Recorre grupos y cabeceras
+        de "aceptar todo". `None` en el conjunto = hay un destino sin marca conocida (se trata como no permitido)."""
+        out: set = set()
+
+        def one(d) -> None:
+            if not isinstance(d, dict):
+                return
+            lane, board = d.get("lane"), d.get("board")
+            if lane or board or d.get("brand"):
+                out.add(BRANDS.get(lane) or BOARD_BRANDS.get(board) or d.get("brand") or None)
+            for name in d.get("lanes") or ():  # /hazlo: carriles candidatos
+                out.add(BRANDS.get(name))
+            for key in _REC_MEMBER_KEYS:
+                for member in d.get(key) or ():
+                    one(member)
+
+        one(rec)
+        return out or {None}
+
+    def puede_con(self, user_id, rec: dict) -> bool:
+        """El operador puede actuar sobre todo lo que toca este teclado."""
+        if not self.restringido(user_id):
+            return True
+        return all(self.puede_en(user_id, m) for m in self.rec_marcas(rec))
+
+    def aviso_marca(self, user_id, marca=None) -> str:
+        """Mensaje claro de rechazo por marca, con las marcas que sí tiene."""
+        person = self._people().lookup(user_id)
+        tuyas = ", ".join(person.brands) if person and person.brands else "ninguna marca"
+        return NOT_BRAND.format(marca=marca or "esa tarea (sin marca conocida)", tuyas=tuyas)
+
+    def _rechazo_marca(self, user_id, rec: dict) -> str:
+        denied = sorted(str(m) for m in self.rec_marcas(rec) if m and not self.puede_en(user_id, m))
+        return self.aviso_marca(user_id, ", ".join(denied) or None)
+
     def operador_nombre(self, user_id) -> str | None:
         """Nombre de un operador que NO es Oscar (para firmar sus acciones); None si es Oscar o no es operador."""
         if str(user_id) == self.owner_id or not self.es_operador(user_id):
@@ -727,6 +778,10 @@ class DecisionDesk:
             answer(cq.get("id"), "Esta decisión ya no está activa")
             self._log_update(chat, "callback", None, "ignorado")
             return
+        if not self.puede_con(actor, rec):  # operador acotado por marca: solo actúa en las suyas
+            answer(cq.get("id"), self._rechazo_marca(actor, rec), alert=True)
+            self._log_update(chat, "callback", None, "rechazado")
+            return
         button = buttons[int(n)]
         where = self._where(cq.get("message") or {})
         self._log_update(chat, "callback", button.get("action"), "respondido")
@@ -770,6 +825,13 @@ class DecisionDesk:
         if not pending:
             return False
         token, rec, button, where = pending["token"], pending["rec"], pending["button"], pending["where"]
+        if not self.puede_con(actor, rec):  # la pregunta era de otra marca: la respuesta no se aplica
+            try:
+                self.notifier.send_to(chat_id, str(msg.get("message_thread_id") or 0), self._rechazo_marca(actor, rec),
+                                      html=False)
+            except Exception as exc:
+                log.warning("no pude avisar del rechazo por marca: %s", exc)
+            return True
         if not self.store.consume(token):  # ya se decidió con otro botón
             self._cleanup_messages(chat_id, [replied.get("message_id"), msg.get("message_id")])
             return True

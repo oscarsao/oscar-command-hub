@@ -21,6 +21,7 @@ YAML = """people:
     name: María
     user_id: "5516823836"
     role: coo
+    brands: ["*"]
     operador: true
   ingerber:
     name: Ingerber

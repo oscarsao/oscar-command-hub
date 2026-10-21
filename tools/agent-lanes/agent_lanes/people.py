@@ -8,10 +8,14 @@ Las capacidades por rol son CONSTANTES de código. El YAML solo puede activar `c
 capacidad `produccion` es exclusiva del owner y no sale nunca del YAML. Aparte, `operador: true` (booleano
 estricto) da a la persona el MISMO acceso que Oscar al bot de carriles (comandos, botones y aprobaciones; decisión de
 Oscar 19-10): se evalúa con `People.es_operador`, no con las capacidades.
+
+Un operador solo actúa en las marcas de su `brands` (`People.puede_en`): `"*"` = todas (María). Sin `"*"`, con una
+marca distinta o con un destino sin marca conocida se rechaza (falla cerrado). Oscar siempre puede.
 """
 from __future__ import annotations
 
 import logging
+import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -22,6 +26,17 @@ log = logging.getLogger("agent_lanes")
 PEOPLE_FILE = Path(__file__).resolve().parents[2] / "telegram" / "people.yaml"
 
 CONSULTA, ESTADO, IDEA, CONTENIDO, CARRIL, PRODUCCION = "consulta", "estado", "idea", "contenido", "carril", "produccion"
+TODAS_LAS_MARCAS = "*"
+_ALIAS_MARCA = {"oscarhq": "pildora"}  # OscarHQ es la marca Píldora para el control de acceso
+
+
+def norm_marca(marca) -> str:
+    """Marca comparable: sin tildes ni mayúsculas ('Píldora' == 'pildora' == 'OscarHQ')."""
+    base = "".join(c for c in unicodedata.normalize("NFD", str(marca or "")) if not unicodedata.combining(c))
+    base = base.strip().casefold()
+    return _ALIAS_MARCA.get(base, base)
+
+
 BASE_CAPS = {
     "owner": frozenset({CONSULTA, ESTADO, IDEA, CONTENIDO, CARRIL, PRODUCCION}),
     "coo": frozenset({CONSULTA, ESTADO, IDEA, CONTENIDO}),
@@ -67,6 +82,23 @@ class People:
         """Oscar (owner) o una persona de people.yaml con `operador: true`. Única fuente de verdad del acceso al bot."""
         person = self.lookup(user_id)
         return bool(person and (person.is_owner or person.operador))
+
+    def restringido(self, user_id) -> bool:
+        """True si es un operador acotado por marca (ni Oscar ni quien tenga `"*"`)."""
+        person = self.lookup(user_id)
+        if not person or person.is_owner:
+            return False
+        return TODAS_LAS_MARCAS not in person.brands
+
+    def puede_en(self, user_id, marca) -> bool:
+        """Oscar y quien tenga `"*"`: cualquier marca. Resto de operadores: solo las de su `brands`; `marca` None
+        (destino sin marca conocida) solo la admiten los de todas las marcas. Quien no es operador no puede nada."""
+        if not self.es_operador(user_id):
+            return False
+        if not self.restringido(user_id):
+            return True
+        wanted = norm_marca(marca)
+        return bool(wanted) and wanted in {norm_marca(b) for b in self.lookup(user_id).brands}
 
     def collaborator_ids(self) -> set[str]:
         return set(self._by_id)
