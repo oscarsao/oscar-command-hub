@@ -25,7 +25,8 @@ from . import proc as _proc
 from .aviso import AvisoAccionable, actions_of, mention, stuck_history
 from .config import Lane
 from .decisions import keyboard_spec
-from .hermes import ANSWER_PREFIX, OSCAR_AUTHOR, answer_progress, is_guard_limit, pending_hermes_answer
+from .hermes import (ANSWER_PREFIX, GUARD_LIMIT_MARK, OSCAR_AUTHOR, answer_progress, is_guard_limit,
+                     pending_hermes_answer)
 from .notices import (
     MessageStore,
     decision_since,
@@ -168,10 +169,21 @@ class Pending:
     yes_no: bool = True  # False en escaladas de review: sin [✅ Sí, adelante] [❌ No] por defecto
     q_index: int = 0  # siguiente pregunta pendiente (las anteriores ya las respondió Oscar en esta ronda)
     answered: list[int] = field(default_factory=list)  # índices ya respondidos (derivado del kanban)
+    guard: bool = False  # bloqueo por LIMITACION-GUARD: va a la cola del integrador (guard_route), no a Oscar
+    need: str | None = None  # qué hace falta (guard): el detalle del worker, ya sin el marcador
     ronda: str = ""  # identifica la ronda del aviso (stuck: instante del block_loop_detected); clave de dedup
 
     def pending_questions(self) -> list[dict]:
         return [q for i, q in enumerate(self.questions) if i not in self.answered]
+
+
+def guard_need(reason: str | None) -> str | None:
+    """Lo que el worker no pudo hacer por el guard: el motivo sin el marcador ni la frase de cabecera."""
+    if not is_guard_limit(reason):
+        return None
+    body = (reason or "").split(GUARD_LIMIT_MARK, 1)[1].strip()
+    _, _, detail = body.partition("\n")
+    return truncate(" ".join((detail or body).split()), 300) or None
 
 
 def _last_block(show: dict) -> dict | None:
@@ -269,7 +281,8 @@ class Renotifier:
         if is_guard_limit(reason):  # limitación permanente del guard: sin botón de responder ni de reintentar
             return Pending(tid, lane, "blocked", task, status_line(
                 "requiere consola", f"el guard no deja hacerlo; en una consola interactiva: /tomar-tarea {tid}",
-                "detalle en la tarjeta"), block_kind="console", since=decision_since(task, show))
+                "detalle en la tarjeta"), block_kind="console", since=decision_since(task, show), guard=True,
+                need=guard_need(reason))
         reason, plain = split_for_oscar(reason)
         questions = block_questions(show)
         # Preguntas ya respondidas en esta ronda (kanban, no memoria): se pinta la siguiente pendiente, nunca una
@@ -324,7 +337,8 @@ class Renotifier:
         who = mention((self.attention or {}).get("mention"))
         status = aviso.motivo + (f"  {who}" if who else "")
         return Pending(task["id"], lane, "stuck", task, status, bullets=list(aviso.contexto_corto),
-                       block_kind=payload.get("kind"), since=since, for_oscar=plain, ronda=str(int(since or 0)))
+                       block_kind=payload.get("kind"), since=since, for_oscar=plain, ronda=str(int(since or 0)),
+                       guard=is_guard_limit(payload.get("reason")), need=guard_need(payload.get("reason")))
 
     def _plan_done(self, lane: Lane, show: dict) -> Pending | None:
         task = show["task"]
@@ -357,6 +371,9 @@ class Renotifier:
             force: bool = False) -> tuple[list[str], list[str]]:
         sent, failed = [], []
         for p in self.collect(lane=lane, task=task):
+            if p.guard:  # limitación del guard: la lleva la cola del integrador (guard_route), no Oscar
+                self.out(f"{p.tid}: se salta (limitación del guard: cola del integrador, /integrador)")
+                continue
             old = self.messages.get(p.tid)
             if old and str(old.get("bot") or "") == self.bot_id and not force:
                 self.out(f"{p.tid}: se salta (ya tiene aviso del bot de carriles)")
@@ -400,6 +417,8 @@ class Renotifier:
     def alert_urgent(self, p: Pending) -> bool:
         """Aviso inmediato de un bloqueo de prioridad alta: al DM de Oscar (con los botones de la tarjeta) y al tema
         Atención (integrador), con la acción concreta: qué pregunta el worker y qué opciones hay. True si llegó al DM."""
+        if p.guard:  # la cola del integrador ya lo avisa a quien puede actuar; a Oscar solo a las 2 h
+            return True
         prio = p.task.get("priority")
         lines = [f"🚨 Prioridad {prio} bloqueada: {p.tid} · {truncate(p.task.get('title'), 80)}",
                  f"{p.lane.name} · {p.status}"]

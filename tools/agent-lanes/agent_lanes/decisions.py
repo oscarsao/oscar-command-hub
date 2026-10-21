@@ -54,6 +54,7 @@ PARK_PROFILE = "oscar"
 PR_FOOTER = "🤖 Generated with [Claude Code](https://claude.com/claude-code)"
 
 APPROVE, CHANGES, PARK, RETRY, OPTION, OTHER = "approve", "changes", "park", "retry", "option", "other"
+GUARD_SNOOZE = "guard_snooze"  # ⏳ Aplazar un bloqueo de guard escalado a Oscar: 24 h más en la cola del integrador
 TO_INTEGRADOR = "to_integrador"  # 🧑‍💻 Que lo resuelva el integrador: Oscar no puede actuar desde Telegram
 UNTRIAGE = "untriage"      # 🧊 Sacar de triage: specify_triage_task sin reescribir la tarjeta (nunca unblock)
 EXPLAIN = "explain"        # 💬 Explícame más: responde con una explicación llana; no consume el teclado
@@ -120,6 +121,9 @@ def keyboard_spec(state: str, *, block_kind: str | None = None, questions=None,
         return rows
     if state == "blocked" and block_kind == "review_stuck":  # tarea en review que no se pudo bloquear: decide Oscar
         return [[{"text": "✅ Aprobar", "action": APPROVE}, {"text": "🔁 Pedir cambios", "action": CHANGES}, park]]
+    if state == "blocked" and block_kind == "console_escalated":  # 2 h en la cola del integrador sin resolverse
+        return [[{"text": "🧑‍💻 Que lo resuelva el integrador", "action": TO_INTEGRADOR}],
+                [{"text": "⏳ Aplazar", "action": GUARD_SNOOZE}]]
     if state == "blocked" and block_kind in ("config", "console"):  # reintentar no arregla la config ni el guard: solo aparcar
         return [[park], [{"text": "🧑‍💻 Que lo resuelva el integrador", "action": TO_INTEGRADOR}]]
     if state == "blocked" and block_kind == "transient":
@@ -778,6 +782,8 @@ class DecisionDesk:
             return bool(self.reconciler) and self.reconciler.on_button(action, rec, where, self)
         if action == TO_INTEGRADOR:
             return self._to_integrador(rec, where)
+        if action == GUARD_SNOOZE:
+            return self._guard_snooze(rec, where)
         if action.startswith("promo_"):  # 🚀 Promover MigraTeam: Revisado / Sí, promover (promote.py)
             if action == "promo_start":
                 if not self.promoter:
@@ -1204,6 +1210,15 @@ class DecisionDesk:
         h.comment(tid, f"Pasada al integrador ({INTEGRATOR_PROFILE}) por {self._who()}: requiere consola",
                   author=OSCAR_AUTHOR)
         self._edit(rec, where, "parked", f"🧑‍💻 la tiene el integrador ({INTEGRATOR_PROFILE}); queda en su tarjeta")
+        return True
+
+    def _guard_snooze(self, rec: dict, where: dict) -> bool:
+        """⏳ Aplazar: la tarjeta sigue en la cola del integrador y no vuelve a Oscar hasta dentro de 24 h."""
+        queue = getattr(self, "guard_queue", None)  # la pone CommandCenter.guard_router (guard_route.GuardQueue)
+        if queue is None or not queue.snooze(rec["task_id"]):
+            self._edit(rec, where, "blocked", "no se pudo aplazar: ya no está en la cola del integrador")
+            return False
+        self._edit(rec, where, "parked", "⏳ aplazada 24 h; sigue en la cola del integrador (/integrador)")
         return True
 
     def _retry(self, rec: dict, where: dict) -> bool:

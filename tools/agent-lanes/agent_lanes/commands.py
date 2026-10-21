@@ -48,12 +48,13 @@ import logging
 import re
 import threading
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Callable
 from urllib.parse import urlsplit
 
 from . import bandeja as _bandeja
-from .aviso import UrgentBlockWatcher
+from .aviso import UrgentBlockWatcher, mention
 from .card_options import PREPARED_AUTHOR, PREPARED_PREFIX, CardSpec, card_message, parse_card
 from .decisions import DEPLOY_ASK, DEPLOY_NO, FALTA, FLUJO, HAZLO, OWNER_TELEGRAM_ID
 from .deps import (ShowCache, child_bucket, dependency_order, family, pending_parents, tree_lines,
@@ -67,6 +68,7 @@ URGENT_EVERY = 120  # s mínimos entre pasadas del aviso inmediato de bloqueos d
 
 COMMANDS = (
     ("hoy", "Resumen del día (el de las 8:00) ahora"),
+    ("integrador", "Cola del integrador: bloqueos de guard que requieren consola"),
     ("decisiones", "Bandeja de decisiones pendientes con botones"),
     ("atencion", "Todo lo que espera a Oscar, con botones para resolverlo aquí"),
     ("aprobar", "Tareas listas para integrar"),
@@ -321,8 +323,70 @@ class CommandCenter:
     def stuck_tasks(self, brand: str | None = None) -> list:
         """🧊 Tareas de carril que Hermes pasó a triage por bloquearse dos veces por lo mismo (block_loop_detected):
         desde ahí `unblock` falla y nadie las ve. Más antigua primero; las cuentan también los recordatorios."""
-        found = [p for p in self.renotifier().collect(statuses=("triage",)) if p.state == "stuck"]
+        found = [p for p in self.renotifier().collect(statuses=("triage",)) if p.state == "stuck" and not p.guard]
         return sorted(self._filter(found, brand), key=lambda p: (p.since or 0, p.tid))
+
+    # --- cola del integrador (limitaciones del guard) y resumen de las 9:00 (t_f8f58acb) ------------------------
+
+    def _state_file(self, attr: str, name: str) -> Path | None:
+        """Como urgent_tick: `attr` explícito (tests) o `.state/<name>` junto al almacén de mensajes real."""
+        path = getattr(self, attr, None)
+        root = getattr(self.messages, "root", None)
+        if path is None and root and Path(root).parent.name == ".state":
+            path = Path(root).parent / name
+        return Path(path) if path else None
+
+    def guard_pending(self) -> list:
+        """Bloqueos por LIMITACION-GUARD (bloqueados y los que Hermes pasó a triage por repetirse)."""
+        return [p for p in self.renotifier().collect(statuses=("blocked", "triage")) if p.guard]
+
+    def guard_queue(self):
+        from .guard_route import GuardQueue
+        path = self._state_file("guard_state", "integrador_cola.json")
+        if path is None:
+            return None
+        if getattr(self, "_guard_queue", None) is None:
+            self._guard_queue = GuardQueue(path, self._now)
+            self.desk.guard_queue = self._guard_queue  # ⏳ Aplazar (DecisionDesk._guard_snooze) lo usa
+        return self._guard_queue
+
+    def guard_tick(self) -> list[str]:
+        """Cola del integrador: anuncia los bloqueos de guard nuevos y escala a Oscar los que llevan 2 h sin resolverse.
+        Una pasada cada 2 min como mucho; sin `.state` (o sin `guard_state`) no hace nada."""
+        from .guard_route import GuardNotifier, GuardRouter
+        queue, now = self.guard_queue(), self._now()
+        if queue is None or now - getattr(self, "_guard_at", 0) < URGENT_EVERY:
+            return []
+        self._guard_at = now
+        ren = self.renotifier()
+        gn = GuardNotifier(self.notifier, self.desk, ren.attention, self.owner_id, self._now)
+        return GuardRouter(self.guard_pending, gn.to_integrator, gn.to_oscar, queue, now=self._now).tick()
+
+    def daily_tick(self) -> str | None:
+        """Resumen de las 9:00 por carril (resumen_carriles). Barato fuera de la franja: solo mira la hora."""
+        from . import resumen_carriles as rc
+        path = self._state_file("daily_state", "resumen_carriles.json")
+        if path is None or rc.due_date(datetime.fromtimestamp(self._now(), rc.MADRID), set()) is None:
+            return None
+        att = self.renotifier().attention
+        who = mention((att or {}).get("oscar_mention") or (att or {}).get("mention"))
+
+        def send(text: str, with_button: bool) -> bool:
+            markup = self.desk.see_all_markup(None) if with_button else None
+            kw = {"reply_markup": markup} if markup else {}
+            chat, thread = (str(att["chat"]), str(att.get("thread") or "0")) if att else (self.owner_id, None)
+            return bool(self.notifier.send_to(chat, thread, text, html=False, **kw))
+
+        queue = self.guard_queue()
+        return rc.DailyLaneSummary(
+            lambda: rc.collect_rows(self.lanes, self.hermes_for), lambda: self.pending_decisions() + self.stuck_tasks(),
+            lambda: len(queue.entries()) if queue else 0, send, path, who=who,
+            now=lambda: datetime.fromtimestamp(self._now(), rc.MADRID)).tick()
+
+    def cmd_integrador(self, where, args: str, brand: str | None) -> None:
+        from .guard_route import queue_view
+        queue = self.guard_queue()
+        self._send(where, queue_view(queue.entries() if queue else {}, self._now()), html=False)
 
     def decision_cards(self, brand: str | None = None) -> list[dict]:
         """Tarjetas de decisión de Oscar (no son de carril): asignadas a `oscar`, en ready/blocked y con etiqueta
@@ -566,6 +630,11 @@ class CommandCenter:
             self.urgent_tick()
         except Exception as exc:
             log.warning("avisos urgentes: %s", exc)
+        for tick in (self.guard_tick, self.daily_tick):  # cola del integrador y resumen de las 9:00
+            try:
+                tick()
+            except Exception as exc:
+                log.warning("%s: %s", tick.__name__, exc)
         cfg, book = self.bandeja, getattr(self.desk, "vetos", None)
         if not cfg.veto_activo or book is None:
             return []

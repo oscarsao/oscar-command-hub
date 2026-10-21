@@ -470,8 +470,8 @@ class LaneRunner:
         if not blocked:
             log.error("no se pudo bloquear %s (limitacion_guard) en el kanban: la tarea sigue en running", tid)
         self.notify("blocked", tid, task or self._active.get(tid), status_line(
-            "requiere consola", f"el guard no deja hacerlo; en una consola interactiva: /tomar-tarea {tid}",
-            "detalle en la tarjeta"), alert=True, buttons=bool(blocked), block_kind="console",
+            "requiere consola", f"en la cola del integrador (/integrador): /tomar-tarea {tid} en una consola",
+            "detalle en la tarjeta"), alert=False, buttons=False, block_kind="console",
             summary=result.get("summary"), for_oscar=result.get("for_oscar"))
         return "blocked:limitacion_guard"
 
