@@ -1,6 +1,8 @@
 # Pitch · Workflows desde los carriles («implementar-con-revision»)
 
-Tarjeta `t_3cd20f03` · carril `claude-hub` · modo OASP: **Pitch** · estado: **pendiente del OK de Oscar** (nada implementado).
+Tarjeta `t_3cd20f03` · carril `claude-hub` · modo OASP: **Pitch** · estado: **aprobado por Oscar (21-oct)** con el corte F0→F1→F2→F3a (F3b opcional); guion del piloto copiado a
+`specs/piloto-funnel-workflow.js.txt`; backend de preview elegido: **A (entornos de PR de Railway)**. **F0 implementada**
+en este PR (`tools/agent-lanes/workflows/`); F1-F3 en tarjetas siguientes.
 Autorización: Oscar aprobó la tarjeta `t_3cd20f03` (encargo vía oscar-bf, 21-oct) tras el piloto de Funnel Studio
 (oscar-hq PR #223: ~37 min de spec a PR sin preguntas intermedias).
 
@@ -37,8 +39,11 @@ todo al principio, y una entrega que permita probar **antes** de desplegar.
   nunca merge; solo push de `rama`.
 - `--dry-run`: no lanza agentes ni toca git; imprime el plan por fase, los `args` resueltos (con secretos enmascarados) y
   los prompts. Es lo que se adjunta al PR de F1 como prueba.
-- **Bloqueo hoy:** el guion del piloto va adjunto a la tarjeta pero no estaba accesible en el worktree del carril
-  (fuera del repo y de las rutas permitidas), así que F0 no se ha escrito para no inventar la plantilla. Ver pregunta 1.
+- **Hecho en F0:** plantilla `workflows/implementar-con-revision.js.txt` (extensión `.js.txt` porque el integrador bloquea
+  `.js`), README, validador Python `agent_lanes/workflow_plantilla.py`, `dry_run` y tests. Parámetros extra respecto al
+  pitch: `encargo` (obligatorio), `reglas`, `lentes`.
+- **Decisión sobre F3b:** al aprobar A, F3b (entornos de PR de Railway por proyecto, flag `backend_preview: railway_pr`)
+  entra como entrega opcional; crear los entornos en Railway/Vercel lo hace Oscar.
 
 ### F1 · Runner
 - Marca: etiqueta de tarjeta `workflow` (nombre configurable en `workflows_carriles.yaml`: `marca`, `activo: false`).

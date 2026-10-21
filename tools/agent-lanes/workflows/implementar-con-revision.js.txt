@@ -1,0 +1,145 @@
+// Plantilla de workflow «implementar-con-revision» (F0 del pitch workflows-desde-carriles).
+// Guion del motor de workflows de Claude Code (globales: args, agent, phase, parallel, log). Se guarda como .js.txt
+// porque el integrador bloquea .js en los PR; para ejecutarlo se pasa su contenido (sin esta cabecera) al motor.
+// Parametrizado SOLO por `args`: ni rutas ni nombres de proyecto en el cuerpo. Documentación: workflows/README.md.
+export const meta = {
+  name: 'implementar-con-revision',
+  description: 'Spec -> Implementar -> Revisar (3 lentes en paralelo) -> Corregir + push + PR, en la rama lane/<id> (nunca la base)',
+  phases: [
+    { title: 'Spec', detail: 'spec corto con las decisiones de Oscar' },
+    { title: 'Implementar', detail: 'código + tests en la rama propia' },
+    { title: 'Revisar', detail: 'revisores con lentes distintas y hallazgos en JSON' },
+    { title: 'Corregir', detail: 'aplicar hallazgos, pruebas, push de la rama y PR' },
+  ],
+}
+
+const A = args || {}
+
+// ---- Validación de args (espejo de agent_lanes/workflow_plantilla.py; un test comprueba que coinciden) ----
+const REQUERIDOS = ['repo', 'remoto', 'base', 'worktree', 'rama', 'encargo', 'autorizacion', 'test_cmd', 'atribucion_commit']
+const LISTAS = ['ficheros_permitidos', 'ficheros_vetados']
+const SECRETO = /(sk-[A-Za-z0-9_-]{8,}|ghp_[A-Za-z0-9]{8,}|gho_[A-Za-z0-9]{8,}|AKIA[0-9A-Z]{12,}|bot\d{6,}:[A-Za-z0-9_-]{20,}|eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]+)/g
+const mask = (t) => String(t).replace(SECRETO, '***')
+
+const errores = []
+for (const k of REQUERIDOS) {
+  if (typeof A[k] !== 'string' || !A[k].trim()) errores.push(`falta el argumento obligatorio «${k}»`)
+}
+for (const k of LISTAS) {
+  if (!Array.isArray(A[k]) || A[k].some((x) => typeof x !== 'string' || !x.trim())) errores.push(`«${k}» debe ser una lista de rutas (puede ir vacía)`)
+}
+if (typeof A.rama === 'string' && A.rama.trim()) {
+  if (!/^lane\/[A-Za-z0-9_.-]+$/.test(A.rama)) errores.push('«rama» debe ser lane/<id>')
+  if (A.rama === A.base || /^(main|master)$/.test(A.rama)) errores.push('«rama» no puede ser la base ni main/master')
+}
+if (typeof A.autorizacion === 'string' && A.autorizacion.trim() && !/t_[0-9a-f]{4,}/i.test(A.autorizacion) && !/\d{1,2}[-/ ]\w+|\d{4}-\d{2}-\d{2}/.test(A.autorizacion)) {
+  errores.push('«autorizacion» debe citar la tarjeta (t_xxxx) y/o la decisión de Oscar con fecha y texto literal')
+}
+if (errores.length) {
+  throw new Error('implementar-con-revision: args inválidos:\n- ' + errores.join('\n- '))
+}
+
+const WT = A.worktree
+const BR = A.rama
+const BASE = A.base
+const PERMITIDOS = A.ficheros_permitidos
+const VETADOS = A.ficheros_vetados
+const MODELO = A.modelo || undefined
+const LENTES = (Array.isArray(A.lentes) && A.lentes.length ? A.lentes : [
+  { clave: 'correccion', agentType: 'code-reviewer', enfoque: 'bugs reales, regresiones de lo que ya funcionaba y tests que no prueban lo que dicen' },
+  { clave: 'seguridad', agentType: 'security-auditor', enfoque: 'entradas no confiables (SSRF/XSS/inyección), aislamiento entre inquilinos o marcas, permisos, secretos' },
+  { clave: 'configurable', enfoque: 'valores hardcodeados que deberían ser configurables desde la UI, agnosticismo de proyecto/marca y degradación con mensaje claro' },
+])
+
+// Lección del piloto: SIN la fuente de la autorización los agentes se niegan a ejecutar. Va al principio de CADA encargo.
+const CTX = `ENCARGO Y AUTORIZACIÓN: ${A.autorizacion}
+
+Tarea: ${A.encargo}
+
+Repo ${A.repo} (remoto origin = ${A.remoto}, base ${BASE}).
+Trabaja SOLO en el worktree ${WT} (rama ${BR}). Nunca toques el checkout raíz, nunca git stash, nunca push a ${BASE} ni a main/master, nunca merge ni --force, nunca aplicar migraciones contra bases de datos reales (solo escribirlas), nunca cambiar variables de entorno ni secretos.
+${A.spec_ref ? `Documento/spec de referencia: ${A.spec_ref}\n` : ''}${A.decisiones_oscar ? `Decisiones de Oscar (literales, obligatorio respetarlas): ${A.decisiones_oscar}\n` : ''}${A.reglas ? `Reglas del proyecto: ${A.reglas}\n` : ''}Ficheros EXCLUSIVOS permitidos: ${PERMITIDOS.length ? PERMITIDOS.join(', ') : '(los que pida la tarea)'}.
+Ficheros VETADOS (no tocar): ${VETADOS.length ? VETADOS.join(', ') : '(ninguno indicado; respeta los hooks del worker)'}.
+Pilares: agnóstico de proyecto/marca, todo configurable desde la UI con granularidad, nada hardcodeado, seguridad. Mantén los finales de línea de cada fichero.`
+
+const COMMIT_TAIL = `Termina cada commit con estas líneas exactas:\n${A.atribucion_commit}`
+
+const FINDINGS_SCHEMA = {
+  type: 'object',
+  properties: { hallazgos: { type: 'array', items: { type: 'object', properties: {
+    severidad: { type: 'string', enum: ['alta', 'media', 'baja'] }, fichero: { type: 'string' }, linea: { type: 'string' },
+    resumen: { type: 'string' }, escenario: { type: 'string' }, arreglo: { type: 'string' },
+  }, required: ['severidad', 'fichero', 'resumen', 'escenario'] } } },
+  required: ['hallazgos'],
+}
+
+const prompts = {
+  spec: `${CTX}
+
+Paso 1. Verifica que el worktree ${WT} existe y está en la rama ${BR} sin cambios ajenos; si no existe, créalo desde origin/${BASE}.
+Paso 2. Lee el código actual relacionado con la tarea para entender lo que YA existe.
+Paso 3. Escribe un spec corto (~40 líneas, modo Spec-Lite) en la ruta permitida: qué se construye, cambios por fichero, criterios de hecho verificables y lo que NO se hace. Commitea el spec en la rama. ${COMMIT_TAIL}
+Devuelve el plan de implementación en texto: ficheros a tocar, comportamiento y tests a escribir.`,
+  implementar: (spec) => `${CTX}
+
+Plan acordado (del paso de spec):
+${spec}
+
+Implementa el plan completo en ${WT}, con sus tests. Verifica con: ${A.test_cmd}
+Commits atómicos en ${BR}; NO hagas push todavía. ${COMMIT_TAIL}
+Devuelve: resumen de lo hecho, ficheros tocados, resultado exacto de las pruebas y las decisiones que hayas tomado.`,
+  revisar: (l, impl) => `${CTX}
+
+Eres revisor (solo lectura, no edites). Trabajo implementado en ${WT}, rama ${BR}:
+${impl}
+
+Revisa el diff origin/${BASE}...HEAD con foco en: ${l.enfoque}.
+Devuelve solo hallazgos concretos y verificados {severidad, fichero, linea, resumen, escenario, arreglo}. Si no hay, lista vacía.`,
+  corregir: (hallazgos) => `${CTX}
+
+Implementación hecha en ${WT} (rama ${BR}). Hallazgos de los revisores (JSON):
+${JSON.stringify(hallazgos, null, 1)}
+
+1. Aplica los hallazgos de severidad alta y media que sean reales (compruébalos en el código; descarta con motivo los que no). Los de severidad baja, solo si son triviales.
+2. Vuelve a pasar: ${A.test_cmd} (0 fallos).
+3. git push -u origin ${BR} (NUNCA a ${BASE}) y abre un PR a ${BASE} con gh desde la rama ${BR} (sin mergear). Cuerpo: qué hace, cómo probarlo, hallazgos aplicados/descartados, resultado de las pruebas.
+${COMMIT_TAIL}
+Devuelve: URL del PR, SHA final, resultado de las pruebas, hallazgos aplicados y descartados.`,
+}
+
+// ---- Modo simulado: no lanza agentes ni toca git; devuelve el plan con los args resueltos (secretos enmascarados) ----
+if (A.dry_run) {
+  const resueltos = JSON.parse(mask(JSON.stringify(A)))
+  const plan = {
+    dry_run: true,
+    args: resueltos,
+    fases: meta.phases.map((f) => f.title),
+    lentes: LENTES.map((l) => l.clave),
+    prompts: {
+      spec: mask(prompts.spec),
+      implementar: mask(prompts.implementar('<plan del paso Spec>')),
+      revisar: LENTES.map((l) => mask(prompts.revisar(l, '<resumen del paso Implementar>'))),
+      corregir: mask(prompts.corregir([])),
+    },
+  }
+  log('dry-run: plan de ' + plan.fases.join(' -> ') + ' con ' + plan.lentes.length + ' lentes; no se lanza ningún agente')
+  return plan
+}
+
+phase('Spec')
+const spec = await agent(prompts.spec, { label: 'spec', phase: 'Spec', model: MODELO })
+
+phase('Implementar')
+const impl = await agent(prompts.implementar(spec), { label: 'implementar', phase: 'Implementar', model: MODELO })
+
+phase('Revisar')
+const reviews = await parallel(LENTES.map((l) => () => agent(prompts.revisar(l, impl), {
+  label: `revisar:${l.clave}`, phase: 'Revisar', agentType: l.agentType, model: MODELO, schema: FINDINGS_SCHEMA,
+})))
+const hallazgos = reviews.filter(Boolean).flatMap((r, i) => (r.hallazgos || []).map((h) => ({ ...h, lente: LENTES[i] ? LENTES[i].clave : '?' })))
+log(`${hallazgos.length} hallazgos de revisión`)
+
+phase('Corregir')
+const final = await agent(prompts.corregir(hallazgos), { label: 'corregir+PR', phase: 'Corregir', model: MODELO })
+
+return { spec, impl, hallazgos, final }
