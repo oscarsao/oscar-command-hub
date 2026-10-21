@@ -38,6 +38,15 @@ ORIGIN_BRANCH_LINE = re.compile(r"^\s*Rama-origen:\s*(\S+)\s*$", re.M | re.I)
 _SAFE_REF = re.compile(r"^[\w][\w./-]*$")
 
 
+# `Rama-push: lane/<id>` (atascos.py): la tarjeta de rebase/arreglo puede EMPUJAR además a la rama de su PR original.
+# Solo ramas lane/t_<id> (nunca main/master), sin force; el guard lo aplica con AGENT_LANES_PUSH_OK.
+PUSH_BRANCH_LINE = re.compile(r"^\s*Rama-push:\s*(lane/t_[0-9A-Za-z]{1,40})\s*$", re.M | re.I)
+
+
+def push_refs(task: dict) -> list[str]:
+    return list(dict.fromkeys(b.lower() for b in PUSH_BRANCH_LINE.findall(task.get("body") or "")))
+
+
 def merge_refs(lane: Lane, task: dict) -> list[str]:
     """Refs que el guard deja traer con `git merge`: `<remote>/<base>` y las ramas de líneas `Rama-origen: <rama>` del
     cuerpo (línea de confianza, como Origen-Ops). Cualquier otra rama arrastraría trabajo sin revisar."""
@@ -282,7 +291,8 @@ class ClaudeWorker:
                 ops_args(lane, flag, dirs, budget), build_ops_prompt(task, lane, cwd, origins, dests), cwd,
                 timeout, lane, task["id"], env))
         args = base_args(lane, flag, budget)
-        env = {"AGENT_LANES_MERGE_OK": json.dumps(merge_refs(lane, task))}
+        env = {"AGENT_LANES_MERGE_OK": json.dumps(merge_refs(lane, task)),
+               "AGENT_LANES_PUSH_OK": json.dumps(push_refs(task))}
         self._ops[session_id] = (env, [])
         return self._account(session_id, self._exec(args, build_prompt(task, lane), cwd, timeout, lane, task["id"], env))
 

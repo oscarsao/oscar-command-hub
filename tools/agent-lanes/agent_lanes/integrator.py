@@ -52,6 +52,7 @@ if __package__ in (None, ""):  # `py agent_lanes/integrator.py`
 
 from . import drain  # noqa: E402
 from . import proc as _proc  # noqa: E402
+from .atascos import DEFAULT_APPEND_ONLY, AutoResolver, pr_branch_card_body  # noqa: E402
 from .config import ROOT, _chat_thread, _load  # noqa: E402
 from .deps import is_integration_comment, pending_parents, waiting_line  # noqa: E402
 from .hermes import OSCAR_AUTHOR, REVIEW_AUTHOR  # noqa: E402
@@ -77,8 +78,9 @@ INT_APPLY = "int_apply"  # claude-hub: [🔁 Aplicar (reinicio ordenado)] tras f
 INT_BATCH_MERGE = "int_batch_merge"  # [🔀 Fusionar lote] (política con `batch: daily`, ver batch.py)
 INT_BATCH_FIX, INT_BATCH_REBASE, INT_BATCH_SKIP = "int_batch_fix", "int_batch_rebase", "int_batch_skip"  # rama fuera del lote
 BATCH_EXCLUDED_ACTIONS = (INT_BATCH_FIX, INT_BATCH_REBASE, INT_BATCH_SKIP)
+INT_BATCH_BUILD = "int_batch_build"  # [🔀 Fusionar lote] del aviso diario «N PR esperando lote»: monta el lote ya
 INT_ACTIONS = (INT_MERGE, INT_DEPLOY, INT_MERGE_DEPLOY, INT_MIGRATION_APPLIED, INT_APPLY, INT_BATCH_MERGE,
-               *BATCH_EXCLUDED_ACTIONS)
+               INT_BATCH_BUILD, *BATCH_EXCLUDED_ACTIONS)
 MIGRATION_APPLIED_PREFIX = "MIGRACION-APLICADA"
 MIGRATION_KINDS = ("supabase", "alembic")  # "infra" no es una migración: no se da por aplicada con un botón
 MIGRATION_BUTTON = {"text": "✅ Migración aplicada", "action": INT_MIGRATION_APPLIED}
@@ -181,6 +183,9 @@ class Policy:
     batch_brand: str = ""                       # nombre en la rama y en /lote <marca>; vacío = el carril sin `claude-`
     batch_frontend_paths: tuple[str, ...] = ()  # si el lote toca estas rutas se ejecuta batch_frontend_cmd
     batch_frontend_cmd: str = ""                # build/typecheck del frontend (en la raíz del worktree del lote)
+    # Ficheros que solo crecen por el final (atascos.py): un conflicto SOLO en ellos se resuelve solo (merge=union) en la
+    # rama del PR. Glob de ruta; en lanes.yaml `append_only_paths: []` lo desactiva para el carril.
+    append_only_paths: tuple[str, ...] = DEFAULT_APPEND_ONLY
 
 
 @dataclass(frozen=True)
@@ -222,6 +227,8 @@ def load_integrator_settings(path: Path | None = None, env: dict | None = None, 
         p["manual_migrations"] = tuple(p.get("manual_migrations") or ())
         p["sensitive_paths"] = tuple(p.get("sensitive_paths") or ())
         p["batch_frontend_paths"] = tuple(p.get("batch_frontend_paths") or ())
+        p["append_only_paths"] = tuple(p["append_only_paths"] if "append_only_paths" in p and p["append_only_paths"]
+                                       is not None else DEFAULT_APPEND_ONLY)
         if p.get("batch") and p["batch"] != "daily":
             raise ValueError(f"integrator.lanes.{name}.batch desconocido: {p['batch']}")
         if p.get("batch_time") is not None and not re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", str(p["batch_time"])):
@@ -414,6 +421,7 @@ class Integrator:
         self._seen: list[tuple[object, Policy, str]] = []  # (carril, política, tarea) vistos en la última pasada
         from .batch import BatchPlanner  # import tardío: batch usa constantes de este módulo
         self.batches = BatchPlanner(self)  # lote diario: solo actúa en carriles con `batch: daily`
+        self.autoresolve = AutoResolver(self)  # conflicto solo en ficheros append-only: unión en la rama del PR
 
     # --- utilidades ----------------------------------------------------------------------------------
 
@@ -649,6 +657,10 @@ class Integrator:
                 self._publish_waiting(lane, task, number, url, waiting)
                 self._save(tid, status="waiting_deps", pr=number, pr_url=url, waiting=key, **about)
             return "waiting_deps"
+        if pr.get("mergeable") == "CONFLICTING" and not self.dry_run:
+            outcome = self._conflict_pass(lane, policy, tid, number, url, pr, task, about)
+            if outcome:
+                return outcome
         if policy.batch:  # lote diario: sin ficha ni gates sueltos; el lote los pasa todos juntos (batch.py)
             if not self.dry_run and (st.get("status") != "batch_pending" or st.get("head_sha") != pr["headRefOid"]):
                 keep = st.get("pending_since") if st.get("status") == "batch_pending" else None
@@ -681,6 +693,27 @@ class Integrator:
         self._save(tid, status="offered", pr=number, pr_url=url, head_sha=result.head_sha, base_sha=result.base_sha,
                    migration=result.migration, **about)
         return "offered"
+
+    def _conflict_pass(self, lane, policy: Policy, tid: str, number: int, url: str, pr: dict, task: dict,
+                       about: dict) -> str | None:
+        """PR aprobado con conflicto (atascos.py). Solo ficheros append-only: unión + gates + push a la rama del PR
+        (la cabeza cambia y la próxima pasada lo integra). Código: de vuelta al carril sobre su rama. None = nada
+        que hacer aquí y sigue el flujo normal (gates sueltos, lote o aviso de lote atascado)."""
+        outcome, detail = self.autoresolve.run(lane, policy, tid, number, pr, task)
+        if outcome == "pushed":
+            return "autoresolved"
+        if outcome in ("gates", "push_failed"):
+            return "autoresolve_blocked"  # ya avisó; no se reintenta sobre la misma cabeza
+        if outcome != "code":
+            return None
+        res = GateResult(ok=False, head_sha=pr["headRefOid"])
+        res.reasons.append(f"tiene conflictos con {lane.base}")
+        res.detail.append("conflictos de código en: " + ", ".join(detail[:10]))
+        if self._send_back_conflict(lane, tid, number, res):
+            self._save(tid, status="sent_back", pr=number, pr_url=url, head_sha=pr["headRefOid"],
+                       sent_back=int(self._state(tid).get("sent_back") or 0) + 1, **about)
+            return "sent_back"
+        return None
 
     def _warn_stale_batch(self, lane, task: dict, number: int, url: str, pr: dict, st: dict) -> None:
         """batch_pending sin salida (más de `batch_pending_days` días, o el PR tiene conflictos): UNA alerta al tema de
@@ -724,11 +757,52 @@ class Integrator:
         body = (f"CAMBIOS (integrador): el PR #{number} tiene conflictos con {lane.base}. En tu lane ejecuta "
                 f"`git fetch origin {lane.base}` y `git merge origin/{lane.base}`, resuelve los conflictos, "
                 "comprueba los tests y haz push de tu rama.\n" + "\n".join(f"- {d}" for d in result.detail[:5]))
+        who = f"Lo da: el carril {lane.name}, sobre la rama lane/{tid} del PR #{number}"
         if not h.comment(tid, body[:3000], author=REVIEW_AUTHOR) or not h.reopen_review(tid):
             log.warning("%s: no se pudo devolver al carril el PR #%s con conflicto", tid, number)
-            return False
+            return self._conflict_card(lane, tid, number, result, who)  # el PR ya no está en review: tarjeta nueva
         log.info("%s: PR #%s con conflicto con %s: devuelta al carril %s", tid, number, lane.base, lane.name)
+        self._comment(lane, tid, f"INTEGRADOR: PR #{number} con conflicto de código ({'; '.join(result.detail[:2])[:300]}"
+                                 f"). {who}.")
         return True
+
+    def _conflict_card(self, lane, tid: str, number: int, result: GateResult, who: str) -> bool:
+        """No se pudo reabrir la tarjeta original: tarjeta nueva en el carril que trabaja SOBRE LA RAMA DEL PR
+        (Rama-origen + Rama-push = lane/<tid>), nunca sobre su propia lane/<id_nuevo>."""
+        branch = f"lane/{tid}"
+        body = pr_branch_card_body(branch, number, lane.base, lane.base, rebase=True,
+                                   origin=f"conflicto del PR #{number}: {'; '.join(result.detail[:2])[:400]}")
+        try:
+            new = self.hermes_for(lane.board).create(truncate(f"Rebasar #{number}: conflicto con {lane.base}", 70), body,
+                                                     lane.name, priority=10, key=f"conflicto-{tid}-{(result.head_sha or '')[:8]}",
+                                                     created_by="oscar")
+        except Exception as exc:
+            log.warning("%s: no se pudo crear la tarjeta de rebase del PR #%s: %s", tid, number, exc)
+            return False
+        self._comment(lane, tid, f"INTEGRADOR: PR #{number} con conflicto de código; tarjeta {new} en {lane.name} "
+                                 f"para rebasar la rama {branch}. {who}.")
+        return True
+
+    def _push_pr_branch(self, wt: str, remote: str, tid: str) -> subprocess.CompletedProcess:
+        """ÚNICO push del integrador (atascos.py): HEAD del worktree -> `lane/<tid>`, la rama del PR. Sin force (un
+        rechazo por non-fast-forward es lo esperado si la rama avanzó); nunca la base, master ni main."""
+        if not TID_RE.fullmatch(tid or ""):
+            raise PermissionError(f"id de tarea no válido para push: {tid!r}")
+        return self._run(["git", "-C", str(wt), "-c", f"core.hooksPath={self._nohooks()}", "push", remote,
+                          f"HEAD:refs/heads/lane/{tid}"], capture_output=True, text=True, encoding="utf-8",
+                         errors="replace", timeout=120, stdin=subprocess.DEVNULL)
+
+    def rebind_approval(self, tid: str, new_sha: str) -> None:
+        """Tras empujar la fusión automática, la aprobación local de Oscar pasa a la nueva cabeza (la hizo el
+        integrador, no un tercero): sin esto el PR quedaría como «commits después de tu aprobación»."""
+        rec = self._approved_record(tid)
+        if not rec or not re.fullmatch(r"[0-9a-f]{40}", new_sha or ""):
+            return
+        rec["head_sha"] = new_sha
+        path = self.approvals_dir / f"{tid}.json"
+        tmp = path.with_suffix(f".{os.getpid()}.tmp")
+        tmp.write_text(json.dumps(rec), encoding="utf-8")
+        os.replace(tmp, path)
 
     def _pr_view(self, slug: str, number: int) -> dict | None:
         cp = self._gh("pr", "view", str(number), "--repo", slug, "--json",
@@ -752,6 +826,8 @@ class Integrator:
             return "hay commits después de tu aprobación"
         from .review import implementation_metadata  # import tardío: review no depende del integrador
         reviewed = str((implementation_metadata(show) or {}).get("head_sha") or "").lower()
+        if self._state(tid).get("autoresolve_head") == pr["headRefOid"]:
+            return None  # la cabeza la empujó el propio integrador (unión append-only con gates OK)
         if reviewed and not pr["headRefOid"].startswith(reviewed):
             return "el commit del PR no es el que revisó el carril review"
         return None
@@ -1075,6 +1151,8 @@ class Integrator:
             return False
         if action == INT_BATCH_MERGE and policy.batch and rec.get("batch"):
             return self.batches.on_merge_button(lane, policy, rec, where, desk)
+        if action == INT_BATCH_BUILD and policy.batch and rec.get("batch_build"):
+            return self.batches.notice.on_build_button(lane, policy, rec, where, desk)
         if action in BATCH_EXCLUDED_ACTIONS and policy.batch and rec.get("batch_excluded_pr"):
             return self.batches.on_excluded_button(action, lane, policy, rec, where, desk)
         if action == INT_MERGE and policy.deploy != DEPLOY_ON_MERGE:
