@@ -1,0 +1,24 @@
+# Avisos de bloqueo (agent_lanes/bloqueos.py). Se edita aquí y se aplica con /aplicar; lo que falte vale el defecto del
+# módulo, así que este fichero puede tener solo lo que quieras cambiar.
+#
+# patrones: SUSTITUYE la lista por defecto entera (el primer patrón que casa gana, sin distinguir mayúsculas).
+#   - clase: transitorio | estructural      (estructural = reintentar repite el error: sin botón Reintentar)
+#     regex: texto a buscar en el motivo técnico del bloqueo
+#     resumen: motivo llano que verá Oscar (público: sin rutas ni trazas)
+#     que_falta: qué hace falta exactamente
+# Defectos: estructural = rutas vetadas, Destino-Ops, push que no llegó, conflicto de merge, migración;
+#           transitorio = cannot lock ref, timed out / sin presupuesto, rate limit, runner reiniciado.
+#
+# botones: ids por clase (retry, park, integrador, detalle). El estructural nunca lleva retry aunque se ponga.
+# umbrales: tamaño del «🔎 Más detalle».
+
+textos:
+  falta: "Falta: {que_falta}"
+
+botones:
+  transitorio: [retry, park, detalle]
+  estructural: [integrador, park, detalle]
+
+umbrales:
+  detalle_max: 3000
+  detalle_comentarios: 3

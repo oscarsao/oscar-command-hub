@@ -19,7 +19,7 @@ def test_versioned_people_yaml_is_structurally_valid():
     entries = yaml.safe_load(people.PEOPLE_FILE.read_text(encoding="utf-8"))["people"]
     assert entries
     for key, cfg in entries.items():
-        assert cfg["role"] in ("coo", "cmo", "marketing"), key  # nunca owner ni desconocido
+        assert cfg["role"] in ("coo", "cmo", "marketing", "dev"), key  # nunca owner ni desconocido
         assert set(cfg.get("can") or ()) <= {"carril"}, key
         assert not cfg.get("can") or cfg["role"] == "coo", key
         assert cfg["user_id"] is None or str(cfg["user_id"]).isdigit(), key
@@ -85,3 +85,25 @@ def test_missing_or_broken_file_fails_closed(tmp_path):
 def test_default_path_points_to_versioned_file():
     assert people.PEOPLE_FILE.name == "people.yaml" and people.PEOPLE_FILE.parent.name == "telegram"
     assert people.PEOPLE_FILE.exists()
+
+
+def test_dev_entries_mauredy_angel_are_scoped_and_not_operators():
+    """Alta pendiente de Mauredy (solo MigraTeam) y Angel (OscarHQ/Signal): sin user_id y SIN operador mientras
+    `brands` no limite lo que puede ejecutar un operador (hoy solo decide el tablero de las ideas)."""
+    import yaml
+    entries = yaml.safe_load(people.PEOPLE_FILE.read_text(encoding="utf-8"))["people"]
+    assert entries["mauredy"]["brands"] == ["MigraTeam"]
+    assert "MigraTeam" not in entries["angel"]["brands"] and "Signal" in entries["angel"]["brands"]
+    for key in ("mauredy", "angel"):
+        assert entries[key]["user_id"] is None and entries[key]["role"] == "dev"
+        assert entries[key].get("operador") is not True  # no activar hasta que exista el operador acotado por marca
+        assert not entries[key].get("can")
+    assert not any(p.key in ("mauredy", "angel") for p in load_people(OWNER)._by_id.values())  # sin id = ignorados
+
+
+def test_dev_role_has_no_carril_or_production_and_is_not_operator(tmp_path):
+    p = _write(tmp_path, "people:\n  m:\n    user_id: '111'\n    role: dev\n    brands: [MigraTeam]\n    can: [carril]\n")
+    ppl = load_people(OWNER, p)
+    person = ppl.lookup("111")
+    assert person.role == "dev" and not person.can(CARRIL) and not person.can(PRODUCCION)
+    assert not ppl.es_operador("111") and person.brands == ("MigraTeam",)

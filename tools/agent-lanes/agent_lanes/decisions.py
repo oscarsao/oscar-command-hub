@@ -26,6 +26,7 @@ from html import escape as _esc
 from pathlib import Path
 from typing import Callable
 
+from . import bloqueos
 from . import proc as _proc
 from .bandeja import VetoBook
 from .config import ROOT
@@ -59,6 +60,7 @@ GUARD_SNOOZE = "guard_snooze"  # ⏳ Aplazar un bloqueo de guard escalado a Osca
 TO_INTEGRADOR = "to_integrador"  # 🧑‍💻 Que lo resuelva el integrador: Oscar no puede actuar desde Telegram
 UNTRIAGE = "untriage"      # 🧊 Sacar de triage: specify_triage_task sin reescribir la tarjeta (nunca unblock)
 EXPLAIN = "explain"        # 💬 Explícame más: responde con una explicación llana; no consume el teclado
+DETAIL = "detail"          # 🔎 Más detalle (aviso de bloqueo): motivo técnico y últimos comentarios; no consume el teclado
 ACCEPT_ALL = "accept_all"  # cabecera de /decisiones: aplica la opción recomendada en todas las que la tienen
 HAZLO = "hazlo"            # /hazlo con duda: el botón elige el carril donde crear la tarea
 FLUJO = "flujo"            # /flujo: [Crear todo] / [Cancelar] sobre la propuesta de tarjetas encadenadas
@@ -87,6 +89,20 @@ DEFAULT_OPTION_LABELS = ("✅ Sí, adelante", "❌ No")  # botones de una pregun
 ALL_LABEL = "todas las preguntas"  # ✍️ de una escalada de review (= hermes.LEGACY_ALL_LABELS)
 TEAM_NOTICE_TEXT = "Esto lo lleva el asistente del equipo: escríbele a él. Yo solo gestiono los trabajos de los carriles."
 EXPLAIN_FAILED ="💬 No pude generar la explicación ahora; mira la tarjeta o responde con ✍️"
+DETAIL_FAILED = "🔎 No pude leer el detalle ahora; mira la tarjeta del kanban"
+
+
+def detail_text(show: dict, cfg: dict) -> str:
+    """Texto de [🔎 Más detalle] a partir del `show` de la tarjeta: último motivo de bloqueo + últimos comentarios,
+    recortado a `umbrales.detalle_max` caracteres."""
+    umbrales = cfg.get("umbrales") or {}
+    maximo, n_com = int(umbrales.get("detalle_max") or 3000), int(umbrales.get("detalle_comentarios") or 3)
+    blocks = [ev for ev in show.get("events") or [] if ev.get("kind") == "blocked"]
+    reason = str(((blocks[-1].get("payload") or {}).get("reason") or "") if blocks else "").strip()
+    comments = [str(c.get("body") or "").strip() for c in (show.get("comments") or [])][-n_com:] if n_com > 0 else []
+    parts = [f"Motivo del bloqueo:\n{reason}" if reason else "Sin motivo de bloqueo registrado en la tarjeta."]
+    parts += [f"Comentario:\n{c}" for c in comments if c]
+    return truncate("\n\n".join(parts), maximo)
 
 
 def keyboard_spec(state: str, *, block_kind: str | None = None, questions=None,
@@ -131,9 +147,16 @@ def keyboard_spec(state: str, *, block_kind: str | None = None, questions=None,
                 [{"text": "⏳ Aplazar", "action": GUARD_SNOOZE}]]
     if state == "blocked" and block_kind in ("config", "console"):  # reintentar no arregla la config ni el guard: solo aparcar
         return [[park], [{"text": "🧑‍💻 Que lo resuelva el integrador", "action": TO_INTEGRADOR}]]
-    if state == "blocked" and block_kind == "transient":
-        rows = [[{"text": "🔄 Reintentar", "action": RETRY}, park]]
-        return rows + [[{"text": "✍️ Responder", "action": OTHER}]] if retried else rows
+    if state == "blocked" and block_kind in ("transient", "estructural"):
+        # Botones por clase desde bloqueos.yaml; el estructural nunca lleva Reintentar (repetiría el error en bucle).
+        clase = bloqueos.ESTRUCTURAL if block_kind == "estructural" else bloqueos.TRANSITORIO
+        by_id = {"retry": {"text": "🔄 Reintentar", "action": RETRY}, "park": park,
+                 "integrador": {"text": "🧑‍💻 Que lo resuelva el integrador", "action": TO_INTEGRADOR},
+                 "detalle": {"text": "🔎 Más detalle", "action": DETAIL}}
+        ids = bloqueos.botones_ids(clase)
+        rows = [[by_id[b] for b in ids if b != "detalle"], [by_id["detalle"]] if "detalle" in ids else []]
+        rows = [r for r in rows if r]
+        return rows + [[{"text": "✍️ Responder", "action": OTHER}]] if retried and clase == bloqueos.TRANSITORIO else rows
     if state == "stuck":  # 🧊 en triage por bloqueo repetido (block_loop_detected): unblock no vale, _untriage la saca
         return [[{"text": "🧊 Sacar de triage", "action": UNTRIAGE}, {"text": "✍️ Responder", "action": OTHER},
                  {"text": "🗄 Archivar", "action": PARK}]]
@@ -713,6 +736,10 @@ class DecisionDesk:
         if button["action"] == EXPLAIN:  # no consume el teclado: los demás botones siguen valiendo
             answer(cq.get("id"), "Te lo explico en un momento")
             self._spawn(lambda: self._explain(rec, where))
+            return
+        if button["action"] == DETAIL:  # tampoco consume
+            answer(cq.get("id"), "Te paso el detalle")
+            self._spawn(lambda: self._detail(rec, where))
             return
         if button["action"] == CARD_VETO:  # tampoco consume: solo apaga la ejecución automática
             answer(cq.get("id"), "Vetada: no se aplicará sola")
@@ -1391,6 +1418,21 @@ class DecisionDesk:
                                   reply_to=where.get("message_id"))
         except Exception as exc:
             log.warning("%s: no se pudo enviar la explicación: %s", rec.get("task_id"), exc)
+
+    def _detail(self, rec: dict, where: dict) -> None:
+        """🔎 Más detalle: motivo técnico del último bloqueo y últimos comentarios de la tarjeta, en el propio chat."""
+        tid = rec.get("task_id")
+        try:
+            show = self._hermes(rec).show(tid) or {}
+            body = f"🔎 {tid}\n{detail_text(show, bloqueos.load_config())}"
+        except Exception as exc:
+            log.warning("%s: detalle no leído: %s", tid, exc)
+            body = DETAIL_FAILED
+        try:
+            self.notifier.send_to(where["chat_id"], where["thread_id"], body, html=False,
+                                  reply_to=where.get("message_id"))
+        except Exception as exc:
+            log.warning("%s: no se pudo enviar el detalle: %s", tid, exc)
 
     def _ask(self, token: str, rec: dict, button: dict, where: dict) -> None:
         tid = rec["task_id"]

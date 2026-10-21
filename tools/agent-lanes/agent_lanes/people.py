@@ -27,6 +27,7 @@ BASE_CAPS = {
     "coo": frozenset({CONSULTA, ESTADO, IDEA, CONTENIDO}),
     "cmo": frozenset({CONSULTA, ESTADO, IDEA, CONTENIDO}),
     "marketing": frozenset({CONSULTA, ESTADO, IDEA, CONTENIDO}),
+    "dev": frozenset({CONSULTA, ESTADO, IDEA, CONTENIDO}),  # soporte/desarrollo de una marca; sin carril ni produccion
 }
 OPTIONAL_CAPS = {"coo": frozenset({CARRIL})}  # lo único que `can:` del YAML puede añadir, y a quién
 
