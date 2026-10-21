@@ -118,7 +118,7 @@ def test_comando_estado_lee_el_kanban_simulado(tmp_path):
     rid = store.crear("Hub", "Avisos", "telegram", tarjetas=["t_1"])["id"]
     store.crear("Signal", "Sin tarjeta", "claude-code")
     enviados = []
-    cc = SimpleNamespace(peticiones=lambda: store, _now=lambda: NOW, desk=None,
+    cc = SimpleNamespace(registro_peticiones=lambda: store, _now=lambda: NOW, desk=None,
                          _show_card=lambda tid: {"task": {"status": "done", "title": "T"},
                                                  "comments": [{"body": "INTEGRADO abc1234"}]},
                          _send=lambda where, text, **kw: enviados.append((text, kw)))

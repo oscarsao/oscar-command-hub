@@ -396,9 +396,12 @@ class CommandCenter:
 
     # --- seguimiento de peticiones req_<n> (t_211c9902): /estado, «Ver más» y segundo parte de las 9:00 ----------------
 
-    def peticiones(self):
-        """Registro de peticiones (`.state/peticiones.json`); None si no hay `.state` (tests sin él)."""
+    def registro_peticiones(self):
+        """Registro de peticiones: el inyectado en `self.peticiones` si sabe listar; si no, `.state/peticiones.json`
+        (None si no hay `.state`, p. ej. en tests sin él)."""
         from .peticiones import Peticiones
+        if hasattr(self.peticiones, "listar"):
+            return self.peticiones
         path = self._state_file("peticiones_state", "peticiones.json")
         return Peticiones(path, now=self._now) if path else None
 
@@ -417,7 +420,7 @@ class CommandCenter:
     def peticion_items(self, proyecto: str | None = None) -> list:
         """[(petición, Estado derivado)] leyendo las tarjetas enlazadas; una ilegible no tumba el resto."""
         from .peticiones import derivar
-        store, ahora = self.peticiones(), self._now()
+        store, ahora = self.registro_peticiones(), self._now()
         if store is None:
             return []
         return [(r, derivar(r, {t: self._show_card(t) for t in r["tarjetas"]}, ahora)) for r in store.listar(proyecto)]
@@ -1187,7 +1190,7 @@ class CommandCenter:
         """Botón «Ver más» de /estado: manda la cadena entera de la petición (paginada, sin recortar)."""
         from .formato_aviso import cadena_texto, paginas
         from .peticiones import derivar
-        store, ahora = self.peticiones(), self._now()
+        store, ahora = self.registro_peticiones(), self._now()
         req = store.get(rec.get("req")) if store else None
         if not req:
             return False
@@ -1200,7 +1203,7 @@ class CommandCenter:
     def cmd_estado(self, where, args: str, brand: str | None) -> None:
         from .peticiones import PROYECTOS
         proyecto = next((p for p in PROYECTOS if args.strip().lower() == p.lower()), None)
-        if (self.peticiones() is not None and not args.strip()) or proyecto:
+        if (self.registro_peticiones() is not None and not args.strip()) or proyecto:
             self.estado_peticiones(where, proyecto)
             if proyecto and not BRAND_ARGS.get(proyecto.lower()):
                 return  # Hub, Signal… no son marcas de la vista antigua

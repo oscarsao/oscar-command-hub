@@ -22,7 +22,7 @@ Fuente: `pitches/seguimiento-peticiones.md` (§4.1–4.4, §5 A1–A4). Código 
 completa, paginada a 4096 sin recortar). `/estado` conserva la vista previa por marca debajo.
 
 ## A3 Formato único de aviso (`formato_aviso.py` dentro de peticiones.py)
-Implementado (no más): 
+Implementado (no más):
 - `notices.render` (todo aviso de tarjeta: runner, `aviso` stuck, recordatorio, `/atascadas`): línea de proyecto
   (marca · carril · req), estado + `· paso N/6` (`PASO_ESTADO`), `➡️ Próximo paso … · Lo da: …` (`next_step`, ahora
   también en el recordatorio y en `/atascadas`) y, si le toca a Oscar, el pie `PIE_TEXTO_LIBRE` tras los botones.
