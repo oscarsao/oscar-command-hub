@@ -61,8 +61,8 @@ from .decisions import DEPLOY_ASK, DEPLOY_NO, FALTA, FLUJO, HAZLO, OWNER_TELEGRA
 from .deps import (ShowCache, child_bucket, dependency_order, family, pending_parents, tree_lines,
                    waiting_line)
 from .notices import (BOARD_BRANDS, BRANDS, DECISION_CARD_STATUSES, OSCAR_ASSIGNEE, TEXT_MAX, card_url,
-                      decision_since, hours_ago, is_decision_card, markup_token, normalize_questions, render,
-                      status_line, truncate)
+                      decision_since, hours_ago, is_decision_card, markup_token, next_step, normalize_questions,
+                      render, status_line, truncate)
 
 log = logging.getLogger("agent_lanes")
 URGENT_EVERY = 120  # s mínimos entre pasadas del aviso inmediato de bloqueos de prioridad alta
@@ -394,6 +394,51 @@ class CommandCenter:
             lambda: len(queue.entries()) if queue else 0, send, path, who=who,
             now=lambda: datetime.fromtimestamp(self._now(), rc.MADRID)).tick()
 
+    # --- seguimiento de peticiones req_<n> (t_211c9902): /estado, «Ver más» y segundo parte de las 9:00 ----------------
+
+    def registro_peticiones(self):
+        """Registro de peticiones: el inyectado en `self.peticiones` si sabe listar; si no, `.state/peticiones.json`
+        (None si no hay `.state`, p. ej. en tests sin él)."""
+        from .peticiones import Peticiones
+        if hasattr(self.peticiones, "listar"):
+            return self.peticiones
+        path = self._state_file("peticiones_state", "peticiones.json")
+        return Peticiones(path, now=self._now) if path else None
+
+    def _show_card(self, tid: str) -> dict | None:
+        """`show` de una tarjeta de petición en el primer tablero que la tiene (el registro guarda el id, no el tablero)."""
+        boards = dict.fromkeys([l.board for l in self.lanes.values() if l.board] + list(EXTRA_BOARDS))
+        for board in boards:
+            try:
+                show = self._shows.show(self.hermes_for(board), tid)
+            except Exception:
+                continue
+            if (show or {}).get("task"):
+                return show
+        return None
+
+    def peticion_items(self, proyecto: str | None = None) -> list:
+        """[(petición, Estado derivado)] leyendo las tarjetas enlazadas; una ilegible no tumba el resto."""
+        from .peticiones import derivar
+        store, ahora = self.registro_peticiones(), self._now()
+        if store is None:
+            return []
+        return [(r, derivar(r, {t: self._show_card(t) for t in r["tarjetas"]}, ahora)) for r in store.listar(proyecto)]
+
+    def peticiones_tick(self) -> str | None:
+        """Segundo parte de las 9:00: por petición, junto al de carriles (no lo repite ni sale sin novedad)."""
+        from . import resumen_carriles as rc
+        from .formato_aviso import paginas
+        from .resumen_peticiones import DailyRequestSummary
+        path = self._state_file("peticiones_daily_state", "resumen_peticiones.json")
+        if path is None or rc.due_date(datetime.fromtimestamp(self._now(), rc.MADRID), set()) is None:
+            return None
+        att = self.renotifier().attention
+        chat, thread = (str(att["chat"]), str(att.get("thread") or "0")) if att else (self.owner_id, None)
+        return DailyRequestSummary(
+            self.peticion_items, lambda t: bool(self.notifier.send_to(chat, thread, t, html=False)), path,
+            now=lambda: datetime.fromtimestamp(self._now(), rc.MADRID)).tick()
+
     def cmd_integrador(self, where, args: str, brand: str | None) -> None:
         from .guard_route import queue_view
         queue = self.guard_queue()
@@ -659,7 +704,8 @@ class CommandCenter:
         for p in stuck[:MAX_CARDS]:
             status = status_line(p.status, f"hace {hours_ago(p.since, now)} h")
             text = render("stuck", p.tid, p.task.get("title"), p.lane.name, status, self._links_for(p.lane, p.tid),
-                          body=p.task.get("body"), for_oscar=p.for_oscar)
+                          body=p.task.get("body"), for_oscar=p.for_oscar,
+                          next_step=next_step("stuck", p.block_kind))
             markup = self.desk.markup("stuck", task=p.task, lane=p.lane, block_kind=p.block_kind)
             self._mirror(p.tid, self._send(where, text, markup=markup), markup)
 
@@ -717,7 +763,7 @@ class CommandCenter:
             self.urgent_tick()
         except Exception as exc:
             log.warning("avisos urgentes: %s", exc)
-        for tick in (self.guard_tick, self.daily_tick):  # cola del integrador y resumen de las 9:00
+        for tick in (self.guard_tick, self.daily_tick, self.peticiones_tick):  # cola del integrador y partes de las 9:00
             try:
                 tick()
             except Exception as exc:
@@ -1127,7 +1173,40 @@ class CommandCenter:
 
     # --- /estado --------------------------------------------------------------------------------------
 
+    def estado_peticiones(self, where, proyecto: str | None) -> None:
+        """Vista por petición de /estado (A2): una línea por req, atascadas primero; «Ver más» abre la cadena."""
+        from .formato_aviso import REQ_MAS, estado_texto, ordenar, paginas
+        items = self.peticion_items(proyecto)
+        text = estado_texto(items, self._now(), proyecto)
+        for page in paginas(text):
+            self._send(where, page, html=False)
+        for req, est in ordenar(items)[:5]:  # «Ver más» de las 5 primeras (las que piden atención)
+            if est.estado != "hecha":
+                markup = self.desk.store.issue({"task_id": "estado", "board": "", "lane": "", "req": req["id"]},
+                                               [[{"text": f"💬 Ver más · {req['id']}", "action": REQ_MAS}]])[1]
+                self._send(where, f"{req['id']} · {truncate(req['titulo'], 50)}", html=False, markup=markup)
+
+    def req_choice(self, rec: dict, button: dict, where: dict) -> bool:
+        """Botón «Ver más» de /estado: manda la cadena entera de la petición (paginada, sin recortar)."""
+        from .formato_aviso import cadena_texto, paginas
+        from .peticiones import derivar
+        store, ahora = self.registro_peticiones(), self._now()
+        req = store.get(rec.get("req")) if store else None
+        if not req:
+            return False
+        shows = {t: self._show_card(t) for t in req["tarjetas"]}
+        dest = (str(where["chat_id"]), str(where.get("thread_id") or "0"))
+        for page in paginas(cadena_texto(req, derivar(req, shows, ahora), shows, ahora)):
+            self._send(dest, page, html=False)
+        return True
+
     def cmd_estado(self, where, args: str, brand: str | None) -> None:
+        from .peticiones import PROYECTOS
+        proyecto = next((p for p in PROYECTOS if args.strip().lower() == p.lower()), None)
+        if (self.registro_peticiones() is not None and not args.strip()) or proyecto:
+            self.estado_peticiones(where, proyecto)
+            if proyecto and not BRAND_ARGS.get(proyecto.lower()):
+                return  # Hub, Signal… no son marcas de la vista antigua
         if args:
             brand = BRAND_ARGS.get(args.split()[0].lower())
             if not brand:

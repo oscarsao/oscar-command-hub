@@ -69,7 +69,7 @@ def test_full_card_has_at_most_7_lines_in_order():
     assert lines[0].startswith("✅ t_1 · Botones") and len(lines[0]) <= len("✅ t_1 · ") + 60
     assert lines[1] == "MigraTeam · claude-migrateam · Fast-Track"
     assert lines[2].startswith("Qué: Que Oscar decida")
-    assert lines[3] == "review aprobada · 3 archivos · tests OK · 1,9 $"
+    assert lines[3] == "review aprobada · 3 archivos · tests OK · 1,9 $ · paso 4/6"
     assert [l.split(">")[1].split("<")[0] for l in lines[4].split(" · ")] == ["🗂 Tarjeta", "📄 Spec/pitch", "🔀 Cambios"]
 
 

@@ -109,6 +109,11 @@ class FreeText:
         text = (msg.get("text") or "").strip()
         if not live:
             return
+        # Escrito como respuesta (reply) a uno de los avisos: es la respuesta de ESE aviso, aunque haya otros en el tema.
+        replied = (msg.get("reply_to_message") or {}).get("message_id")
+        exact = [c for c in live if replied is not None and str(c["where"]["message_id"]) == str(replied)]
+        if len(exact) == 1:
+            live = exact
         if len(live) == 1:
             self._apply(live[0], text, msg.get("message_id"))
         else:
