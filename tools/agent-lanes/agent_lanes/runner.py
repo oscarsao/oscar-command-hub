@@ -11,6 +11,7 @@ import uuid
 from pathlib import Path
 from typing import Callable
 
+from . import bloqueos
 from . import proc as _proc
 from .config import ROOT, Lane
 from .hermes import GUARD_LIMIT_MARK, looks_like_guard_limit
@@ -260,6 +261,11 @@ class LaneRunner:
                           "recommended": None}]  # sin recomendada: ni «Sí, todo» ni vías automáticas la responden solas
             kind, public, notify_kind = "needs_input", f"bloqueada {times + 1} veces por lo mismo", None
             for_oscar = for_oscar or "El worker se bloquea una y otra vez por el mismo motivo; dime cómo seguir."
+        if kind == "transient" and not notify_kind:  # motivo real y clase (bloqueos.yaml); el estructural sin Reintentar
+            diag = bloqueos.clasificar(reason)
+            public = bloqueos.texto_publico(diag) or public
+            if diag.estructural:
+                notify_kind = "estructural"
         if for_oscar:  # también a la tarjeta: renotify y /decisiones lo recuperan del motivo del bloqueo
             reason = f"{reason}\n{FOR_OSCAR_PREFIX} {' '.join(str(for_oscar).split())}"
         log.warning("%s bloqueada (%s): %s", tid, kind, reason)

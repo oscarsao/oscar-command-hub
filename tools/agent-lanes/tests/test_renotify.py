@@ -174,6 +174,16 @@ def test_parse_questions(reason, expected):
 
 # --- transient ---------------------------------------------------------------------------------------
 
+def test_structural_block_is_resent_with_real_reason_and_without_retry(tmp_path):
+    reason = "verificación mecánica fallida: rama no empujada a origin (C:\\Users\\oscar\\x)"
+    r, bot, *_ = make(tmp_path, {"t_2": blocked_show("t_2", "transient", reason, assignee="claude-oscarhq")})
+    r.run()
+    msg = bot.sent[0]
+    assert "el push de la rama no llegó a GitHub" in msg["text"] and "C:\\" not in msg["text"]
+    assert "integrador" in msg["text"]
+    assert texts(msg["markup"]) == ["🧑‍💻 Que lo resuelva el integrador", "🗄 Aparcar", "🔎 Más detalle"]
+
+
 def test_transient_is_resent_with_retry_and_park_and_no_technical_detail(tmp_path):
     reason = ("el worker no terminó (tras 2 resume(s)): error_max_budget C:\\Users\\oscar\\x "
               "(session_id=f4c72037)")
@@ -181,9 +191,10 @@ def test_transient_is_resent_with_retry_and_park_and_no_technical_detail(tmp_pat
     r.run()
     msg = bot.sent[0]
     assert msg["text"].startswith("⛔ t_2")
-    assert "bloqueada · el worker no terminó (tiempo o presupuesto agotado) · detalle en la tarjeta" in msg["text"]
+    assert "bloqueada · el worker se quedó sin tiempo o sin presupuesto" in msg["text"]  # motivo real (bloqueos.yaml)
+    assert "Falta: reintentar" in msg["text"] and "detalle en la tarjeta" in msg["text"]
     assert "session_id" not in msg["text"] and "C:\\" not in msg["text"]
-    assert texts(msg["markup"]) == ["🔄 Reintentar", "🗄 Aparcar"]
+    assert texts(msg["markup"]) == ["🔄 Reintentar", "🗄 Aparcar", "🔎 Más detalle"]
     assert msg["lane_target"] is None  # LANE de tests sin destino: default del .env
 
 
