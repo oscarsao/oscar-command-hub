@@ -37,6 +37,7 @@ from .free_text import FREE_ACTIONS, FreeText
 from .people import People, load_people
 from .notices import (DECISION_CARD_STATUSES, OPTION_LETTERS, card_url, normalize_questions, questions_block,
                       render, status_line, truncate, with_default_options)
+from .tipo_peticion import A_ASK as PEDIR_ASK, KIND as PEDIR_KIND
 from .reconcile import INTEGRATOR_PROFILE, REC_ARCHIVE, REC_KEEP
 from .review import CHANGES_PREFIX
 
@@ -77,7 +78,7 @@ CARD_VETO = "card_veto"       # ⛔ Vetar: la tarjeta reversible deja de ejecuta
 CARD_ACCEPT_ALL = "card_accept_all"  # ✅ Aceptar las recomendadas del lote de tarjetas de /decisiones
 SNOOZE_DAYS = 7
 BUTTON_OPTION_MAX = 22  # caracteres del texto de la opción en su botón ("A · Aprobar el PR")
-REPLY_ACTIONS = (CHANGES, OTHER, CARD_ASK)  # piden texto a Oscar con force_reply
+REPLY_ACTIONS = (CHANGES, OTHER, CARD_ASK, PEDIR_ASK)  # piden texto a Oscar con force_reply
 EXPLAIN_BUTTON = {"text": "💬 Explícame más", "action": EXPLAIN}
 DEFAULT_OPTION_LABELS = ("✅ Sí, adelante", "❌ No")  # botones de una pregunta sin opciones (DEFAULT_OPTIONS)
 ALL_LABEL = "todas las preguntas"  # ✍️ de una escalada de review (= hermes.LEGACY_ALL_LABELS)
@@ -840,6 +841,8 @@ class DecisionDesk:
         action = button["action"]
         if action in FREE_ACTIONS:  # selector / Deshacer del texto libre
             return bool(self.free) and self.free.on_button(action, rec, button, where)
+        if rec.get("kind") == PEDIR_KIND:  # /pedir: tipo, preguntas y modo OASP (tipo_peticion.py)
+            return bool(self.commands) and self.commands.pedir_step(rec, button, where)
         if rec.get("card"):  # tarjeta de decisión de Oscar (/decisiones)
             return self._card_act(rec, button, where)
         if action.startswith("int_"):  # 🔀 Fusionar / 🚀 Desplegar: solo con el Integrador activo
@@ -1382,7 +1385,9 @@ class DecisionDesk:
 
     def _ask(self, token: str, rec: dict, button: dict, where: dict) -> None:
         tid = rec["task_id"]
-        if button["action"] == CHANGES:
+        if rec.get("kind") == PEDIR_KIND:  # /pedir: la pregunta en curso, sin tarjeta que enlazar
+            prompt = rec.get("prompt") or "Tu respuesta:"
+        elif button["action"] == CHANGES:
             prompt = f"¿Qué cambio pides para {tid}?"
         else:
             q = ((rec.get("question") or {}).get("question") or rec.get("summary")
@@ -1390,7 +1395,8 @@ class DecisionDesk:
             n = rec.get("n_questions") or 1
             step = f" (Pregunta {(rec.get('q_index') or 0) + 1}/{n})" if n > 1 and not rec.get("other_label") else ""
             prompt = f"Tu respuesta para {tid}{step}:" + (f"\n{truncate(q, 300)}" if q else "")
-        card = card_url(getattr(self.links, "kanban_base_url", None), rec.get("board") or "", tid)
+        card = None if rec.get("kind") == PEDIR_KIND else card_url(
+            getattr(self.links, "kanban_base_url", None), rec.get("board") or "", tid)
         if card:  # texto plano: Telegram enlaza la URL sola
             prompt += f"\nTarjeta: {card}"
         try:
@@ -1408,6 +1414,8 @@ class DecisionDesk:
                                  {"token": token, "rec": rec, "button": button, "where": where})
 
     def _apply_reply(self, rec: dict, button: dict, where: dict, text: str) -> bool:
+        if rec.get("kind") == PEDIR_KIND:
+            return bool(self.commands) and self.commands.pedir_step(rec, button, where, text)
         if rec.get("card"):
             return self._card_act(rec, button, where, text)
         if rec.get("group"):

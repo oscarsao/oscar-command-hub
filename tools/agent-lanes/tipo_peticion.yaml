@@ -1,0 +1,22 @@
+# Ajustes de /pedir (tipo de petición: bug o feature, preguntas por tipo y modo OASP).
+# Se leen al arrancar el runner-servicio (hace falta [🔁 Aplicar] tras editarlos). Lo que falte, o un valor de otro
+# tipo del esperado, usa el valor por defecto de agent_lanes/tipo_peticion.py (DEFAULTS), que es la lista completa.
+# Descomenta y cambia solo lo que quieras; las listas (urgencias, modos, preguntas) se sustituyen enteras.
+
+# Prioridad que recibe la tarjeta según la urgencia del bug (más alto = antes en la cola).
+# urgencias:
+#   - {id: P0, texto: "Producción rota o datos en riesgo", prioridad: 10}
+#   - {id: P1, texto: "Bloquea el trabajo de alguien", prioridad: 8}
+#   - {id: P2, texto: "Molesta pero hay rodeo", prioridad: 5}
+#   - {id: P3, texto: "Cuando haya hueco", prioridad: 2}
+# urgencia_recomendada: P2
+
+# Tope de preguntas por tipo.
+# max_preguntas: {bug: 4, feature: 3}
+
+# Modo OASP que se propone cuando no hay pistas, y palabras a partir de las cuales un encargo ya no es Fast-Track.
+# modo_por_defecto: spec-lite
+# palabras_modo_largo: 120
+
+# Carril -> proyecto del registro de peticiones (lista cerrada del pitch).
+# proyecto_por_carril: {claude-hub: Hub, claude-migrateam: MigraTeam}
