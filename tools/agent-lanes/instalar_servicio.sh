@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Instala el servicio de carriles con 2 workers (1 por repo gracias a max_parallel: 1) y muestra el estado.
+# Instala el servicio de carriles y muestra el estado. Los workers simultáneos los fija lanes.yaml
+# (runner.max_workers), no esta línea: así hay una sola fuente de verdad.
 set -euo pipefail
 DIR="$(cd "$(dirname "$0")" && pwd -W 2>/dev/null || pwd)"
-powershell -NoProfile -ExecutionPolicy Bypass -File "$DIR/install-service.ps1" -MaxWorkers 2
+powershell -NoProfile -ExecutionPolicy Bypass -File "$DIR/install-service.ps1"
 sleep 5
 py -3.12 "$DIR/lanes.py" status

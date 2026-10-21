@@ -49,6 +49,11 @@ STUCK_STATE = ROOT / ".state" / "stuck_avisos.json"  # avisos de 🧊 atascadas 
 COLLAB_STATE = ROOT / ".state" / "collab_reject.json"  # DM de desconocidos ya rechazados (1 cada 6 h)
 
 
+def effective_max_workers(arg: int, settings: dict) -> int:
+    """`--max-workers N` (>0) pisa a lanes.yaml `runner.max_workers`; 0 = lo que diga lanes.yaml."""
+    return arg or settings["max_workers"]
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--lane", default="claude-oscarhq", help="un solo carril (ignorado con --all)")
@@ -175,7 +180,7 @@ def main(argv: list[str] | None = None) -> int:
             if configs:
                 decisions.promoter = Promoter(configs, notifier=notify, desk=decisions)
                 log.info("promoción a producción activa: %s", list(configs))
-    service = Service(runners, max_workers=args.max_workers or settings["max_workers"], busy_path=drain.BUSY_FILE)
+    service = Service(runners, max_workers=effective_max_workers(args.max_workers, settings), busy_path=drain.BUSY_FILE)
     interval = args.interval or settings["interval_seconds"]
     log.info("runner: carriles=%s max_workers=%s interval=%ss", list(selected), service.max_workers, interval)
 
