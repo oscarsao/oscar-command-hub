@@ -9,6 +9,8 @@ también como /cmd@<bot>. Un /cmd@otro_bot (p. ej. el de Hermes) se ignora.
                          y "📌 Tus tarjetas de decisión" (asignadas a oscar con [DECISIÓN…]/[SEMANA…]/[IDEA…])
     /aprobar             tareas listas para integrar con [✅ Aprobar] [🔁 Pedir cambios] [🗄 Aparcar]
     /tareas [marca]      en curso y en cola por carril (migrateam | pildora | nextjobs), un solo mensaje
+    /cola [marca]        tarea en curso y siguientes por prioridad en cada carril
+    /prioridad t_x N     cambia la prioridad de una tarjeta (N = 0-99, sube o baja)
     /tarea t_xxx         ficha de la tarea con los botones de su estado
     /hazlo <texto>       crea una tarea pequeña (prioridad alta, tope 15 min): marca y carril salen del texto; con
                          duda, botones para elegir carril. El resultado vuelve a donde lo pediste
@@ -76,6 +78,8 @@ COMMANDS = (
     ("atencion", "Todo lo que espera a Oscar, con botones para resolverlo aquí"),
     ("aprobar", "Tareas listas para integrar"),
     ("tareas", "En curso y en cola por carril: /tareas [migrateam|pildora|nextjobs]"),
+    ("cola", "Qué corre y qué sigue en cada carril, por prioridad: /cola [marca]"),
+    ("prioridad", "Sube o baja una tarea en la cola: /prioridad t_xxx <0-99|sube|baja>"),
     ("tarea", "Ficha de una tarea con sus botones: /tarea t_xxx"),
     ("preparar", "Claude redacta contexto y 3 opciones de una tarjeta de decisión: /preparar t_xxx | todas"),
     ("hazlo", "Crea una tarea pequeña (carril según el texto): /hazlo <texto>"),
@@ -123,6 +127,9 @@ LANE_HINTS = {
 }
 PREPARE_MAX = 10  # /preparar todas: tope de tarjetas por orden (0,5 $ como máximo cada una)
 READY_PER_LANE = 8  # tareas en cola listadas por carril en /tareas
+COLA_PER_LANE = 5  # siguientes tareas por carril en /cola
+PRIORITY_MAX = 99
+PRIORITY_STEP = 1  # lo que suben o bajan «sube»/«baja» de /prioridad
 
 _CMD_RE = re.compile(r"^/([A-Za-z0-9_]+)(?:@([A-Za-z0-9_]+))?(?:\s+(.*))?$", re.S)
 
@@ -218,6 +225,18 @@ def panel_url(base_url: str | None) -> str | None:
         parts = urlsplit(base)
         return f"{parts.scheme}://{parts.netloc}/" if parts.scheme and parts.netloc else None
     return base.rstrip("/") + "/"
+
+
+def _prio(task: dict) -> int | None:
+    try:
+        return int(task.get("priority"))
+    except (TypeError, ValueError):
+        return None
+
+
+def _elapsed(seconds: float) -> str:
+    minutes = max(0, int(seconds // 60))
+    return f"{minutes // 60} h {minutes % 60} min" if minutes >= 60 else f"{minutes} min"
 
 
 def _progress_label(p) -> str | None:
@@ -1755,6 +1774,67 @@ class CommandCenter:
                            html=False)
                 return
         self._send(where, self.tasks_text(brand))
+
+    def cmd_cola(self, where, args: str, brand: str | None) -> None:
+        if args:
+            brand = BRAND_ARGS.get(args.split()[0].lower())
+            if not brand:
+                self._send(where, "Marca desconocida: usa /cola migrateam, /cola pildora o /cola nextjobs", html=False)
+                return
+        self._send(where, self.queue_text(brand))
+
+    def queue_text(self, brand: str | None) -> str:
+        """Por carril: la tarea en curso (desde cuándo) y las siguientes en cola por prioridad actual."""
+        e = html.escape
+        out = ["📋 <b>Cola por carril</b>" + (f" · {e(brand)}" if brand else "")]
+        for name, lane in self.lanes.items():
+            if lane.kind not in ("implement", "ops") or (brand and BRANDS.get(name) != brand):
+                continue
+            h = self.hermes_for(lane.board)
+            running = h.list_status(name, "running")
+            ready = sorted(h.list_status(name, "ready"), key=lambda t: -(_prio(t) or 0))
+            out.append(f"\n<b>{e(name)}</b>" + (f" · {e(BRANDS[name])}" if name in BRANDS else ""))
+            for t in running:
+                since = t.get("started_at")
+                when = f" · desde hace {_elapsed(self._now() - float(since))}" if since else ""
+                out.append(f"▶️ <code>{e(t['id'])}</code> · {e(truncate(t.get('title'), 50))}{when}")
+            if not running:
+                out.append("▶️ libre")
+            for i, t in enumerate(ready[:COLA_PER_LANE], 1):
+                out.append(f"{i}. <code>{e(t['id'])}</code> · {e(truncate(t.get('title'), 50))} · "
+                           f"prioridad {_prio(t) or 0}")
+            if len(ready) > COLA_PER_LANE:
+                out.append(f"  +{len(ready) - COLA_PER_LANE} más en cola")
+            elif not ready:
+                out.append("sin cola")
+        return "\n".join(out)[:TEXT_MAX]
+
+    def cmd_prioridad(self, where, args: str, brand: str | None) -> None:
+        usage = "Uso: /prioridad t_xxxxxxxx <0-99 | sube | baja>"
+        parts = args.split()
+        if len(parts) != 2 or not TASK_ID_RE.match(parts[0].lower()):
+            self._send(where, usage, html=False)
+            return
+        tid, val = parts[0].lower(), parts[1].lower()
+        if val not in ("sube", "baja") and not (val.isascii() and val.isdigit()):
+            self._send(where, usage, html=False)
+            return
+        found = self._find(tid)
+        if not found:
+            self._send(where, f"No encuentro {tid} en los tableros de los carriles", html=False)
+            return
+        board, show = found
+        task = show["task"]
+        if task.get("status") in ("done", "archived"):
+            self._send(where, f"{tid} ya está cerrada: no tiene cola que reordenar", html=False)
+            return
+        cur = _prio(task) or 0
+        new = cur + PRIORITY_STEP if val == "sube" else cur - PRIORITY_STEP if val == "baja" else int(val)
+        new = max(0, min(PRIORITY_MAX, new))
+        if not self.hermes_for(board).set_priority(tid, new):
+            self._send(where, f"No pude cambiar la prioridad de {tid}; detalle en el log", html=False)
+            return
+        self._send(where, f"✅ {tid} · prioridad {cur} → {new}", html=False)
 
     def tasks_text(self, brand: str | None, *, with_links: bool = True) -> str:
         e = html.escape
