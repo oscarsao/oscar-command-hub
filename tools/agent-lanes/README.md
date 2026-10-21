@@ -266,6 +266,16 @@ se abran ramas paralelas que chocan. Oscar decide («fusionar en una sola» / «
   «/»); solape = mismo fichero o (`nivel: modulo`) misma carpeta de ≥2 tramos. Padre/hija (p. ej. `/flujo`) no se avisan.
 - Ajustes en `solapes.yaml` (se relee cada pasada): `activo`, `minutos`, `nivel` (`archivo` = menos avisos), estados…
 
+## Ajustes editables (`/ajustes`, t_9e297c93)
+
+Regla de Oscar: nada hardcodeado. `agent_lanes/ajustes_hub.py` es la capa única: valores por defecto = los de antes,
+editados en `ajustes_hub.json` (junto a lanes.yaml, ignorado por git) con recarga en caliente y auditoría en
+`ajustes_hub_auditoria.jsonl` (quién, cuándo, valor anterior). `/ajustes` (solo operadores) abre grupos Avisos, Atascos,
+Lotes, Carriles y Avanzado (`/ajustes <clave> <valor>`, `/ajustes historial`). Los de `carriles.*` y `topes.*` los lee el
+runner al arrancar: se guardan ya y rigen al reiniciarlo (nunca lo reinicia esto). Sin editar, valen lanes.yaml y
+integrador_visibilidad.yaml. Quién puede pulsar botones (`tools/telegram/people.yaml`) y las plantillas de texto
+(`integrador_visibilidad.yaml: textos`) siguen en su YAML: dar permisos no se hace desde el chat.
+
 ## Atascos rápidos (t_86c09458)
 - **Aviso diario** (desde las 9:00, una vez al día por proyecto con `batch: daily`): «🚦 N PR aprobados esperando lote» con
   una línea por PR (proyecto, título, días esperando) y [🔀 Fusionar lote]. Sin PR esperando no manda nada.

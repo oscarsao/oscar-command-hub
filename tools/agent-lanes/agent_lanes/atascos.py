@@ -17,6 +17,7 @@ import re
 import threading
 from pathlib import Path
 
+from .ajustes_hub import valor
 from .notices import truncate
 
 log = logging.getLogger("agent_lanes")
@@ -24,6 +25,7 @@ log = logging.getLogger("agent_lanes")
 # Ficheros que solo crecen por el final: un conflicto aquí se resuelve juntando las dos partes (union).
 DEFAULT_APPEND_ONLY = ("docs/kb/CHANGELOG.md", "docs/kb/LEDGER_ESTATUS.md", "docs/kb/archivo/CHANGELOG.md",
                        "CHANGELOG.md")
+# Valores por defecto de estas tres; los vigentes se editan con /ajustes (ajustes_hub: atascos.*).
 NOTICE_HOUR = 9           # hora local desde la que sale el aviso diario
 NOTICE_TITLE_MAX = 50
 TID_BRANCH_RE = re.compile(r"t_[0-9A-Za-z]{1,40}")
@@ -80,7 +82,7 @@ class PendingNotice:
     def render(repo: str, entries: list[dict]) -> str:
         n = len(entries)
         head = f"🚦 {n} PR aprobado{'s' if n != 1 else ''} esperando lote · {html.escape(repo)}"
-        rows = [f"• #{e['pr']} · {html.escape(repo)} · {html.escape(truncate(e['title'], NOTICE_TITLE_MAX))} · "
+        rows = [f"• #{e['pr']} · {html.escape(repo)} · {html.escape(truncate(e['title'], valor('atascos.titulo_max')))} · "
                 f"{e['days']} día{'s' if e['days'] != 1 else ''}" for e in entries]
         return "\n".join([head, *rows, "Pulsa el botón para montar el lote ahora (o espera al automático)."])
 
@@ -90,7 +92,7 @@ class PendingNotice:
         if i.dry_run or not i.settings.enabled or not i.desk:
             return []
         now = i.batches.clock()
-        if now.hour < NOTICE_HOUR:
+        if now.hour < valor("atascos.aviso_hora"):
             return []
         today, sent = now.strftime("%Y-%m-%d"), []
         for name, policy in i.settings.policies.items():
@@ -162,6 +164,8 @@ class AutoResolver:
         """('pushed'|'code'|'gates'|'push_failed'|'skipped', detalle). 'code' = hay conflicto de código."""
         i, head = self.i, pr["headRefOid"]
         patterns = tuple(policy.append_only_paths or ())
+        if patterns == DEFAULT_APPEND_ONLY:  # sin lista propia en lanes.yaml: vale la editada con /ajustes (o la de fábrica)
+            patterns = tuple(valor("atascos.solo_anadir"))
         if i.dry_run or not patterns or i._state(tid).get("autoresolve_try") == head:
             return "skipped", []
         i._save(tid, autoresolve_try=head)  # antes: un fallo (o un rechazo del push) no se reintenta en bucle
