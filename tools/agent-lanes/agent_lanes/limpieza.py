@@ -16,6 +16,7 @@ import difflib
 import json
 import logging
 import os
+import re
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -36,7 +37,8 @@ LIM_CLOSE, LIM_KEEP, LIM_VIEW = "lim_close", "lim_keep", "lim_view"
 AUTHOR = "limpieza"
 OSCAR_AUTHORS = ("oscar", "oscar-telegram")
 SYSTEM_AUTHORS = (AUTHOR, "reconciliacion", "agent-lanes")  # no cuentan como movimiento ni como reapertura
-QUIET_EVENTS = ("commented", "comment")  # el comentario ya se cuenta por su autor
+AUTO_BODY_RE = re.compile(r"(?:Archivada por|Mantenida \d+ d por) ", re.I)  # reconcile.on_button, autor oscar-telegram
+QUIET_EVENTS =("commented", "comment")  # el comentario ya se cuenta por su autor
 REOPEN_GRACE = 600  # s: los comentarios/eventos del integrador justo tras el merge no son una reapertura
 RULES = ("pr_mergeado", "hermana_hecha", "decidir_respondida", "duplicada", "oscar_parada")
 TITLE_MAX = 50
@@ -94,6 +96,7 @@ class Candidata:
     evidencia: str
     accion: str = "complete"  # complete | archive
     assignee: str = ""
+    original: str = ""  # solo duplicadas: la tarjeta que se queda abierta
 
     def linea(self) -> str:
         return f"{self.tid} · {self.title[:TITLE_MAX]} · {self.motivo} · {self.evidencia}"
@@ -153,8 +156,13 @@ def _regla_hermana(c: dict, hechas: list[dict]) -> tuple[str, str] | None:
     return None
 
 
+def _automatico(c: dict) -> bool:
+    """Comentarios de máquina: los del propio job y los que reconcile firma como oscar-telegram al pulsar un botón."""
+    return _author(c) in SYSTEM_AUTHORS or bool(AUTO_BODY_RE.match(str(c.get("body") or "")))
+
+
 def _regla_respondida(c: dict) -> tuple[str, str] | None:
-    comments = [x for x in c["show"].get("comments") or () if _author(x) not in SYSTEM_AUTHORS]
+    comments = [x for x in c["show"].get("comments") or () if not _automatico(x)]
     if c.get("status") not in ("blocked", "triage") or len(comments) < 2 or _author(comments[-1]) not in OSCAR_AUTHORS:
         return None
     if all(_author(x) in OSCAR_AUTHORS for x in comments):
@@ -171,9 +179,9 @@ def _regla_parada(c: dict, cfg: Ajustes, now: float) -> tuple[str, str] | None:
     return f"sin movimiento {dias} días", f"asignada a oscar; último movimiento {_day(last)}"
 
 
-def _duplicadas(cards: list[dict], cfg: Ajustes) -> dict[str, tuple[str, str]]:
-    """tid de la más nueva -> (motivo, evidencia), por pares del mismo carril con títulos parecidos."""
-    out: dict[str, tuple[str, str]] = {}
+def _duplicadas(cards: list[dict], cfg: Ajustes) -> dict[str, tuple[str, str, str]]:
+    """tid de la más nueva -> (motivo, evidencia, tid de la original), por pares del mismo carril con títulos parecidos."""
+    out: dict[str, tuple[str, str, str]] = {}
     for i, a in enumerate(cards):
         for b in cards[i + 1:]:
             if a.get("assignee") != b.get("assignee") or not (ka := title_key(a.get("title"))) \
@@ -183,7 +191,8 @@ def _duplicadas(cards: list[dict], cfg: Ajustes) -> dict[str, tuple[str, str]]:
             if ratio < cfg.similitud:
                 continue
             old, new = sorted((a, b), key=lambda c: (_stamp((c["show"].get("task") or {}).get("created_at")) or 0, c["id"]))
-            out.setdefault(new["id"], ("duplicada de otra abierta", f"{old['id']} ({round(ratio * 100)} % parecida)"))
+            out.setdefault(new["id"], (f"duplicada de {old['id']}",
+                                       f"{round(ratio * 100)} % parecida; {old['id']} sigue abierta", old["id"]))
     return out
 
 
@@ -195,13 +204,14 @@ def detectar(cards: list[dict], hechas: list[dict], prs: list[dict], cfg: Ajuste
     out = []
     for c in live:
         checks = (("pr_mergeado", lambda: _regla_pr(c, prs)), ("hermana_hecha", lambda: _regla_hermana(c, hechas)),
-                  ("decidir_respondida", lambda: _regla_respondida(c)), ("duplicada", lambda: dups.get(c["id"])),
+                  ("decidir_respondida", lambda: _regla_respondida(c)), ("duplicada", lambda: dups[c["id"]][:2] if c["id"] in dups else None),
                   ("oscar_parada", lambda: _regla_parada(c, cfg, now)))
         found = next(((name, *r) for name, check in checks if cfg.reglas.get(name) and (r := check())), None)
         if found:
             regla, motivo, evidencia = found
             out.append(Candidata(c["id"], c["board"], c.get("title") or "", regla, motivo, evidencia,
-                                 "archive" if regla == "duplicada" else "complete", c.get("assignee") or ""))
+                                 "archive" if regla == "duplicada" else "complete", c.get("assignee") or "",
+                                 dups[c["id"]][2] if regla == "duplicada" else ""))
     return out
 
 
@@ -233,6 +243,7 @@ class LimpiezaRunner:
                  clock: Callable[[], float] = time.time):
         self.hermes_for, self.boards, self.prs, self.send, self.issue = hermes_for, boards, prs, send, issue
         self.state_path, self.settings_path, self.clock = Path(state_path), settings_path, clock
+        self.peer: Callable[[str], bool] | None = None  # Reconciler.silenciada: lo que ya propuso/silenció reconcile
 
     def ajustes(self) -> Ajustes:
         return load(self.settings_path)
@@ -269,7 +280,8 @@ class LimpiezaRunner:
         cards, hechas = self._read(cfg.tableros or self.boards)
         found = detectar(cards, hechas, self.prs(), cfg, now)
         return [c for c in found if state.data["kept"].get(c.tid, 0) <= now
-                and now - state.data["proposed"].get(c.tid, 0) >= cfg.dias_silencio * 86400]
+                and now - state.data["proposed"].get(c.tid, 0) >= cfg.dias_silencio * 86400
+                and not (self.peer and self.peer(c.tid))]
 
     def proponer(self, cfg: Ajustes | None = None) -> list[str]:
         """Manda la propuesta (una línea por candidata, fila de botones cada una) y deja el comentario en la tarjeta."""
@@ -277,21 +289,20 @@ class LimpiezaRunner:
         found = self.candidatas(cfg)[:cfg.max_propuestas]
         if not found:
             return []
-        rows, lines = [], []
-        for n, c in enumerate(found, 1):
-            lines.append(f"{n}) {c.linea()}")
-            if self.issue:
-                rec = {"task_id": c.tid, "board": c.board, "lane": c.assignee, "title": c.title, "motivo": c.motivo,
-                       "evidencia": c.evidencia, "accion": c.accion, "limpieza": True}
-                rows += self.issue(rec, [[{"text": f"✅ Cerrar {n}", "action": LIM_CLOSE},
-                                          {"text": f"⏳ Mantener {n}", "action": LIM_KEEP},
-                                          {"text": f"👁 Ver {n}", "action": LIM_VIEW}]])[1]["inline_keyboard"]
-        text = (f"🧹 {len(found)} tarjeta{'s' if len(found) != 1 else ''} que parece{'n' if len(found) != 1 else ''} "
-                "resuelta" + ("s" if len(found) != 1 else "") + ":\n" + "\n".join(lines)
-                + "\n➡️ Próximo paso: Cerrar, Mantener o Ver cada una · Lo da: Oscar (si no contestas, no pasa nada)")
-        self.send(text, {"inline_keyboard": rows} if rows else None)
         state = _State(self.state_path)
         for c in found:
+            # Un mensaje por candidata: al pulsar se edita ese mensaje sin quitar los botones de las demás.
+            markup = None
+            if self.issue:
+                rec = {"task_id": c.tid, "board": c.board, "lane": c.assignee, "title": c.title, "motivo": c.motivo,
+                       "evidencia": c.evidencia, "accion": c.accion, "original": c.original, "limpieza": True}
+                markup = self.issue(rec, [[{"text": "🗄 Archivar esta" if c.accion == "archive" else "✅ Cerrar",
+                                            "action": LIM_CLOSE},
+                                           {"text": f"⏳ Mantener {cfg.dias_silencio:g} d", "action": LIM_KEEP},
+                                           {"text": "👁 Ver", "action": LIM_VIEW}]])[1]
+            paso = f"archivar esta (la original {c.original} se queda abierta)" if c.original else "cerrarla"
+            self.send(f"🧹 {c.linea()}\n➡️ Próximo paso: {paso}, mantenerla o verla · Lo da: Oscar "
+                      "(si no contestas, no pasa nada)", markup)
             state.data["proposed"][c.tid] = self.clock()
             try:
                 self.hermes_for(c.board).comment(c.tid, f"propuesta de cierre: {c.motivo} ({c.evidencia})", author=AUTHOR)
@@ -310,6 +321,23 @@ class LimpiezaRunner:
             except Exception as exc:
                 log.warning("limpieza: no se pudo responder: %s", exc)
 
+    @classmethod
+    def _fin(cls, desk, where: dict | None, text: str) -> None:
+        """Resultado de Cerrar/Mantener: edita el mensaje de la propuesta (como reconcile); sin él, responde aparte."""
+        if where and where.get("message_id") and hasattr(desk, "_edit_text"):
+            try:
+                desk._edit_text(where, text)
+                return
+            except Exception as exc:
+                log.info("limpieza: no se pudo editar el mensaje: %s", exc)
+        cls._say(desk, where, text)
+
+    def silenciada(self, tid: str) -> bool:
+        """¿Está en silencio (Mantener) o ya propuesta hace menos de `dias_silencio`? La consulta reconcile para no duplicar."""
+        state, now = _State(self.state_path), self.clock()
+        return state.data["kept"].get(tid, 0) > now \
+            or now - state.data["proposed"].get(tid, 0) < self.ajustes().dias_silencio * 86400
+
     def on_button(self, action: str, rec: dict, where: dict | None, desk) -> bool:
         tid, h = rec["task_id"], self.hermes_for(rec["board"])
         who = desk._who() if hasattr(desk, "_who") else "Oscar"
@@ -324,7 +352,7 @@ class LimpiezaRunner:
             self._say(desk, where, self._ver(tid, show))
             return True
         if status in ("done", "archived"):
-            self._say(desk, where, f"{tid}: ya estaba cerrada")
+            self._fin(desk, where, f"{tid}: ya estaba cerrada")
             return True
         if action == LIM_KEEP:
             cfg = self.ajustes()
@@ -334,22 +362,33 @@ class LimpiezaRunner:
             state.data["proposed"].pop(tid, None)
             state.save()
             h.comment(tid, f"{who}: mantener hasta {_day(until)} (no se vuelve a proponer antes)", author=AUTHOR)
-            self._say(desk, where, f"⏳ {tid} se mantiene hasta {_day(until)}")
+            self._fin(desk, where, f"⏳ {tid} se mantiene hasta {_day(until)}")
             return True
         if status == "running":
             self._say(desk, where, f"{tid}: está en curso; no la cierro")
             return False
         motivo = f"{rec.get('motivo', '')} ({rec.get('evidencia', '')})".strip()
+        original = rec.get("original") or ""
         if rec.get("accion") == "archive":
+            if original:  # duplicada: solo se archiva si la original sigue abierta; si no, se perdería el trabajo
+                try:
+                    estado = ((h.show(original).get("task")) or {}).get("status")
+                except Exception:
+                    estado = None
+                if estado in (None, "done", "archived"):
+                    self._say(desk, where, f"{tid}: no la archivo; la original {original} ya no está abierta. Revísalas a mano")
+                    return False
             ok = h.archive(tid)
         else:
             ok, _ = h.complete(tid, motivo, {"limpieza": True, "regla_motivo": rec.get("motivo", "")})
         if not ok:
             self._say(desk, where, f"{tid}: no se pudo cerrar (¿estado incompatible?)")
             return False
-        h.comment(tid, f"{who}: {'archivada' if rec.get('accion') == 'archive' else 'cerrada'} desde la propuesta "
-                       f"de limpieza · {motivo}", author=AUTHOR)
-        self._say(desk, where, f"✅ {tid} {'archivada' if rec.get('accion') == 'archive' else 'cerrada'}")
+        verbo = "archivada" if rec.get("accion") == "archive" else "cerrada"
+        h.comment(tid, f"{who}: {verbo} desde la propuesta de limpieza · {motivo}", author=AUTHOR)
+        if original:
+            h.comment(original, f"{tid} se archivó como duplicada de esta; esta sigue abierta", author=AUTHOR)
+        self._fin(desk, where, f"✅ {tid} {verbo} · {motivo}")
         return True
 
     @staticmethod

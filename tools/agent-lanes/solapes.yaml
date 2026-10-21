@@ -1,0 +1,10 @@
+# Aviso de solape entre tarjetas activas del mismo repo (agent_lanes/solapes.py). Se relee en cada pasada: no hace falta
+# reiniciar el runner. Lo que falte o no sea válido vale el default que se indica.
+activo: true                  # false = apagado (no barre ni avisa)
+minutos: 10                   # cada cuánto se barre el tablero
+nivel: modulo                 # archivo = solo si comparten un fichero; modulo = también si comparten carpeta
+modulo_min_profundidad: 2     # tramos mínimos de una carpeta para contar como módulo (src/ solo no cuenta)
+estados: [ready, todo, running, blocked]
+extensiones: [py, ts, tsx, js, jsx, yaml, yml, md, json, sql, css, html, ps1, sh, toml]
+max_tarjetas: 8               # tarjetas que se listan en el aviso
+comparten_max: 5              # rutas compartidas que se citan

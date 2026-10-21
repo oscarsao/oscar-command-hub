@@ -35,6 +35,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
+from .ajustes_hub import valor
 from .atascos import pr_branch_card_body
 from .falta import CONFLICT, OTHER, classify, plain_reason
 from .integration import header, phase_for, repo_name, risk_of
@@ -49,7 +50,7 @@ log = logging.getLogger("agent_lanes")
 BATCH_LABEL = "🔀 Fusionar lote"
 BATCH_BRANCH_RE = re.compile(r"release/lote-[a-z0-9]+(?:-[a-z0-9]+)*-\d{4}-\d{2}-\d{2}(?:-\d+)?")
 OPEN_STATUSES = ("offered", "stale")  # lote con PR abierto pendiente del botón
-EXCLUDED_TITLE_MAX = 80
+EXCLUDED_TITLE_MAX = 80  # por defecto; el vigente se edita con /ajustes (lotes.titulo_excluido_max)
 EXPLAIN_BUTTON = {"text": "💬 Explícame más", "action": "explain"}  # = decisions.EXPLAIN (sin importar decisions aquí)
 IDENT = ("-c", "user.name=agent-lanes-integrator", "-c", "user.email=agent-lanes@localhost", "-c", "commit.gpgsign=false")
 
@@ -170,7 +171,7 @@ class BatchPlanner:
             lane = i.lanes.get(name)
             if not policy.batch or not lane:
                 continue
-            hh, mm = (int(x) for x in policy.batch_time.split(":"))
+            hh, mm = (int(x) for x in (valor("lotes.hora") or policy.batch_time).split(":"))  # /ajustes manda sobre lanes.yaml
             today = now.strftime("%Y-%m-%d")
             if (now.hour, now.minute) < (hh, mm) or self._day(name) == today:
                 continue
@@ -529,7 +530,7 @@ class BatchPlanner:
         offer = ("Puedes " + ("rebasarla sobre el lote" if kind == CONFLICT else "arreglarla")
                  + " con una tarjeta nueva o dejarla para el siguiente lote.") if row else \
             "Puedes dejarla para el siguiente lote."
-        text = (f"⏭ <b>Fuera del lote</b> · #{e(str(x['pr']))} · {e(truncate(x['title'], EXCLUDED_TITLE_MAX))}\n"
+        text = (f"⏭ <b>Fuera del lote</b> · #{e(str(x['pr']))} · {e(truncate(x['title'], valor('lotes.titulo_excluido_max')))}\n"
                 f"Motivo: {e(plain)}.\n{offer}")
         i._publish(lane, {"id": x["tid"], "title": x["title"], "body": None}, text, markup,
                    link=f"⏭ Fuera del lote · #{x['pr']}")

@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Callable
 from zoneinfo import ZoneInfo
 
+from .ajustes_hub import valor
 from .aviso import mention
 from .formato_aviso import PIE_TEXTO_LIBRE
 from .notices import hours_ago, truncate
@@ -21,9 +22,15 @@ from .notices import hours_ago, truncate
 log = logging.getLogger("agent_lanes")
 
 MADRID = ZoneInfo("Europe/Madrid")
+# Valores por defecto; los vigentes se editan con /ajustes (ajustes_hub: avisos.*).
 SLOT_HOUR = 9
 WINDOW_HOURS = 2     # si el runner estaba parado a las 9:00, se envía hasta las 11:00
 DECISIONS_SHOWN = 5
+
+
+def _hour(hour: int | None) -> int:
+    v = valor("avisos.hora_parte") if hour is None else hour
+    return SLOT_HOUR if v is None else v
 
 
 def lane_row(name: str, h, kind: str = "implement") -> dict:
@@ -57,9 +64,10 @@ def render_lane(row: dict) -> str:
 
 
 def render_summary(rows: list[dict], decisions: list, guard_n: int, now: float, who: str = "", extra: str = "",
-                   hour: int = SLOT_HOUR) -> str:
+                   hour: int | None = None) -> str:
     """El mensaje: una línea por carril (también los vacíos) y las decisiones de Oscar con su próximo paso.
     `extra`: líneas del integrador (estado de sus consolas y PR de sesiones interactivas), ya compuestas."""
+    hour, shown = _hour(hour), valor("avisos.decisiones_en_resumen")
     lines = [f"☀️ Resumen de las {hour}:00 por carril"]
     lines += [render_lane(r) for r in rows] or ["(no hay carriles configurados)"]
     if guard_n:
@@ -71,20 +79,21 @@ def render_summary(rows: list[dict], decisions: list, guard_n: int, now: float, 
         lines.append("Decisiones pendientes de Oscar: ninguna. ➡️ Próximo paso: ninguno · Lo da: nadie")
         return "\n".join(lines)
     lines.append(f"{who + ' ' if who else ''}Decisiones pendientes de Oscar ({len(decisions)}):")
-    for p in decisions[:DECISIONS_SHOWN]:
+    for p in decisions[:shown]:
         lines.append(f"• {p.tid} · {truncate((p.task or {}).get('title'), 60)} · hace {hours_ago(p.since, now)} h")
-    if len(decisions) > DECISIONS_SHOWN:
-        lines.append(f"… y {len(decisions) - DECISIONS_SHOWN} más")
+    if len(decisions) > shown:
+        lines.append(f"… y {len(decisions) - shown} más")
     lines.append("➡️ Próximo paso: pulsa «Ver decisiones» y responde con los botones · Lo da: Oscar")
     lines.append(PIE_TEXTO_LIBRE)  # formato único de aviso (t_211c9902): botones + texto libre
     return "\n".join(lines)
 
 
-def due_date(now: datetime, sent: set[str], hour: int = SLOT_HOUR) -> str | None:
-    """Clave AAAA-MM-DD si toca enviar (desde `hour`:00 hasta 2 h después, hora de Madrid, todos los días) y no está enviada."""
-    now = now.astimezone(MADRID)
+def due_date(now: datetime, sent: set[str], hour: int | None = None) -> str | None:
+    """Clave AAAA-MM-DD si toca enviar (desde `hour`:00 hasta el margen configurado, hora de Madrid, todos los días) y no
+    está enviada."""
+    now, hour = now.astimezone(MADRID), _hour(hour)
     key = f"{now:%Y-%m-%d}"
-    return key if hour <= now.hour < hour + WINDOW_HOURS and key not in sent else None
+    return key if hour <= now.hour < hour + valor("avisos.resumen_ventana_horas") and key not in sent else None
 
 
 class DailyLaneSummary:
@@ -93,7 +102,7 @@ class DailyLaneSummary:
 
     def __init__(self, rows: Callable[[], list], decisions: Callable[[], list], guard_n: Callable[[], int],
                  send: Callable[[str, bool], bool], state_path: Path | str, *, who: str = "",
-                 now: Callable[[], datetime] = lambda: datetime.now(MADRID), hour: int = SLOT_HOUR,
+                 now: Callable[[], datetime] = lambda: datetime.now(MADRID), hour: int | None = None,
                  extra: Callable[[], str] = lambda: ""):
         self.rows, self.decisions, self.guard_n, self.send = rows, decisions, guard_n, send
         self.state_path, self.who, self._now = Path(state_path), who, now

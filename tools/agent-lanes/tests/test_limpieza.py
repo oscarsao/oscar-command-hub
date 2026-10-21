@@ -147,6 +147,7 @@ class FakeHermes:
 class Notifier:
     def __init__(self):
         self.sent = []
+        self.edited = []
 
     def send_to(self, chat, thread, text, html=False, **kw):
         self.sent.append(text)
@@ -158,6 +159,9 @@ class Desk:
 
     def _who(self):
         return "Oscar"
+
+    def _edit_text(self, where, text):
+        self.notifier.edited.append((where["message_id"], text))
 
 
 def make(tmp_path, cards, prs=(), clock=lambda: NOW, yaml_text=None):
@@ -185,6 +189,7 @@ def test_propuesta_una_linea_y_botones_cerrar_mantener_ver(tmp_path):
     text, markup = sent[0]
     assert "t_aaaaaaaa · Firmar el contrato · sin movimiento 20 días · asignada a oscar" in text
     assert [b["callback_data"] for b in markup["inline_keyboard"][0]] == [LIM_CLOSE, LIM_KEEP, LIM_VIEW]
+    assert [b["text"] for b in markup["inline_keyboard"][0]] == ["✅ Cerrar", "⏳ Mantener 14 d", "👁 Ver"]
     assert issued[0]["task_id"] == "t_aaaaaaaa" and issued[0]["accion"] == "complete"
     assert ("comment", "t_aaaaaaaa") == h.calls[0][:2] and h.calls[0][2].startswith("propuesta de cierre: sin movimiento")
     assert not any(c[0] in ("complete", "archive") for c in h.calls)  # proponer nunca cierra
@@ -196,8 +201,10 @@ def test_mantener_silencia_dias_silencio_y_comenta(tmp_path):
     r, h, sent, issued = make(tmp_path, [parada()], clock=lambda: t[0])
     r.proponer()
     desk = Desk()
-    assert r.on_button(LIM_KEEP, issued[0], {"chat_id": 1, "thread_id": None}, desk)
-    assert h.calls[-1][2].startswith("Oscar: mantener hasta") and "se mantiene hasta" in desk.notifier.sent[0]
+    assert r.on_button(LIM_KEEP, issued[0], {"chat_id": 1, "thread_id": None, "message_id": 5}, desk)
+    assert h.calls[-1][2].startswith("Oscar: mantener hasta")
+    assert desk.notifier.edited[0][0] == 5 and "se mantiene hasta" in desk.notifier.edited[0][1]  # edita el original
+    assert desk.notifier.sent == []
     t[0] = NOW + 13 * DAY
     assert r.candidatas() == []  # silenciada M=14 d
     t[0] = NOW + 15 * DAY
@@ -208,10 +215,10 @@ def test_cerrar_completa_con_el_motivo_en_result(tmp_path):
     r, h, sent, issued = make(tmp_path, [parada()])
     r.proponer()
     desk = Desk()
-    assert r.on_button(LIM_CLOSE, issued[0], {"chat_id": 1, "thread_id": None}, desk)
+    assert r.on_button(LIM_CLOSE, issued[0], {"chat_id": 1, "thread_id": None, "message_id": 5}, desk)
     done = [c for c in h.calls if c[0] == "complete"]
     assert done and "sin movimiento 20 días" in done[0][2] and "asignada a oscar" in done[0][2]
-    assert h.cards["t_aaaaaaaa"]["status"] == "done" and "cerrada" in desk.notifier.sent[0]
+    assert h.cards["t_aaaaaaaa"]["status"] == "done" and "cerrada" in desk.notifier.edited[0][1]
     assert r.on_button(LIM_CLOSE, issued[0], None, desk)  # idempotente
     assert len([c for c in h.calls if c[0] == "complete"]) == 1
 
@@ -224,8 +231,10 @@ def test_cerrar_duplicada_archiva_y_ver_no_toca_nada(tmp_path):
     desk = Desk()
     assert r.on_button(LIM_VIEW, issued[0], {"chat_id": 1, "thread_id": None}, desk)
     assert "t_bbbbbbbb" in desk.notifier.sent[0] and h.cards["t_bbbbbbbb"]["status"] == "ready"
+    assert "duplicada de t_aaaaaaaa" in issued[0]["motivo"] and issued[0]["original"] == "t_aaaaaaaa"
     assert r.on_button(LIM_CLOSE, issued[0], None, desk)
-    assert ("archive", "t_bbbbbbbb") in h.calls
+    assert ("archive", "t_bbbbbbbb") in h.calls and h.cards["t_aaaaaaaa"]["status"] == "ready"
+    assert any(c[:2] == ("comment", "t_aaaaaaaa") and "sigue abierta" in c[2] for c in h.calls)
 
 
 def test_no_cierra_una_tarjeta_en_curso(tmp_path):
@@ -271,3 +280,47 @@ def test_dry_run_imprime_sin_enviar_ni_comentar(tmp_path):
     assert limpieza.main(["--dry-run"], runner=r, out=lines.append) == 0
     assert "1 candidata" in lines[0] and "[oscar_parada] t_aaaaaaaa" in lines[1]
     assert sent == [] and h.calls == [] and not (tmp_path / "s.json").exists()
+
+
+def test_decidir_respondida_ignora_comentarios_automaticos_de_reconcile():
+    # reconcile firma «Archivada…/Mantenida…» como oscar-telegram al pulsar su botón: no es una respuesta
+    mantenida = com("oscar-telegram", NOW - 2 * DAY, "Mantenida 7 d por Oscar (no se vuelve a proponer antes)")
+    archivada = com("oscar-telegram", NOW - 2 * DAY, "Archivada por Oscar (propuesta de obsolescencia)")
+    for auto in (mantenida, archivada):
+        c = card("t_aaaaaaaa", status="blocked", comments=[com("worker", NOW - 5 * DAY, "¿A o B?"), auto])
+        assert run([c], cfg=sin("oscar_parada")) == []
+
+
+def test_duplicada_no_se_archiva_si_la_original_ya_no_esta_abierta(tmp_path):
+    a = card("t_aaaaaaaa", title="Limpieza de tarjetas resueltas", created=NOW - 9 * DAY)
+    b = card("t_bbbbbbbb", title="Limpieza de tarjetas resueltas", created=NOW - 1 * DAY)
+    r, h, sent, issued = make(tmp_path, [a, b])
+    r.proponer()
+    h.cards["t_aaaaaaaa"]["status"] = "done"
+    desk = Desk()
+    assert r.on_button(LIM_CLOSE, issued[0], {"chat_id": 1, "thread_id": None}, desk) is False
+    assert ("archive", "t_bbbbbbbb") not in h.calls and "original t_aaaaaaaa" in desk.notifier.sent[0]
+
+
+def test_una_propuesta_por_candidata_para_poder_editar_su_mensaje(tmp_path):
+    otra = card("t_cccccccc", title="Otra cosa", assignee="oscar", created=NOW - 20 * DAY)
+    r, h, sent, issued = make(tmp_path, [parada(), otra])
+    assert r.proponer() == ["t_aaaaaaaa", "t_cccccccc"] and len(sent) == 2 and len(issued) == 2
+
+
+def test_no_duplica_con_reconcile_y_mantener_silencia_al_otro(tmp_path):
+    from agent_lanes.reconcile import Reconciler
+    t = [NOW]
+    r, h, sent, issued = make(tmp_path, [parada()], clock=lambda: t[0])
+    rec = Reconciler(lambda b: h, ["default"], lambda: [], lambda *a: None, state_path=tmp_path / "rc.json",
+                     clock=lambda: t[0])
+    rec.peer, r.peer = r.silenciada, rec.silenciada
+    rec.state.data["proposed"]["t_aaaaaaaa"] = NOW  # reconcile ya la propuso
+    assert r.candidatas() == []
+    del rec.state.data["proposed"]["t_aaaaaaaa"]
+    assert r.proponer() == ["t_aaaaaaaa"]
+    assert rec.obsolete_pass() == []  # la limpieza ya la propuso: reconcile no repite
+    assert r.on_button(LIM_KEEP, issued[0], None, Desk())
+    assert r.silenciada("t_aaaaaaaa")
+    t[0] = NOW + 13 * DAY
+    assert rec.obsolete_pass() == [] and r.candidatas() == []

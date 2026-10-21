@@ -256,6 +256,26 @@ título, cuerpo, assignee y prioridad, `idempotency-key` = id original, copia co
 - Runner: cada `BOARD_GUARD_MINUTES` (10) y aviso al DM de Oscar una vez por tarjeta. Solo mueve con
   `BOARD_GUARD_APPLY=true` en `.env`; sin ello avisa en dry-run.
 
+## Solape entre tarjetas activas (t_2bce5755)
+`agent_lanes/solapes.py` avisa al DM de Oscar cuando 2+ tarjetas activas del MISMO repo tocan lo mismo, antes de que
+se abran ramas paralelas que chocan. Oscar decide («fusionar en una sola» / «dejarlas, se complementan»); no fusiona nada.
+- Va en una pasada periódica del runner (no en `create`) para cubrir también lo que crean el Coordinador, otros workers
+  o personas con `hermes kanban create` directo. Aviso una vez por conjunto de tarjetas (`.state/solapes.json`).
+- Criterio (sin IA): repo = el del carril asignado (`lanes.yaml`; assignees sin carril/repo no se comparan); estados
+  ready/todo/running/blocked; rutas mencionadas en título y cuerpo (fichero con extensión, nombre suelto o carpeta con
+  «/»); solape = mismo fichero o (`nivel: modulo`) misma carpeta de ≥2 tramos. Padre/hija (p. ej. `/flujo`) no se avisan.
+- Ajustes en `solapes.yaml` (se relee cada pasada): `activo`, `minutos`, `nivel` (`archivo` = menos avisos), estados…
+
+## Ajustes editables (`/ajustes`, t_9e297c93)
+
+Regla de Oscar: nada hardcodeado. `agent_lanes/ajustes_hub.py` es la capa única: valores por defecto = los de antes,
+editados en `ajustes_hub.json` (junto a lanes.yaml, ignorado por git) con recarga en caliente y auditoría en
+`ajustes_hub_auditoria.jsonl` (quién, cuándo, valor anterior). `/ajustes` (solo operadores) abre grupos Avisos, Atascos,
+Lotes, Carriles y Avanzado (`/ajustes <clave> <valor>`, `/ajustes historial`). Los de `carriles.*` y `topes.*` los lee el
+runner al arrancar: se guardan ya y rigen al reiniciarlo (nunca lo reinicia esto). Sin editar, valen lanes.yaml y
+integrador_visibilidad.yaml. Quién puede pulsar botones (`tools/telegram/people.yaml`) y las plantillas de texto
+(`integrador_visibilidad.yaml: textos`) siguen en su YAML: dar permisos no se hace desde el chat.
+
 ## Atascos rápidos (t_86c09458)
 - **Aviso diario** (desde las 9:00, una vez al día por proyecto con `batch: daily`): «🚦 N PR aprobados esperando lote» con
   una línea por PR (proyecto, título, días esperando) y [🔀 Fusionar lote]. Sin PR esperando no manda nada.

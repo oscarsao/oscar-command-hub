@@ -2,3 +2,6 @@
 .state/
 __pycache__/
 *.pyc
+# Ajustes editados con /ajustes y su auditoría (agent_lanes/ajustes_hub.py): estado local, no se versiona.
+ajustes_hub.json
+ajustes_hub_auditoria.jsonl
