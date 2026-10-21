@@ -54,7 +54,7 @@ from typing import Callable
 from urllib.parse import urlsplit
 
 from . import bandeja as _bandeja
-from . import titulos
+from . import tipo_peticion, titulos
 from .aviso import UrgentBlockWatcher, mention
 from .card_options import PREPARED_AUTHOR, PREPARED_PREFIX, CardSpec, card_message, parse_card
 from .decisions import DEPLOY_ASK, DEPLOY_NO, FALTA, FLUJO, HAZLO, OWNER_TELEGRAM_ID
@@ -77,6 +77,7 @@ COMMANDS = (
     ("tarea", "Ficha de una tarea con sus botones: /tarea t_xxx"),
     ("preparar", "Claude redacta contexto y 3 opciones de una tarjeta de decisión: /preparar t_xxx | todas"),
     ("hazlo", "Crea una tarea pequeña (carril según el texto): /hazlo <texto>"),
+    ("pedir", "Pide algo con tipo (bug o feature) y preguntas: /pedir <texto>"),
     ("estado", "En curso, esperando a Oscar y pendiente de desplegar: /estado [marca]"),
     ("falta", "Qué frena una salida, con el siguiente paso arriba: /falta [marca]"),
     ("desplegar", "Despliega lo fusionado de un proyecto, con doble confirmación: /desplegar oscarhq"),
@@ -256,6 +257,8 @@ class CommandCenter:
         self._asker = asker  # texto libre del DM: (pregunta, estado) -> respuesta (explain.answer); None = solo la ayuda
         self._ask_lock = threading.Lock()  # una pregunta libre a la vez (cada una cuesta una llamada a haiku)
         self._health = health  # /salud: texto HTML ya montado (tests); None = health.build con lo real
+        self._tipo = None  # /pedir: tipo_peticion.TipoPeticion (perezoso); `peticiones` = registro de A1, si lo hay
+        self.peticiones = None
 
     # --- entrada --------------------------------------------------------------------------------------
 
@@ -905,6 +908,37 @@ class CommandCenter:
         text = self.create_quick(names[idx], rec.get("text") or "", (where["chat_id"], where["thread_id"]))
         self.notifier.edit(where["chat_id"], where["message_id"], text)
         return True
+
+    # --- /pedir ---------------------------------------------------------------------------------------
+
+    @property
+    def tipo(self):
+        if self._tipo is None:
+            self._tipo = tipo_peticion.TipoPeticion(self.notifier, self.desk.store, crear_tarjeta=self._pedir_card,
+                                                    registro=self.peticiones, now=self._now)
+        return self._tipo
+
+    def cmd_pedir(self, where, args: str, brand: str | None) -> None:
+        text = args.strip()
+        if not text:
+            self._send(where, "Uso: /pedir <qué necesitas>. Te pregunto si es algo que falla o algo nuevo y lo que haga "
+                       "falta. Ej.: /pedir MigraTeam: el login falla con Google", html=False)
+            return
+        self.tipo.start(where, text, lane=self.infer_lane(text, brand), brand=brand)
+
+    def pedir_step(self, rec: dict, button: dict, where: dict, text: str | None = None) -> bool:
+        """Botón (o respuesta escrita de ✍️) de un /pedir. False = vuelven los botones."""
+        return self.tipo.step(rec, button, where, self.desk._who(), text)
+
+    def _pedir_card(self, st: dict, title: str, body: str, priority: int | None) -> str:
+        """Tarjeta del /pedir: en el carril por palabras clave (como /hazlo) o, sin carril claro, [IDEA] para Oscar."""
+        lane = st.get("lane")
+        board, assignee = (self.lanes[lane].board, lane) if lane in self.lanes else ("default", OSCAR_ASSIGNEE)
+        key = tipo_peticion.card_key(st["confirmado_por"], tuple(st["where"]), st["texto"], self._now())
+        tid = self.hermes_for(board).create(title, body, assignee, priority=priority, key=key, created_by="oscar")
+        return (f"✅ Creada <code>{html.escape(tid)}</code> en {html.escape(assignee)} · "
+                f"{html.escape(st['tipo'])}" + (f" {html.escape(st['urgencia'])}" if st.get("urgencia") else "")
+                + ". Te aviso al terminar.")
 
     # --- /sesion --------------------------------------------------------------------------------------
 
