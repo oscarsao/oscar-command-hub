@@ -160,6 +160,7 @@ lanes:
     max_budget_usd: 3.0
     test_cmd: py -3.12 "{AGENT_LANES_DIR}/agent_lanes/checks.py" {BASE} && py -3.12 -m pytest tools/agent-lanes/tests -q
     # La lista sustituye a la de defaults (no se fusiona): .github/workflows/ se repite a propósito.
+    max_parallel: 2  # 21-10: Oscar quiere las entregas A/B/C del pitch de seguimiento a la vez
     forbidden_paths:
       - .github/workflows/
       - tools/agent-lanes/.env
