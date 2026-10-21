@@ -1,4 +1,4 @@
-"""max_workers: lanes.yaml manda (2) y `--max-workers` puede sobrescribirlo."""
+"""max_workers: lanes.yaml manda (3) y `--max-workers` puede sobrescribirlo."""
 import sys
 from pathlib import Path
 
@@ -9,8 +9,8 @@ import runner  # noqa: E402
 from agent_lanes.config import load_lanes, load_runner_settings  # noqa: E402
 
 
-def test_lanes_yaml_real_pide_dos_workers():
-    assert load_runner_settings()["max_workers"] == 2
+def test_lanes_yaml_real_pide_tres_workers():
+    assert load_runner_settings()["max_workers"] == 3
 
 
 def test_max_workers_se_lee_del_yaml(tmp_path):

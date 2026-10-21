@@ -241,7 +241,7 @@ cambia; cualquier cola, orden o escalada que se escriba aquí debe respetarla.
   DM de Oscar (ni comando ni /sesion abierta) se contesta con haiku sin herramientas y tope de coste, alimentado con
   /falta y /estado; solo informa. `telegram.team_notice` en lanes.yaml (apagado) hace que el bot conteste en un grupo
   «esto lo lleva el asistente del equipo» cuando le escriben a él.
-- max_workers: `lanes.yaml` `runner.max_workers` = 2 (decisión de Oscar, 21-oct). El argumento `--max-workers` PISA el
+- max_workers: `lanes.yaml` `runner.max_workers` = 3 (decisión de Oscar, 21-oct; era 2, se sube para medir la RAM). El argumento `--max-workers` PISA el
   yaml, y la tarea instalada se registró con `-MaxWorkers 2` en su línea de comandos (dos fuentes de verdad). Para que
   mande solo el yaml: reinstalar el servicio SIN `-MaxWorkers` (`instalar_servicio.sh` ya no lo pasa; lo hace Oscar, los
   `.ps1` quedan fuera del alcance de los workers) y reiniciar el runner. El log de arranque
