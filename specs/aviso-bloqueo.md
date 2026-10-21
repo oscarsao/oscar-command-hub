@@ -38,5 +38,8 @@ Botones por clase: transitorio = [🔄 Reintentar][🗄 Aparcar][🔎 Más detal
 ## Tests (`tests/test_bloqueos.py`, sin red)
 Clasificación de cada patrón por defecto; yaml sobrescribe patrones y textos; sin yaml = defaults; estructural nunca ofrece Reintentar; `DETAIL` no consume teclado; un patrón mal formado se ignora con log (no rompe el aviso).
 
-## Preguntas para Oscar (ver `questions` del resultado)
-Alcance de E1; si editar desde Telegram significa «yaml + `/aplicar`» (hoy no hay edición de yaml desde el bot) o un comando `/bloqueos`; y si la reasignación automática (E2) es sin pedir permiso.
+## Decisiones de Oscar (21-oct) y estado
+- Alcance: **E1 sola** (aviso, clasificador, botones). Implementada en esta rama: `agent_lanes/bloqueos.py`, `bloqueos.yaml`, botón `DETAIL`, `tests/test_bloqueos.py`.
+- Editable: yaml en el repo + `/aplicar` (sin comando nuevo).
+- E2 (reasignación automática): sin pedir permiso, con aviso y [Deshacer]. Pendiente de otra tarjeta.
+- Fuera de E1: el carril review (`review.py`) sigue con las frases fijas; E3 lo unifica.

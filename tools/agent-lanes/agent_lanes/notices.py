@@ -439,6 +439,8 @@ def next_step(state: str, block_kind: str | None = None, *, ops: bool = False, b
         what = "resolverlo en una consola con /tomar-tarea" if block_kind == "console" else \
             "cambiar lanes.yaml (rutas o claims) y reabrirla"
         return f"{what} (o pulsa «Que lo resuelva el integrador») · Lo da: {INTEGRADOR}"
+    if state == "blocked" and block_kind == "estructural":  # reintentar repetiría el error: sin Reintentar
+        return f"pedir al integrador que lo resuelva o aparcarla · Lo da: {INTEGRADOR}"
     table = {
         "needs_input": ("responder con un botón" if buttons else "responder en este hilo o a Hermes", "Oscar"),
         "blocked": ("reintentar o aparcar" if buttons else "reintentar desde la tarjeta", "Oscar"),

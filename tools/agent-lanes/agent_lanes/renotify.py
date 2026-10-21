@@ -21,6 +21,7 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
+from . import bloqueos
 from . import proc as _proc
 from .aviso import AvisoAccionable, actions_of, mention, stuck_history
 from .config import Lane
@@ -272,8 +273,11 @@ class Renotifier:
         runs = show.get("runs") or []
         reason = block.get("reason") or (runs[-1].get("summary") if runs else "") or ""
         if kind == "transient":
-            status = status_line("bloqueada", public_reason(reason), "detalle en la tarjeta")
-            return Pending(tid, lane, "blocked", task, status, block_kind="transient",
+            diag = bloqueos.clasificar(reason)
+            status = status_line("bloqueada", bloqueos.texto_publico(diag) or public_reason(reason),
+                                 "detalle en la tarjeta")
+            return Pending(tid, lane, "blocked", task, status,
+                           block_kind="estructural" if diag.estructural else "transient",
                            since=decision_since(task, show))
         meta = (runs[-1].get("metadata") if runs else None) or {}
         if not isinstance(meta, dict):
