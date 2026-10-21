@@ -17,7 +17,7 @@ Hermes **por DM es solo de Oscar**. El equipo escribe por DM al bot de carriles.
 
 | Persona | Rol | Bot de carriles (DM) | Grupo | No puede |
 |---|---|---|---|---|
-| **María** | COO | Mandar ideas y peticiones en un mensaje normal; recibe `t_xxx` y enlace al panel. | Gestión (María trabaja desde aquí: escribe, no ejecuta) | Mandar comandos, crear tareas ejecutables, aprobar, fusionar, desplegar, migraciones, variables. |
+| **María** | Socia / estrategia | Mandar ideas y peticiones en un mensaje normal; recibe `t_xxx` y enlace al panel. | Gestión (María trabaja desde aquí: escribe, no ejecuta) | Mandar comandos, crear tareas ejecutables, aprobar, fusionar, desplegar, migraciones, variables. |
 | **Ingerber** | CMO Píldora | Igual que María, en el tablero de Píldora. | Marketing (temas de contenido y planificación) | Lo mismo; además, nada de finanzas, clientes ni código. |
 | **Andrea** | Marketing (a prueba) | Igual, en el tablero de Píldora. | Marketing (CMO en modo ejecución: contenido, calendario, crews de contenido) | Lo mismo; el gasto en ads y el posicionamiento se escalan a Oscar, no se deciden aquí. |
 | **Oscar** | Dueño | Todo | Todos | — |

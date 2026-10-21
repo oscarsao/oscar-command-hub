@@ -37,6 +37,7 @@ from .free_text import FREE_ACTIONS, FreeText
 from .people import People, load_people
 from .notices import (DECISION_CARD_STATUSES, OPTION_LETTERS, card_url, normalize_questions, questions_block,
                       render, status_line, truncate, with_default_options)
+from .tipo_peticion import A_ASK as PEDIR_ASK, KIND as PEDIR_KIND
 from .reconcile import INTEGRATOR_PROFILE, REC_ARCHIVE, REC_KEEP
 from .review import CHANGES_PREFIX
 
@@ -77,7 +78,7 @@ CARD_VETO = "card_veto"       # ⛔ Vetar: la tarjeta reversible deja de ejecuta
 CARD_ACCEPT_ALL = "card_accept_all"  # ✅ Aceptar las recomendadas del lote de tarjetas de /decisiones
 SNOOZE_DAYS = 7
 BUTTON_OPTION_MAX = 22  # caracteres del texto de la opción en su botón ("A · Aprobar el PR")
-REPLY_ACTIONS = (CHANGES, OTHER, CARD_ASK)  # piden texto a Oscar con force_reply
+REPLY_ACTIONS = (CHANGES, OTHER, CARD_ASK, PEDIR_ASK)  # piden texto a Oscar con force_reply
 EXPLAIN_BUTTON = {"text": "💬 Explícame más", "action": EXPLAIN}
 DEFAULT_OPTION_LABELS = ("✅ Sí, adelante", "❌ No")  # botones de una pregunta sin opciones (DEFAULT_OPTIONS)
 ALL_LABEL = "todas las preguntas"  # ✍️ de una escalada de review (= hermes.LEGACY_ALL_LABELS)
@@ -87,12 +88,13 @@ EXPLAIN_FAILED ="💬 No pude generar la explicación ahora; mira la tarjeta o r
 
 def keyboard_spec(state: str, *, block_kind: str | None = None, questions=None,
                   yes_no: bool = True, ops: bool = False, index: int = 0,
-                  accept_card: bool = True) -> list[list[dict]] | None:
+                  accept_card: bool = True, retried: bool = False) -> list[list[dict]] | None:
     """Botones por estado: filas de {text, action, index}. None = aviso sin botones (en curso, en review...).
     `ops`: el carril ops no tiene carril review ni PR; su review la valida Oscar directamente.
     `index`: pregunta en curso (con varias preguntas van en secuencia: una por paso, en la misma tarjeta).
     Las opciones van escritas en el mensaje (A, B, C...): los botones solo dicen la letra, ⭐ Recomendada y ✍️ Otra.
-    `accept_card`: con varias preguntas y recomendada en todas las pendientes, añade ✅ Acepto todas las recomendadas."""
+    `accept_card`: con varias preguntas y recomendada en todas las pendientes, añade ✅ Acepto todas las recomendadas.
+    `retried`: Oscar ya pulsó Reintentar y volvió a fallar; añade ✍️ Responder para corregir y reanudar desde Telegram."""
     park = {"text": "🗄 Aparcar", "action": PARK}
     if state == "review" and ops:
         return [[{"text": "✅ Validar", "action": APPROVE}, {"text": "🔁 Pedir cambios", "action": CHANGES}, park]]
@@ -127,7 +129,8 @@ def keyboard_spec(state: str, *, block_kind: str | None = None, questions=None,
     if state == "blocked" and block_kind in ("config", "console"):  # reintentar no arregla la config ni el guard: solo aparcar
         return [[park], [{"text": "🧑‍💻 Que lo resuelva el integrador", "action": TO_INTEGRADOR}]]
     if state == "blocked" and block_kind == "transient":
-        return [[{"text": "🔄 Reintentar", "action": RETRY}, park]]
+        rows = [[{"text": "🔄 Reintentar", "action": RETRY}, park]]
+        return rows + [[{"text": "✍️ Responder", "action": OTHER}]] if retried else rows
     if state == "stuck":  # 🧊 en triage por bloqueo repetido (block_loop_detected): unblock no vale, _untriage la saca
         return [[{"text": "🧊 Sacar de triage", "action": UNTRIAGE}, {"text": "✍️ Responder", "action": OTHER},
                  {"text": "🗄 Archivar", "action": PARK}]]
@@ -199,6 +202,68 @@ def _clamp(index, qs) -> int:
     except (TypeError, ValueError):
         i = 0
     return min(max(i, 0), max(len(qs) - 1, 0))
+
+
+class RetryBook:
+    """Reintentos pulsados con 🔄 Reintentar: .state/retry_marks.json {task_id: {at, key}}. `key` = huella del motivo del
+    bloqueo previo. Si el runner vuelve a bloquear la tarea dentro del plazo, el aviso dice que el reintento no
+    funcionó y si es el mismo motivo (antes el botón desaparecía y reaparecía sin explicación)."""
+    TTL = 24 * 3600
+
+    def __init__(self, path: Path | str, clock: Callable[[], float] = time.time):
+        self.path = Path(path)
+        self._clock = clock
+        self._lock = threading.Lock()
+
+    @staticmethod
+    def key(reason: str | None) -> str:
+        """Huella del motivo: sin la línea "Para Oscar", espacios normalizados y primeros 80 caracteres."""
+        lines = [l for l in (reason or "").splitlines() if not l.strip().startswith("Para Oscar")]
+        return " ".join(" ".join(lines).split())[:80]
+
+    def _load(self) -> dict:
+        try:
+            raw = json.loads(self.path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {}
+        if not isinstance(raw, dict):
+            return {}
+        now = self._clock()
+        return {k: v for k, v in raw.items() if isinstance(v, dict) and now - float(v.get("at") or 0) < self.TTL}
+
+    def mark(self, task_id: str, reason: str | None) -> None:
+        with self._lock:
+            data = self._load()
+            data[task_id] = {"at": self._clock(), "key": self.key(reason)}
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self.path.with_suffix(f".{os.getpid()}.{threading.get_ident()}.tmp")
+            tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+            os.replace(tmp, self.path)
+
+    def get(self, task_id: str) -> dict | None:
+        with self._lock:
+            return self._load().get(task_id)
+
+    def clear(self, task_id: str) -> None:
+        """Cierra el ciclo de reintento (salió bien, falló al reencolar, o Oscar respondió/aparcó)."""
+        with self._lock:
+            data = self._load()
+            if task_id not in data:
+                return
+            del data[task_id]
+            tmp = self.path.with_suffix(f".{os.getpid()}.{threading.get_ident()}.tmp")
+            tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+            os.replace(tmp, self.path)
+
+    def verdict(self, task_id: str, reason: str | None) -> str | None:
+        """Frase pública si la tarea se reintentó y vuelve a estar bloqueada ("mismo motivo" u "otro motivo"); None si
+        no hubo reintento reciente. El registro se conserva: el teclado lo usa para ofrecer ✍️ Responder."""
+        mark = self.get(task_id)
+        if not mark:
+            return None
+        if mark.get("key") and self.key(reason) == mark["key"]:
+            return "🔁 el reintento no funcionó: sigue atascada por el mismo motivo"
+        return "🔁 el reintento no funcionó: ahora se bloquea por otro motivo"
 
 
 class CallbackStore:
@@ -336,6 +401,7 @@ class DecisionDesk:
         self.explainer = explainer or (lambda rec: _explain(rec, runner=self._run))
         # Aplazadas 7 días: junto a los teclados (.state/), así los tests con tmp_path no escriben en el .state real.
         self.snoozes = snoozes or CardSnoozes(Path(store.root).parent / "card_snooze.json")
+        self.retries = RetryBook(Path(store.root).parent / "retry_marks.json")  # reintentos pulsados (aviso de resultado)
         self.vetos = VetoBook(Path(store.root).parent / "card_veto.json")  # plazo de veto de las tarjetas reversibles
         # Texto libre = respuesta a la decisión pendiente del tema (`telegram.free_text` de lanes.yaml); None = apagado.
         self.free = FreeText(self, **free_text) if free_text else None
@@ -404,7 +470,8 @@ class DecisionDesk:
         qs = with_default_options(questions, yes_no)
         q_index = _clamp(q_index, qs)
         spec = keyboard_spec(state, block_kind=block_kind, questions=questions, yes_no=yes_no,
-                             ops=getattr(lane, "kind", "") == "ops", index=q_index)
+                             ops=getattr(lane, "kind", "") == "ops", index=q_index,
+                             retried=bool(self.retries.get(task["id"])))
         if not spec:
             return None
         # ✍️ responde SOLO la pregunta en curso (antes, con varias, valía para "todas las preguntas" y Oscar no lo
@@ -774,6 +841,8 @@ class DecisionDesk:
         action = button["action"]
         if action in FREE_ACTIONS:  # selector / Deshacer del texto libre
             return bool(self.free) and self.free.on_button(action, rec, button, where)
+        if rec.get("kind") == PEDIR_KIND:  # /pedir: tipo, preguntas y modo OASP (tipo_peticion.py)
+            return bool(self.commands) and self.commands.pedir_step(rec, button, where)
         if rec.get("card"):  # tarjeta de decisión de Oscar (/decisiones)
             return self._card_act(rec, button, where)
         if action.startswith("int_"):  # 🔀 Fusionar / 🚀 Desplegar: solo con el Integrador activo
@@ -1195,6 +1264,7 @@ class DecisionDesk:
 
     def _park(self, rec: dict, where: dict) -> bool:
         tid, h = rec["task_id"], self._hermes(rec)
+        self.retries.clear(tid)
         self._edit(rec, where, "parked", "🗄 aparcada")
         if not h.assign(tid, PARK_PROFILE):
             self._edit(rec, where, "blocked", "no se pudo aparcar (¿la tarea está en curso?)")
@@ -1227,9 +1297,10 @@ class DecisionDesk:
         if self._guard_limited(rec):  # limitación permanente del guard: devolverla al carril repite el mismo bloqueo
             self._edit(rec, where, "blocked", f"requiere consola: /tomar-tarea {rec['task_id']} (el guard del carril no lo permite)")
             return False
-        # Se edita ANTES de desbloquear: el runner puede cogerla enseguida y su "▶️ en curso" debe quedar encima.
-        self._edit(rec, where, "requeued", "🔄 reencolada")
         h, tid = self._hermes(rec), rec["task_id"]
+        self._mark_retry(h, tid)  # para decir después si el reintento salió o volvió a fallar por lo mismo
+        # Se edita ANTES de desbloquear: el runner puede cogerla enseguida y su "▶️ en curso" debe quedar encima.
+        self._edit(rec, where, "requeued", "🔄 reencolada · si vuelve a fallar te aviso aquí con el motivo")
         # Bloqueada dos veces por lo mismo, Hermes la pasa a triage y `unblock` falla: _resume la saca de triage sin
         # reescribirla (también desde un aviso ⛔ antiguo de cuando aún estaba bloqueada).
         status = self._resume(h, tid)
@@ -1237,7 +1308,9 @@ class DecisionDesk:
             if status != "ready":
                 self._edit(rec, where, "requeued", f"🔄 sacada de triage · queda en {status} (espera a otra tarea)")
             return True
-        self._edit(rec, where, "blocked", "no se pudo reencolar: la tarea ya no está bloqueada ni en triage")
+        self.retries.clear(tid)
+        self._edit(rec, where, "blocked", "❌ el reintento falló: no se pudo reencolar, la tarea ya no está bloqueada ni "
+                   "en triage (quizá otra vía ya la movió: mira la tarjeta)")
         return False
 
     def _untriage(self, rec: dict, where: dict) -> bool:
@@ -1264,6 +1337,14 @@ class DecisionDesk:
         self._edit(rec, where, "requeued", "🔄 sacada de triage" + ("" if new == "ready" else f" · queda en {new}"))
         return True
 
+    def _mark_retry(self, h, tid: str) -> None:
+        try:
+            reason = next(((e.get("payload") or {}).get("reason") for e in reversed(h.show(tid).get("events") or ())
+                           if e.get("kind") == "blocked"), None)
+            self.retries.mark(tid, reason)
+        except Exception as exc:  # sin la huella el reintento sigue: solo se pierde el "mismo motivo"
+            log.info("%s: huella del bloqueo no guardada: %s", tid, exc)
+
     def _guard_limited(self, rec: dict) -> bool:
         try:
             block = last_needs_input_block(self._hermes(rec).show(rec["task_id"]))
@@ -1277,6 +1358,7 @@ class DecisionDesk:
             self._edit(rec, where, "blocked", "no se pudo guardar la respuesta en la tarjeta")
             return False
         self._trace(h, tid)
+        self.retries.clear(tid)
         self._edit(rec, where, "answered", f"💬 respondida: {truncate(answer, 120)}")
         if not self._resume(h, tid) and self._stuck(rec):  # en triage (bloqueo repetido): requeue_triage
             self._edit(rec, where, "answered", "💬 respuesta anotada · no se pudo desbloquear (mira la tarjeta)")
@@ -1305,7 +1387,9 @@ class DecisionDesk:
 
     def _ask(self, token: str, rec: dict, button: dict, where: dict) -> None:
         tid = rec["task_id"]
-        if button["action"] == CHANGES:
+        if rec.get("kind") == PEDIR_KIND:  # /pedir: la pregunta en curso, sin tarjeta que enlazar
+            prompt = rec.get("prompt") or "Tu respuesta:"
+        elif button["action"] == CHANGES:
             prompt = f"¿Qué cambio pides para {tid}?"
         else:
             q = ((rec.get("question") or {}).get("question") or rec.get("summary")
@@ -1313,7 +1397,8 @@ class DecisionDesk:
             n = rec.get("n_questions") or 1
             step = f" (Pregunta {(rec.get('q_index') or 0) + 1}/{n})" if n > 1 and not rec.get("other_label") else ""
             prompt = f"Tu respuesta para {tid}{step}:" + (f"\n{truncate(q, 300)}" if q else "")
-        card = card_url(getattr(self.links, "kanban_base_url", None), rec.get("board") or "", tid)
+        card = None if rec.get("kind") == PEDIR_KIND else card_url(
+            getattr(self.links, "kanban_base_url", None), rec.get("board") or "", tid)
         if card:  # texto plano: Telegram enlaza la URL sola
             prompt += f"\nTarjeta: {card}"
         try:
@@ -1331,6 +1416,8 @@ class DecisionDesk:
                                  {"token": token, "rec": rec, "button": button, "where": where})
 
     def _apply_reply(self, rec: dict, button: dict, where: dict, text: str) -> bool:
+        if rec.get("kind") == PEDIR_KIND:
+            return bool(self.commands) and self.commands.pedir_step(rec, button, where, text)
         if rec.get("card"):
             return self._card_act(rec, button, where, text)
         if rec.get("group"):

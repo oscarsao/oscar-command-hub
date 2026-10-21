@@ -267,6 +267,10 @@ class LaneRunner:
         if not blocked:
             log.error("no se pudo bloquear %s (%s) en el kanban: la tarea sigue en running", tid, kind)
         task = task or self._active.get(tid)
+        retries = getattr(self._decisions, "retries", None)  # Reintentar pulsado en Telegram: decir cómo salió
+        verdict = retries.verdict(tid, reason) if (retries and blocked and kind != "needs_input") else None
+        if verdict:
+            public = f"{verdict} ({public})"
         # Botones solo si el bloqueo quedó hecho: Reintentar/Responder hacen `unblock`.
         if kind == "needs_input":
             hint = "responde con un botón o en la tarjeta" if (blocked and self._decisions) else \
@@ -421,11 +425,18 @@ class LaneRunner:
             if not ok:
                 return self._block(tid, "transient", f"request-review rechazado: {err}", task,
                                    public="el kanban rechazó el paso a review")
+            self._clear_retry(tid)
             # El resumen completo queda en la tarjeta (request-review); aquí solo la línea de estado.
             self.notify("review", tid, task, status_line(
                 "en review", files_label(len(result.get("changed_files") or [])), test_label(check.test_exit),
                 money(outcome.cost_usd)), changed_files=result.get("changed_files"), for_oscar=result.get("for_oscar"))
             return "review"
+
+    def _clear_retry(self, tid: str) -> None:
+        """La tarea llegó a review tras un Reintentar: el ciclo terminó y un bloqueo posterior ya no es "del reintento"."""
+        retries = getattr(self._decisions, "retries", None)
+        if retries:
+            retries.clear(tid)
 
     def _preflight(self, lane: Lane, tid: str, task: dict) -> list[str]:
         """Avisos de permisos que faltan (ver preflight.py); quedan también como comentario de la tarjeta."""
@@ -484,6 +495,7 @@ class LaneRunner:
         if not ok:
             return self._block(tid, "transient", f"request-review rechazado: {err}", task,
                                public="el kanban rechazó el paso a review")
+        self._clear_retry(tid)
         n = len(result.get("evidence") or [])
         paths = [str(ev.get("path") or (ev.get("value") if ev.get("type") == "path" else "") or "")
                  for ev in result.get("evidence") or [] if isinstance(ev, dict)]
