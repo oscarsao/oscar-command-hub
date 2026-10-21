@@ -11,6 +11,7 @@ import tempfile
 import time
 
 from . import proc as _proc
+from . import titulos
 from pathlib import Path
 
 log = logging.getLogger("agent_lanes")
@@ -353,6 +354,7 @@ class HermesCLI:
                created_by: str | None = None, parents: list[str] | None = None) -> str:
         """Crea una tarjeta y devuelve su id. --body-file: un cuerpo que empieza por "- " no se toma como flag.
         `parents` = ids del mismo tablero de los que depende (un --parent por id)."""
+        titulos.warn_title(title)  # aviso en el log si no sigue «[Proyecto] Qué · paso»; nunca bloquea
         fd, tmp = tempfile.mkstemp(prefix="tarjeta-", suffix=".md")
         try:
             with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as fh:

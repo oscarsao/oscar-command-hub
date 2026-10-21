@@ -5,8 +5,10 @@
 
 runner:
   # Tope global de procesos claude vivos a la vez, sumando todos los carriles (review incluido).
-  # 1 por defecto: hubo un OOM el 27-09 con varias sesiones abiertas. 2 desde el 21-10 (decisión de Oscar;
-  # el servicio ya arrancaba con --max-workers 2).
+  # 2 por decisión de Oscar (21-oct, botones): quiere dos trabajos a la vez. Esta es la ÚNICA fuente de verdad: el
+  # servicio (install-service.ps1) no fija el número en su línea de comandos; `--max-workers N` en runner.py solo
+  # sirve para pruebas puntuales y PISA este valor. Ojo con la RAM: hubo un OOM el 27-09 con varias sesiones abiertas
+  # y el PC va justo (~0,9 GB libres el 21-oct). Si vuelve a haber OOM, bajar a 1 aquí y reiniciar el runner.
   max_workers: 2
   interval_seconds: 60
   # Vigilante de «runner ciego» (agent_lanes/ciego.py): si no se pueden listar tareas (p. ej. WinError 4551 de App
@@ -70,6 +72,9 @@ defaults:
   model: sonnet
   effort: medium
   max_budget_usd: 3.0
+  # Por carril, no global. Se queda en 1: cada carril trabaja un repo y dos workers en el mismo repo/checkout podrían
+  # pisarse (worktrees, migraciones, pushes). Con max_workers 2 el paralelismo sale de carriles DISTINTOS (repos
+  # distintos) o de un carril + review. No subirlo sin mirar el riesgo de ese repo.
   max_parallel: 1
   role: roles/implementador.md
   # En -p, acceptEdits solo aprueba ediciones; el resto de Bash se deniega salvo lo listado aquí.
