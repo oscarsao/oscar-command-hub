@@ -87,16 +87,16 @@ def test_default_path_points_to_versioned_file():
     assert people.PEOPLE_FILE.exists()
 
 
-def test_dev_entries_mauredy_angel_are_scoped_and_not_operators():
-    """Alta pendiente de Mauredy (solo MigraTeam) y Angel (OscarHQ/Signal): sin user_id y SIN operador mientras
-    `brands` no limite lo que puede ejecutar un operador (hoy solo decide el tablero de las ideas)."""
+def test_dev_entries_mauredy_angel_are_scoped_operators_without_id_yet():
+    """Mauredy (solo MigraTeam) y Angel (OscarHQ/Signal): operadores ACOTADOS por marca (`brands` ya limita lo que
+    ejecutan; ver test_operador_marca.py), pero sin user_id hasta que Oscar lo rellene, así que aún no existen."""
     import yaml
     entries = yaml.safe_load(people.PEOPLE_FILE.read_text(encoding="utf-8"))["people"]
     assert entries["mauredy"]["brands"] == ["MigraTeam"]
     assert "MigraTeam" not in entries["angel"]["brands"] and "Signal" in entries["angel"]["brands"]
     for key in ("mauredy", "angel"):
         assert entries[key]["user_id"] is None and entries[key]["role"] == "dev"
-        assert entries[key].get("operador") is not True  # no activar hasta que exista el operador acotado por marca
+        assert entries[key].get("operador") is True  # activo: la restricción por marca ya existe
         assert not entries[key].get("can")
     assert not any(p.key in ("mauredy", "angel") for p in load_people(OWNER)._by_id.values())  # sin id = ignorados
 
