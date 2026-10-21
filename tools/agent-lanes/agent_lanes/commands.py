@@ -104,7 +104,7 @@ HELP_ALIASES = ("start", "ayuda", "help")
 NOT_OWNER = ("Este comando es solo para operadores. Pide a Oscar o a María que lo haga, o escribe tu petición en "
              "texto libre y se la paso")
 # Comandos sin marca clara o con efecto directo en repos/sesiones de Oscar: un operador acotado por marca no los usa.
-SOLO_TODAS_LAS_MARCAS = ("integrador", "encolar", "preparar", "pedir", "sesion", "flujo")
+SOLO_TODAS_LAS_MARCAS = ("integrador", "encolar", "preparar", "pedir", "sesion", "flujo", "ajustes")
 BRAND_ARGS = {"migrateam": "MigraTeam", "pildora": "Píldora", "píldora": "Píldora", "nextjobs": "NextJobs"}
 TASK_ID_RE = re.compile(r"^t_[0-9a-f]{8}$")
 STATUS_TEXT = {"running": ("running", "en curso"), "ready": ("ready", "en cola"), "review": ("review", "en review"),
@@ -351,6 +351,10 @@ class CommandCenter:
                 found = batches.resolve(arg.lower() or (scope or "").lower()) if batches and (arg or scope) else None
                 name = found[0].name if found else None
             return check(BRANDS.get(name))
+        if cmd == "hazlo":
+            lane = self.infer_lane(args, scope)
+            # Sin carril claro, el comando ofrece botones de carril: se comprueban al pulsarlos.
+            return check(BRANDS.get(lane)) if lane else None
         if cmd in ("prioridad", "tarea"):
             tid = (args.split() or [""])[0].lower()
             found = self._find(tid) if TASK_ID_RE.match(tid) else None

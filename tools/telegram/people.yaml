@@ -17,6 +17,8 @@
 #   - brands: la primera marca decide el tablero de sus tarjetas (Pildora -> oscarhq, MigraTeam -> migrateam). Ademas
 #     limita lo que ejecuta un operador: solo actua (comandos, botones, aprobaciones, fusiones, despliegues) en esas
 #     marcas; "*" = todas (Maria). Sin "*" y sin marca clara en el destino, se rechaza. OscarHQ cuenta como Pildora.
+#     Limite conocido (pendiente de Oscar): los listados (/tareas, /estado...) aun muestran tarjetas de otras marcas;
+#     solo se veta ACTUAR sobre ellas. /ajustes, /integrador, /sesion... quedan reservados a quien tiene "*".
 people:
   maria:
     name: María

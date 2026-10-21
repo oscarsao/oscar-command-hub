@@ -159,3 +159,24 @@ def test_maria_sigue_operando_por_comando_y_mauredy_no_ejecuta_integrador(tmp_pa
     assert "No tienes permiso" not in bot.sent[-1]["text"]
     command(desk, "/integrador", user=MAUREDY, chat=MAUREDY, uid=2)
     assert bot.sent[-1]["text"].startswith("No tienes permiso")
+
+
+def test_hazlo_de_otra_marca_se_veta_y_el_de_la_suya_no(tmp_path):
+    cc, desk, bot, _ = desk_con(tmp_path)
+    veto = cc._veto_marca
+    assert "No tienes permiso" in veto(MAUREDY, "hazlo", "OscarHQ: algo", None)
+    assert "No tienes permiso" in veto(MAUREDY, "hazlo", "scraper: algo", None)
+    assert "No tienes permiso" in veto(ANGEL, "hazlo", "MigraTeam: algo", None)
+    assert veto(MAUREDY, "hazlo", "MigraTeam: algo", None) is None
+    assert veto(ANGEL, "hazlo", "OscarHQ: algo", None) is None
+    assert veto(MAUREDY, "hazlo", "sin pistas de carril", None) is None  # irá a botones, que se comprueban al pulsar
+    for user in (OSCAR, MARIA):
+        assert veto(user, "hazlo", "OscarHQ: algo", None) is None
+
+
+def test_ajustes_solo_para_quien_opera_en_todas_las_marcas(tmp_path):
+    cc, desk, bot, _ = desk_con(tmp_path)
+    for user in (MAUREDY, ANGEL):
+        assert "No tienes permiso" in cc._veto_marca(user, "ajustes", "clave valor", None)
+    for user in (OSCAR, MARIA):
+        assert cc._veto_marca(user, "ajustes", "clave valor", None) is None
