@@ -1,9 +1,10 @@
 """Texto libre de Oscar como respuesta a la decisión pendiente del tema (auditoría t_dddcc232, P1, opción A).
 
-Si Oscar escribe en un chat/tema sin hacer "reply" a un force_reply, y ahí hay UNA decisión pendiente suya (una
-pregunta needs_input o una tarjeta de /decisiones), su texto cuenta como respuesta: mismo camino que la respuesta por
-reply (`DecisionDesk._apply_reply`), con eco "Entendido: «…» para t_xxx" y [↩️ Deshacer]. Con varias pendientes no
-adivina: pregunta con botones cuál. Con ninguna, todo sigue como antes (ayuda en el DM; silencio en grupos).
+Si Oscar escribe en un chat/tema sin hacer "reply" a un force_reply, y ahí hay alguna decisión pendiente suya (una
+pregunta needs_input o una tarjeta de /decisiones), NO se asume que el texto sea la respuesta (t_61a4baa6): el bot
+pregunta con botones «¿es tu respuesta a t_xxx o un mensaje nuevo?» (con varias, a cuál). Al elegir tarea, mismo
+camino que la respuesta por reply (`DecisionDesk._apply_reply`), con eco "Entendido: «…» para t_xxx" y [↩️ Deshacer]
+como red de seguridad. Con ninguna, todo sigue como antes (ayuda en el DM; silencio en grupos).
 
 Nunca aplica a acciones de producción: solo cuentan los avisos que ofrecen ✍️ (OTHER / CARD_ASK); promover, fusionar,
 desplegar y aprobar siguen exigiendo su botón (y su doble confirmación). Ventana y tope de botones: `telegram.free_text`
@@ -109,10 +110,9 @@ class FreeText:
         text = (msg.get("text") or "").strip()
         if not live:
             return
-        if len(live) == 1:
-            self._apply(live[0], text, msg.get("message_id"))
-        else:
-            self._ask_which(live[:self.max_choices], text, msg)
+        # Nunca se asume que el texto suelto es una respuesta: con una o varias pendientes se pregunta con botones
+        # (el reply directo al aviso y los botones A/B ya tienen su camino aparte). Deshacer queda como red de seguridad.
+        self._ask_which(live[:self.max_choices], text, msg)
 
     # --- aplicar --------------------------------------------------------------------------------------
 
@@ -158,12 +158,16 @@ class FreeText:
         first = live[0]["where"]
         rows = [[{"text": f"{c['rec']['task_id']} · {truncate(c['rec'].get('title') or '', PICK_TITLE_MAX)}",
                   "action": FREE_PICK, "index": i}] for i, c in enumerate(live)]
-        rows.append([{"text": "✖ Ninguna", "action": FREE_CANCEL}])
+        rows.append([{"text": "✖ Ninguna" if len(live) > 1 else "✖ Es un mensaje nuevo", "action": FREE_CANCEL}])
         rec = {"task_id": "texto-libre", "board": "", "lane": "", "free_pick": True, "text": text[:3000],
                "reply_to": msg.get("message_id"),
                "candidates": [{"token": c["token"], "task_id": c["rec"]["task_id"], "where": c["where"]} for c in live]}
         markup = d.store.issue(rec, rows)[1]
-        body = f"Tienes {len(live)} decisiones pendientes aquí. ¿Para cuál es «{truncate(text, 120)}»?"
+        if len(live) > 1:
+            body = f"Tienes {len(live)} decisiones pendientes aquí. ¿Para cuál es «{truncate(text, 120)}»?"
+        else:
+            body = (f"Tienes pendiente {live[0]['rec']['task_id']}. ¿«{truncate(text, 120)}» es tu respuesta, "
+                    f"o es un mensaje nuevo?")
         try:
             d.notifier.send_to(first["chat_id"], first["thread_id"], body, html=False,
                                reply_to=msg.get("message_id"), reply_markup=markup)
