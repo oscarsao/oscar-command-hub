@@ -799,6 +799,8 @@ class DecisionDesk:
             return bool(self.commands) and self.commands.falta_choice(rec, button, where, self)
         if action == HAZLO:  # /hazlo con duda: el botón elige carril
             return bool(self.commands) and self.commands.hazlo_choice(rec, button, where)
+        if action == "req_mas":  # /estado: «Ver más» de una petición (formato_aviso.REQ_MAS)
+            return bool(self.commands) and self.commands.req_choice(rec, button, where)
         if action == FLUJO:  # /flujo: crear o descartar la propuesta
             return bool(self.commands) and self.commands.flujo_choice(rec, button, where)
         if action in (DEPLOY_ASK, DEPLOY_NO):  # /desplegar: confirmación previa al int_deploy

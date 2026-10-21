@@ -15,6 +15,7 @@ from typing import Callable
 from zoneinfo import ZoneInfo
 
 from .aviso import mention
+from .formato_aviso import PIE_TEXTO_LIBRE
 from .notices import hours_ago, truncate
 
 log = logging.getLogger("agent_lanes")
@@ -71,6 +72,7 @@ def render_summary(rows: list[dict], decisions: list, guard_n: int, now: float, 
     if len(decisions) > DECISIONS_SHOWN:
         lines.append(f"… y {len(decisions) - DECISIONS_SHOWN} más")
     lines.append("➡️ Próximo paso: pulsa «Ver decisiones» y responde con los botones · Lo da: Oscar")
+    lines.append(PIE_TEXTO_LIBRE)  # formato único de aviso (t_211c9902): botones + texto libre
     return "\n".join(lines)
 
 

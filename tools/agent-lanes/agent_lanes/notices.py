@@ -14,6 +14,7 @@ import re
 import subprocess
 
 from . import proc as _proc
+from .peticiones import vinculo_de
 import threading
 from pathlib import Path
 from typing import Callable
@@ -466,7 +467,9 @@ def render(state: str, task_id: str, title: str | None, lane: str, status: str,
         🗂 Tarjeta · 📄 Spec/pitch · 🔀 Cambios
     """
     e = html.escape
-    head = [f"{EMOJI.get(state, '•')} {e(task_id)} · {e(truncate(title, TITLE_MAX))}", e(context_line(lane, body))]
+    req = vinculo_de(body)  # petición a la que pertenece la tarjeta (`req: req_<n>`): se ve en el aviso (t_211c9902)
+    head = [f"{EMOJI.get(state, '•')} {e(task_id)} · {e(truncate(title, TITLE_MAX))}",
+            e(context_line(lane, body)) + (f" · {req}" if req else "")]
     plain = truncate(for_oscar, FOR_OSCAR_MAX) if for_oscar else ""
     what = None if plain else objective(body)
     if plain:
