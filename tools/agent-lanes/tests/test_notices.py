@@ -50,11 +50,11 @@ def test_render_card_format_and_escapes_html():
     assert lines[0].startswith("🔍 t_1 · Arregla &lt;script&gt; &amp; ") and lines[0].endswith("…")
     assert lines[1] == "Píldora · claude-oscarhq · Spec-Lite"
     assert lines[2] == "Qué: Que el &lt;aviso&gt; tenga contexto"
-    assert lines[3] == "en review · 2 archivos"
+    assert lines[3] == "en review · 2 archivos · paso 4/6"
     assert "<script>" not in text
     assert lines[4].startswith('<a href="https://k/t?a=1&amp;b=2">🗂 Tarjeta</a> · ')
     # sin objetivo ni enlaces: cabecera, contexto y estado
-    assert render("running", "t_1", "T", "l", "en curso").split("\n") == ["▶️ t_1 · T", "l", "en curso"]
+    assert render("running", "t_1", "T", "l", "en curso").split("\n") == ["▶️ t_1 · T", "l", "en curso · paso 3/6"]
 
 
 def test_questions_block_max_5_items_and_limit_total():
@@ -262,7 +262,7 @@ def test_review_status_line_has_files_tests_and_cost():
     n = FakeNotifier()
     LaneRunner(LANE, hermes=FakeHermes(tasks=[{"id": "t_1", "title": "T", "body": "B"}]), git=FakeGit(),
                worker=FakeWorker([out]), verifier=FakeVerifier(), notify=n).run_once()
-    assert n.edits[-1][1].split("\n")[2] == "en review · 2 archivos · tests OK · 1,7 $"
+    assert n.edits[-1][1].split("\n")[2] == "en review · 2 archivos · tests OK · 1,7 $ · paso 4/6"
     assert "ok" not in n.edits[-1][1].split("\n")[1:]  # el resumen del worker no va a Telegram
 
 

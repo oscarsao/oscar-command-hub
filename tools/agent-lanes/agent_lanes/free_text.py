@@ -110,8 +110,14 @@ class FreeText:
         text = (msg.get("text") or "").strip()
         if not live:
             return
-        # Nunca se asume que el texto suelto es una respuesta: con una o varias pendientes se pregunta con botones
-        # (el reply directo al aviso y los botones A/B ya tienen su camino aparte). Deshacer queda como red de seguridad.
+        # Escrito como respuesta (reply) a uno de los avisos: es la respuesta de ESE aviso, sin preguntar.
+        replied = (msg.get("reply_to_message") or {}).get("message_id")
+        exact = [c for c in live if replied is not None and str(c["where"]["message_id"]) == str(replied)]
+        if len(exact) == 1:
+            self._apply(exact[0], text, msg.get("message_id"))
+            return
+        # Texto suelto: nunca se asume que es una respuesta; con una o varias pendientes se pregunta con botones.
+        # Deshacer queda como red de seguridad.
         self._ask_which(live[:self.max_choices], text, msg)
 
     # --- aplicar --------------------------------------------------------------------------------------

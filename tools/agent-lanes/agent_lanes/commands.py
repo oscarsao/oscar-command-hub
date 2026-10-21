@@ -44,6 +44,7 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import html
+import json
 import logging
 import re
 import threading
@@ -61,15 +62,16 @@ from .decisions import DEPLOY_ASK, DEPLOY_NO, FALTA, FLUJO, HAZLO, OWNER_TELEGRA
 from .deps import (ShowCache, child_bucket, dependency_order, family, pending_parents, tree_lines,
                    waiting_line)
 from .notices import (BOARD_BRANDS, BRANDS, DECISION_CARD_STATUSES, OSCAR_ASSIGNEE, TEXT_MAX, card_url,
-                      decision_since, hours_ago, is_decision_card, markup_token, normalize_questions, render,
-                      status_line, truncate)
+                      decision_since, hours_ago, is_decision_card, markup_token, next_step, normalize_questions,
+                      render, status_line, truncate)
 
 log = logging.getLogger("agent_lanes")
 URGENT_EVERY = 120  # s mínimos entre pasadas del aviso inmediato de bloqueos de prioridad alta
 
 COMMANDS = (
     ("hoy", "Resumen del día (el de las 8:00) ahora"),
-    ("integrador", "Cola del integrador: bloqueos de guard que requieren consola"),
+    ("integrador", "Estado del integrador, PR de sesiones interactivas y bloqueos de guard"),
+    ("encolar", "Encola un PR de una sesión interactiva para tu OK: /encolar <repo> <PR>"),
     ("decisiones", "Bandeja de decisiones pendientes con botones"),
     ("atencion", "Todo lo que espera a Oscar, con botones para resolverlo aquí"),
     ("aprobar", "Tareas listas para integrar"),
@@ -377,7 +379,8 @@ class CommandCenter:
         """Resumen de las 9:00 por carril (resumen_carriles). Barato fuera de la franja: solo mira la hora."""
         from . import resumen_carriles as rc
         path = self._state_file("daily_state", "resumen_carriles.json")
-        if path is None or rc.due_date(datetime.fromtimestamp(self._now(), rc.MADRID), set()) is None:
+        hour = self.vis_ajustes().hora_parte
+        if path is None or rc.due_date(datetime.fromtimestamp(self._now(), rc.MADRID), set(), hour) is None:
             return None
         att = self.renotifier().attention
         who = mention((att or {}).get("oscar_mention") or (att or {}).get("mention"))
@@ -392,12 +395,168 @@ class CommandCenter:
         return rc.DailyLaneSummary(
             lambda: rc.collect_rows(self.lanes, self.hermes_for), lambda: self.pending_decisions() + self.stuck_tasks(),
             lambda: len(queue.entries()) if queue else 0, send, path, who=who,
+            now=lambda: datetime.fromtimestamp(self._now(), rc.MADRID), hour=hour,
+            extra=lambda: self.integrador_resumen()[0]).tick()
+
+    # --- visibilidad del integrador (t_5624611d): estado, PR de sesiones interactivas, «ver más» ---------------
+
+    def vis_ajustes(self):
+        from . import integrador_visibilidad as iv
+        return iv.load_ajustes(getattr(self, "vis_settings", None))  # se relee: editar el YAML no pide reiniciar
+
+    def estado_integrador(self):
+        from . import integrador_visibilidad as iv
+        return iv.leer_estado(self._state_file("estado_path", iv.ESTADO_FILE))
+
+    def cola_externos(self):
+        from . import integrador_visibilidad as iv
+        path = self._state_file("externos_state", iv.EXTERNOS_FILE)
+        return iv.ColaExternos(path, self._now) if path else None
+
+    def integrador_resumen(self) -> tuple[str, bool]:
+        """(texto corto, hay «ver más»): estado del integrador (o su falta) y los PR de sesiones interactivas."""
+        from . import integrador_visibilidad as iv
+        aj, now = self.vis_ajustes(), self._now()
+        text, mas = iv.resumen(self.estado_integrador(), aj, now)
+        cola = self.cola_externos()
+        ext = iv.vista_externos(cola.items() if cola else {}, now)
+        return "\n".join(x for x in (text, ext) if x), mas
+
+    # --- seguimiento de peticiones req_<n> (t_211c9902): /estado, «Ver más» y segundo parte de las 9:00 ----------------
+
+    def registro_peticiones(self):
+        """Registro de peticiones: el inyectado en `self.peticiones` si sabe listar; si no, `.state/peticiones.json`
+        (None si no hay `.state`, p. ej. en tests sin él)."""
+        from .peticiones import Peticiones
+        if hasattr(self.peticiones, "listar"):
+            return self.peticiones
+        path = self._state_file("peticiones_state", "peticiones.json")
+        return Peticiones(path, now=self._now) if path else None
+
+    def _show_card(self, tid: str) -> dict | None:
+        """`show` de una tarjeta de petición en el primer tablero que la tiene (el registro guarda el id, no el tablero)."""
+        boards = dict.fromkeys([l.board for l in self.lanes.values() if l.board] + list(EXTRA_BOARDS))
+        for board in boards:
+            try:
+                show = self._shows.show(self.hermes_for(board), tid)
+            except Exception:
+                continue
+            if (show or {}).get("task"):
+                return show
+        return None
+
+    def peticion_items(self, proyecto: str | None = None) -> list:
+        """[(petición, Estado derivado)] leyendo las tarjetas enlazadas; una ilegible no tumba el resto."""
+        from .peticiones import derivar
+        store, ahora = self.registro_peticiones(), self._now()
+        if store is None:
+            return []
+        return [(r, derivar(r, {t: self._show_card(t) for t in r["tarjetas"]}, ahora)) for r in store.listar(proyecto)]
+
+    def peticiones_tick(self) -> str | None:
+        """Segundo parte de las 9:00: por petición, junto al de carriles (no lo repite ni sale sin novedad)."""
+        from . import resumen_carriles as rc
+        from .formato_aviso import paginas
+        from .resumen_peticiones import DailyRequestSummary
+        path = self._state_file("peticiones_daily_state", "resumen_peticiones.json")
+        if path is None or rc.due_date(datetime.fromtimestamp(self._now(), rc.MADRID), set()) is None:
+            return None
+        att = self.renotifier().attention
+        chat, thread = (str(att["chat"]), str(att.get("thread") or "0")) if att else (self.owner_id, None)
+        return DailyRequestSummary(
+            self.peticion_items, lambda t: bool(self.notifier.send_to(chat, thread, t, html=False)), path,
             now=lambda: datetime.fromtimestamp(self._now(), rc.MADRID)).tick()
 
     def cmd_integrador(self, where, args: str, brand: str | None) -> None:
+        from .decisions import ESTADO_MAS
         from .guard_route import queue_view
         queue = self.guard_queue()
-        self._send(where, queue_view(queue.entries() if queue else {}, self._now()), html=False)
+        text, mas = self.integrador_resumen()
+        markup = None
+        if mas:
+            rec = {"task_id": "estado-integrador", "board": "", "lane": ""}
+            markup = self.desk.store.issue(rec, [[{"text": "📖 Ver más", "action": ESTADO_MAS}]])[1]
+        self._send(where, text + "\n\n" + queue_view(queue.entries() if queue else {}, self._now()), html=False,
+                   markup=markup)
+
+    def estado_mas(self, where: dict) -> bool:
+        """Botón «Ver más» de /integrador: todos los pasos del estado, en un mensaje nuevo."""
+        from . import integrador_visibilidad as iv
+        text = iv.detalle(self.estado_integrador(), self.vis_ajustes(), self._now())
+        self._send((where["chat_id"], where["thread_id"]), text, html=False)
+        return True
+
+    def repos_encolables(self) -> dict[str, str]:
+        """alias -> owner/repo que se pueden encolar: los del YAML o, sin ellos, los repos de los carriles."""
+        aj = self.vis_ajustes()
+        if aj.repos:
+            return dict(aj.repos)
+        out = {}
+        for name, lane in self.lanes.items():
+            slug = self.links.repo_slug(lane) if self.links else None
+            if slug:
+                out[name.removeprefix("claude-").lower()] = slug
+        return out
+
+    def cmd_encolar(self, where, args: str, brand: str | None) -> None:
+        """/encolar <repo> <PR>: mete un PR de una sesión interactiva en la cola, con el botón de Oscar (sin él no se
+        fusiona nada). Aquí no se fusiona ni se despliega."""
+        from . import integrador_visibilidad as iv
+        from .decisions import EXT_DROP, EXT_OK
+        repos = self.repos_encolables()
+        parsed = iv.parse_encolar(args)
+        cola = self.cola_externos()
+        if not parsed or parsed[0] not in repos:
+            self._send(where, "Uso: /encolar <repo> <PR>. Repos: " + (", ".join(sorted(repos)) or "(ninguno configurado)"),
+                       html=False)
+            return
+        if cola is None:
+            self._send(where, "No puedo encolar: no hay carpeta .state configurada.", html=False)
+            return
+        alias, number = parsed
+        slug = repos[alias]
+        cp = self.desk._gh("pr", "view", str(number), "--repo", slug, "--json", "number,title,headRefOid,state")
+        try:
+            pr = json.loads(cp.stdout or "{}") if cp.returncode == 0 else {}
+        except ValueError:
+            pr = {}
+        if pr.get("state") != "OPEN" or not re.fullmatch(r"[0-9a-f]{40}", pr.get("headRefOid") or ""):
+            self._send(where, f"No encuentro el PR #{number} abierto en {slug}.", html=False)
+            return
+        key, it = cola.add(alias, slug, number, pr.get("title") or "", pr["headRefOid"])
+        rec = {"task_id": key, "board": "", "lane": "", "ext": key}
+        markup = self.desk.store.issue(rec, [[{"text": "✅ Dar OK a fusionar", "action": EXT_OK},
+                                              {"text": "🗄 Quitar", "action": EXT_DROP}]])[1]
+        self._send(where, f"🔀 En la cola del integrador: {alias} #{number} · {truncate(it['title'], 80)} · "
+                          f"{it['sha'][:9]}\n➡️ Próximo paso: pulsa «Dar OK» (vale solo para este commit; si el PR "
+                          "cambia, vuelve a pedirlo) · Lo da: Oscar. Sin tu OK no se fusiona nada.", html=False,
+                   markup=markup)
+
+    def externo_step(self, action: str, rec: dict, where: dict) -> bool:
+        """Botones de /encolar. El OK se ata al commit que Oscar vio; si el PR cambió, se avisa y no vale."""
+        from .decisions import EXT_OK
+        cola, key = self.cola_externos(), rec.get("ext") or ""
+        it = (cola.items() if cola else {}).get(key)
+        dest = (where["chat_id"], where["thread_id"])
+        if not it:
+            self._send(dest, f"{key}: ya no está en la cola.", html=False)
+            return True
+        if action != EXT_OK:
+            cola.quitar(key)
+            self._send(dest, f"🗄 {key} fuera de la cola; no se ha tocado el PR.", html=False)
+            return True
+        cp = self.desk._gh("pr", "view", str(it["pr"]), "--repo", it["slug"], "--json", "headRefOid,state")
+        try:
+            pr = json.loads(cp.stdout or "{}") if cp.returncode == 0 else {}
+        except ValueError:
+            pr = {}
+        if pr.get("state") != "OPEN" or not cola.dar_ok(key, pr.get("headRefOid") or ""):
+            self._send(dest, f"⚠️ {key} cambió desde que lo viste (o ya no está abierto): vuelve a lanzar "
+                             f"/encolar {it['repo']} {it['pr']} y confirma el commit nuevo.", html=False)
+            return True
+        self._send(dest, f"✅ OK registrado para {key} ({it['sha'][:9]}). El integrador puede fusionarlo; "
+                         "el OK vale solo para este commit.", html=False)
+        return True
 
     def decision_cards(self, brand: str | None = None) -> list[dict]:
         """Tarjetas de decisión de Oscar (no son de carril): asignadas a `oscar`, en ready/blocked y con etiqueta
@@ -659,7 +818,8 @@ class CommandCenter:
         for p in stuck[:MAX_CARDS]:
             status = status_line(p.status, f"hace {hours_ago(p.since, now)} h")
             text = render("stuck", p.tid, p.task.get("title"), p.lane.name, status, self._links_for(p.lane, p.tid),
-                          body=p.task.get("body"), for_oscar=p.for_oscar)
+                          body=p.task.get("body"), for_oscar=p.for_oscar,
+                          next_step=next_step("stuck", p.block_kind))
             markup = self.desk.markup("stuck", task=p.task, lane=p.lane, block_kind=p.block_kind)
             self._mirror(p.tid, self._send(where, text, markup=markup), markup)
 
@@ -717,7 +877,7 @@ class CommandCenter:
             self.urgent_tick()
         except Exception as exc:
             log.warning("avisos urgentes: %s", exc)
-        for tick in (self.guard_tick, self.daily_tick):  # cola del integrador y resumen de las 9:00
+        for tick in (self.guard_tick, self.daily_tick, self.peticiones_tick):  # cola del integrador y partes de las 9:00
             try:
                 tick()
             except Exception as exc:
@@ -1127,7 +1287,40 @@ class CommandCenter:
 
     # --- /estado --------------------------------------------------------------------------------------
 
+    def estado_peticiones(self, where, proyecto: str | None) -> None:
+        """Vista por petición de /estado (A2): una línea por req, atascadas primero; «Ver más» abre la cadena."""
+        from .formato_aviso import REQ_MAS, estado_texto, ordenar, paginas
+        items = self.peticion_items(proyecto)
+        text = estado_texto(items, self._now(), proyecto)
+        for page in paginas(text):
+            self._send(where, page, html=False)
+        for req, est in ordenar(items)[:5]:  # «Ver más» de las 5 primeras (las que piden atención)
+            if est.estado != "hecha":
+                markup = self.desk.store.issue({"task_id": "estado", "board": "", "lane": "", "req": req["id"]},
+                                               [[{"text": f"💬 Ver más · {req['id']}", "action": REQ_MAS}]])[1]
+                self._send(where, f"{req['id']} · {truncate(req['titulo'], 50)}", html=False, markup=markup)
+
+    def req_choice(self, rec: dict, button: dict, where: dict) -> bool:
+        """Botón «Ver más» de /estado: manda la cadena entera de la petición (paginada, sin recortar)."""
+        from .formato_aviso import cadena_texto, paginas
+        from .peticiones import derivar
+        store, ahora = self.registro_peticiones(), self._now()
+        req = store.get(rec.get("req")) if store else None
+        if not req:
+            return False
+        shows = {t: self._show_card(t) for t in req["tarjetas"]}
+        dest = (str(where["chat_id"]), str(where.get("thread_id") or "0"))
+        for page in paginas(cadena_texto(req, derivar(req, shows, ahora), shows, ahora)):
+            self._send(dest, page, html=False)
+        return True
+
     def cmd_estado(self, where, args: str, brand: str | None) -> None:
+        from .peticiones import PROYECTOS
+        proyecto = next((p for p in PROYECTOS if args.strip().lower() == p.lower()), None)
+        if (self.registro_peticiones() is not None and not args.strip()) or proyecto:
+            self.estado_peticiones(where, proyecto)
+            if proyecto and not BRAND_ARGS.get(proyecto.lower()):
+                return  # Hub, Signal… no son marcas de la vista antigua
         if args:
             brand = BRAND_ARGS.get(args.split()[0].lower())
             if not brand:

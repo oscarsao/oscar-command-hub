@@ -66,6 +66,9 @@ DEPLOY_ASK = "deploy_ask"  # /desplegar: 1.er toque = pide confirmar; el 2.º (�
 DEPLOY_NO = "deploy_no"    # /desplegar: ✖ No en la confirmación
 ACCEPT_CARD = "accept_card"  # ✅ Acepto todas las recomendadas: las preguntas pendientes de ESTA tarjeta, de una vez
 SEE_ALL = "see_all"        # "N más · ver todas" de /decisiones
+ESTADO_MAS = "estado_mas"  # «Ver más» del estado del integrador en /integrador
+EXT_OK = "ext_ok"          # /encolar: OK de Oscar sobre el commit del PR de una sesión interactiva
+EXT_DROP = "ext_drop"      # /encolar: quitar el PR de la cola
 FALTA = "falta"            # /falta: botón de un paso (fusionar lote, migración aplicada, desplegar)
 # Tarjetas de decisión de Oscar (/decisiones): su propio juego de acciones; no tocan las rutas de las tareas de carril.
 CARD_OPTION = "card_option"   # A/B/C: anota RESPUESTA-OSCAR con la opción y completa la tarjeta
@@ -868,6 +871,8 @@ class DecisionDesk:
             return bool(self.commands) and self.commands.falta_choice(rec, button, where, self)
         if action == HAZLO:  # /hazlo con duda: el botón elige carril
             return bool(self.commands) and self.commands.hazlo_choice(rec, button, where)
+        if action == "req_mas":  # /estado: «Ver más» de una petición (formato_aviso.REQ_MAS)
+            return bool(self.commands) and self.commands.req_choice(rec, button, where)
         if action == FLUJO:  # /flujo: crear o descartar la propuesta
             return bool(self.commands) and self.commands.flujo_choice(rec, button, where)
         if action in (DEPLOY_ASK, DEPLOY_NO):  # /desplegar: confirmación previa al int_deploy
@@ -880,6 +885,10 @@ class DecisionDesk:
             return self._accept_all({"accept_all": [rec]}, where, card_where=where)
         if action == SEE_ALL:
             return self._see_all(rec, where)
+        if action == ESTADO_MAS:
+            return bool(self.commands) and self.commands.estado_mas(where)
+        if action in (EXT_OK, EXT_DROP):
+            return bool(self.commands) and self.commands.externo_step(action, rec, where)
         if rec.get("group"):
             return self._group_act(rec, button, where)
         if action == APPROVE:
