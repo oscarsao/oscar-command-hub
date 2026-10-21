@@ -1,0 +1,11 @@
+# Visibilidad del integrador en Telegram (agent_lanes/integrador_visibilidad.py). Se relee en cada uso: no hace falta
+# reiniciar el runner. Lo que falte o no sea válido vale el default que se indica.
+hora_parte: 9          # hora (Madrid) del parte diario por carril (0-21)
+estado_max_horas: 24   # un integrador_estado.md más viejo se declara viejo en una línea
+resumen_pasos: 3       # pasos del resumen corto; el resto sale con «Ver más»
+detalle_max: 3500      # tope de caracteres de «Ver más»
+# Repos que /encolar acepta (alias: owner/repo). Vacío = los repos de los carriles.
+repos: {}
+# Textos de los avisos (plantillas con {repo} {sha} {horas} {max}). Claves: estado_falta, estado_viejo,
+# incidencia_abre, incidencia_cierra.
+textos: {}
