@@ -254,3 +254,14 @@ título, cuerpo, assignee y prioridad, `idempotency-key` = id original, copia co
 - Manual: `py -3.12 lanes.py doctor-boards` (dry-run) / `--apply`.
 - Runner: cada `BOARD_GUARD_MINUTES` (10) y aviso al DM de Oscar una vez por tarjeta. Solo mueve con
   `BOARD_GUARD_APPLY=true` en `.env`; sin ello avisa en dry-run.
+
+## Atascos rápidos (t_86c09458)
+- **Aviso diario** (desde las 9:00, una vez al día por proyecto con `batch: daily`): «🚦 N PR aprobados esperando lote» con
+  una línea por PR (proyecto, título, días esperando) y [🔀 Fusionar lote]. Sin PR esperando no manda nada.
+- **Tarjetas de rebase/arreglo** (botones «Fuera del lote» y conflicto devuelto): trabajan sobre la RAMA DEL PR original.
+  El cuerpo lleva `Rama-origen: lane/<id>` y `Rama-push: lane/<id>`; el guard deja empujar a esa rama (solo
+  `lane/t_<id>`, sin force, nunca main/master) vía `AGENT_LANES_PUSH_OK`.
+- **Conflicto solo en ficheros append-only** (`append_only_paths` por carril en `integrator.lanes.<carril>` de
+  lanes.yaml; por defecto `docs/kb/CHANGELOG.md`, `docs/kb/LEDGER_ESTATUS.md`, `docs/kb/archivo/CHANGELOG.md`,
+  `CHANGELOG.md`; `[]` lo desactiva): el integrador fusiona la base en la rama del PR con `merge=union`, pasa los gates y
+  empuja a `lane/<id>` (único push del integrador, sin force). Con código mezclado no toca nada: devuelve la tarjeta al carril.

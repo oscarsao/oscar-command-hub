@@ -35,6 +35,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
+from .atascos import pr_branch_card_body
 from .falta import CONFLICT, OTHER, classify, plain_reason
 from .integration import header, phase_for, repo_name, risk_of
 from .integrator import (INT_BATCH_FIX, INT_BATCH_MERGE, INT_BATCH_REBASE, INT_BATCH_SKIP, INTEGRATED_PREFIX,
@@ -100,6 +101,8 @@ class BatchPlanner:
         self.i = integrator
         self.clock = clock  # hora LOCAL de pared (batch_time)
         self._asm = threading.Lock()
+        from .atascos import PendingNotice  # import tardío: atascos importa al integrador en sus métodos
+        self.notice = PendingNotice(integrator)  # aviso diario «N PR aprobados esperando lote»
 
     # --- estado ----------------------------------------------------------------------------------------
 
@@ -176,6 +179,10 @@ class BatchPlanner:
                 log.info("lote diario %s: %s", name, self.assemble(lane, policy))
             except Exception as exc:
                 log.warning("lote diario %s falló: %s", name, exc)
+        try:
+            self.notice.tick()
+        except Exception as exc:
+            log.warning("aviso de PR esperando lote falló: %s", exc)
 
     def reconcile(self) -> None:
         """Lotes con PR abierto: cerrado sin fusionar -> sus ramas vuelven a la cola; fusionado fuera del integrador
@@ -540,17 +547,9 @@ class BatchPlanner:
             return True
         rebase = action == INT_BATCH_REBASE
         branch, lote = f"lane/{tid}", rec.get("batch_branch") or lane.base
-        what = (f"Rebasar la rama `{branch}` (PR #{pr}) sobre el lote `{lote}` y la base `{lane.base}`, resolviendo "
-                "los conflictos" if rebase else
-                f"Arreglar la rama `{branch}` (PR #{pr}), que quedó fuera del lote: {rec.get('reason')}")
-        how = (f"- Después `git merge origin/{lote}` (si existe; si no, `origin/{lane.base}`) y resuelve los conflictos "
-               "conservando la intención de ambas partes.\n" if rebase else
-               "- Si es un falso positivo del escáner de secretos (un dato de prueba), cámbialo para que no parezca una "
-               "clave real; si es un test o build roto, arréglalo de verdad.\n")
-        body = (f"## Objetivo\n{what}.\n\n## Cómo\n- Parte de la rama existente: `git fetch origin` y "
-                f"`git merge origin/{branch}` en tu rama (trae su trabajo; no la reescribas).\n{how}"
-                f"- Tu PR sustituye al #{pr}: dilo en `for_oscar`. Cambios mínimos.\n\n"
-                f"Origen: aviso «Fuera del lote» ({rec.get('batch_id')}).\n")
+        # La tarjeta trabaja SOBRE LA RAMA DEL PR (Rama-origen + Rama-push), no sobre su propia lane/<id_nuevo>.
+        body = pr_branch_card_body(branch, pr, lane.base, lote, rebase=rebase, reason=str(rec.get("reason") or ""),
+                                   origin=f"aviso «Fuera del lote» ({rec.get('batch_id')})")
         tag = "rebase" if rebase else "fix"
         try:
             new = i.hermes_for(lane.board).create(truncate(("Rebasar" if rebase else "Arreglar") + f" #{pr}: "

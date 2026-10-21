@@ -50,7 +50,12 @@ def _check_reviewer_bash(command: str) -> str | None:
     return None
 
 
-def _check_git_push(tokens: list[str], task: str | None = None) -> str | None:
+PUSH_OK_RE = re.compile(r"^lane/t_[0-9a-z]{1,40}$")
+
+
+def _check_git_push(tokens: list[str], task: str | None = None, push_ok: list[str] | None = None) -> str | None:
+    """`push_ok` (AGENT_LANES_PUSH_OK, de las líneas `Rama-push:` de la tarjeta): ramas lane/t_<id> EXTRA que esta tarea
+    puede empujar (la rama de su PR original). Nunca main/master ni otra forma; el force sigue prohibido."""
     if "git" not in tokens or "push" not in tokens:
         return None
     args = tokens[tokens.index("push") + 1:]
@@ -69,7 +74,7 @@ def _check_git_push(tokens: list[str], task: str | None = None) -> str | None:
         dst = dst.removeprefix("refs/heads/")
         if dst in ("master", "main") or not dst.startswith("lane/"):
             return f"push a '{dst}' prohibido: los workers solo empujan ramas lane/<task_id>"
-        if task and dst != f"lane/{task.lower()}":
+        if task and dst != f"lane/{task.lower()}" and not (dst in (push_ok or ()) and PUSH_OK_RE.match(dst)):
             return f"push a '{dst}' prohibido: esta tarea solo puede empujar lane/{task}"
     return None
 
@@ -101,14 +106,14 @@ def _check_git_merge(tokens: list[str], allowed: list[str] | None = None) -> str
 
 
 def check_bash(command: str, env_db_url: str | None, task: str | None = None,
-               merge_ok: list[str] | None = None) -> str | None:
+               merge_ok: list[str] | None = None, push_ok: list[str] | None = None) -> str | None:
     for segment in SEGMENT_SPLIT.split(command):
         seg = segment.strip()
         if not seg:
             continue
         tokens = _tokens(seg)
         low = [t.lower() for t in tokens]
-        reason = _check_git_push(low, task) or _check_git_merge(low, merge_ok)
+        reason = _check_git_push(low, task, push_ok) or _check_git_merge(low, merge_ok)
         if reason:
             return reason
         if "gh" in low and "pr" in low and "merge" in low:
@@ -143,7 +148,11 @@ def check(payload: dict, env: dict | None = None) -> str | None:
             merge_ok = [str(r).lower() for r in json.loads(env.get("AGENT_LANES_MERGE_OK") or "[]")]
         except (ValueError, TypeError):
             merge_ok = []  # ilegible: ningún merge (falla cerrado)
-        return check_bash(ti.get("command", ""), env.get("DATABASE_URL"), env.get("AGENT_LANES_TASK"), merge_ok)
+        try:
+            push_ok = [str(r).lower() for r in json.loads(env.get("AGENT_LANES_PUSH_OK") or "[]")]
+        except (ValueError, TypeError):
+            push_ok = []  # ilegible: ninguna rama extra (falla cerrado)
+        return check_bash(ti.get("command", ""), env.get("DATABASE_URL"), env.get("AGENT_LANES_TASK"), merge_ok, push_ok)
     if tool in WRITE_TOOLS and reviewer:
         return f"el revisor es de solo lectura: {tool} prohibido"
     if tool in WRITE_TOOLS:

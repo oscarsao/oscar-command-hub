@@ -59,7 +59,9 @@ def test_reset_refuses_other_states_and_bad_ids(tmp_path):
 
 def _batch(tmp_path, **kw):
     integ, w, h, tg, d, clock = make(tmp_path, **kw)
-    pol = dataclasses.replace(integ.settings.policies["claude-oscarhq"], batch="daily")
+    # Sin unión automática ni aviso diario (atascos.py, test_atascos.py): aquí se prueba el aviso de lote atascado.
+    pol = dataclasses.replace(integ.settings.policies["claude-oscarhq"], batch="daily", append_only_paths=())
+    integ.batches.notice.tick = lambda: []
     integ.settings = dataclasses.replace(integ.settings, policies={"claude-oscarhq": pol}, batch_pending_days=3)
     t = [1_000_000.0]
     integ._now = lambda: t[0]
