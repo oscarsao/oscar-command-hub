@@ -96,10 +96,11 @@ class FreeText:
         """True si hay al menos una decisión pendiente aquí y el texto se tratará como su respuesta (en un hilo
         aparte: consulta el kanban). False = nada pendiente, que siga el flujo de siempre."""
         chat_id, thread_id = scope_of(msg)
-        found = self.candidates(chat_id, thread_id)
+        sender = (msg.get("from") or {}).get("id")  # operador que no es Oscar: sus respuestas se firman con su nombre
+        puede = getattr(self.desk, "puede_con", None)  # operador acotado por marca: solo decisiones de las suyas
+        found = [c for c in self.candidates(chat_id, thread_id) if not puede or puede(sender, c["rec"])]
         if not found:
             return False
-        sender = (msg.get("from") or {}).get("id")  # operador que no es Oscar: sus respuestas se firman con su nombre
         run = lambda: self._run(msg, found)  # noqa: E731
         wrap = getattr(self.desk, "_en_nombre_de", None)
         self.desk._spawn(wrap(sender, run) if wrap else run)
@@ -167,7 +168,8 @@ class FreeText:
         rows.append([{"text": "✖ Ninguna" if len(live) > 1 else "✖ Es un mensaje nuevo", "action": FREE_CANCEL}])
         rec = {"task_id": "texto-libre", "board": "", "lane": "", "free_pick": True, "text": text[:3000],
                "reply_to": msg.get("message_id"),
-               "candidates": [{"token": c["token"], "task_id": c["rec"]["task_id"], "where": c["where"]} for c in live]}
+               "candidates": [{"token": c["token"], "task_id": c["rec"]["task_id"], "where": c["where"],
+                               "board": c["rec"].get("board") or "", "lane": c["rec"].get("lane") or ""} for c in live]}
         markup = d.store.issue(rec, rows)[1]
         if len(live) > 1:
             body = f"Tienes {len(live)} decisiones pendientes aquí. ¿Para cuál es «{truncate(text, 120)}»?"

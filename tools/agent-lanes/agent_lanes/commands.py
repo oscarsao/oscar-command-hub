@@ -103,6 +103,8 @@ COMMAND_SCOPES = ("default", "all_private_chats", "all_group_chats")
 HELP_ALIASES = ("start", "ayuda", "help")
 NOT_OWNER = ("Este comando es solo para operadores. Pide a Oscar o a María que lo haga, o escribe tu petición en "
              "texto libre y se la paso")
+# Comandos sin marca clara o con efecto directo en repos/sesiones de Oscar: un operador acotado por marca no los usa.
+SOLO_TODAS_LAS_MARCAS = ("integrador", "encolar", "preparar", "pedir", "sesion", "flujo", "ajustes")
 BRAND_ARGS = {"migrateam": "MigraTeam", "pildora": "Píldora", "píldora": "Píldora", "nextjobs": "NextJobs"}
 TASK_ID_RE = re.compile(r"^t_[0-9a-f]{8}$")
 STATUS_TEXT = {"running": ("running", "en curso"), "ready": ("ready", "en cola"), "review": ("review", "en review"),
@@ -296,6 +298,14 @@ class CommandCenter:
             self._send(where, NOT_OWNER, html=False)
             return True
         brand = scope_brand(where[0], where[1], self.lanes, self.generic_origins)
+        try:
+            veto = self._veto_marca(actor, cmd, args, brand)
+        except Exception as exc:  # ante la duda, un operador acotado no ejecuta
+            log.warning("/%s: no pude comprobar la marca: %s", cmd, exc)
+            veto = "No pude comprobar tu permiso de marca; pídeselo a Oscar o a María"
+        if veto:
+            self._send(where, veto, html=False)
+            return True
         actuando = getattr(self.desk, "actuando", None)  # firma las acciones con el nombre del operador (no Oscar)
         try:
             with actuando(actor) if actuando else contextlib.nullcontext():
@@ -314,6 +324,46 @@ class CommandCenter:
             return True
         check = getattr(self.desk, "es_operador", None)
         return bool(check and check(user_id))
+
+    def _veto_marca(self, actor, cmd: str, args: str, scope: str | None) -> str | None:
+        """Operador acotado por marca (people.yaml `brands` sin "*"): texto de rechazo si el comando apunta a una marca
+        que no es suya o a algo sin marca (integrador, sesiones, tareas del hub...); None si puede seguir. Los
+        listados pasan: sus botones se comprueban al pulsarlos (DecisionDesk._callback)."""
+        restringido = getattr(self.desk, "restringido", None)
+        if not restringido or not restringido(actor):
+            return None
+        desk = self.desk
+
+        def check(marca) -> str | None:
+            return None if desk.puede_en(actor, marca) else desk.aviso_marca(actor, marca)
+
+        if cmd in SOLO_TODAS_LAS_MARCAS:
+            return desk.aviso_marca(actor, None)
+        if cmd in ("desplegar", "promover", "lote"):
+            arg = args.strip()
+            if cmd == "desplegar":
+                found = self._deploy_target(arg)
+                name = found[0].name if found else None
+            elif cmd == "promover":
+                name = f"claude-{(arg.split() or [''])[0].lower()}"
+            else:
+                batches = getattr(getattr(desk, "integrator", None), "batches", None)
+                found = batches.resolve(arg.lower() or (scope or "").lower()) if batches and (arg or scope) else None
+                name = found[0].name if found else None
+            return check(BRANDS.get(name))
+        if cmd == "hazlo":
+            lane = self.infer_lane(args, scope)
+            # Sin carril claro, el comando ofrece botones de carril: se comprueban al pulsarlos.
+            return check(BRANDS.get(lane)) if lane else None
+        if cmd in ("prioridad", "tarea"):
+            tid = (args.split() or [""])[0].lower()
+            found = self._find(tid) if TASK_ID_RE.match(tid) else None
+            if not found:
+                return None  # el comando dirá que no la encuentra
+            board, show = found
+            marca = BRANDS.get((show.get("task") or {}).get("assignee")) or BOARD_BRANDS.get(board)
+            return check(marca)
+        return None
 
     @staticmethod
     def _where(msg: dict) -> tuple[str, str]:
