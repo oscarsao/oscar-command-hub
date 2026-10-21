@@ -13,7 +13,8 @@ las preguntas que cada caso necesita.
 
 ## 2. Appetite
 
-**Grande: ~3 semanas en 3 entregas independientes** (cada una útil sola, en este orden):
+**Grande: ~3 semanas en 3 entregas independientes** (cada una útil sola). **Decisión de Oscar: se lanzan las tres a la
+vez** (A, B y C en paralelo); el orden de abajo es el de dependencias, no de calendario:
 
 | Entrega | Contenido | Appetite |
 |---|---|---|
@@ -21,7 +22,8 @@ las preguntas que cada caso necesita.
 | **B. Tipo de petición** | Botón bug / feature al pedir (o detectado y confirmado), preguntas por tipo, decisión OASP | ~3-4 días |
 | **C. Workflows dinámicos + cola autónoma del integrador** | Plan con preguntas previas, aprobación de plan y gasto, orquestación de carriles, entrega única; integrador que no depende de su sesión | ~1,5 semanas |
 
-Si C no cabe, se recorta C (no A ni B): A y B ya resuelven «tarjetas atascadas» y «pedir bien».
+Si el tiempo aprieta, se recorta C (no A ni B): A y B ya resuelven «tarjetas atascadas» y «pedir bien». Al ir las tres a
+la vez, C se apoya en los contratos de A (registro `req_<id>`) y B (tipo): se fijan primero en las specs A1/B1.
 
 ## 3. Qué ya existe (se cita, no se reconstruye)
 
@@ -111,13 +113,16 @@ Próximo paso: resolver conflicto en src/a.py · lo da: el integrador (necesita 
 - **Botones de opción**: integrar, dar seguimiento, aparcar, responder, explícame más. Sin códigos: el usuario nunca teclea
   ids; el botón lleva el id. Solo personas autorizadas (la lista existente del bot); un botón pulsado por otro se ignora.
 
-### 4.4 Parte de las 9:00 y atasco inmediato — **decisión: fusionar**
+### 4.4 Parte de las 9:00 y atasco inmediato — **decisión de Oscar: mantener los dos**
 
-Propongo **un solo parte** a las 9:00 = `/estado` completo agrupado por proyecto (sustituye al resumen por carril de
-t_f8f58acb, que pasa a ser una vista del mismo registro: «por carril» sigue disponible como `/estado carriles`).
+A las 9:00 siguen **dos partes** con funciones distintas:
+- **Resumen por carril** (t_f8f58acb, `resumen_carriles.py`): no se toca; dice qué hace cada carril.
+- **Parte por petición/proyecto** (nuevo, `/estado` completo agrupado por proyecto): dice cómo va cada cosa que Oscar pidió.
+
+Para que no sea ruido doble, el parte por petición **no repite** el detalle de carril (solo enlaza «ver carriles») y no
+sale si no hay novedad desde ayer. Ambos usan el formato de §4.3 y son recuperables hasta las 11:00 como hoy.
 El **aviso inmediato de atasco** (t_86c09458) usa el mismo formato y se dispara cuando una petición pasa a `atascada`; no
-espera a las 9:00. Un atasco no se repite: recordatorio a las 24 h (ya existe en [ATENCIÓN]). *Alternativa descartada:*
-mantener dos partes (carril y petición) → duplica ruido, es justo lo que Oscar quiere reducir.
+espera a las 9:00. Un atasco no se repite: recordatorio a las 24 h (ya existe en [ATENCIÓN]).
 
 ### 4.5 Tipo de petición (entrega B)
 
@@ -147,8 +152,8 @@ Para tareas complejas o funciones completas, `/workflow <qué quieres>` (o botó
 5. **Entrega única**: un mensaje final con *qué se hizo, enlaces (PR, staging) y cómo probarlo*; mientras tanto solo avisan
    los atascos y las decisiones, no cada paso.
 
-**Límites de coste y aprobación** (propuesta, a confirmar por Oscar):
-- Tope por defecto por workflow: valor único fijado por Oscar (propongo **8 € / workflow**; ver pregunta 2). El plan lo
+**Límites de coste y aprobación:**
+- Tope por defecto por workflow: **8 €, ampliable con botón** (decisión de Oscar). El plan lo
   muestra estimado; si lo gastado alcanza el **80 %** → aviso; al **100 %** → se **pausa** y pide `[➕ Ampliar] [⛔ Parar]`.
 - Máx. 5 tarjetas de carril activas por workflow, y respeta el límite de 3 workstreams de código en paralelo.
 - Nunca sin OK de Oscar: producción, migraciones, borrados, dinero (reglas de `~/.claude/CLAUDE.md`). El workflow las
@@ -192,7 +197,7 @@ red, sin Telegram real) **más** la comprobación manual indicada en un chat de 
 | A1 | Registro de petición + vínculo | Crear una tarjeta con `req:` crea el registro; `INTEGRADO <sha>` lo pasa a `hecha`; sin tarjeta → «sin tarjeta» | tests con kanban simulado |
 | A2 | `/estado` | Una línea por petición con estado y quién da el próximo paso; filtro por proyecto; «ver más» muestra la cadena completa | test de texto + captura en chat de prueba |
 | A3 | Formato único de aviso | Todo aviso lleva proyecto, estado/paso, próximo paso y quién; botones + texto libre; va al tema de su proyecto | tests de formato; un aviso real por proyecto en chat de prueba |
-| A4 | Parte de las 9:00 fusionado | Un único parte a las 9:00 (recuperable hasta las 11:00 como hoy); sin duplicar con el resumen por carril | test con reloj simulado |
+| A4 | Parte de las 9:00 por petición, junto al de carriles | Dos partes a las 9:00 (carril intacto + petición); el de petición no repite el detalle de carril y no sale si no hay novedad | test con reloj simulado |
 | B1 | Botón de tipo + detección confirmada | Sin pulsar, el bot propone y espera confirmación; nunca fija tipo solo | tests de callbacks |
 | B2 | Preguntas por tipo + modo OASP | Bug pregunta repro/dónde/esperado y prioriza; feature pregunta objetivo/usuarios/hecho y propone modo | tests; ejemplos de tarjeta resultante |
 | C1 | Plan + aprobación de gasto | No se crea ninguna tarjeta antes de «Aprobar plan y gasto»; el plan muestra tope | test: sin aprobar → 0 tarjetas |
@@ -239,15 +244,16 @@ aún no existe en `main`, se pregunta a oscar-bf la ruta.
 1. Oscar aprueba (o recorta) el pitch → el integrador cierra las absorbidas (§4.8).
 2. Se crean 3 specs-lite en `specs/`: `seguimiento-cadena-estado.md` (A), `tipo-de-peticion.md` (B),
    `workflows-telegram-cola-integrador.md` (C), cada una una tarjeta `claude-hub`.
-3. Orden: `t_86c09458` → A → B → C. Una persona técnica puede tomar B o C con los criterios de §5.
+3. Las tres a la vez (decisión de Oscar), con `t_86c09458` primero o en paralelo con el mismo formato. Una persona técnica
+   puede tomar B o C con los criterios de §5.
 
-## 10. Decisiones que necesito de Oscar
+## 10. Decisiones de Oscar (ya tomadas, 21-oct)
 
-Recomendada marcada con ⭐ (si no contestas, voy con ella):
+1. **Partes de las 9:00:** mantener los dos (carril y petición). Ver §4.4.
+2. **Tope de gasto por workflow:** 8 €, ampliable con botón. Ver §4.6.
+3. **Alcance de la primera entrega:** las tres (A, B y C) a la vez. Ver §2 y §9.
+4. **Detección de tipo:** el bot propone y la persona confirma. Ver §4.5.
 
-1. **Parte de las 9:00:** ⭐ un solo parte por petición/proyecto que sustituye al de carriles · mantener los dos.
-2. **Tope de gasto por workflow:** ⭐ 8 € por defecto, ampliable con botón · otro importe (dime cuál) · sin tope (no recomendado).
-3. **Alcance de la primera entrega:** ⭐ A + B primero, C después de verlas funcionar · las tres a la vez.
-4. **Detección de tipo:** ⭐ el bot propone y tú confirmas · solo botón manual al pedir.
-5. **Fuentes pendientes:** oscar-bf, ¿texto/enlace de `hermes-orchestration-plan`, de «Problemas Telegram tareas atascadas»
-   y del pitch de Autonomía de carriles? (no bloquea aprobar el pitch; sí cerrarlo del todo).
+**Único punto abierto (no bloquea aprobar el pitch):** oscar-bf, ¿texto/enlace de `hermes-orchestration-plan`, de
+«Problemas Telegram tareas atascadas» y del pitch de Autonomía de carriles? Sin ellos el pitch no asume nada de esas
+fuentes; si contradicen algo, prevalecen y se corrige antes de implementar.
