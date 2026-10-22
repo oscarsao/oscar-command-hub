@@ -1527,7 +1527,8 @@ class CommandCenter:
         PRs sueltos. None = sin integrador activo (no se sabe)."""
         from .batch import OPEN_STATUSES, brand_of
         from .falta import env_pending, plain_reason
-        from .integrator import INT_BATCH_MERGE, INT_MIGRATION_APPLIED, MIGRATION_KINDS, pending_migration
+        from .integrator import (DEPLOY_BUTTON, INT_BATCH_MERGE, INT_MIGRATION_APPLIED, MIGRATION_KINDS,
+                                 pending_migration)
         integ = getattr(self.desk, "integrator", None)
         if not integ or not integ.settings.enabled:
             return None
@@ -1569,7 +1570,7 @@ class CommandCenter:
                 if mig in MIGRATION_KINDS:
                     sql.append(f"🗄 Aplicar el SQL/migración ({e(mig)}) de PR #{pr} ({e(tid)}){e(who)} y marcarla")
                     targets.append({"action": INT_MIGRATION_APPLIED, "rec": rec, "text": f"✅ Migración aplicada #{pr}"})
-                elif policy.deploy == "railway_up":
+                elif policy.deploy in DEPLOY_BUTTON:
                     deploy.append(f"🚀 Desplegar PR #{pr} ({e(tid)}){e(who)}: fusionado y sin desplegar")
                     targets.append({"action": DEPLOY_ASK, "rec": {**rec, "migration": None}, "text": f"🚀 Desplegar #{pr}"})
                 else:
@@ -1824,20 +1825,21 @@ class CommandCenter:
 
     def _deploy_target(self, arg: str):
         """(carril, política) con deploy `railway_up` cuyo nombre, marca o palabra clave es `arg`; None si no hay."""
+        from .integrator import DEPLOY_BUTTON
         integ = getattr(self.desk, "integrator", None)
         if not integ or not integ.settings.enabled:
             return None
         want = re.sub(r"[^a-z0-9 -]+", "", (arg or "").lower()).strip()
         for name, policy in integ.settings.policies.items():
             lane = self.lanes.get(name)
-            if lane is not None and policy.deploy == "railway_up" and want and want in (
+            if lane is not None and policy.deploy in DEPLOY_BUTTON and want and want in (
                     name, name.removeprefix("claude-"), *LANE_HINTS.get(name, ())):
                 return lane, policy
         return None
 
     def cmd_desplegar(self, where, args: str, brand: str | None) -> None:
         """/desplegar <proyecto>: ficha de cada fusión sin desplegar con [🚀 Desplegar]; hace falta un 2.º toque."""
-        from .integrator import pending_migration
+        from .integrator import DEPLOY_BUTTON, pending_migration
         integ = getattr(self.desk, "integrator", None)
         arg = args.strip()
         if not integ or not integ.settings.enabled:
@@ -1846,7 +1848,7 @@ class CommandCenter:
         found = self._deploy_target(arg)
         if not found:
             names = sorted(n.removeprefix("claude-") for n, p in integ.settings.policies.items()
-                           if p.deploy == "railway_up")
+                           if p.deploy in DEPLOY_BUTTON)
             self._send(where, "Dime el proyecto: /desplegar " + ("|".join(names) or "(ninguno despliega con botón)")
                        + ". MigraTeam despliega staging al fusionar y producción va por /promover.", html=False)
             return
@@ -1870,18 +1872,20 @@ class CommandCenter:
 
     def deploy_step(self, action: str, rec: dict, where: dict, desk) -> bool:
         """1.er toque de /desplegar: edita la ficha con "¿Seguro?" y [✅ Sí, desplegar] (= int_deploy) / [✖ No]."""
-        from .integrator import INT_DEPLOY
+        from .integrator import DEPLOY_BUTTON, INT_DEPLOY
         if action == DEPLOY_NO:
             self.notifier.edit(where["chat_id"], where["message_id"], "✖ No despliego nada.", html=False)
             return True
         policy = desk.integrator.settings.policies.get(rec.get("lane")) if desk.integrator else None
-        if not policy or policy.deploy != "railway_up" or not rec.get("merge_sha"):
+        if not policy or policy.deploy not in DEPLOY_BUTTON or not rec.get("merge_sha"):
             return False
         markup = desk.store.issue(rec, [[{"text": "✅ Sí, desplegar", "action": INT_DEPLOY}],
                                         [{"text": "✖ No", "action": DEPLOY_NO}]])[1]
         self.notifier.edit(where["chat_id"], where["message_id"],
                            f"⚠️ ¿Seguro? Esto despliega {rec.get('lane')} (PR #{rec.get('pr_number')}, "
-                           f"{(rec.get('merge_sha') or '')[:7]}) con `railway up`.", html=False, reply_markup=markup)
+                           f"{(rec.get('merge_sha') or '')[:7]}) con "
+                           f"{'Dokploy' if policy.deploy == 'dokploy' else '`railway up`'}.", html=False,
+                           reply_markup=markup)
         return True
 
 

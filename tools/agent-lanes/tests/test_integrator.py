@@ -293,7 +293,9 @@ def test_disabled_by_default_and_build_returns_none(monkeypatch):
 
 def test_real_lanes_yaml_policies():
     s = load_integrator_settings(env={})
-    assert s.policies["claude-oscarhq"].deploy == "railway_up"
+    assert s.policies["claude-oscarhq"].deploy == "dokploy"
+    assert s.policies["claude-oscarhq"].dokploy_token_env == "DOKPLOY_API_TOKEN"
+    assert s.policies["claude-oscarhq"].health_url == "https://api.pildoradigital.com/api/health"
     assert s.policies["claude-migrateam"].deploy == "on_merge"
     assert s.policies["claude-migrateam"].alembic_versions == "backend/alembic/versions/"
     assert "supabase/migrations/" in s.policies["claude-oscarhq"].manual_migrations
