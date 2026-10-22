@@ -1,6 +1,8 @@
 # Spec-Lite · Nudger «Agente Píldora Avisos»: repetición, tarjetas de Oscar y solape sin botones
 
-Tarjeta t_e31e4d9c · 22-10-2026 · Estado: PROPUESTA (nada aplicado; falta el OK de Oscar)
+Tarjeta t_e31e4d9c · 22-10-2026 · Estado: **B APLICADA** en esta rama (OK de Oscar); **A pendiente** en una tarjeta para
+`claude-oscarhq` (OK de Oscar: crearla, backoff 3 h y máx. 2 por tarjeta, configurable en el panel).
+Nota B: «Son duplicadas» solo comenta en ambas tarjetas (no hay comando de triage en `HermesCLI`; no se mueve nada).
 
 ## Diagnóstico
 

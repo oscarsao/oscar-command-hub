@@ -1,7 +1,8 @@
 """Solape de alcance entre tarjetas activas del mismo repo (tableros falsos, sin hermes real ni Telegram)."""
 from types import SimpleNamespace
 
-from agent_lanes.solapes import (Ajustes, SolapeTicker, aviso, compartido, detectar, extraer_rutas, load_ajustes)
+from agent_lanes.solapes import (SOL_DISTINTAS, SOL_FUSIONAR, SOL_LUEGO, Ajustes, SolapeTicker, aviso, compartido,
+                                 detectar, extraer_rutas, load_ajustes, load_descartes)
 
 HUB = "C:/Users/oscar/oscar-command-hub"
 LANES = {
@@ -162,3 +163,75 @@ def test_ajustes_invalidos_caen_al_default(tmp_path):
     a = load_ajustes(p)
     assert (a.nivel, a.minutos, a.activo, a.max_tarjetas) == ("modulo", 10, True, 2) and a.estados == Ajustes().estados
     assert load_ajustes(tmp_path / "no.yaml") == Ajustes()
+
+
+# --- botones del aviso (t_e31e4d9c) ---------------------------------------------------------------------------------
+
+class Desk:
+    def __init__(self):
+        self.edits = []
+
+    def _who(self):
+        return "Oscar"
+
+    def _edit_text(self, where, text):
+        self.edits.append(text)
+
+
+class Store:
+    def issue(self, rec, spec):
+        self.rec = rec
+        return "tok", {"inline_keyboard": [[{"text": b["text"], "callback_data": "tok:0"} for b in row] for row in spec]}
+
+
+class Commenting(FakeBoard):
+    def __init__(self, cards):
+        super().__init__(cards)
+        self.comments = []
+
+    def comment(self, tid, text, author=None):
+        self.comments.append((tid, text, author))
+        return True
+
+
+def _dos():
+    return {"default": Commenting([card("t_1", "claude-hub", "A", "runner.py"), card("t_2", "claude-hub", "B", "runner.py")])}
+
+
+def test_aviso_con_botones_si_hay_issue(tmp_path):
+    sent, store = [], Store()
+    t = SolapeTicker(LANES, hermes(_dos()), send=lambda text, markup=None: sent.append((text, markup)),
+                     state_path=tmp_path / "s.json", settings_path=tmp_path / "no.yaml", issue=store.issue)
+    t.tick()
+    assert len(sent) == 1
+    rows = sent[0][1]["inline_keyboard"]
+    assert [b["text"] for r in rows for b in r] == ["🔀 Son duplicadas", "✅ No son duplicadas", "⏸ Luego"]
+    assert [c["tid"] for c in store.rec["cards"]] == ["t_1", "t_2"] and store.rec["task_id"] == "t_1"
+
+
+def test_no_son_duplicadas_descarta_la_pareja_para_siempre(tmp_path):
+    boards, sent = _dos(), []
+    desk = Desk()
+    t = SolapeTicker(LANES, hermes(boards), send=lambda x, m=None: sent.append(x), state_path=tmp_path / "s.json",
+                     settings_path=tmp_path / "no.yaml", issue=Store().issue)
+    rec = {"cards": [{"tid": "t_1", "board": "default"}, {"tid": "t_2", "board": "default"}]}
+    assert t.on_button(SOL_DISTINTAS, rec, None, desk) is True
+    assert load_descartes(t.descartes_path) == {"t_1|t_2"}
+    assert "no son duplicadas" in desk.edits[-1]
+    # aunque se pierda el estado de avisos, la pareja descartada no vuelve a salir
+    assert detectar(LANES, hermes(boards), A, load_descartes(t.descartes_path)) == []
+    t.tick()
+    assert sent == []
+
+
+def test_son_duplicadas_solo_comenta_y_luego_no_hace_nada(tmp_path):
+    boards = _dos()
+    t = SolapeTicker(LANES, hermes(boards), send=lambda x, m=None: None, state_path=tmp_path / "s.json")
+    rec = {"cards": [{"tid": "t_1", "board": "default"}, {"tid": "t_2", "board": "default"}]}
+    desk = Desk()
+    assert t.on_button(SOL_FUSIONAR, rec, None, desk) is True
+    assert [c[0] for c in boards["default"].comments] == ["t_1", "t_2"]
+    assert "t_2" in boards["default"].comments[0][1] and "no se fusiona" in desk.edits[-1]
+    boards["default"].comments.clear()
+    assert t.on_button(SOL_LUEGO, rec, None, desk) is True
+    assert boards["default"].comments == [] and not t.descartes_path.exists()
