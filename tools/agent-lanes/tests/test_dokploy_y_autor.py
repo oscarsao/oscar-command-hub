@@ -20,7 +20,7 @@ class Dokploy:
 
     def __call__(self, method, url, headers, body=None):
         self.calls.append((method, url, headers, body))
-        if url.endswith("/api/application.redeploy"):
+        if url.endswith("/api/application.deploy"):
             return self.redeploy_code, {}
         if "/api/application.one" in url:
             return 200, (self.one.pop(0) if len(self.one) > 1 else self.one[0])
@@ -47,7 +47,7 @@ def test_dokploy_redeploy_polls_application_and_checks_health(tmp_path, monkeypa
     one = [app("done", [("old", "done")]), app("running", [("old", "done")]),
            app("running", [("old", "done"), ("new", "running")]), app("done", [("old", "done"), ("new", "done")])]
     integ, w, h, tg, api, clock = deploy(tmp_path, monkeypatch, one)
-    red = [c for c in api.calls if c[1].endswith("application.redeploy")]
+    red = [c for c in api.calls if c[1].endswith("application.deploy")]
     assert len(red) == 1 and red[0][0] == "POST" and red[0][3] == {"applicationId": APP}
     assert red[0][2]["x-api-key"] == "tok"  # el token sale de la variable, nunca del yaml
     assert "🚀 desplegado · ddddddd" in tg.edits[-1]["text"] and "health OK" in tg.edits[-1]["text"]
@@ -89,7 +89,7 @@ def test_dokploy_done_but_health_down_is_a_failure(tmp_path, monkeypatch):
 def test_dokploy_redeploy_rejected(tmp_path, monkeypatch):
     integ, w, h, tg, api, _ = deploy(tmp_path, monkeypatch, [app("done", [("old", "done")])], redeploy_code=401)
     assert "⛔ deploy falló al pedirlo a Dokploy" in tg.edits[-1]["text"]
-    assert any("application.redeploy HTTP 401" in t for _, t, _ in h.comments)
+    assert any("application.deploy HTTP 401" in t for _, t, _ in h.comments)
 
 
 def test_dokploy_without_token_or_application_id_does_not_call_api(tmp_path, monkeypatch):

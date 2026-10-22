@@ -1732,7 +1732,7 @@ class Integrator:
         return None, dep_id
 
     def _deploy_dokploy_locked(self, lane, policy: Policy, rec: dict, where: dict, desk) -> bool:
-        """🚀 Desplegar con Dokploy: application.redeploy → sondeo de application.one hasta done/error → health_url.
+        """🚀 Desplegar con Dokploy: application.deploy (no redeploy) → sondeo de application.one hasta done/error → health_url.
         Dokploy reconstruye lo último de la rama que tiene configurada (la base): no hay worktree ni `up`."""
         tid, sha = rec["task_id"], rec["merge_sha"]
         if not (policy.dokploy_url and policy.dokploy_application_id and policy.dokploy_token_env):
@@ -1759,11 +1759,11 @@ class Integrator:
         self._edit(desk, lane, rec, where, "running", status_line(
             f"🚀 desplegando {tip[:7]}…", f"lo último de {lane.base}, {extra} commit(s) después de esta fusión"
             if extra else None))
-        code, _ = self._dokploy(policy, "POST", "application.redeploy", {"applicationId": policy.dokploy_application_id})
+        code, _ = self._dokploy(policy, "POST", "application.deploy", {"applicationId": policy.dokploy_application_id})
         if not 200 <= code < 300:
-            log.warning("%s: dokploy redeploy falló: HTTP %s", tid, code)
+            log.warning("%s: dokploy deploy falló: HTTP %s", tid, code)
             self._edit(desk, lane, rec, where, "blocked", "⛔ deploy falló al pedirlo a Dokploy (detalle en el log)")
-            self._comment(lane, tid, f"DEPLOY-FALLIDO {tip} · dokploy application.redeploy HTTP {code}")
+            self._comment(lane, tid, f"DEPLOY-FALLIDO {tip} · dokploy application.deploy HTTP {code}")
             return True
         status, dep_id = self._poll_dokploy(policy, before)
         dep = dep_id or "dokploy"
