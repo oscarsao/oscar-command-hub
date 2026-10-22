@@ -1,0 +1,5 @@
+# Ajustes de /pendiente («Lo tuyo»; agent_lanes/lo_tuyo.py). Con el fichero ausente o un valor inválido valen los defaults.
+urgente_prioridad: 10   # prioridad de la tarjeta a partir de la cual va en «🔴 Urgente»
+urgente_horas: 24       # horas esperándote (pregunta, PR por aprobar, PR de sesión) para subir a «🔴 Urgente»
+max_lineas: 20          # líneas con botón; el resto se cuenta en «N más»
+max_texto: 3500         # tope de caracteres del mensaje (Telegram admite 4096)

@@ -73,6 +73,8 @@ DEPLOY_NO = "deploy_no"    # /desplegar: ✖ No en la confirmación
 ACCEPT_CARD = "accept_card"  # ✅ Acepto todas las recomendadas: las preguntas pendientes de ESTA tarjeta, de una vez
 SEE_ALL = "see_all"        # "N más · ver todas" de /decisiones
 ESTADO_MAS = "estado_mas"  # «Ver más» del estado del integrador en /integrador
+LT_OPEN = "lt_open"        # /pendiente: abre la ficha de esa línea con sus botones de siempre
+PERS_MOVE, PERS_KEEP = "pers_move", "pers_keep"  # /personal: mover al board personal / dejarlas donde están
 EXT_OK = "ext_ok"          # /encolar: OK de Oscar sobre el commit del PR de una sesión interactiva
 EXT_DROP = "ext_drop"      # /encolar: quitar el PR de la cola
 FALTA = "falta"            # /falta: botón de un paso (fusionar lote, migración aplicada, desplegar)
@@ -978,6 +980,10 @@ class DecisionDesk:
             return self._see_all(rec, where)
         if action == ESTADO_MAS:
             return bool(self.commands) and self.commands.estado_mas(where)
+        if action == LT_OPEN:  # /pendiente: la línea pulsada
+            return bool(self.commands) and self.commands.lt_open(rec, where)
+        if action in (PERS_MOVE, PERS_KEEP):  # /personal: Oscar confirma el traslado
+            return bool(self.commands) and self.commands.personal_step(action, rec, where)
         if action in (EXT_OK, EXT_DROP):
             return bool(self.commands) and self.commands.externo_step(action, rec, where)
         if rec.get("group"):
