@@ -15,6 +15,7 @@ import uuid
 from pathlib import Path
 from typing import Callable
 
+from . import telegram_lane
 from .config import ROOT, Lane
 from .hermes import REVIEW_AUTHOR
 from .integration import CHANNEL, link_line, render_ficha, repo_name, risk_of, risks_from_files
@@ -122,7 +123,7 @@ class ReviewRunner:
         for attempt in (1, 2):  # un aviso que falla se reintenta UNA vez
             try:
                 # Reviewed lane's destination (brand topic), else the review lane's own, else the .env default.
-                reviewed = self.lanes.get(task.get("assignee"))
+                reviewed = telegram_lane.lane_de_tarjeta(self.lanes, task)
                 lane_target = (reviewed.telegram if reviewed else None) or self.lane.telegram
                 name = reviewed.name if reviewed else self.lane.name
                 links = self._links(reviewed, task["id"], changed_files=changed_files) if (self._links and reviewed) else []
@@ -182,7 +183,9 @@ class ReviewRunner:
         found = []
         for name, lane in self.lanes.items():
             h = self.hermes_for(lane.board)
-            found += [(t, lane, h) for t in h.list_status(name, "review")]
+            # Carril de varios repos (claude-telegram): se revisa en el repo que eligió la tarjeta.
+            found += [(t, telegram_lane.lane_de_tarjeta({name: lane}, {**t, "assignee": name}), h)
+                      for t in h.list_status(name, "review")]
         return [(t["id"], lambda t=t, l=l, h=h: self.process(t, l, h)) for t, l, h in found[: self.lane.max_parallel]]
 
     def run_once(self) -> dict[str, str]:

@@ -173,6 +173,51 @@ lanes:
       - tools/monitor/.state/
       - tools/telegram/.state/
 
+  # Carril de los bots de Telegram (22-10, decisión de Oscar: «las mejoras del sistema de Telegram tienen que ser continuas,
+  # carril exclusivo que no cuente»). reserved_slots: plaza FUERA de max_workers (aunque los generales estén llenos
+  # siempre puede tener este número de workers propios; con max_parallel 1 solo uno). Trabaja en DOS repos; la tarjeta
+  # elige con una línea `Repo: hub|oscar-hq` en el cuerpo (lista blanca `repos:`; sin línea se deduce de las rutas que
+  # cite y, si no, el primero). El título `[Telegram]` o citar los bots lo enruta aquí (clasificador.yaml, `telegram:`).
+  # Cada entrada de repos puede sobrescribir repo, github, base, test_cmd, role, forbidden_paths y remote. Mismos límites
+  # que un carril de código: mismo hook (contract/guard.py), nada de producción/env/Hermes (clasificador), rama lane/<id>.
+  claude-telegram:
+    telegram: {chat: -1003530490339, thread: 5}
+    board: default
+    repo: C:/Users/oscar/oscar-command-hub
+    github: oscarsao/oscar-command-hub
+    base: main
+    role: roles/hub.md
+    reserved_slots: 1
+    max_parallel: 1
+    test_cmd: py -3.12 "{AGENT_LANES_DIR}/agent_lanes/checks.py" {BASE} && py -3.12 -m pytest tools/agent-lanes/tests -q
+    forbidden_paths:
+      - .github/workflows/
+      - tools/agent-lanes/.env
+      - tools/agent-lanes/.state/
+      - tools/monitor/.state/
+      - tools/telegram/.state/
+    repos:
+      hub:
+        repo: C:/Users/oscar/oscar-command-hub
+        github: oscarsao/oscar-command-hub
+        base: main
+        role: roles/hub.md
+        test_cmd: py -3.12 "{AGENT_LANES_DIR}/agent_lanes/checks.py" {BASE} && py -3.12 -m pytest tools/agent-lanes/tests -q
+        forbidden_paths:
+          - .github/workflows/
+          - tools/agent-lanes/.env
+          - tools/agent-lanes/.state/
+          - tools/monitor/.state/
+          - tools/telegram/.state/
+      oscar-hq:
+        repo: C:/Users/oscar/dev/oscar-hq
+        github: oscarsao/oscar-hq
+        base: master
+        role: roles/implementador.md
+        test_cmd: py -3.12 "{AGENT_LANES_DIR}/agent_lanes/checks.py" {BASE}
+        forbidden_paths:
+          - .github/workflows/
+
   # Carril OPERATIVO (sin repo): vault/buzón del disco E:, calendario, accesos, ClickUp... Qué va aquí: README.md.
   # Carpeta de trabajo por tarea en worktree_root/<task_id> (no git). Hook: contract/ops_guard.py (lista blanca, fail
   # closed): sin borrar/mover, escritura solo en el workspace y en `Destino-Ops:` bajo dest_roots, MCP solo lectura.
@@ -238,7 +283,7 @@ lanes:
 
   review:
     kind: review
-    reviews: [claude-oscarhq, claude-migrateam, claude-scraper, claude-nextjobs, claude-hub]
+    reviews: [claude-oscarhq, claude-migrateam, claude-scraper, claude-nextjobs, claude-hub, claude-telegram]
     role: roles/revisor.md
     model: sonnet
     effort: medium

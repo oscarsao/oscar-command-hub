@@ -1,6 +1,7 @@
 """Lane runner state machine: ready -> claim -> worktree -> worker (+resume) -> verify -> review | block."""
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import os
@@ -11,7 +12,7 @@ import uuid
 from pathlib import Path
 from typing import Callable
 
-from . import bloqueos, clasificador
+from . import bloqueos, clasificador, telegram_lane
 from . import consulta as _consulta
 from . import deps
 from . import proc as _proc
@@ -365,6 +366,18 @@ class LaneRunner:
         self._active[tid] = task
         try:
             self._drop_hermes_subs(tid)
+            if lane.repos:  # carril de varios repos (claude-telegram): el de ESTA tarjeta, validado contra la lista blanca
+                eff, error = telegram_lane.para_tarjeta(lane, task)
+                if error:
+                    return self._block(tid, "needs_input", error, task, public="repo no permitido en el carril",
+                                       questions=[{"question": error + ". ¿En cuál lo hacemos?",
+                                                   "options": [f"Repo: {a}" for a in lane.repos], "recommended": 0}])
+                problem = self._repo_guard(eff) if self._repo_guard else None
+                if problem:
+                    return self._block(tid, "transient", f"candado de repos: {problem}", task, public="candado de repos")
+                runner = copy.copy(self)  # mismos hermes/git/avisos; solo cambia el Lane (repo, base, test_cmd, límites)
+                runner.lane = eff
+                return runner._work(task, tid, session_id, deadline)
             return self._work(task, tid, session_id, deadline)
         finally:
             self._active.pop(tid, None)

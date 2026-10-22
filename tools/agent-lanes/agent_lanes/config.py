@@ -1,7 +1,7 @@
 """lanes.yaml loader."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
@@ -41,6 +41,11 @@ class Lane:
     # Candado de repos (28-09): owner/repo de GitHub que DEBE tener `remote` en `repo`. Un carril de código sin él,
     # o con otro remote, no reclama tareas (runner: guard_github_remote).
     github: str = ""
+    # Plaza reservada (22-10): workers de ESTE carril que corren aunque max_workers esté lleno; no cuentan para él.
+    reserved_slots: int = 0
+    # Lista blanca de repos por tarjeta (`Repo: <alias>` en el cuerpo): alias -> {repo, github, base, test_cmd, ...}.
+    # Ver telegram_lane.py. El primero es el de por defecto.
+    repos: dict = field(default_factory=dict, hash=False, compare=False)
 
     @property
     def claim_ttl_seconds(self) -> int:
