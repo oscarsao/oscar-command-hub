@@ -249,6 +249,8 @@ class PinnedSummary:
             if st.get("message_id") and same_place:
                 if st.get("text") == text:
                     return "unchanged"
+                if float(getattr(self.notifier, "rate_limited_until", 0) or 0) > time.time():
+                    return "error"  # backoff ante 429: se reintenta en la próxima pasada
                 try:
                     markup = markup_factory() if markup_factory else None
                     ok = self.notifier.edit(self.chat, st["message_id"], text,
@@ -259,7 +261,10 @@ class PinnedSummary:
                 if ok:
                     self._store({**st, "text": text, "updated": time.time()})
                     return "edited"
-                log.info("resumen de integración: el mensaje fijado ya no se puede editar; creo otro")
+                if float(getattr(self.notifier, "rate_limited_until", 0) or 0) > time.time():
+                    log.info("resumen de integración: Telegram limita las ediciones (429); espero")
+                    return "error"
+                log.info("resumen de integración: el mensaje fijado ya no se puede editar; recreo y fijo otro")
             try:
                 markup = markup_factory() if markup_factory else None
                 sent = self.notifier.send_to(self.chat, self.thread, text, silent=True,

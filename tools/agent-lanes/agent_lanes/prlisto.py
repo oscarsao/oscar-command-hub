@@ -50,6 +50,7 @@ def _ago(hours: float) -> str:
 class ReadyPRWatcher:
     def __init__(self, integrator):
         self.i = integrator
+        self.last_entries: list[dict] = []  # PR vistos en la última pasada (los lee el panel vivo)
         self._lock = threading.Lock()
 
     # --- estado ---------------------------------------------------------------------------------------
@@ -111,7 +112,7 @@ class ReadyPRWatcher:
                 if age is None or age < hours:
                     continue
                 state = str(pr.get("mergeable") or "UNKNOWN").upper()
-                found.append({"repo": slug.split("/")[-1], "slug": slug, "number": int(pr["number"]),
+                found.append({"tid": tid, "lane": lane.name, "repo": slug.split("/")[-1], "slug": slug, "number": int(pr["number"]),
                               "title": pr.get("title") or head, "url": pr.get("url") or "", "age": age,
                               "state": state if state in ("MERGEABLE", "CONFLICTING") else "UNKNOWN"})
                 first = first or lane
@@ -157,6 +158,9 @@ class ReadyPRWatcher:
             return False
         try:
             entries, lane = self.entries()
+            self.last_entries = entries
+            if getattr(i, "panel", None):  # panel vivo: los PR en conflicto viven en el fijado, sin mensaje suelto
+                return False
             # UNKNOWN solo acompaña: por sí solo no merece un mensaje (se reintenta en la pasada siguiente).
             if not lane or not any(e["state"] != "UNKNOWN" for e in entries):
                 return False
