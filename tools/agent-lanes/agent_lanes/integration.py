@@ -68,7 +68,7 @@ def risk_of(policy) -> Risk:
     level = str(getattr(policy, "risk", "") or "").strip().lower()
     if level not in RISKS:
         deploy = getattr(policy, "deploy", "none")
-        level = {"on_merge": "production", "railway_up": "manual"}.get(deploy, "none")
+        level = {"on_merge": "production", "railway_up": "manual", "dokploy": "manual"}.get(deploy, "none")
     base = RISKS[level]
     label = str(getattr(policy, "risk_label", "") or "").strip()
     return Risk(base.emoji, label.upper() if label else base.label)
@@ -305,7 +305,7 @@ def summary_state(status: str, *, deploy: str = "none", migration: str | None = 
     if status == "merged":
         if migration:
             return "⏸ fusionado, migración pendiente"
-        return "🚀 fusionado, falta desplegar" if deploy == "railway_up" else "🚀 fusionado, deploy sin confirmar"
+        return "🚀 fusionado, falta desplegar" if deploy in ("railway_up", "dokploy") else "🚀 fusionado, deploy sin confirmar"
     return None
 
 

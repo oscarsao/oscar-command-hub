@@ -260,18 +260,38 @@ promote:
     seeds: [backend/seeds/, backend/app/seeds/]
     sensitive_paths: [backend/alembic/, backend/alembic.ini, backend/Procfile, backend/railway.json, backend/railway.toml, backend/nixpacks.toml, backend/Dockerfile, railway.json, vercel.json, frontend/vercel.json, .github/]
 
+# Avisos de producción del monitor (tools/monitor/prodwatch.py): fallo de un despliegue de PRODUCCIÓN en Vercel (las
+# vistas previas de lane/* no avisan; un aviso por despliegue) y salud del servidor (health_url de cada carril de
+# `integrator.lanes` + estado de su aplicación en Dokploy). Tokens por NOMBRE de variable (agent-lanes/.env), no aquí.
+# projects: nombres o ids (prj_…) de los proyectos de Vercel; team_id solo si están en un equipo.
+monitor_alerts:
+  vercel:
+    token_env: VERCEL_TOKEN
+    team_id: ""
+    projects: [recursos, website]
+  skip_health: [claude-migrateam]   # staging en Railway, pausado desde el incidente del 22-10; quitar al volver
+
 # Carriles sin entrada aquí (nextjobs) no se integran; para añadirlos basta `deploy: none`.
 integrator:
   interval_seconds: 300          # cada cuánto revisa tarjetas done aprobadas (el runner pasa cada 60 s)
   worktree_root: C:/Users/oscar/dev/_lanes/_integrator   # worktrees temporales int-<id> / intdep-<id>
   deploy_timeout_seconds: 900    # 15 min sondeando el deploy
   poll_seconds: 20
+  # Autor de los commits de fusión de lote/conflictos. Vercel bloquea los despliegues de commits cuyo autor no es del
+  # equipo (agent-lanes@localhost dejó `recursos` en BLOCKED, 22-10): el noreply de GitHub de Oscar sí lo es.
+  commit_author: {name: oscarsao, email: oscarsao@users.noreply.github.com}
   lanes:
     claude-oscarhq:
-      # Fusionar NO despliega: botón aparte [🚀 Desplegar] = `railway up --detach` de un worktree limpio del commit
-      # fusionado (cwd = checkout enlazado con la CLI), ids explícitos, y sondeo de ESE deployment (no /api/health:
-      # respondería el contenedor viejo). Ids leídos con `railway list --json` el 28-09 (no son secretos).
-      deploy: railway_up
+      # Fusionar NO despliega: botón aparte [🚀 Desplegar]. Desde el 22-10 Oscar HQ corre en pildora-01 (Hetzner) con
+      # Dokploy (Railway ya no): application.redeploy, sondeo de application.one hasta done/error y GET health_url.
+      # dokploy_url: hoy el túnel SSH al panel (http://localhost:3300); con Cloudflare Access será https://panel.pildoradigital.com.
+      # dokploy_application_id: pégalo desde el panel (aplicación oscar-hq → URL/ajustes). Vacío = el 🚀 avisa «deploy no
+      # configurado». El TOKEN no va aquí: dokploy_token_env es el NOMBRE de la variable (en agent-lanes/.env).
+      # Para volver a Railway: deploy: railway_up + railway_dir/project/service/environment (ids en el historial de git).
+      deploy: dokploy
+      dokploy_url: http://localhost:3300
+      dokploy_application_id: ""
+      dokploy_token_env: DOKPLOY_API_TOKEN
       risk: manual                  # 🟠 cabecera de la ficha: deploy manual con botón
       risk_label: OSCAR HQ
       batch: daily                  # lote diario (agent_lanes/batch.py): un solo botón [🔀 Fusionar lote] a las 08:30 o con /lote oscarhq
@@ -284,14 +304,7 @@ integrator:
       batch_frontend_cmd: cd dashboard && set COREPACK_ENABLE_DOWNLOAD_PROMPT=0&& corepack pnpm@10.18.3 install --frozen-lockfile && npx tsc --noEmit && npx vitest run
       # Infraestructura de arranque/deploy: se puede fusionar, pero sin botón de deploy (lo revisa Oscar).
       sensitive_paths: [railway.json, railway.toml, nixpacks.toml, Procfile, Dockerfile, .railwayignore, requirements.txt, .github/]
-      railway_dir: C:/Users/oscar/dev/oscar-hq
-      railway_project: 34da294f-afdf-47f9-8ea9-5ffe3551e8f0      # Oscar HQ
-      railway_service: 8dcda4bf-5a6f-49f5-aa75-b0b38f82e9ed      # Oscar HQ
-      railway_environment: 3236716d-c75a-41fe-b426-9953deb7e426  # production
-      # 22-10: el backend de Oscar HQ YA NO se despliega en Railway: corre en Dokploy en el servidor propio pildora-01
-      # (https://api.pildoradigital.com). Los railway_* de arriba se dejan intactos a propósito; el botón [🚀 Desplegar]
-      # (deploy: railway_up) se adaptará a Dokploy en otra tarea. Hasta entonces, no usarlo para Oscar HQ.
-      health_url: https://api.pildoradigital.com/api/health   # 2ª señal tras SUCCESS, nunca la única
+      health_url: https://api.pildoradigital.com/api/health   # se verifica tras el done de Dokploy
     claude-migrateam:
       # 28-09: fusiona en develop, que DESPLIEGA STAGING solo (Railway staging + Vercel develop, alembic contra la BD
       # de staging). Nunca master: la promoción a producción es release/<fecha> con OK de Oscar, fuera del carril.
