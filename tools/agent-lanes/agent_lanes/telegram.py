@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -192,7 +193,12 @@ class TelegramNotifier:
         try:
             self._api("editMessageText", payload)
         except TelegramAPIError as exc:
-            return "not modified" in exc.description.lower()  # mismo texto: no es un fallo (evita duplicados)
+            desc = exc.description.lower()
+            if "too many requests" in desc:  # 429: no es «mensaje borrado»; quien edite debe esperar, no recrear
+                m = re.search(r"retry after (\d+)", desc)
+                self.rate_limited_until = time.time() + (int(m.group(1)) if m else 30) + 1
+                return False
+            return "not modified" in desc  # mismo texto: no es un fallo (evita duplicados)
         return True
 
     def edit_markup(self, chat_id: str, message_id, reply_markup: dict | None) -> bool:
