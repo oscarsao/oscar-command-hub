@@ -8,7 +8,8 @@ CommandCenter (cada uno abre la ficha de siempre con sus botones: este módulo n
 Ítem = {kind, tid, title, board, since, prio, url, extra}. `kind`:
   pregunta   tarea de carril en needs_input         -> ✍️ Responder
   atascada   🧊 Hermes la paró por bloquearse        -> 👁 Ver
-  aprobar    tarea lista para integrar (PR listo)   -> ✅ Aprobar (abre la ficha con [✅ Aprobar])
+  aprobar    tarea lista para integrar (PR listo)   -> ✅ Aprobar (abre la ficha con [✅ Aprobar]); solo si su rama sigue
+             abierta y sin fusionar y no pasa de `aprobar_max_dias`
   cola       bloqueo de LIMITACIÓN-GUARD en la cola del integrador (integrador_cola.json) -> 👁 Ver
   externo    PR de sesión interactiva que espera tu OK (integrador_externos.json)          -> 🔗 PR (enlace)
   tuyo       tarjeta tuya («· tuyo» / «· decidir» o de decisión)                           -> 👁 Ver
@@ -43,6 +44,7 @@ class Ajustes:
     urgente_horas: float = 24     # lo que lleva esperando a Oscar para subir a «Urgente»
     max_lineas: int = 20          # ítems con línea y botón; el resto se cuenta en «N más»
     max_texto: int = 3500         # tope de caracteres (el límite de Telegram es 4096)
+    aprobar_max_dias: float = 14  # antigüedad máxima de un «Aprobar»: más viejo se da por olvidado/integrado y no cuenta
 
 
 def load_ajustes(path: Path | str | None = None) -> Ajustes:
@@ -63,6 +65,8 @@ def load_ajustes(path: Path | str | None = None) -> Ajustes:
             out[f.name] = float(v)
         elif f.name == "max_lineas" and v >= 1:
             out[f.name] = min(int(v), 40)   # un teclado de Telegram admite 100 botones; 40 sigue siendo legible
+        elif f.name == "aprobar_max_dias" and v > 0:
+            out[f.name] = float(v)
         elif f.name == "max_texto" and v >= 500:
             out[f.name] = min(int(v), 3900)
     return Ajustes(**{**{f.name: getattr(d, f.name) for f in fields(Ajustes)}, **out})
@@ -127,11 +131,34 @@ def de_estado(est: dict | None) -> list[dict]:
     return out
 
 
-def de_kanban(lanes: dict, hermes_for, extra_boards=("default",)) -> list[dict]:
+def _aprobar_vigentes(lane, h, aj: Ajustes, now: float, branch_state) -> list[dict]:
+    """«Aprobar» reales de un carril: tarjetas done recientes cuya rama sigue en el remote sin fusionar y sin OK/integración
+    (la misma regla que el aviso del renotifier). Las viejas se descartan antes de leer su ficha o preguntar a git."""
+    from .notices import decision_since
+    from .renotify import listo_para_aprobar
+    out = []
+    for t in h.list_status(lane.name, "done"):
+        since = t.get("completed_at") or decision_since(t)
+        if since and now - since > aj.aprobar_max_dias * 86400:
+            continue
+        try:
+            if listo_para_aprobar(lane, h.show(t["id"]), branch_state, lambda _msg: None) is None:
+                continue
+        except Exception:   # tarjeta o git ilegible: ante la duda no se cuenta como pendiente
+            continue
+        out.append(item("aprobar", t["id"], t.get("title"), board=lane.board, since=since, prio=_prio(t)))
+    return out
+
+
+def de_kanban(lanes: dict, hermes_for, extra_boards=("default",), *, aj: Ajustes | None = None, now: float | None = None,
+              branch_state=None) -> list[dict]:
     """Lectura directa del kanban, sin el bot (herramienta de Hermes / CLI): preguntas, tareas por aprobar y tarjetas de
     Oscar. Un tablero o tarea ilegible se salta. Es una vista algo más tosca que la de /pendiente (sin aplazadas)."""
+    import time
     from . import titulos
     from .notices import OSCAR_ASSIGNEE, decision_since, is_decision_card
+    from .renotify import _git_branch_state
+    aj, now, branch_state = aj or load_ajustes(), time.time() if now is None else now, branch_state or _git_branch_state
     out: list[dict] = []
     boards = dict.fromkeys([l.board for l in lanes.values() if l.board] + list(extra_boards))
     for lane in lanes.values():
@@ -139,8 +166,8 @@ def de_kanban(lanes: dict, hermes_for, extra_boards=("default",)) -> list[dict]:
             continue
         h = hermes_for(lane.board)
         try:
-            for t in h.list_status(lane.name, "done"):
-                out.append(item("aprobar", t["id"], t.get("title"), board=lane.board, since=decision_since(t), prio=_prio(t)))
+            if lane.kind == "implement":   # ops no tiene «done» que aprobar: entra solo por sus preguntas
+                out += _aprobar_vigentes(lane, h, aj, now, branch_state)
             for t in h.list_status(lane.name, "blocked"):
                 kinds = [(e.get("payload") or {}).get("kind") for e in h.show(t["id"]).get("events") or ()
                          if e.get("kind") == "blocked"]
@@ -187,6 +214,8 @@ def ordenar(items: list[dict], aj: Ajustes, now: float) -> list[dict]:
     """Por grupo (urgente primero) y, dentro, tipo de ítem y la más antigua antes. Sin repetir la misma cosa (kind, tid)."""
     seen, uniq = set(), []
     for it in items:
+        if it["kind"] == "aprobar" and it.get("since") and now - it["since"] > aj.aprobar_max_dias * 86400:
+            continue   # un «Aprobar» de semanas es una tarjeta olvidada o ya integrada, no algo que te espere
         if (it["kind"], it["tid"]) not in seen:
             seen.add((it["kind"], it["tid"]))
             uniq.append(it)
@@ -237,7 +266,7 @@ def cli(argv: list[str], lanes: dict, hermes_for, state_dir: Path | str, now: fl
     args = ap.parse_args(argv)
     now = time.time() if now is None else now
     aj = load_ajustes()
-    found = de_kanban(lanes, hermes_for) + de_state(state_dir, lambda lane: getattr(lanes.get(lane), "board", ""))
+    found = de_kanban(lanes, hermes_for, aj=aj, now=now) +de_state(state_dir, lambda lane: getattr(lanes.get(lane), "board", ""))
     text, shown = render(found, aj, now)
     if not args.json:
         print(text + ("\n\nPara actuar: /pendiente en el bot de carriles (botones) o /tarea <id>." if shown else ""))

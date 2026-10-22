@@ -171,3 +171,55 @@ def test_cli_text_and_json_are_read_only(tmp_path, capsys):
     assert lt.cli(["--json"], lanes, lambda b: H(), tmp_path, now=NOW) == 0
     data = json.loads(capsys.readouterr().out)
     assert data[0]["grupo"] == "urgente" and {d["tipo"] for d in data} == {"cola", "tuyo"}
+
+
+# --- «Aprobar» solo de lo que sigue abierto (t_269eac71) -------------------------------------------------------
+
+def _done(tid, *, age_days, review="approve", comments=(), status="done"):
+    task = {"id": tid, "title": f"hecha {tid}", "status": status, "completed_at": NOW - age_days * 86400}
+    meta = {"head_sha": "a" * 40, "branch": f"lane/{tid}", "review": {"status": review}}
+    return task, {"task": task, "runs": [{"metadata": meta}], "comments": list(comments), "events": []}
+
+
+class _KanbanH:
+    def __init__(self, cards, shown):
+        self.cards, self.shown = cards, shown
+
+    def list_status(self, assignee, status, sort="priority"):
+        return [t for t, _ in self.cards] if (assignee, status) == ("claude-hub", "done") else []
+
+    def show(self, tid):
+        self.shown.append(tid)
+        return dict(next(s for t, s in self.cards if t["id"] == tid))
+
+
+def test_de_kanban_aprobar_only_counts_open_unmerged_recent_cards():
+    from agent_lanes.config import Lane
+    cards = [_done("t_abierta0", age_days=1), _done("t_fusion00", age_days=2), _done("t_sinrama0", age_days=2),
+             _done("t_integrad", age_days=1, comments=[{"body": "INTEGRADO en main", "author": "x"}]),
+             _done("t_archivad", age_days=1, status="archived"), _done("t_vieja000", age_days=28),
+             _done("t_sinreview", age_days=1, review="request_changes")]
+    shown: list[str] = []
+    lanes = {"claude-hub": Lane(name="claude-hub", board="hub", repo="C:/h", base="main")}
+
+    def branch_state(lane, tid, sha):
+        return {"t_fusion00": (True, True), "t_sinrama0": (False, False)}.get(tid, (True, False))
+
+    got = lt.de_kanban(lanes, lambda b: _KanbanH(cards, shown), extra_boards=(), now=NOW, branch_state=branch_state)
+    assert [i["tid"] for i in got if i["kind"] == "aprobar"] == ["t_abierta0"]
+    assert "t_vieja000" not in shown   # la antigua se descarta sin leer su ficha ni preguntar a git
+
+
+def test_ordenar_drops_old_aprobar_but_keeps_old_questions_and_orders_pregunta_aprobar_tuyo():
+    aj = lt.Ajustes(aprobar_max_dias=7)
+    items = [_it("tuyo", "t_00000003", since=NOW - 3600), _it("aprobar", "t_00000002", since=NOW - 3600),
+             _it("aprobar", "t_00000009", since=NOW - 30 * 86400), _it("pregunta", "t_00000001", since=NOW - 40 * 86400)]
+    assert [i["tid"] for i in lt.ordenar(items, aj, NOW)] == ["t_00000001", "t_00000002", "t_00000003"]
+
+
+def test_aprobar_max_dias_setting_is_validated(tmp_path):
+    f = tmp_path / "lo_tuyo.yaml"
+    f.write_text("aprobar_max_dias: 3\n", encoding="utf-8")
+    assert lt.load_ajustes(f).aprobar_max_dias == 3.0
+    f.write_text("aprobar_max_dias: -1\n", encoding="utf-8")
+    assert lt.load_ajustes(f).aprobar_max_dias == 14
