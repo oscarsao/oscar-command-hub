@@ -16,6 +16,7 @@ from logging.handlers import RotatingFileHandler
 from agent_lanes import ciego, drain, notices
 from agent_lanes.bandeja import load as load_bandeja
 from agent_lanes.board_guard import BoardGuardTicker
+from agent_lanes.choques import ChoquesTicker
 from agent_lanes.solapes import SolapeTicker
 from agent_lanes.config import (ROOT, load_env, load_lanes, load_notice_limits, load_runner_settings,
                                 load_telegram_settings)
@@ -196,6 +197,7 @@ def main(argv: list[str] | None = None) -> int:
     guard = None
     reconcile = None
     solapes = None
+    choques = None
     if decisions and not args.once:  # PR resueltos -> tarjetas cerradas; propuesta diaria de obsoletas (con botón)
         owner_dm = env.get("OWNER_TELEGRAM_ID") or OWNER_TELEGRAM_ID
         boards = sorted({l.board for l in all_lanes.values() if l.board})
@@ -215,6 +217,9 @@ def main(argv: list[str] | None = None) -> int:
         # Solape de alcance entre tarjetas activas del mismo repo: avisa a Oscar, no fusiona nada (solapes.yaml).
         solapes = SolapeTicker(all_lanes, hermes_for, send=lambda text: notify.send_to(owner_dm, None, text, html=False),
                                state_path=ROOT / ".state" / "solapes.json")
+        # Choques reales en git (ramas lane/*, PR, ramas de personas): solo avisa a Oscar con propuesta (choques.yaml).
+        choques = ChoquesTicker(all_lanes, hermes_for, send=lambda text: notify.send_to(owner_dm, None, text, html=False),
+                                state_path=ROOT / ".state" / "choques.json")
     while True:
         shows.clear()
         # Reinicio ordenado (lanes.py restart --drain): entre pasadas, sin reclamar nada; el acuse dice si queda
@@ -247,6 +252,8 @@ def main(argv: list[str] | None = None) -> int:
             guard.tick()
         if solapes:
             solapes.tick()
+        if choques:
+            choques.tick()
         if reconcile:
             reconcile.tick()
         results = service.run_pass()
