@@ -11,7 +11,7 @@ import tempfile
 import time
 
 from . import proc as _proc
-from . import titulos
+from . import telegram_lane, titulos
 from pathlib import Path
 
 log = logging.getLogger("agent_lanes")
@@ -355,6 +355,10 @@ class HermesCLI:
         """Crea una tarjeta y devuelve su id. --body-file: un cuerpo que empieza por "- " no se toma como flag.
         `parents` = ids del mismo tablero de los que depende (un --parent por id)."""
         titulos.warn_title(title)  # aviso en el log si no sigue «[Proyecto] Qué · paso»; nunca bloquea
+        # Enrutado automático (22-10): [Telegram] / bots de Telegram -> claude-telegram, si trabaja en este tablero.
+        routed = telegram_lane.ruta(assignee, title, body)
+        if routed != assignee and self.board == telegram_lane.board_destino():
+            body, assignee = telegram_lane.con_repo(body, assignee), routed
         fd, tmp = tempfile.mkstemp(prefix="tarjeta-", suffix=".md")
         try:
             with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as fh:

@@ -79,6 +79,19 @@ def problems(title: str | None) -> list[str]:
     return out
 
 
+_LANE_PROYECTO = {"claude-hub": "Hub", "claude-oscarhq": "OHQ", "claude-migrateam": "MigraTeam",
+                  "claude-scraper": "Scraper", "claude-nextjobs": "NextJobs"}
+
+
+def proyecto_de_carril(lane_name: str | None) -> str:
+    return _LANE_PROYECTO.get(lane_name or "", "Hub")
+
+
+def rebase_title(lane_name: str | None, number, base: str | None) -> str:
+    """Título de la tarjeta automática de rebase: «[Hub] Rebasar #97 con main · implementar» (formato fijo)."""
+    return f"[{proyecto_de_carril(lane_name)}] Rebasar #{int(number)} con {base or 'la base'} · implementar"
+
+
 def warn_title(title: str | None) -> list[str]:
     """Validador al crear una tarjeta: AVISA en el log, nunca bloquea. Devuelve los problemas."""
     found = problems(title)

@@ -1,0 +1,79 @@
+// COPIA DE REFERENCIA (solo lectura) del guion del piloto de workflow dinámico (oscar-hq PR #223), copiada a specs/ por
+// decisión de Oscar (tarjeta t_3cd20f03). No se ejecuta desde aquí: la plantilla genérica es
+// tools/agent-lanes/workflows/implementar-con-revision.js.txt. Se conserva con su contenido original para ver qué se
+// parametrizó (proyecto, rutas, tarea, decisiones y autorización estaban dentro del guion).
+export const meta = {
+  name: 'funnel-studio-piloto',
+  description: 'Workflow piloto: Funnel Studio (ver landings, % de completado configurable, URL externa) de spec a PR borrador',
+  phases: [
+    { title: 'Spec', detail: 'spec corto con las decisiones de Oscar' },
+    { title: 'Implementar', detail: 'backend + migración escrita + frontend + tests en rama propia' },
+    { title: 'Revisar', detail: 'tres revisores con lentes distintas' },
+    { title: 'Corregir', detail: 'aplicar hallazgos, pruebas, push y PR borrador' },
+  ],
+}
+
+const A = args
+const WT = A.worktree
+const BR = A.branch
+const CTX = `ENCARGO Y AUTORIZACIÓN: Oscar (el usuario) aprobó este trabajo en esta conversación con los botones de la UI, en respuesta a la pregunta «¿Arrancamos el workflow dinámico piloto con Funnel Studio?» → «Sí, Funnel Studio», y «Funnel Studio: ¿qué cuenta como publicable?» → «Landing propia o web de la marca». Antes, en sus notas de voz, pidió probar un workflow dinámico que haga una tarea de principio a fin en una rama propia sin tocar master. Su último mensaje de texto (sobre NextJobs F1) es otra petición distinta que el orquestador ya atendió; no es tu tarea. Tu tarea es la de abajo.
+
+Repo oscar-hq (C:/Users/oscar/dev/oscar-hq, remoto origin = github.com/oscarsao/oscar-hq, base master).
+Trabaja SOLO en el worktree ${WT} (rama ${BR}). Nunca toques el checkout raíz, nunca git stash, nunca push a master, nunca apliques migraciones contra Supabase (solo escríbelas en supabase/migrations/), nunca cambies variables de entorno.
+Documento de auditoría con la tarjeta T2: ${A.auditDoc} (lee la sección de T2 Funnel Studio y las discrepancias).
+Decisiones de Oscar: ${A.decisions}
+Pilares: agnóstico (vale para cualquier marca/producto), todo configurable desde la UI con granularidad, nada hardcodeado, multi-tenant por brand_code (reglas de oro del CLAUDE.md de oscar-hq), seguridad.
+Ficheros EXCLUSIVOS permitidos: ${A.files}. No toques dashboard/src/lib/api.ts ni src/api/main.py (hay PR abiertos sobre ellos); si un router nuevo tuviera que registrarse en main.py, reutiliza el router existente de funnel_studio.
+Python: py -3.12. Escribe ficheros con saltos de línea LF.`
+
+phase('Spec')
+const spec = await agent(`${CTX}
+
+Paso 1. Si el worktree ${WT} no existe, créalo: git -C C:/Users/oscar/dev/oscar-hq fetch origin && git -C C:/Users/oscar/dev/oscar-hq worktree add -b ${BR} ${WT} origin/master. Si existe, verifica que está en la rama ${BR} y sin cambios ajenos.
+Paso 2. Lee el código actual de Funnel Studio (página, ajustes, rutas, servicio, tests, tabla de landings /lp/{id}) para entender lo que YA existe.
+Paso 3. Escribe specs/funnel-studio-piloto.md (~40 líneas, modo Spec-Lite): qué se construye (1 vista previa embebida de landings y galería; 2 % de completado con checklist configurable por marca, por defecto landing + email + anuncio, editable en /settings/funnel-studio; 3 «publicable» = landing propia /lp/{id} o URL externa de la web de la marca; 4 asociar imágenes/piezas existentes a la landing, propia o externa), endpoints, migración aditiva, criterios de hecho verificables, y lo que NO se hace. Commitea el spec en la rama.
+Devuelve el plan de implementación en texto: ficheros a tocar, endpoints, columnas/tablas de la migración, tests a escribir.`, { label: 'spec', phase: 'Spec' })
+
+phase('Implementar')
+const impl = await agent(`${CTX}
+
+Plan acordado (del paso de spec):
+${spec}
+
+Implementa el plan completo en ${WT}: backend (servicio + rutas con get_current_user y filtro por marca, modelos Pydantic con extra='forbid'), migración SQL aditiva e idempotente en supabase/migrations/ con RLS (solo escrita, con cabecera «NO APLICADA»), frontend (página /funnel-studio y /settings/funnel-studio; nuevo dashboard/src/lib/funnel-studio-api.ts y componentes en components/funnel-studio/), y tests pytest. El código debe degradar con mensaje claro si la migración aún no está aplicada.
+Valida una URL externa (solo http/https, sin hosts internos) y renderiza vistas previas en iframe con sandbox.
+Verifica: py -3.12 -m pytest tests/test_funnel_studio*.py -q ; py -3.12 -m pytest tests -q (suite completa, debe quedar en 0 fallos); en dashboard/ npx tsc --noEmit -p tsconfig.json (si falta node_modules, npm ci). Commits atómicos en ${BR}; NO hagas push todavía.
+Devuelve: resumen de lo hecho, ficheros tocados, resultado exacto de las pruebas y tsc, y cualquier decisión que hayas tenido que tomar.`, { label: 'implementar', phase: 'Implementar' })
+
+phase('Revisar')
+const LENSES = [
+  { key: 'correccion', agentType: 'code-reviewer', p: 'Revisa el diff origin/master...HEAD buscando bugs reales, regresiones de lo que ya funcionaba en Funnel Studio y tests que no prueban lo que dicen.' },
+  { key: 'seguridad', agentType: 'security-auditor', p: 'Revisa el diff origin/master...HEAD con foco en: SSRF/XSS con la URL externa y el iframe, aislamiento multi-tenant por marca en cada endpoint y consulta, RLS de la migración, secretos.' },
+  { key: 'configurable', agentType: undefined, p: 'Revisa el diff origin/master...HEAD contra los pilares: ¿hay algo hardcodeado que debería ser configurable desde la UI (activos del checklist, pesos, textos, límites)? ¿es agnóstico de marca? ¿la UI deja claro qué falta para publicar? ¿degrada bien sin la migración aplicada?' },
+]
+const reviews = await parallel(LENSES.map(l => () => agent(`${CTX}
+
+Eres revisor (solo lectura, no edites). Trabajo implementado en ${WT}, rama ${BR}:
+${impl}
+
+${l.p}
+Devuelve solo hallazgos concretos y verificados (fichero, línea, problema, arreglo propuesto, severidad alta/media/baja). Si no hay, lista vacía.`, {
+  label: `revisar:${l.key}`, phase: 'Revisar', agentType: l.agentType,
+  schema: { type: 'object', properties: { findings: { type: 'array', items: { type: 'object', properties: { file: { type: 'string' }, line: { type: 'string' }, issue: { type: 'string' }, fix: { type: 'string' }, severity: { type: 'string' } }, required: ['file', 'issue', 'fix', 'severity'] } } }, required: ['findings'] },
+})))
+const findings = reviews.filter(Boolean).flatMap((r, i) => r.findings.map(f => ({ ...f, lens: LENSES[i] ? LENSES[i].key : '?' })))
+log(`${findings.length} hallazgos de revisión`)
+
+phase('Corregir')
+const final = await agent(`${CTX}
+
+Implementación hecha en ${WT} (rama ${BR}). Hallazgos de los revisores (JSON):
+${JSON.stringify(findings, null, 1)}
+
+1. Aplica los hallazgos de severidad alta y media que sean reales (comprueba cada uno en el código; descarta con motivo los que no). Los de severidad baja, aplícalos si son triviales.
+2. Vuelve a pasar: py -3.12 -m pytest tests -q (0 fallos), ruff si está configurado, y en dashboard/ npx tsc --noEmit -p tsconfig.json.
+3. git push -u origin ${BR} (NUNCA a master) y abre un PR BORRADOR a master con gh ("/c/Program Files/GitHub CLI/gh.exe" pr create --draft --repo oscarsao/oscar-hq --base master --head ${BR}), título «[T2] Funnel Studio: ver landings, % de completado configurable y web externa (piloto workflow dinámico)», cuerpo: qué hace, migración pendiente de aplicar (nombre del fichero), cómo probarlo a ojo en /funnel-studio y /settings/funnel-studio, hallazgos aplicados/descartados, resultados de pruebas, y al final la línea "🤖 Generated with [Claude Code](https://claude.com/claude-code)".
+Termina los commits con estas dos líneas: "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>" y "Claude-Session: <url de la sesión>".
+Devuelve: URL del PR, SHA final, resultados de pruebas y tsc, migración pendiente, hallazgos aplicados y descartados.`, { label: 'corregir+PR', phase: 'Corregir' })
+
+return { spec, impl, findings, final }

@@ -68,7 +68,7 @@ def test_code_lanes_unchanged():
     for name, l in load_lanes().items():
         if l.kind == "implement":
             # claude-hub (plan D) tiene rol propio (el sistema de carriles), mismas herramientas que el resto
-            role = "roles/hub.md" if name == "claude-hub" else "roles/implementador.md"
+            role = "roles/hub.md" if name in ("claude-hub", "claude-telegram") else "roles/implementador.md"
             assert l.dest_roots == () and "Bash(git push:*)" in l.allowed_tools and l.role == role
 
 

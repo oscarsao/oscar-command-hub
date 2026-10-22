@@ -955,6 +955,9 @@ class DecisionDesk:
             return bool(self.limpieza) and self.limpieza.on_button(action, rec, where, self)
         if action in SOL_ACTIONS:  # aviso de posible solape (solapes.py)
             return bool(self.solapes) and self.solapes.on_button(action, rec, where, self)
+        if action.startswith("pv_"):  # panel vivo del tema de Integración: Resolver / Ver / Aparcar
+            panel = getattr(self.integrator, "panel", None)
+            return bool(panel) and panel.on_button(action, rec, where, self)
         if action == TO_INTEGRADOR:
             return self._to_integrador(rec, where)
         if action == GUARD_SNOOZE:

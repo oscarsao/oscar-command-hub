@@ -43,6 +43,7 @@ from .integrator import (INT_BATCH_FIX, INT_BATCH_MERGE, INT_BATCH_REBASE, INT_B
                          MERGE_RETRY_WAITS, NEEDS_MIGRATION, PR_URL_RE, TID_RE, GateResult, Policy, alembic_heads,
                          safe_env)
 from .notices import TEXT_MAX, status_line, truncate
+from .titulos import proyecto_de_carril
 from .verify import render_test_cmd
 
 log = logging.getLogger("agent_lanes")
@@ -552,8 +553,8 @@ class BatchPlanner:
                                    origin=f"aviso «Fuera del lote» ({rec.get('batch_id')})")
         tag = "rebase" if rebase else "fix"
         try:
-            new = i.hermes_for(lane.board).create(truncate(("Rebasar" if rebase else "Arreglar") + f" #{pr}: "
-                                                           + str(rec.get("title")), 70), body, lane.name, priority=10,
+            new = i.hermes_for(lane.board).create(f"[{proyecto_de_carril(lane.name)}] " + ("Rebasar" if rebase else "Arreglar")
+                                                     + f" #{pr} " + truncate(str(rec.get("title")), 40) + " · implementar", body, lane.name, priority=10,
                                                   key=f"lotefuera-{tag}-{rec.get('batch_id')}-{pr}", created_by="oscar")
         except Exception as exc:
             log.warning("%s: no se pudo crear la tarjeta de %s: %s", tid, tag, exc)
