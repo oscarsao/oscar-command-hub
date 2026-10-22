@@ -68,6 +68,57 @@ LIST_FAIL_GAP = 240  # s sin fallos nuevos = recuperado (el runner lista cada ~6
 
 
 RAM_REPORT_EVERY = 4 * 3600  # s entre informes de RAM al DM (antes: aviso repetido cada hora mientras RAM > 88 %)
+ALERT_CAP_HOURS = 24  # como mucho un aviso por clave y día (retro 22-10); editable: ajustes_hub.json avisos.alerta_cada_horas
+CAP_EXEMPT = ("INFO", "RESUELTO")
+WATCHED_CODE = ("monitor.py", "dbwatch.py", "prodwatch.py")  # si cambian en disco, el monitor se reinicia solo
+
+
+def alert_cap_seconds() -> float:
+    """Horas mínimas entre avisos de una misma clave: ajuste del hub (agent-lanes/ajustes_hub.json) o 24 h."""
+    import json
+    try:
+        h = float(json.loads((LANES / "ajustes_hub.json").read_text(encoding="utf-8"))["valores"]["avisos.alerta_cada_horas"])
+    except (OSError, ValueError, KeyError, TypeError):
+        h = ALERT_CAP_HOURS
+    return max(h, 0.0) * 3600
+
+
+def code_fingerprint(base: Path | None = None) -> tuple:
+    """(nombre, mtime_ns, tamaño) de los .py del monitor: cambia cuando un merge aplicado los reescribe."""
+    base = base or Path(__file__).resolve().parent
+    out = []
+    for name in WATCHED_CODE:
+        try:
+            st = (base / name).stat()
+            out.append((name, st.st_mtime_ns, st.st_size))
+        except OSError:
+            out.append((name, 0, 0))
+    return tuple(out)
+
+
+def restart_if_code_changed(started: tuple, *, base: Path | None = None, state: Path | None = None, run=None,
+                            spawn=None, alert=None) -> bool:
+    """Reinicio ordenado tras un merge que toca tools/monitor (como `restart --drain` del runner): solo entre ciclos
+    (no hay nada a medias), tras comprobar que el código nuevo compila y lanzando el relevo ANTES de salir. True =
+    relevo lanzado y este proceso debe terminar. Si el código nuevo no compila, avisa y sigue con el actual."""
+    base = base or Path(__file__).resolve().parent
+    state = state or STATE
+    if code_fingerprint(base) == started:
+        return False
+    run = run or (lambda args: subprocess.run(args, capture_output=True, text=True, timeout=60,
+                                              creationflags=NO_WINDOW))
+    for name in WATCHED_CODE:
+        cp = run([sys.executable, "-m", "py_compile", str(base / name)])
+        if cp.returncode:
+            if alert:
+                alert("ALTA", f"El monitor no se reinicia: {name} nuevo no compila ({(cp.stderr or '')[-160:].strip()}).",
+                      "monitor-restart-bad", 86400)
+            return False
+    spawn = spawn or (lambda args: subprocess.Popen(
+        args, creationflags=NO_WINDOW | getattr(subprocess, "DETACHED_PROCESS", 0), close_fds=True))
+    (state / "headless.pid").unlink(missing_ok=True)  # si no, el relevo vería este pid vivo y saldría
+    spawn([sys.executable, str(base / "monitor.py"), "--headless"])
+    return True
 
 
 def ram_text(top: int = 5) -> str:
@@ -150,7 +201,8 @@ class Monitor:
         self.prod, self.prod_at = prod, 0.0  # prodwatch.ProdWatch o None (sin avisos de producción/servidor)
         self.db, self.db_at = db, 0.0  # dbwatch.DbWatch o None (vigilancia de Supabase desactivada)
         self.alerts: deque[tuple[str, str, str]] = deque(maxlen=14)  # (hora, nivel, texto)
-        self._seen: dict[str, float] = {}
+        self._daily = self._load_json(STATE / "alert_daily.json") if write_log else {}  # {clave: último aviso}
+        self._seen: dict[str, float] = {k: v for k, v in self._daily.items() if isinstance(v, (int, float))}
         self.now = datetime.now  # inyectable en tests
         self._quiet_pending: list[str] = []
         self._list_fail_first = self._list_fail_last = 0.0
@@ -186,12 +238,45 @@ class Monitor:
             self.alert("RESUELTO", f"✅ Resuelto: {text.split(chr(10))[0]} (duró ~{mins} min)", key + "-ok", every=0)
         conds[key] = {"hits": 0, "since": 0.0, "alerted": False}
 
+    @staticmethod
+    def _load_json(path: Path) -> dict:
+        import json
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    def silenced(self, key: str) -> bool:
+        """/silenciar <clave> <horas> (agent-lanes): .state/silenced.json {clave: epoch de fin}; la clave cubre las que
+        empiezan por ella."""
+        now = time.time()
+        for k, until in self._load_json(STATE / "silenced.json").items():
+            try:
+                if key.startswith(k) and float(until) > now:
+                    return True
+            except (TypeError, ValueError):
+                continue
+        return False
+
     def alert(self, level: str, text: str, key: str | None = None, every: float = 600) -> None:
         key = key or text
         t = time.time()
+        capped = level not in CAP_EXEMPT and every > 0  # RESUELTO/INFO y los de `every=0` salen siempre
+        if capped:
+            if self.silenced(key):
+                return
+            every = max(every, alert_cap_seconds())  # como mucho 1 al día por clave
         if t - self._seen.get(key, 0) < every:
             return
         self._seen[key] = t
+        if capped and self.write_log:  # sobrevive a reinicios del monitor (si no, cada reinicio repetiría todo)
+            import json
+            self._daily = {k: v for k, v in {**self._daily, key: t}.items() if t - v < 7 * 86400}
+            try:
+                (STATE / "alert_daily.json").write_text(json.dumps(self._daily), encoding="utf-8")
+            except OSError:
+                pass
         self.alerts.appendleft((now_s(), level, text))
         if not self.write_log:  # la ventana solo muestra; el servicio headless registra y avisa
             return
@@ -673,6 +758,7 @@ def run_headless(interval: float = 15.0) -> int:
     mon = Monitor(write_log=True, push=dm_pusher(), db=dbwatch.from_env(envs), prod=prod)
     mon.alert("INFO", "Monitor headless arrancado" + ("" if mon.db else " (vigilancia de Supabase desactivada: falta "
               + dbwatch.ENV_KEY + ")"), every=0)
+    started = code_fingerprint()
     while True:
         for step in (mon.pc, mon.system, mon.chats, mon.alerts_panel, mon.refresh_db, mon.refresh_prod):
             try:
@@ -684,6 +770,12 @@ def run_headless(interval: float = 15.0) -> int:
             mon.ram_report()
         except Exception as exc:
             mon.alert("MEDIA", f"monitor: fallo en ram_report: {exc}", "self-ram_report", every=3600)
+        try:
+            if restart_if_code_changed(started, alert=mon.alert):  # un merge cambió tools/monitor: relevo y salida
+                mon.alert("INFO", "Monitor reiniciado: código nuevo en tools/monitor", every=0)
+                return 0
+        except Exception as exc:
+            mon.alert("MEDIA", f"monitor: fallo en el reinicio: {exc}", "self-restart", every=3600)
         time.sleep(interval)
 
 
