@@ -9,7 +9,7 @@ runner:
   # servicio (install-service.ps1) no fija el número en su línea de comandos; `--max-workers N` en runner.py solo
   # sirve para pruebas puntuales y PISA este valor. Ojo con la RAM: hubo un OOM el 27-09 con varias sesiones abiertas
   # y el PC va justo (~0,9 GB libres el 21-oct). Si vuelve a haber OOM, bajar a 2 (o 1) aquí y reiniciar el runner.
-  max_workers: 3
+  max_workers: 4
   interval_seconds: 60
   # Vigilante de «runner ciego» (agent_lanes/ciego.py): si no se pueden listar tareas (p. ej. WinError 4551 de App
   # Control) durante estos minutos seguidos, aviso ALTA al DM de Oscar y un `restart --drain` automático (máx. 1/hora).
