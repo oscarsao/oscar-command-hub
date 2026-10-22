@@ -14,6 +14,11 @@ también como /cmd@<bot>. Un /cmd@otro_bot (p. ej. el de Hermes) se ignora.
     /tarea t_xxx         ficha de la tarea con los botones de su estado
     /hazlo <texto>       crea una tarea pequeña (prioridad alta, tope 15 min): marca y carril salen del texto; con
                          duda, botones para elegir carril. El resultado vuelve a donde lo pediste
+    /pendiente           «Lo tuyo» en UN mensaje agrupado por prioridad: preguntas, PR por aprobar, cola del integrador,
+                         PR de sesiones, tarjetas tuyas y pasos del integrador, con un botón por línea que abre su
+                         ficha (lo_tuyo.py; `lanes.py pendiente` es la misma lista para Hermes)
+    /personal            propone mover tus tarjetas personales (no son decisiones de carril) al board `personal`;
+                         no mueve nada hasta pulsar [✅ Mover] (personal.py, personal.yaml)
     /estado [marca]      en un solo mensaje: en curso, lo que espera a Oscar y lo pendiente de desplegar
     /falta [marca]       checklist de lo que frena una salida (lote, ramas fuera, SQL, variables, deploy), con el
                          siguiente paso arriba y botones donde ya existe la acción (falta.py)
@@ -57,6 +62,9 @@ from typing import Callable
 from urllib.parse import urlsplit
 
 from . import bandeja as _bandeja
+from . import clasificador
+from . import lo_tuyo as _lo_tuyo
+from . import personal as _personal
 from . import tipo_peticion, titulos
 from .aviso import UrgentBlockWatcher, mention
 from .card_options import PREPARED_AUTHOR, PREPARED_PREFIX, CardSpec, card_message, parse_card
@@ -94,6 +102,8 @@ COMMANDS = (
     ("ram", "Consumo de RAM ahora y qué procesos más gastan"),
     ("sesion", "Correcciones agrupadas: /sesion [nombre] abre; fin | cancelar | estado"),
     ("flujo", "Una petición -> cadena de hasta 8 tarjetas (se crean al pulsar): /flujo <texto>"),
+    ("pendiente", "Lo tuyo en UN mensaje: preguntas, PR por aprobar, cola del integrador y tarjetas, con botones"),
+    ("personal", "Propone sacar tu backlog personal del kanban de carriles (confirmas con botones)"),
     ("pendientes", "Tus pendientes (pasos «tuyo» y «decidir») con botones"),
     ("epicas", "Vista de épicas (fuera de la cola de decisiones)"),
     ("retenidas", "Vista de tarjetas retenidas"),
@@ -104,7 +114,8 @@ HELP_ALIASES = ("start", "ayuda", "help")
 NOT_OWNER = ("Este comando es solo para operadores. Pide a Oscar o a María que lo haga, o escribe tu petición en "
              "texto libre y se la paso")
 # Comandos sin marca clara o con efecto directo en repos/sesiones de Oscar: un operador acotado por marca no los usa.
-SOLO_TODAS_LAS_MARCAS = ("integrador", "encolar", "preparar", "pedir", "sesion", "flujo", "ajustes")
+SOLO_TODAS_LAS_MARCAS = ("integrador", "encolar", "preparar", "pedir", "sesion", "flujo", "ajustes", "pendiente",
+                         "personal")
 BRAND_ARGS = {"migrateam": "MigraTeam", "pildora": "Píldora", "píldora": "Píldora", "nextjobs": "NextJobs"}
 TASK_ID_RE = re.compile(r"^t_[0-9a-f]{8}$")
 STATUS_TEXT = {"running": ("running", "en curso"), "ready": ("ready", "en cola"), "review": ("review", "en review"),
@@ -846,6 +857,145 @@ class CommandCenter:
                       for c in loose[:MAX_CARDS]]
             self._send(where, "\n".join(lines))
 
+    # --- /pendiente: bandeja única «Lo tuyo» (lo_tuyo.py) ----------------------------------------------------------
+
+    def lo_tuyo_items(self, brand: str | None = None) -> list[dict]:
+        """Todo lo que espera a Oscar, de las fuentes de siempre. Una fuente que falla no vacía la bandeja."""
+        def board_of(lane):
+            return getattr(self.lanes.get(lane), "board", "")
+
+        def tuyo() -> list[dict]:
+            snoozed = self._snoozed()
+            mine = [c for c in self.board_tasks(brand) if c["task"].get("assignee") == OSCAR_ASSIGNEE
+                    and titulos.step_of(c["task"]) in titulos.OSCAR_STEPS and c["task"]["id"] not in snoozed]
+            return _lo_tuyo.de_tarjetas(mine + self.oscar_cards(brand)[0])
+
+        def cola() -> list[dict]:
+            queue = self.guard_queue()
+            return _lo_tuyo.de_cola_guard(queue.entries(), board_of) if queue and not brand else []
+
+        def externos() -> list[dict]:
+            ext = self.cola_externos()
+            return _lo_tuyo.de_externos(ext.items()) if ext and not brand else []
+
+        fuentes = (("preguntas", lambda: _lo_tuyo.de_pendientes(self.pending_decisions(brand), "pregunta")),
+                   ("atascadas", lambda: _lo_tuyo.de_pendientes(self.stuck_tasks(brand), "atascada")),
+                   ("por aprobar", lambda: _lo_tuyo.de_pendientes(self.ready_to_approve(brand), "aprobar")),
+                   ("cola del integrador", cola), ("PR de sesiones", externos), ("tarjetas tuyas", tuyo),
+                   ("estado del integrador", lambda: [] if brand else _lo_tuyo.de_estado(self.estado_integrador())))
+        out: list[dict] = []
+        for name, fn in fuentes:
+            try:
+                out += fn()
+            except Exception as exc:
+                log.warning("/pendiente: %s no leído: %s", name, exc)
+        return out
+
+    def cmd_pendiente(self, where, args: str, brand: str | None) -> None:
+        """UN mensaje con todo lo tuyo agrupado por prioridad y un botón por línea (cada botón abre la ficha de siempre)."""
+        aj = _lo_tuyo.load_ajustes(getattr(self, "lo_tuyo_settings", None))
+        text, shown = _lo_tuyo.render(self.lo_tuyo_items(brand), aj, self._now(), f" · {brand}" if brand else "")
+        self._send(where, text, html=False, markup=self._lo_tuyo_markup(shown))
+
+    def _lo_tuyo_markup(self, shown: list[dict]) -> dict | None:
+        """Un token por botón (cada uno de un solo uso e independiente), todos en el mismo teclado de dos columnas."""
+        from .decisions import ESTADO_MAS, LT_OPEN
+        buttons = []
+        for n, it in enumerate(shown, 1):
+            text = f"{n} {_lo_tuyo.verbo(it)}"
+            if it.get("url"):
+                buttons.append({"text": text, "url": it["url"]})
+                continue
+            rec = {"task_id": "pendiente", "board": it.get("board") or "", "lane": "", "kind": it["kind"], "tid": it["tid"]}
+            action = ESTADO_MAS if it["kind"] == "integrador" else LT_OPEN
+            buttons.append(self.desk.store.issue(rec, [[{"text": text, "action": action}]])[1]["inline_keyboard"][0][0])
+        return {"inline_keyboard": [buttons[i:i + 2] for i in range(0, len(buttons), 2)]} if buttons else None
+
+    def lt_open(self, rec: dict, where: dict) -> bool:
+        """Botón de una línea de /pendiente: la ficha de esa cosa, con los botones que le tocan hoy (siempre fresca)."""
+        dest, tid, board = (where["chat_id"], where["thread_id"]), rec.get("tid") or "", rec.get("board") or ""
+        if rec.get("kind") == "tuyo":
+            card = next((c for c in self.board_tasks() if c["task"]["id"] == tid), None)
+            if card:
+                self._send_card(dest, card, self._now())
+                return True
+        elif TASK_ID_RE.match(tid):
+            try:
+                show = self.hermes_for(board).show(tid) if board else None
+            except Exception:
+                show = None
+            found = (board, show) if show and show.get("task") else self._find(tid)
+            if found:
+                self._send_ficha(dest, *found)
+                return True
+        self._send(dest, f"No encuentro {tid}: puede que ya se haya resuelto", html=False)
+        return True
+
+    # --- /personal: backlog personal fuera del kanban de carriles (personal.py) ---------------------------------------
+
+    def personal_candidatas(self) -> list[dict]:
+        aj = _personal.load_ajustes(getattr(self, "personal_settings", None))
+        cards = [c for c in self.board_tasks() if not aj.boards_origen or c["board"] in aj.boards_origen]
+        path = self._state_file("personal_state", _personal.DESCARTADAS_FILE)
+        excluidas = self._snoozed() | (_personal.Descartadas(path).ids() if path else set())
+        return _personal.candidatas(cards, aj, self._now(), excluidas)
+
+    def cmd_personal(self, where, args: str, brand: str | None) -> None:
+        """Propone mover a Oscar sus tarjetas personales (no son decisiones de carril) al board `personal`. No mueve nada
+        hasta que pulse [✅ Mover]; [✋ Dejarlas] las excluye de futuras propuestas."""
+        from .decisions import PERS_KEEP, PERS_MOVE
+        aj = _personal.load_ajustes(getattr(self, "personal_settings", None))
+        cands = self.personal_candidatas()
+        if not cands:
+            self._send(where, "Backlog personal: no hay tarjetas tuyas que mover 🎉", html=False)
+            return
+        now, tanda, tope = self._now(), cands[:aj.max_por_tanda], MAX_CARDS * 2
+        lines = [f"🗃 Backlog personal · {len(cands)} tarjetas a tu nombre que no son decisiones de carril",
+                 f"Propongo moverlas al board «{aj.board}». No se mueve nada hasta que pulses ✅."
+                 + (f" Esta tanda: las {len(tanda)} más antiguas." if len(cands) > len(tanda) else "")]
+        for c in tanda[:tope]:
+            t = c["task"]
+            lines.append(f"• {t['id']} · {c['board']} · {truncate(t.get('title'), 50)}"
+                         + (f" · hace {int(max(0, now - c['since']) // 86400)} d" if c.get("since") else ""))
+        if len(tanda) > tope:
+            lines.append(f"… y {len(tanda) - tope} más en esta tanda")
+        rec = {"task_id": "personal", "board": "", "lane": "",
+               "cards": [{"id": c["task"]["id"], "board": c["board"]} for c in tanda]}
+        markup = self.desk.store.issue(rec, [[{"text": f"✅ Mover {len(tanda)} a «{aj.board}»", "action": PERS_MOVE},
+                                              {"text": "✋ Dejarlas donde están", "action": PERS_KEEP}]])[1]
+        self._send(where, "\n".join(lines)[:TEXT_MAX], html=False, markup=markup)
+
+    def personal_step(self, action: str, rec: dict, where: dict) -> bool:
+        """[✅ Mover] / [✋ Dejarlas] de /personal. Solo se traslada lo que SIGUE siendo candidata (releída al pulsar)."""
+        from .decisions import PERS_KEEP
+        dest = (where["chat_id"], where["thread_id"])
+        ids = [m["id"] for m in rec.get("cards") or () if isinstance(m, dict) and m.get("id")]
+        if action == PERS_KEEP:
+            path = self._state_file("personal_state", _personal.DESCARTADAS_FILE)
+            if path is None:
+                self._send(dest, "No puedo recordar la elección (sin carpeta .state)", html=False)
+                return False
+            _personal.Descartadas(path, self._now).add(ids)
+            self._send(dest, f"✋ Vale: {len(ids)} tarjetas se quedan donde están y no vuelvo a proponerlas", html=False)
+            return True
+        aj = _personal.load_ajustes(getattr(self, "personal_settings", None))
+        vivas = {c["task"]["id"]: c for c in self.personal_candidatas()}
+        todo = [vivas[i] for i in ids if i in vivas]
+        moved, failed = [], []
+        for c in todo:
+            ok, detail = _personal.mover(c, self.hermes_for, aj)
+            (moved if ok else failed).append((c["task"]["id"], detail))
+            if len(failed) >= 3 and not moved:   # el board destino no existe o falla: no insistir 60 veces
+                break
+        lines = [f"🗃 Movidas a «{aj.board}»: {len(moved)}"
+                 + (f" · ya no eran candidatas: {len(ids) - len(todo)}" if len(ids) > len(todo) else "")]
+        lines += [f"⚠️ {tid}: {why}" for tid, why in failed[:5]]
+        if failed and not moved:
+            lines.append(f"No he movido nada. Si el board «{aj.board}» no existe, hay que crearlo en Hermes (necesita tu "
+                         "OK); luego repite /personal.")
+        self._send(dest, "\n".join(lines), html=False)
+        return bool(moved) or not failed
+
     def _top_decisions(self, where, pendings: list, stuck: list, cards: list[dict], now: float, brand: str | None,
                        total: int) -> None:
         scope = f" · {brand}" if brand else ""
@@ -1125,7 +1275,13 @@ class CommandCenter:
         tid = self.hermes_for(lane.board).create(truncate(text.splitlines()[0], HAZLO_TITLE_MAX), body, lane_name,
                                                  priority=HAZLO_PRIORITY, key=key, created_by="oscar")
         return (f"✅ Creada <code>{html.escape(tid)}</code> en {html.escape(lane_name)} · prioridad alta, tope "
-                f"{HAZLO_MINUTES} min. Te aviso al terminar.")
+                f"{HAZLO_MINUTES} min. Te aviso al terminar." + self._aviso_clasificador(lane, title_body=(text, body)))
+
+    def _aviso_clasificador(self, lane, *, title_body: tuple[str, str]) -> str:
+        """Aviso (HTML) de que un carril no podrá con la tarjeta recién creada; '' si puede. Ver clasificador.py."""
+        title, body = title_body
+        verdict = clasificador.evaluar(lane, {"title": title, "body": body}, lanes=self.lanes)
+        return html.escape(clasificador.aviso_creacion(verdict))
 
     def hazlo_choice(self, rec: dict, button: dict, where: dict) -> bool:
         """Botón de carril de un /hazlo con duda. True = hecho (tarjeta creada o cancelado); False = fallo (vuelven
@@ -1167,9 +1323,12 @@ class CommandCenter:
         board, assignee = (self.lanes[lane].board, lane) if lane in self.lanes else ("default", OSCAR_ASSIGNEE)
         key = tipo_peticion.card_key(st["confirmado_por"], tuple(st["where"]), st["texto"], self._now())
         tid = self.hermes_for(board).create(title, body, assignee, priority=priority, key=key, created_by="oscar")
+        aviso = "" if st["tipo"] == "consulta" or lane not in self.lanes else self._aviso_clasificador(
+            self.lanes[lane], title_body=(title, body))
         return (f"✅ Creada <code>{html.escape(tid)}</code> en {html.escape(assignee)} · "
                 f"{html.escape(st['tipo'])}" + (f" {html.escape(st['urgencia'])}" if st.get("urgencia") else "")
-                + ". Te aviso al terminar.")
+                + (". Te respondo en un comentario, sin rama." if st["tipo"] == "consulta" else ". Te aviso al terminar.")
+                + aviso)
 
     # --- /sesion --------------------------------------------------------------------------------------
 
@@ -1527,7 +1686,8 @@ class CommandCenter:
         PRs sueltos. None = sin integrador activo (no se sabe)."""
         from .batch import OPEN_STATUSES, brand_of
         from .falta import env_pending, plain_reason
-        from .integrator import INT_BATCH_MERGE, INT_MIGRATION_APPLIED, MIGRATION_KINDS, pending_migration
+        from .integrator import (DEPLOY_BUTTON, INT_BATCH_MERGE, INT_MIGRATION_APPLIED, MIGRATION_KINDS,
+                                 pending_migration)
         integ = getattr(self.desk, "integrator", None)
         if not integ or not integ.settings.enabled:
             return None
@@ -1569,7 +1729,7 @@ class CommandCenter:
                 if mig in MIGRATION_KINDS:
                     sql.append(f"🗄 Aplicar el SQL/migración ({e(mig)}) de PR #{pr} ({e(tid)}){e(who)} y marcarla")
                     targets.append({"action": INT_MIGRATION_APPLIED, "rec": rec, "text": f"✅ Migración aplicada #{pr}"})
-                elif policy.deploy == "railway_up":
+                elif policy.deploy in DEPLOY_BUTTON:
                     deploy.append(f"🚀 Desplegar PR #{pr} ({e(tid)}){e(who)}: fusionado y sin desplegar")
                     targets.append({"action": DEPLOY_ASK, "rec": {**rec, "migration": None}, "text": f"🚀 Desplegar #{pr}"})
                 else:
@@ -1824,20 +1984,21 @@ class CommandCenter:
 
     def _deploy_target(self, arg: str):
         """(carril, política) con deploy `railway_up` cuyo nombre, marca o palabra clave es `arg`; None si no hay."""
+        from .integrator import DEPLOY_BUTTON
         integ = getattr(self.desk, "integrator", None)
         if not integ or not integ.settings.enabled:
             return None
         want = re.sub(r"[^a-z0-9 -]+", "", (arg or "").lower()).strip()
         for name, policy in integ.settings.policies.items():
             lane = self.lanes.get(name)
-            if lane is not None and policy.deploy == "railway_up" and want and want in (
+            if lane is not None and policy.deploy in DEPLOY_BUTTON and want and want in (
                     name, name.removeprefix("claude-"), *LANE_HINTS.get(name, ())):
                 return lane, policy
         return None
 
     def cmd_desplegar(self, where, args: str, brand: str | None) -> None:
         """/desplegar <proyecto>: ficha de cada fusión sin desplegar con [🚀 Desplegar]; hace falta un 2.º toque."""
-        from .integrator import pending_migration
+        from .integrator import DEPLOY_BUTTON, pending_migration
         integ = getattr(self.desk, "integrator", None)
         arg = args.strip()
         if not integ or not integ.settings.enabled:
@@ -1846,7 +2007,7 @@ class CommandCenter:
         found = self._deploy_target(arg)
         if not found:
             names = sorted(n.removeprefix("claude-") for n, p in integ.settings.policies.items()
-                           if p.deploy == "railway_up")
+                           if p.deploy in DEPLOY_BUTTON)
             self._send(where, "Dime el proyecto: /desplegar " + ("|".join(names) or "(ninguno despliega con botón)")
                        + ". MigraTeam despliega staging al fusionar y producción va por /promover.", html=False)
             return
@@ -1870,18 +2031,20 @@ class CommandCenter:
 
     def deploy_step(self, action: str, rec: dict, where: dict, desk) -> bool:
         """1.er toque de /desplegar: edita la ficha con "¿Seguro?" y [✅ Sí, desplegar] (= int_deploy) / [✖ No]."""
-        from .integrator import INT_DEPLOY
+        from .integrator import DEPLOY_BUTTON, INT_DEPLOY
         if action == DEPLOY_NO:
             self.notifier.edit(where["chat_id"], where["message_id"], "✖ No despliego nada.", html=False)
             return True
         policy = desk.integrator.settings.policies.get(rec.get("lane")) if desk.integrator else None
-        if not policy or policy.deploy != "railway_up" or not rec.get("merge_sha"):
+        if not policy or policy.deploy not in DEPLOY_BUTTON or not rec.get("merge_sha"):
             return False
         markup = desk.store.issue(rec, [[{"text": "✅ Sí, desplegar", "action": INT_DEPLOY}],
                                         [{"text": "✖ No", "action": DEPLOY_NO}]])[1]
         self.notifier.edit(where["chat_id"], where["message_id"],
                            f"⚠️ ¿Seguro? Esto despliega {rec.get('lane')} (PR #{rec.get('pr_number')}, "
-                           f"{(rec.get('merge_sha') or '')[:7]}) con `railway up`.", html=False, reply_markup=markup)
+                           f"{(rec.get('merge_sha') or '')[:7]}) con "
+                           f"{'Dokploy' if policy.deploy == 'dokploy' else '`railway up`'}.", html=False,
+                           reply_markup=markup)
         return True
 
 
@@ -2041,14 +2204,17 @@ class CommandCenter:
         if not found:
             self._send(where, f"No encuentro {tid} en los tableros de los carriles", html=False)
             return
-        board, show = found
+        self._send_ficha(where, *found)
+
+    def _send_ficha(self, where, board: str, show: dict) -> None:
+        """Ficha de una tarea con los botones de su estado (/tarea y las líneas de /pendiente)."""
         text, markup = self.task_card(board, show)
         tree = self.tree_text(board, show)
         if tree and len(text) + 1 + len(tree) <= TEXT_MAX:
             text += "\n" + tree
         sent = self._send(where, text, markup=markup)
         if markup:
-            self._mirror(tid, sent, markup)
+            self._mirror(show["task"]["id"], sent, markup)
 
     def _find(self, tid: str) -> tuple[str, dict] | None:
         for board in dict.fromkeys(l.board for l in self.lanes.values() if l.board):

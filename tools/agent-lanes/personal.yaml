@@ -1,0 +1,7 @@
+# Backlog personal de Oscar fuera del kanban de carriles (/personal; agent_lanes/personal.py).
+# /personal solo PROPONE; no se mueve nada hasta que Oscar pulsa [✅ Mover].
+board: personal         # board destino (debe existir en Hermes: crearlo requiere el OK de Oscar)
+estados: [ready, todo]  # estados que cuentan como backlog
+min_dias: 0             # antigüedad mínima de la tarjeta para proponerla
+max_por_tanda: 60       # tarjetas por propuesta
+boards_origen: []       # vacío = todos los boards que leen los carriles

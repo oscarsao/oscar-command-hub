@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Callable
 
 from . import bloqueos
+from . import deps
 from . import proc as _proc
 from .bandeja import VetoBook
 from .config import ROOT
@@ -63,6 +64,7 @@ APPROVE, CHANGES, PARK, RETRY, OPTION, OTHER = "approve", "changes", "park", "re
 GUARD_SNOOZE = "guard_snooze"  # ⏳ Aplazar un bloqueo de guard escalado a Oscar: 24 h más en la cola del integrador
 TO_INTEGRADOR = "to_integrador"  # 🧑‍💻 Que lo resuelva el integrador: Oscar no puede actuar desde Telegram
 UNTRIAGE = "untriage"      # 🧊 Sacar de triage: specify_triage_task sin reescribir la tarjeta (nunca unblock)
+WAIT = "wait"              # ⏸ Esperar a…: pide el id de la tarjeta y crea la dependencia real (kanban link)
 EXPLAIN = "explain"        # 💬 Explícame más: responde con una explicación llana; no consume el teclado
 DETAIL = "detail"          # 🔎 Más detalle (aviso de bloqueo): motivo técnico y últimos comentarios; no consume el teclado
 ACCEPT_ALL = "accept_all"  # cabecera de /decisiones: aplica la opción recomendada en todas las que la tienen
@@ -73,6 +75,8 @@ DEPLOY_NO = "deploy_no"    # /desplegar: ✖ No en la confirmación
 ACCEPT_CARD = "accept_card"  # ✅ Acepto todas las recomendadas: las preguntas pendientes de ESTA tarjeta, de una vez
 SEE_ALL = "see_all"        # "N más · ver todas" de /decisiones
 ESTADO_MAS = "estado_mas"  # «Ver más» del estado del integrador en /integrador
+LT_OPEN = "lt_open"        # /pendiente: abre la ficha de esa línea con sus botones de siempre
+PERS_MOVE, PERS_KEEP = "pers_move", "pers_keep"  # /personal: mover al board personal / dejarlas donde están
 EXT_OK = "ext_ok"          # /encolar: OK de Oscar sobre el commit del PR de una sesión interactiva
 EXT_DROP = "ext_drop"      # /encolar: quitar el PR de la cola
 FALTA = "falta"            # /falta: botón de un paso (fusionar lote, migración aplicada, desplegar)
@@ -87,7 +91,7 @@ CARD_VETO = "card_veto"       # ⛔ Vetar: la tarjeta reversible deja de ejecuta
 CARD_ACCEPT_ALL = "card_accept_all"  # ✅ Aceptar las recomendadas del lote de tarjetas de /decisiones
 SNOOZE_DAYS = 7
 BUTTON_OPTION_MAX = 22  # caracteres del texto de la opción en su botón ("A · Aprobar el PR")
-REPLY_ACTIONS = (CHANGES, OTHER, CARD_ASK, PEDIR_ASK)  # piden texto a Oscar con force_reply
+REPLY_ACTIONS = (CHANGES, OTHER, CARD_ASK, PEDIR_ASK, WAIT)  # piden texto a Oscar con force_reply
 EXPLAIN_BUTTON = {"text": "💬 Explícame más", "action": EXPLAIN}
 DEFAULT_OPTION_LABELS = ("✅ Sí, adelante", "❌ No")  # botones de una pregunta sin opciones (DEFAULT_OPTIONS)
 ALL_LABEL = "todas las preguntas"  # ✍️ de una escalada de review (= hermes.LEGACY_ALL_LABELS)
@@ -162,8 +166,8 @@ def keyboard_spec(state: str, *, block_kind: str | None = None, questions=None,
         rows = [r for r in rows if r]
         return rows + [[{"text": "✍️ Responder", "action": OTHER}]] if retried and clase == bloqueos.TRANSITORIO else rows
     if state == "stuck":  # 🧊 en triage por bloqueo repetido (block_loop_detected): unblock no vale, _untriage la saca
-        return [[{"text": "🧊 Sacar de triage", "action": UNTRIAGE}, {"text": "✍️ Responder", "action": OTHER},
-                 {"text": "🗄 Archivar", "action": PARK}]]
+        return [[{"text": "🧊 Sacar de triage", "action": UNTRIAGE}, {"text": "⏸ Esperar a…", "action": WAIT}],
+                [{"text": "✍️ Responder", "action": OTHER}, {"text": "🗄 Archivar", "action": PARK}]]
     return None
 
 
@@ -978,6 +982,10 @@ class DecisionDesk:
             return self._see_all(rec, where)
         if action == ESTADO_MAS:
             return bool(self.commands) and self.commands.estado_mas(where)
+        if action == LT_OPEN:  # /pendiente: la línea pulsada
+            return bool(self.commands) and self.commands.lt_open(rec, where)
+        if action in (PERS_MOVE, PERS_KEEP):  # /personal: Oscar confirma el traslado
+            return bool(self.commands) and self.commands.personal_step(action, rec, where)
         if action in (EXT_OK, EXT_DROP):
             return bool(self.commands) and self.commands.externo_step(action, rec, where)
         if rec.get("group"):
@@ -1435,6 +1443,33 @@ class DecisionDesk:
         self._edit(rec, where, "requeued", "🔄 sacada de triage" + ("" if new == "ready" else f" · queda en {new}"))
         return True
 
+    def _wait_for(self, rec: dict, where: dict, text: str) -> bool:
+        """⏸ Esperar a…: dependencia real (`kanban link`) + comentario `ESPERA-A t_x` (lo que lee el runner para no
+        reclamarla) y la tarjeta sale de triage/bloqueo. Falla (False: vuelven los botones) si el id no es válido, es la
+        propia tarjeta, no existe o Hermes rechaza el enlace; el motivo se queda en el mensaje."""
+        h, tid = self._hermes(rec), rec["task_id"]
+        found = re.search(r"\bt_[0-9a-f]{8}\b", text or "")
+        parent = found.group(0) if found else None
+        if not parent or parent == tid:
+            why = "no vi un id de tarjeta distinto de esta (t_xxxxxxxx) en tu respuesta"
+        else:
+            try:
+                h.show(parent)
+                why = None
+            except Exception:
+                why = f"{parent} no existe en este tablero"
+        if not why and not h.link(parent, tid):
+            why = f"Hermes no aceptó el enlace {parent} → {tid}"
+        if why:
+            self._edit(rec, where, "stuck", f"⚠️ no se pudo esperar: {why}. Puedes volver a pulsar.")
+            return False
+        h.comment(tid, deps.wait_comment(parent), author=OSCAR_AUTHOR)
+        self.retries.clear(tid)
+        status = self._resume(h, tid)
+        self._edit(rec, where, "answered", f"⏸ esperando a {parent}: no se reclamará hasta que esté hecha o fusionada"
+                   + ("" if status else " · anotado, pero no pude sacarla de bloqueo (mira la tarjeta)"))
+        return True
+
     def _mark_retry(self, h, tid: str) -> None:
         try:
             reason = next(((e.get("payload") or {}).get("reason") for e in reversed(h.show(tid).get("events") or ())
@@ -1504,6 +1539,8 @@ class DecisionDesk:
             prompt = rec.get("prompt") or "Tu respuesta:"
         elif button["action"] == CHANGES:
             prompt = f"¿Qué cambio pides para {tid}?"
+        elif button["action"] == WAIT:
+            prompt = f"¿A qué tarjeta espera {tid}? Escribe su id (t_xxxxxxxx). No se reclamará hasta que esté hecha o fusionada."
         else:
             q = ((rec.get("question") or {}).get("question") or rec.get("summary")
                  or (rec.get("title") if rec.get("card") else "") or "")
@@ -1536,6 +1573,8 @@ class DecisionDesk:
         if rec.get("group"):
             return self._group_act(rec, button, where, text)
         tid, h = rec["task_id"], self._hermes(rec)
+        if button["action"] == WAIT:
+            return self._wait_for(rec, where, text)
         if button["action"] == OTHER:
             if (rec.get("n_questions") or 1) > 1 and not rec.get("other_label"):  # en secuencia: la pregunta en curso
                 return self._answer_step(rec, where, text)[0]

@@ -1,0 +1,17 @@
+# Clasificador de tarjetas (agent_lanes/clasificador.py): reglas como DATOS, no código.
+# Qué hace: antes de gastar una ejecución, si la tarjeta pide algo que un carril no puede (producción/env, SQL remoto,
+# escribir fuera del worktree, otro repo, instalar binarios), el runner la deja en la cola del integrador (/integrador)
+# con aviso en vez de lanzar al worker. Una regla con `accion: aviso` solo se lo dice al worker.
+# Se lee en cada pasada (no hace falta [🔁 Aplicar] para cambiar reglas). Lo que falte vale el valor por defecto de
+# clasificador.py (DEFAULTS, que es la lista completa); las listas se sustituyen enteras.
+# Salida de emergencia en una tarjeta concreta: una línea `Clasificador: omitir` en su cuerpo.
+# Tipo «consulta»: línea `Tipo: consulta` en el cuerpo (o título `[Consulta] …`): sin rama ni verificación, el carril
+# responde en un comentario y la cierra (agent_lanes/consulta.py). Se crea con /pedir.
+
+# enabled: true
+
+# Repos que ningún carril puede tocar (además de los repos de los demás carriles, que salen de lanes.yaml).
+# otros_repos: [pildora-handbook, pildora-mcp, pildora-website, pildora-recursos, pildora-cmo-workspace]
+
+# Tope de la respuesta de una consulta y de su coste (USD) y tiempo (s).
+# consulta: {max_usd: 0.8, timeout_seconds: 300}

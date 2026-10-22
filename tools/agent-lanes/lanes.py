@@ -10,6 +10,8 @@
                                                    # (comentario REGISTRO por <autor> + .state/reconcile-audit.jsonl)
     py -3.12 lanes.py doctor-boards [--apply]     # tarjetas abiertas en un tablero que su carril no lee (dry-run
                                                    # por defecto; --apply las recoloca en el tablero correcto)
+    py -3.12 lanes.py pendiente [--json]           # todo lo que espera a Oscar en una lista (solo lectura; herramienta
+                                                   # de Hermes; los botones están en /pendiente del bot de carriles)
     py -3.12 lanes.py restart --drain [--timeout 3600]
                                                    # reinicio ordenado: deja de reclamar, espera a los workers y
                                                    # reinicia la tarea programada "agent-lanes runner"
@@ -123,6 +125,10 @@ def main(argv: list[str]) -> int:
     if argv[:1] == ["doctor-boards"]:
         from agent_lanes import board_guard
         return board_guard.main(argv[1:])
+    if argv[:1] == ["pendiente"]:  # herramienta de Hermes: todo lo que espera a Oscar, solo lectura
+        from agent_lanes import lo_tuyo
+        boards: dict[str, HermesCLI] = {}
+        return lo_tuyo.cli(argv[1:], load_lanes(), lambda b: boards.setdefault(b, HermesCLI(b)), STATE_DIR)
     if argv[:1] == ["restart"]:
         return restart(argv[1:])
     if argv[:1] == ["reload"]:  # alias de `restart --drain`: recarga el runner sin cortar workers

@@ -42,7 +42,7 @@ def test_a_triage_con_block_loop_da_aviso_con_historial_tres_botones_y_mencion(t
     assert "@oscar_test" in msg["text"]
     assert "Lo que se preguntó: «¿Borro la tabla vieja?»" in msg["text"] and "veces" in msg["text"]
     assert "Falta:" in msg["text"]
-    assert texts(msg["markup"]) == ["🧊 Sacar de triage", "✍️ Responder", "🗄 Archivar"]  # exactamente 3
+    assert texts(msg["markup"]) == ["🧊 Sacar de triage", "⏸ Esperar a…", "✍️ Responder", "🗄 Archivar"]
 
 
 def test_sin_config_de_atencion_no_hay_mencion_ni_cambia_el_destino(tmp_path):
@@ -101,7 +101,7 @@ def test_pulsar_en_otra_copia_con_la_tarea_ya_resuelta_dice_que_ya_estaba_resuel
 
 
 def test_responder_y_archivar_son_las_acciones_existentes():
-    assert [b["action"] for row in keyboard_spec("stuck") for b in row] == ["untriage", "other", "park"]
+    assert [b["action"] for row in keyboard_spec("stuck") for b in row] == ["untriage", "wait", "other", "park"]
 
 
 def test_e_aviso_sin_acciones_falla_el_lint():
@@ -166,7 +166,7 @@ def test_remind_dm_lleva_los_botones_y_dice_que_no_se_hizo_nada(tmp_path):
     assert ren.remind_dm(pending(cc), 24)
     dm = bot.sent[-1]
     assert "recordatorio: no se ha hecho nada por ti" in dm["text"] and "@oscar_test" not in dm["text"]
-    assert texts(dm["markup"]) == ["🧊 Sacar de triage", "✍️ Responder", "🗄 Archivar"]
+    assert texts(dm["markup"]) == ["🧊 Sacar de triage", "⏸ Esperar a…", "✍️ Responder", "🗄 Archivar"]
 
 
 def test_f_prioridad_del_runner_de_oscar_hq_esta_documentada():

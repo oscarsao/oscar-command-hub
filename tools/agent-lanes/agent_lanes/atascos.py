@@ -198,8 +198,7 @@ class AutoResolver:
         i.state_dir.mkdir(parents=True, exist_ok=True)
         attrs.write_text("".join(f"{p} merge=union\n" for p in patterns), encoding="utf-8")
         nohooks = ["-c", f"core.hooksPath={i._nohooks()}"]
-        merge = i._git(w, *nohooks, "-c", "user.name=agent-lanes-integrator", "-c", "user.email=agent-lanes@localhost",
-                       "-c", "commit.gpgsign=false", "-c", f"core.attributesFile={attrs.as_posix()}",
+        merge = i._git(w, *nohooks, *i._ident(), "-c", f"core.attributesFile={attrs.as_posix()}",
                        "merge", "--no-ff", "--no-edit", base_sha)
         if merge.returncode != 0:  # lo que sigue en conflicto NO es append-only (esos los resolvió union)
             files = (i._git(w, "diff", "--name-only", "--diff-filter=U").stdout or "").split()
