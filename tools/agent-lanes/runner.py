@@ -16,6 +16,7 @@ from logging.handlers import RotatingFileHandler
 from agent_lanes import ciego, drain, notices
 from agent_lanes.bandeja import load as load_bandeja
 from agent_lanes.board_guard import BoardGuardTicker
+from agent_lanes.choques import ChoquesTicker
 from agent_lanes.solapes import SolapeTicker
 from agent_lanes.config import (ROOT, load_env, load_lanes, load_notice_limits, load_runner_settings,
                                 load_telegram_settings)
@@ -23,10 +24,11 @@ from agent_lanes.commands import CommandCenter, register_commands
 from agent_lanes.collab_intake import CollabIntake
 from agent_lanes.people import load_people
 from agent_lanes.decisions import CALLBACKS_DIR, OWNER_TELEGRAM_ID, CallbackStore, DecisionDesk, UpdatePoller
-from agent_lanes import explain
+from agent_lanes import explain, triaje
 from agent_lanes.deps import ShowCache, TreeReader
 from agent_lanes.hermes_answers import HermesAnswers
 from agent_lanes.reminders import Reminders
+from agent_lanes.limpieza import LimpiezaRunner, LimpiezaTicker
 from agent_lanes.reconcile import ReconcileTicker, Reconciler, gh_prs
 from agent_lanes.aviso import REMIND_HOURS, StuckWatcher
 from agent_lanes.git_ops import GitOps, github_slug_problem
@@ -117,7 +119,8 @@ def main(argv: list[str] | None = None) -> int:
             log.warning("getMe falló (los comandos con @sufijo no se reconocerán): %s", exc)
         commands = CommandCenter(notify, decisions, lanes=all_lanes, hermes_for=hermes_for, messages=messages,
                                  links=links, generic_origins=tg_settings["generic_origins"], bot_username=username,
-                                 owner_id=owner, bandeja=load_bandeja(), asker=explain.answer)
+                                 owner_id=owner, bandeja=load_bandeja(), asker=explain.answer,
+                                 classifier=triaje.clasificar)
         decisions.commands = commands
         decisions.team_notice = tg_settings.get("team_notice") or None
         decisions.collab = CollabIntake(notify, load_people(owner), hermes_for=hermes_for, state_path=COLLAB_STATE)
@@ -150,13 +153,14 @@ def main(argv: list[str] | None = None) -> int:
     # Candado de repos: un carril de código solo reclama si el remote de su repo es el `github:` de lanes.yaml.
     runners: list = [LaneRunner(l, hermes=hermes_for(l.board), git=git, worker=ClaudeWorker(pid_dir=STATE_DIR),
                                 verifier=verify, notify=notify, exclude=set(args.exclude), messages=messages, links=links,
-                                decisions=decisions, tree=tree, repo_guard=github_slug_problem, lanes=all_lanes)
+                                decisions=decisions, tree=tree, repo_guard=github_slug_problem, lanes=all_lanes,
+                                final_only=tg_settings["final_only"])
                      for l in impl.values()]
     # Carril ops: sin repo. Carpeta de trabajo por tarea + verificación por evidencias; siempre acaba en review para
     # Oscar (no está en `review.reviews`, y sweep_done no lo toca: el workspace se conserva).
     runners += [LaneRunner(l, hermes=hermes_for(l.board), git=OpsWorkspace(), worker=ClaudeWorker(pid_dir=STATE_DIR), verifier=verify_ops,
                            notify=notify, exclude=set(args.exclude), messages=messages, links=links, decisions=decisions,
-                           tree=tree)
+                           tree=tree, final_only=tg_settings["final_only"])
                 for l in selected.values() if l.kind == "ops"]
     # Tema de Integración (integration_telegram): la tarjeta done con ✅ Aprobar va allí aunque el integrador esté apagado.
     integration = (IntegrationRoute(tg_settings["integration"], load_integrator_settings(env=env, lane_filter=False).policies)
@@ -195,7 +199,9 @@ def main(argv: list[str] | None = None) -> int:
     watch = None if args.once else ciego.Vigilante(minutes=float(settings["ciego_minutes"]), alert=drain.dm_alert(env))
     guard = None
     reconcile = None
+    limpieza = None
     solapes = None
+    choques = None
     if decisions and not args.once:  # PR resueltos -> tarjetas cerradas; propuesta diaria de obsoletas (con botón)
         owner_dm = env.get("OWNER_TELEGRAM_ID") or OWNER_TELEGRAM_ID
         boards = sorted({l.board for l in all_lanes.values() if l.board})
@@ -206,6 +212,13 @@ def main(argv: list[str] | None = None) -> int:
                            issue=decisions.store.issue, state_path=ROOT / ".state" / "reconcile.json")
         decisions.reconciler = recon
         reconcile = ReconcileTicker(recon, minutes=float(env.get("RECONCILE_MINUTES") or 10))
+        limpieza_runner = LimpiezaRunner(hermes_for, boards, lambda: gh_prs(slugs),  # propone cierres; nunca cierra sola
+                                         lambda text, markup=None: notify.send_to(owner_dm, None, text, html=False,
+                                                                                  reply_markup=markup),
+                                         issue=decisions.store.issue, state_path=ROOT / ".state" / "limpieza.json")
+        recon.peer, limpieza_runner.peer = limpieza_runner.silenciada, recon.silenciada  # «Mantener» en uno silencia el otro
+        decisions.limpieza = limpieza_runner
+        limpieza = LimpiezaTicker(limpieza_runner, minutes=float(env.get("RECONCILE_MINUTES") or 10))
     if not args.once:  # guarda de tablero (ADR-036): tarjetas en un tablero que su carril no lee
         owner_dm = env.get("OWNER_TELEGRAM_ID") or OWNER_TELEGRAM_ID
         guard = BoardGuardTicker(all_lanes, hermes_for, apply=env.get("BOARD_GUARD_APPLY", "").lower() == "true",
@@ -215,6 +228,9 @@ def main(argv: list[str] | None = None) -> int:
         # Solape de alcance entre tarjetas activas del mismo repo: avisa a Oscar, no fusiona nada (solapes.yaml).
         solapes = SolapeTicker(all_lanes, hermes_for, send=lambda text: notify.send_to(owner_dm, None, text, html=False),
                                state_path=ROOT / ".state" / "solapes.json")
+        # Choques reales en git (ramas lane/*, PR, ramas de personas): solo avisa a Oscar con propuesta (choques.yaml).
+        choques = ChoquesTicker(all_lanes, hermes_for, send=lambda text: notify.send_to(owner_dm, None, text, html=False),
+                                state_path=ROOT / ".state" / "choques.json")
     while True:
         shows.clear()
         # Reinicio ordenado (lanes.py restart --drain): entre pasadas, sin reclamar nada; el acuse dice si queda
@@ -247,8 +263,12 @@ def main(argv: list[str] | None = None) -> int:
             guard.tick()
         if solapes:
             solapes.tick()
+        if choques:
+            choques.tick()
         if reconcile:
             reconcile.tick()
+        if limpieza:
+            limpieza.tick()
         results = service.run_pass()
         if watch:
             watch.observe(service.list_errors)

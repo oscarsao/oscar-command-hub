@@ -1,0 +1,50 @@
+# Tema de usuario de Hermes: Píldora · Liquid Glass V4 (parte de paleta/tipografía).
+# El CSS (`customCSS`) NO está aquí: `instalar_tema.py` lo une desde pildora-liquid-glass.css.
+# Esquema: hermes_cli/web_server_dashboard.py::_normalise_theme_definition.
+# Paleta tomada de oscar-hq dashboard/src/app/globals.css (tokens Design System V4).
+name: pildora-liquid-glass
+label: Píldora · Liquid Glass V4
+description: Estilo Liquid Glass V4 de Píldora (fondo violeta oscuro, coral→naranja, tarjetas de cristal).
+
+palette:
+  # background = fondo del viewport; midground = color de texto principal (en Hermes midground hace de "foreground")
+  background: "#0a0613"
+  midground: "#fafafa"
+  foreground:
+    hex: "#ffffff"
+    alpha: 0
+  warmGlow: "rgba(255, 106, 82, 0.20)"
+  noiseOpacity: 0.4
+
+typography:
+  fontSans: '"Manrope", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif'
+  fontMono: '"JetBrains Mono", ui-monospace, "Cascadia Mono", Consolas, monospace'
+  fontUrl: "https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap"
+  baseSize: "15px"
+  lineHeight: "1.55"
+  letterSpacing: "0"
+
+layout:
+  radius: "0.9rem"
+  density: comfortable
+
+colorOverrides:
+  card: "#13091e"
+  cardForeground: "#fafafa"
+  popover: "#13091e"
+  popoverForeground: "#fafafa"
+  primary: "#ff6a52"
+  primaryForeground: "#ffffff"
+  secondary: "#1b1029"
+  secondaryForeground: "#fafafa"
+  muted: "#1b1029"
+  mutedForeground: "#b8afc7"
+  accent: "#2a1a3d"
+  accentForeground: "#fafafa"
+  destructive: "#ef4444"
+  destructiveForeground: "#ffffff"
+  success: "#10b981"
+  warning: "#f59e0b"
+  border: "rgba(255, 255, 255, 0.10)"
+  input: "rgba(255, 255, 255, 0.15)"
+  ring: "#ff6a52"

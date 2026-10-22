@@ -40,6 +40,7 @@ from .people import People, load_people
 from .notices import (BOARD_BRANDS, BRANDS, DECISION_CARD_STATUSES, OPTION_LETTERS, card_url, normalize_questions,
                       questions_block, render, status_line, truncate, with_default_options)
 from .tipo_peticion import A_ASK as PEDIR_ASK, KIND as PEDIR_KIND
+from .limpieza import LIM_CLOSE, LIM_KEEP, LIM_VIEW
 from .reconcile import INTEGRATOR_PROFILE, REC_ARCHIVE, REC_KEEP
 from .review import CHANGES_PREFIX
 
@@ -70,6 +71,8 @@ DETAIL = "detail"          # 🔎 Más detalle (aviso de bloqueo): motivo técni
 ACCEPT_ALL = "accept_all"  # cabecera de /decisiones: aplica la opción recomendada en todas las que la tienen
 HAZLO = "hazlo"            # /hazlo con duda: el botón elige el carril donde crear la tarea
 FLUJO = "flujo"            # /flujo: [Crear todo] / [Cancelar] sobre la propuesta de tarjetas encadenadas
+TRIAJE = "triaje"          # entrada inteligente: preguntas de recomendación, «Créala ya», duplicados, workflow
+WORKFLOW = "workflow"      # /workflow: [Aprobar plan y gasto] / [Cancelar] (nada se crea antes)
 DEPLOY_ASK = "deploy_ask"  # /desplegar: 1.er toque = pide confirmar; el 2.º (✅ Sí) es el int_deploy del integrador
 DEPLOY_NO = "deploy_no"    # /desplegar: ✖ No en la confirmación
 ACCEPT_CARD = "accept_card"  # ✅ Acepto todas las recomendadas: las preguntas pendientes de ESTA tarjeta, de una vez
@@ -421,6 +424,7 @@ class DecisionDesk:
         self._spawn = spawn
         self._now = now
         self.reconciler = None  # reconcile.Reconciler: botones rec_archive / rec_keep
+        self.limpieza = None  # limpieza.LimpiezaRunner: botones lim_close / lim_keep / lim_view
         self.integrator = None  # carril Integrador (INTEGRATOR_ENABLED): botones int_* de fusionar/desplegar
         self.messages = messages  # MessageStore: todas las copias de cada aviso (sincronización tema <-> DM)
         self.promoter = None      # promote.Promoter: /promover y botones promo_* (producción de MigraTeam)
@@ -945,6 +949,8 @@ class DecisionDesk:
             return bool(self.integrator) and self.integrator.on_button(action, rec, where, self)
         if action in (REC_ARCHIVE, REC_KEEP):  # propuesta de obsolescencia (reconcile.py)
             return bool(self.reconciler) and self.reconciler.on_button(action, rec, where, self)
+        if action in (LIM_CLOSE, LIM_KEEP, LIM_VIEW):  # propuesta de limpieza (limpieza.py)
+            return bool(self.limpieza) and self.limpieza.on_button(action, rec, where, self)
         if action == TO_INTEGRADOR:
             return self._to_integrador(rec, where)
         if action == GUARD_SNOOZE:
@@ -970,6 +976,10 @@ class DecisionDesk:
             return bool(self.commands) and self.commands.req_choice(rec, button, where)
         if action == FLUJO:  # /flujo: crear o descartar la propuesta
             return bool(self.commands) and self.commands.flujo_choice(rec, button, where)
+        if action == TRIAJE:  # entrada inteligente: paso de preguntas / créala ya / duplicado / derivar
+            return bool(self.commands) and self.commands.triaje_choice(rec, button, where)
+        if action == WORKFLOW:  # /workflow: aprobar el plan o descartarlo
+            return bool(self.commands) and self.commands.workflow_choice(rec, button, where)
         if action in (DEPLOY_ASK, DEPLOY_NO):  # /desplegar: confirmación previa al int_deploy
             return bool(self.commands) and self.commands.deploy_step(action, rec, where, self)
         if action == CARD_ACCEPT_ALL:

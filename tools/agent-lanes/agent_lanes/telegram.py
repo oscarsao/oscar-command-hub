@@ -34,6 +34,14 @@ def resolve_target(origin: tuple[str, str] | None, lane_target: tuple[str, str] 
     return tuple(lane_target) if lane_target else None
 
 
+def in_scope(target: tuple[str, str] | None, scopes) -> bool:
+    """¿El Origen-Telegram cae en alguno de los ámbitos (chat, hilo)? hilo "*" = cualquier hilo del chat."""
+    if not target:
+        return False
+    chat, thread = str(target[0]), str(target[1])
+    return any(str(c) == chat and str(t) in ("*", thread) for c, t in scopes or ())
+
+
 def notifier_from_env(env: dict, tg_settings: dict) -> tuple[TelegramNotifier, bool]:
     """(notificador, es_bot_de_carriles). CARRILES_BOT_TOKEN = bot propio de los carriles (botones + escucha); sin
     él, el bot de Hermes (TELEGRAM_BOT_TOKEN) y sin botones. La usan el runner y `lanes.py renotify`."""
