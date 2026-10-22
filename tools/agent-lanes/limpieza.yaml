@@ -1,0 +1,16 @@
+# Limpieza propuesta de tarjetas resueltas (agent_lanes/limpieza.py; spec: specs/kanban-limpieza-propuesta.md).
+# Se relee en cada pasada: basta editarlo (y /aplicar si quieres que quede en main). Valor inválido = por defecto.
+# El job NUNCA cierra nada solo: propone con [Cerrar / Mantener / Ver] y espera a Oscar.
+activo: true
+hora: 9                    # hora local (Madrid) desde la que sale la propuesta, una vez al día
+dias_sin_movimiento: 7     # N: tarjeta de `oscar` sin eventos ni comentarios en N días
+dias_silencio: 14          # M: «Mantener» silencia la tarjeta M días; sin respuesta tampoco se repite antes
+similitud: 0.85            # umbral (0-1) de títulos parecidos para «duplicada»
+max_propuestas: 8          # candidatas por mensaje (el resto, otro día)
+tableros: []               # vacío = todos los tableros de los carriles; o [default, otro]
+reglas:                    # true/false por regla
+  pr_mergeado: true
+  hermana_hecha: true
+  decidir_respondida: true
+  duplicada: true
+  oscar_parada: true
