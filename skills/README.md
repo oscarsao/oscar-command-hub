@@ -1,6 +1,10 @@
 # Skills: inventario y propuesta (22-10-2026)
 
-Borradores para revisión de Oscar. **No están instalados.** Instalar = copiar la carpeta a `~/.claude/skills/<nombre>/` (usuario) o a `.claude/skills/` de un repo (proyecto, también la usan los carriles que trabajen en ese repo).
+**Estado (22-10, OK de Oscar con botones):** las 5 de esta carpeta (`desplegar-dokploy`, `integrar-lote`, `barrido-carriles`, `tarjeta-carril`, `migracion-supabase`) están **instaladas** en `~/.claude/skills/<nombre>/` del PC de Oscar. Esta carpeta `skills/` es la fuente versionada: si se edita aquí, volver a copiar a `~/.claude/skills/`.
+
+**Carriles:** los workers de agent-lanes son sesiones `claude -p` del mismo usuario de Windows, así que cargan las skills de usuario (`~/.claude/skills`) igual que las sesiones interactivas: no hace falta copiarlas a cada repo. Para que en modo `-p` puedan invocarlas sin permiso interactivo, `lanes.yaml` (defaults.allowed_tools) incluye `Skill(integrar-lote)` y `Skill(tarjeta-carril)`. El guard de cada carril sigue mandando: un worker nunca fusiona a main/master ni despliega aunque la skill lo describa (esos pasos son del integrador).
+
+Borradores pendientes de aprobar: `../skills-borrador/` (no instalados).
 
 ## Inventario
 
@@ -49,3 +53,9 @@ Uso medido en los transcripts de Claude Code de los últimos 30 días (1.508 ses
 - **Actualizar:** `healthcheck` (Railway → Dokploy y api.pildoradigital.com), `db-migration-checker` (Railway → arranque en Dokploy; MigraTeam sigue en Railway hasta su corte), `distill` (ruta de memoria real y quitar el gotcha de nvm), `cto-audit-360` (infra actual).
 - **Mantener sin cambios:** tomar-tarea, cerrar-tarea, spec-lite, pre-deploy, handoff, audit-360.
 - **Retirar:** ninguna por ahora (no estorban); revisar `synced`.
+
+## Borradores pendientes de aprobar (22-10)
+En `skills-borrador/` (no instalados): `verificar-bot-telegram`, `smoke-produccion`, `alta-persona-equipo`, `revisar-correo-infra` y `rotar-clave` (solo esqueleto: esperar a que la Bóveda, oscar-hq PR #254, esté en master).
+
+## Actualizadas el 22-10 (fuera del repo, en `~/.claude`, con copia `.bak-20261022`)
+`skills/healthcheck` (Railway → Dokploy y api.pildoradigital.com; MigraTeam en Railway hasta su corte), `skills/distill` (sin el gotcha de nvm; lecciones duraderas también a la memoria real `projects/C--Users-oscar/memory/`), `agents/db-migration-checker.md` y `agents/cto-audit-360.md` (host actual).
