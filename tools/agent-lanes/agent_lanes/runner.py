@@ -20,7 +20,7 @@ from .hermes import GUARD_LIMIT_MARK, looks_like_guard_limit
 from .notices import (MessageStore, TaskNotices, files_label, fit_reason, money, next_step, normalize_questions,
                       question_text, questions_block, render, status_line, test_label)
 from .preflight import preflight_warnings
-from .telegram import telegram_target
+from .telegram import in_scope, telegram_target
 
 log = logging.getLogger("agent_lanes")
 
@@ -84,6 +84,7 @@ class Heartbeat:
 # Motivos de verificación que dependen de la config (lanes.yaml / cuerpo de la tarea), no de algo que el worker arregle
 # reintentando: el aviso no ofrece [🔄 Reintentar].
 CONFIG_REASONS = ("toca rutas vetadas", "Destino-Ops no permitido")
+QUIET_STATES = ("needs_input", "blocked", "stuck", "changes")  # vueltas de proceso que un chat «solo resultado final» no ve
 FOR_OSCAR_PREFIX = "Para Oscar:"  # línea del motivo del bloqueo con el `for_oscar` del worker (la lee renotify)
 
 
@@ -112,10 +113,12 @@ class LaneRunner:
                  repo_guard: Callable[[Lane], str | None] | None = None,
                  kill: Callable[[int], None] = _proc.kill_tree,
                  created_at: Callable[[int], float | None] = _proc.created_at,
-                 lanes: dict | None = None, consultor: Callable | None = None):
+                 lanes: dict | None = None, consultor: Callable | None = None, final_only=()):
         self.lane = lane
         self._lanes = lanes or {}  # el clasificador distingue «otro repo» por los repos de los demás carriles
         self._consultor = consultor or _consulta.responder  # tipo «consulta»: (lane, task) -> (texto, coste)
+        # Chats «solo resultado final» (lanes.yaml telegram.final_only): ahí solo salen inicio y entrega; el proceso va al DM.
+        self._final_only = set(final_only or ())
         self._kill = kill
         self._created_at = created_at
         self._tree = tree  # deps.TreeReader: líneas 🔗/⏸/↳ (padre e hijas) en cada aviso; None = sin árbol
@@ -151,6 +154,11 @@ class LaneRunner:
         task = {"id": tid, **(task or {})}
         # Origen-Telegram routes the notice back to that topic (contract with W3b); lane.telegram is the fallback.
         target = target_override or telegram_target(task.get("body"))  # override = tema Atención (config de confianza)
+        lane_target, keep = self.lane.telegram, False
+        owner = str(getattr(self._decisions, "owner_id", "") or "")
+        if state in QUIET_STATES and owner and in_scope(target, self._final_only):
+            # Ruido de proceso: no sale en el grupo; llega a Oscar (con sus botones) y el aviso del grupo se conserva.
+            target, lane_target, keep = None, (owner, "0"), True
         mirror = dm_mirror(self._decisions, target, alert, state)
         for attempt in (1, 2):  # un aviso que falla (red, Telegram) se reintenta UNA vez
             try:
@@ -165,7 +173,7 @@ class LaneRunner:
                                                     questions=questions, changed_files=changed_files,
                                                     summary=summary, for_oscar=for_oscar, yes_no=yes_no,
                                                     q_index=q_index)
-                self._notices.publish(tid, text, target, self.lane.telegram, alert=alert, reply_markup=markup,
+                self._notices.publish(tid, text, target, lane_target, alert=alert, reply_markup=markup, keep_previous=keep,
                                       followup=list(getattr(bullets, "overflow", None) or ()) or None,
                                       **({"mirror_to": mirror} if mirror else {}))
                 return

@@ -30,6 +30,11 @@ telegram:
   generic_origins:
     - {chat: 6744452215}              # DM de Oscar (cualquier hilo)
     - {chat: -1003530490339, thread: 5}  # Gestión · Operaciones General
+  # «Solo resultado final» (22-oct, grupo de desarrollo de Angel): en estos chats un aviso de proceso (needs_input,
+  # blocked, stuck, changes) NO se publica; llega al DM de Oscar con sus botones. Quedan inicio (▶️), review y done.
+  # thread omitido = cualquier hilo. Quitar el bloque restaura el comportamiento de siempre.
+  final_only:
+    - {chat: -1003731090094}          # Grupo de desarrollo de Angel
   # Aviso al equipo (APAGADO por defecto: sin esta clave, o con enabled: false, el bot ignora el texto de los grupos).
   # Con enabled: true, si alguien escribe a ESTE bot en uno de los chats (@mención o respuesta a un mensaje suyo)
   # contesta una vez por minuto «esto lo lleva el asistente del equipo». Lo que hablan entre ellos no se contesta.
