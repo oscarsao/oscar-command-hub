@@ -27,6 +27,7 @@ from agent_lanes import explain
 from agent_lanes.deps import ShowCache, TreeReader
 from agent_lanes.hermes_answers import HermesAnswers
 from agent_lanes.reminders import Reminders
+from agent_lanes.limpieza import LimpiezaRunner, LimpiezaTicker
 from agent_lanes.reconcile import ReconcileTicker, Reconciler, gh_prs
 from agent_lanes.aviso import REMIND_HOURS, StuckWatcher
 from agent_lanes.git_ops import GitOps, github_slug_problem
@@ -195,6 +196,7 @@ def main(argv: list[str] | None = None) -> int:
     watch = None if args.once else ciego.Vigilante(minutes=float(settings["ciego_minutes"]), alert=drain.dm_alert(env))
     guard = None
     reconcile = None
+    limpieza = None
     solapes = None
     if decisions and not args.once:  # PR resueltos -> tarjetas cerradas; propuesta diaria de obsoletas (con botón)
         owner_dm = env.get("OWNER_TELEGRAM_ID") or OWNER_TELEGRAM_ID
@@ -206,6 +208,13 @@ def main(argv: list[str] | None = None) -> int:
                            issue=decisions.store.issue, state_path=ROOT / ".state" / "reconcile.json")
         decisions.reconciler = recon
         reconcile = ReconcileTicker(recon, minutes=float(env.get("RECONCILE_MINUTES") or 10))
+        limpieza_runner = LimpiezaRunner(hermes_for, boards, lambda: gh_prs(slugs),  # propone cierres; nunca cierra sola
+                                         lambda text, markup=None: notify.send_to(owner_dm, None, text, html=False,
+                                                                                  reply_markup=markup),
+                                         issue=decisions.store.issue, state_path=ROOT / ".state" / "limpieza.json")
+        recon.peer, limpieza_runner.peer = limpieza_runner.silenciada, recon.silenciada  # «Mantener» en uno silencia el otro
+        decisions.limpieza = limpieza_runner
+        limpieza = LimpiezaTicker(limpieza_runner, minutes=float(env.get("RECONCILE_MINUTES") or 10))
     if not args.once:  # guarda de tablero (ADR-036): tarjetas en un tablero que su carril no lee
         owner_dm = env.get("OWNER_TELEGRAM_ID") or OWNER_TELEGRAM_ID
         guard = BoardGuardTicker(all_lanes, hermes_for, apply=env.get("BOARD_GUARD_APPLY", "").lower() == "true",
@@ -249,6 +258,8 @@ def main(argv: list[str] | None = None) -> int:
             solapes.tick()
         if reconcile:
             reconcile.tick()
+        if limpieza:
+            limpieza.tick()
         results = service.run_pass()
         if watch:
             watch.observe(service.list_errors)

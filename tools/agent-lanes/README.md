@@ -327,3 +327,10 @@ Oscar HQ y NextJobs corren en el servidor pildora-01 (Hetzner) con Dokploy; Migr
 - **Consulta** (`Tipo: consulta` en el cuerpo o título `[Consulta] …`; `/pedir` ofrece el botón «❓ Solo una pregunta»): sin
   rama, sin worktree y sin verificación mecánica. El carril responde con `claude -p` de SOLO LECTURA (`Read,Grep,Glob`) en
   el checkout de su repo, deja la respuesta como comentario y completa la tarjeta (`agent_lanes/consulta.py`).
+
+## Limpieza propuesta de tarjetas resueltas (`limpieza.py`, `limpieza.yaml`)
+Una vez al día (hora de `limpieza.yaml`) el runner propone por Telegram las tarjetas abiertas que parecen resueltas
+(PR mergeado, hermana `done`, pregunta ya respondida, duplicada, tarjeta de `oscar` parada) con [✅ Cerrar] [⏳ Mantener]
+[👁 Ver]. Nunca cierra solo. Umbrales, reglas, tableros y hora se editan en `limpieza.yaml` (se relee sin reiniciar).
+Ver las candidatas sin enviar nada: `py -3.12 -m agent_lanes.limpieza --dry-run` (desde `tools/agent-lanes`).
+Spec: `specs/kanban-limpieza-propuesta.md`.
