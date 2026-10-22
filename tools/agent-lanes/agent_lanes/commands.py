@@ -100,6 +100,8 @@ COMMANDS = (
     ("desplegar", "Despliega lo fusionado de un proyecto, con doble confirmación: /desplegar oscarhq"),
     ("promover", "Promover MigraTeam a producción (doble confirmación): /promover migrateam"),
     ("lote", "Montar ya el lote de un proyecto: /lote migrateam|oscarhq"),
+    ("al_dia", "Poner al día ramas, ver lo listo e integrarlo (dev): /al_dia [proyecto|todos] [dev]"),
+    ("aldia", "Alias de /al_dia"),
     ("salud", "Estado de runner, Hermes, servicios, MigraTeam y equipo"),
     ("ram", "Consumo de RAM ahora y qué procesos más gastan"),
     ("silenciar", "Calla una alerta del monitor un tiempo: /silenciar <clave> <horas>"),
@@ -358,6 +360,10 @@ class CommandCenter:
 
         if cmd in SOLO_TODAS_LAS_MARCAS:
             return desk.aviso_marca(actor, None)
+        if cmd in ("al_dia", "aldia"):  # un proyecto = su marca; "todos" abarca todas las marcas
+            al_dia = self._al_dia()
+            clave = next((t for t in args.lower().split() if t in al_dia.proyectos()), None)
+            return check(BRANDS.get(f"claude-{clave}")) if clave else desk.aviso_marca(actor, None)
         if cmd in ("desplegar", "promover", "lote"):
             arg = args.strip()
             if cmd == "desplegar":
@@ -2252,6 +2258,85 @@ class CommandCenter:
                    html=False)
         dest = {"chat_id": where[0], "thread_id": where[1]}
         self._spawn(lambda: promoter.start(key, dest))
+
+    # --- /al_dia (al_dia.py) ----------------------------------------------------------------
+
+    def _al_dia(self):
+        from .al_dia import AlDia
+        return AlDia(getattr(self.desk, "integrator", None))
+
+    def cmd_aldia(self, where, args: str, brand: str | None) -> None:
+        self.cmd_al_dia(where, args, brand)
+
+    def cmd_al_dia(self, where, args: str, brand: str | None) -> None:
+        """/al_dia [proyecto|todos] [dev|prod]: un mensaje que se edita con el progreso y termina con el resumen y
+        los botones. Esta versión solo hace `dev` (sin desplegar); `prod` llega con la tarjeta hija."""
+        al_dia = self._al_dia()
+        proyectos = al_dia.proyectos()
+        if not proyectos:
+            self._send(where, "El integrador está apagado: no hay nada que poner al día.", html=False)
+            return
+        from .al_dia import parse_args
+        proyecto, destino, error = parse_args(args, proyectos)
+        if error:
+            self._send(where, error, html=False)
+            return
+        if destino == "prod":
+            self._send(where, "/al_dia prod aún no está disponible (llega en la tarjeta hija: producción con doble "
+                              "confirmación). Usa /desplegar para lo ya fusionado.", html=False)
+            return
+        claves = list(proyectos) if proyecto == "todos" else [proyecto]
+        sent = self._send(where, f"🔄 /al_dia {proyecto} dev · empiezo…", html=False)
+        mid = (sent or {}).get("message_id")
+
+        def run() -> None:
+            lineas = []
+            for clave in claves:
+                try:
+                    st = al_dia.diagnose(clave)
+                    acciones = al_dia.poner_al_dia(st)
+                    lineas.append(al_dia.resumen(st, destino) + ("\n" + "\n".join(acciones) if acciones else ""))
+                    markup = al_dia.botones(self.desk, st)
+                except Exception as exc:  # un proyecto roto no tumba el resto
+                    log.warning("/al_dia %s falló: %s", clave, exc)
+                    lineas.append(f"📁 {clave}: no pude diagnosticarlo (detalle en el log)")
+                    markup = None
+                if markup:  # los botones de cada proyecto van en su propio mensaje
+                    self._send(where, lineas[-1], html=False, markup=markup)
+                if mid:
+                    self.notifier.edit(where[0], mid, f"🔄 /al_dia {proyecto} dev · {len(lineas)}/{len(claves)} "
+                                                      "proyectos…", html=False)
+            texto = "✅ /al_dia terminado\n\n" + "\n\n".join(lineas)
+            if mid:
+                self.notifier.edit(where[0], mid, texto, html=False)
+            else:
+                self._send(where, texto, html=False)
+
+        self._spawn(run)
+
+    def al_dia_choice(self, action: str, rec: dict, where: dict, desk) -> bool:
+        """Botones de /al_dia: integrar todo lo listo (lote) o abrir la ficha de un PR con sus botones de siempre."""
+        from .al_dia import AD_INTEGRAR, AD_PR
+        dest = (where["chat_id"], where.get("thread_id") or "0")
+        if action == AD_PR:
+            self.cmd_tarea(dest, str(rec.get("task_id") or ""), None)
+            return True
+        if action != AD_INTEGRAR:
+            return False
+        al_dia, clave = self._al_dia(), str(rec.get("key") or "")
+        self._send(dest, f"Montando el lote de {clave}… pasa los gates y los tests, puede tardar unos minutos.",
+                   html=False)
+
+        def run() -> None:
+            try:
+                texto = al_dia.integrar_todo(clave)
+            except Exception as exc:
+                log.warning("/al_dia integrar %s falló: %s", clave, exc)
+                texto = "No pude montar el lote; detalle en el log."
+            self._send(dest, texto, html=False)
+
+        self._spawn(run)
+        return True
 
     # --- /desplegar -----------------------------------------------------------------------
 

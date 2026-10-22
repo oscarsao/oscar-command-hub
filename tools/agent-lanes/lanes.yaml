@@ -288,7 +288,7 @@ integrator:
   lanes:
     claude-oscarhq:
       # Fusionar NO despliega: botón aparte [🚀 Desplegar]. Desde el 22-10 Oscar HQ corre en pildora-01 (Hetzner) con
-      # Dokploy (Railway ya no): application.redeploy, sondeo de application.one hasta done/error y GET health_url.
+      # Dokploy (Railway ya no): application.deploy (no redeploy), sondeo de application.one hasta done/error y GET health_url.
       # dokploy_url: hoy el túnel SSH al panel (http://localhost:3300); con Cloudflare Access será https://panel.pildoradigital.com.
       # dokploy_application_id: pégalo desde el panel (aplicación oscar-hq → URL/ajustes). Vacío = el 🚀 avisa «deploy no
       # configurado». El TOKEN no va aquí: dokploy_token_env es el NOMBRE de la variable (en agent-lanes/.env).

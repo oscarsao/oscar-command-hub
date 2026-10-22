@@ -298,13 +298,22 @@ integrador_visibilidad.yaml. Quién puede pulsar botones (`tools/telegram/people
   `CHANGELOG.md`; `[]` lo desactiva): el integrador fusiona la base en la rama del PR con `merge=union`, pasa los gates y
   empuja a `lane/<id>` (único push del integrador, sin force). Con código mezclado no toca nada: devuelve la tarjeta al carril.
 
+## `/al_dia [proyecto|todos] [dev]` (t_a1e4e8cf, `al_dia.py`)
+
+Diagnóstico por proyecto (PR de `lane/*`: listos / CI rojo / conflicto / sin aprobar / atrasados), pone al día las ramas
+con ≥ `rama_atras_commits` (10, en `al_dia.yaml`) vía `update-branch` de GitHub (la base nunca se toca; la aprobación se
+re-ata a la cabeza nueva), resuelve el conflicto trivial con `atascos` o crea la tarjeta de rebase, y ofrece
+«✅ Integrar todo lo listo» (monta el lote, `batch.py`) más un botón por PR. Solo `dev`; `prod`, «🛠 Resolver» y la oferta
+proactiva son la tarjeta hija (`specs/al-dia-prod.md`). Alias `/aldia`. Con un proyecto vale su marca; «todos» exige acceso
+a todas las marcas.
+
 ## Tras la migración a Dokploy (22-10, t_ffffc632)
 Oscar HQ y NextJobs corren en el servidor pildora-01 (Hetzner) con Dokploy; MigraTeam sigue en Railway hasta su corte.
 - **Autor de los commits del integrador** (`integrator.commit_author` en lanes.yaml; por defecto
   `oscarsao <oscarsao@users.noreply.github.com>`). Vercel bloquea los despliegues de commits cuyo autor no es del equipo
   («Failed deployment from agent-lanes@localhost»). Si tu noreply lleva el id numérico (`<id>+oscarsao@users.noreply…`,
   mira Settings → Emails en GitHub), ponlo ahí: es un dato, no hace falta tocar código.
-- **🚀 Desplegar con Dokploy** (`deploy: dokploy` en `integrator.lanes.<carril>`): `application.redeploy`, sondeo de
+- **🚀 Desplegar con Dokploy** (`deploy: dokploy` en `integrator.lanes.<carril>`): `application.deploy` (no `redeploy`), sondeo de
   `application.one` hasta `done`/`error` del despliegue NUEVO y comprobación de `health_url`. Campos: `dokploy_url` (https, o
   `http://localhost:3300` mientras el panel vaya por túnel SSH), `dokploy_application_id` y `dokploy_token_env` (el NOMBRE de
   la variable de agent-lanes/.env con el token; el token nunca va en lanes.yaml). `railway_up` sigue funcionando para quien lo use.
