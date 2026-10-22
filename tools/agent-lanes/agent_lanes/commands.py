@@ -14,6 +14,11 @@ también como /cmd@<bot>. Un /cmd@otro_bot (p. ej. el de Hermes) se ignora.
     /tarea t_xxx         ficha de la tarea con los botones de su estado
     /hazlo <texto>       crea una tarea pequeña (prioridad alta, tope 15 min): marca y carril salen del texto; con
                          duda, botones para elegir carril. El resultado vuelve a donde lo pediste
+    /pendiente           «Lo tuyo» en UN mensaje agrupado por prioridad: preguntas, PR por aprobar, cola del integrador,
+                         PR de sesiones, tarjetas tuyas y pasos del integrador, con un botón por línea que abre su
+                         ficha (lo_tuyo.py; `lanes.py pendiente` es la misma lista para Hermes)
+    /personal            propone mover tus tarjetas personales (no son decisiones de carril) al board `personal`;
+                         no mueve nada hasta pulsar [✅ Mover] (personal.py, personal.yaml)
     /estado [marca]      en un solo mensaje: en curso, lo que espera a Oscar y lo pendiente de desplegar
     /falta [marca]       checklist de lo que frena una salida (lote, ramas fuera, SQL, variables, deploy), con el
                          siguiente paso arriba y botones donde ya existe la acción (falta.py)
@@ -57,6 +62,8 @@ from typing import Callable
 from urllib.parse import urlsplit
 
 from . import bandeja as _bandeja
+from . import lo_tuyo as _lo_tuyo
+from . import personal as _personal
 from . import tipo_peticion, titulos
 from .aviso import UrgentBlockWatcher, mention
 from .card_options import PREPARED_AUTHOR, PREPARED_PREFIX, CardSpec, card_message, parse_card
@@ -94,6 +101,8 @@ COMMANDS = (
     ("ram", "Consumo de RAM ahora y qué procesos más gastan"),
     ("sesion", "Correcciones agrupadas: /sesion [nombre] abre; fin | cancelar | estado"),
     ("flujo", "Una petición -> cadena de hasta 8 tarjetas (se crean al pulsar): /flujo <texto>"),
+    ("pendiente", "Lo tuyo en UN mensaje: preguntas, PR por aprobar, cola del integrador y tarjetas, con botones"),
+    ("personal", "Propone sacar tu backlog personal del kanban de carriles (confirmas con botones)"),
     ("pendientes", "Tus pendientes (pasos «tuyo» y «decidir») con botones"),
     ("epicas", "Vista de épicas (fuera de la cola de decisiones)"),
     ("retenidas", "Vista de tarjetas retenidas"),
@@ -104,7 +113,8 @@ HELP_ALIASES = ("start", "ayuda", "help")
 NOT_OWNER = ("Este comando es solo para operadores. Pide a Oscar o a María que lo haga, o escribe tu petición en "
              "texto libre y se la paso")
 # Comandos sin marca clara o con efecto directo en repos/sesiones de Oscar: un operador acotado por marca no los usa.
-SOLO_TODAS_LAS_MARCAS = ("integrador", "encolar", "preparar", "pedir", "sesion", "flujo", "ajustes")
+SOLO_TODAS_LAS_MARCAS = ("integrador", "encolar", "preparar", "pedir", "sesion", "flujo", "ajustes", "pendiente",
+                         "personal")
 BRAND_ARGS = {"migrateam": "MigraTeam", "pildora": "Píldora", "píldora": "Píldora", "nextjobs": "NextJobs"}
 TASK_ID_RE = re.compile(r"^t_[0-9a-f]{8}$")
 STATUS_TEXT = {"running": ("running", "en curso"), "ready": ("ready", "en cola"), "review": ("review", "en review"),
@@ -845,6 +855,145 @@ class CommandCenter:
             lines += [f"• <code>{c['task']['id']}</code> · {e(truncate(c['task'].get('title'), CARD_TITLE_MAX))}"
                       for c in loose[:MAX_CARDS]]
             self._send(where, "\n".join(lines))
+
+    # --- /pendiente: bandeja única «Lo tuyo» (lo_tuyo.py) ----------------------------------------------------------
+
+    def lo_tuyo_items(self, brand: str | None = None) -> list[dict]:
+        """Todo lo que espera a Oscar, de las fuentes de siempre. Una fuente que falla no vacía la bandeja."""
+        def board_of(lane):
+            return getattr(self.lanes.get(lane), "board", "")
+
+        def tuyo() -> list[dict]:
+            snoozed = self._snoozed()
+            mine = [c for c in self.board_tasks(brand) if c["task"].get("assignee") == OSCAR_ASSIGNEE
+                    and titulos.step_of(c["task"]) in titulos.OSCAR_STEPS and c["task"]["id"] not in snoozed]
+            return _lo_tuyo.de_tarjetas(mine + self.oscar_cards(brand)[0])
+
+        def cola() -> list[dict]:
+            queue = self.guard_queue()
+            return _lo_tuyo.de_cola_guard(queue.entries(), board_of) if queue and not brand else []
+
+        def externos() -> list[dict]:
+            ext = self.cola_externos()
+            return _lo_tuyo.de_externos(ext.items()) if ext and not brand else []
+
+        fuentes = (("preguntas", lambda: _lo_tuyo.de_pendientes(self.pending_decisions(brand), "pregunta")),
+                   ("atascadas", lambda: _lo_tuyo.de_pendientes(self.stuck_tasks(brand), "atascada")),
+                   ("por aprobar", lambda: _lo_tuyo.de_pendientes(self.ready_to_approve(brand), "aprobar")),
+                   ("cola del integrador", cola), ("PR de sesiones", externos), ("tarjetas tuyas", tuyo),
+                   ("estado del integrador", lambda: [] if brand else _lo_tuyo.de_estado(self.estado_integrador())))
+        out: list[dict] = []
+        for name, fn in fuentes:
+            try:
+                out += fn()
+            except Exception as exc:
+                log.warning("/pendiente: %s no leído: %s", name, exc)
+        return out
+
+    def cmd_pendiente(self, where, args: str, brand: str | None) -> None:
+        """UN mensaje con todo lo tuyo agrupado por prioridad y un botón por línea (cada botón abre la ficha de siempre)."""
+        aj = _lo_tuyo.load_ajustes(getattr(self, "lo_tuyo_settings", None))
+        text, shown = _lo_tuyo.render(self.lo_tuyo_items(brand), aj, self._now(), f" · {brand}" if brand else "")
+        self._send(where, text, html=False, markup=self._lo_tuyo_markup(shown))
+
+    def _lo_tuyo_markup(self, shown: list[dict]) -> dict | None:
+        """Un token por botón (cada uno de un solo uso e independiente), todos en el mismo teclado de dos columnas."""
+        from .decisions import ESTADO_MAS, LT_OPEN
+        buttons = []
+        for n, it in enumerate(shown, 1):
+            text = f"{n} {_lo_tuyo.verbo(it)}"
+            if it.get("url"):
+                buttons.append({"text": text, "url": it["url"]})
+                continue
+            rec = {"task_id": "pendiente", "board": it.get("board") or "", "lane": "", "kind": it["kind"], "tid": it["tid"]}
+            action = ESTADO_MAS if it["kind"] == "integrador" else LT_OPEN
+            buttons.append(self.desk.store.issue(rec, [[{"text": text, "action": action}]])[1]["inline_keyboard"][0][0])
+        return {"inline_keyboard": [buttons[i:i + 2] for i in range(0, len(buttons), 2)]} if buttons else None
+
+    def lt_open(self, rec: dict, where: dict) -> bool:
+        """Botón de una línea de /pendiente: la ficha de esa cosa, con los botones que le tocan hoy (siempre fresca)."""
+        dest, tid, board = (where["chat_id"], where["thread_id"]), rec.get("tid") or "", rec.get("board") or ""
+        if rec.get("kind") == "tuyo":
+            card = next((c for c in self.board_tasks() if c["task"]["id"] == tid), None)
+            if card:
+                self._send_card(dest, card, self._now())
+                return True
+        elif TASK_ID_RE.match(tid):
+            try:
+                show = self.hermes_for(board).show(tid) if board else None
+            except Exception:
+                show = None
+            found = (board, show) if show and show.get("task") else self._find(tid)
+            if found:
+                self._send_ficha(dest, *found)
+                return True
+        self._send(dest, f"No encuentro {tid}: puede que ya se haya resuelto", html=False)
+        return True
+
+    # --- /personal: backlog personal fuera del kanban de carriles (personal.py) ---------------------------------------
+
+    def personal_candidatas(self) -> list[dict]:
+        aj = _personal.load_ajustes(getattr(self, "personal_settings", None))
+        cards = [c for c in self.board_tasks() if not aj.boards_origen or c["board"] in aj.boards_origen]
+        path = self._state_file("personal_state", _personal.DESCARTADAS_FILE)
+        excluidas = self._snoozed() | (_personal.Descartadas(path).ids() if path else set())
+        return _personal.candidatas(cards, aj, self._now(), excluidas)
+
+    def cmd_personal(self, where, args: str, brand: str | None) -> None:
+        """Propone mover a Oscar sus tarjetas personales (no son decisiones de carril) al board `personal`. No mueve nada
+        hasta que pulse [✅ Mover]; [✋ Dejarlas] las excluye de futuras propuestas."""
+        from .decisions import PERS_KEEP, PERS_MOVE
+        aj = _personal.load_ajustes(getattr(self, "personal_settings", None))
+        cands = self.personal_candidatas()
+        if not cands:
+            self._send(where, "Backlog personal: no hay tarjetas tuyas que mover 🎉", html=False)
+            return
+        now, tanda, tope = self._now(), cands[:aj.max_por_tanda], MAX_CARDS * 2
+        lines = [f"🗃 Backlog personal · {len(cands)} tarjetas a tu nombre que no son decisiones de carril",
+                 f"Propongo moverlas al board «{aj.board}». No se mueve nada hasta que pulses ✅."
+                 + (f" Esta tanda: las {len(tanda)} más antiguas." if len(cands) > len(tanda) else "")]
+        for c in tanda[:tope]:
+            t = c["task"]
+            lines.append(f"• {t['id']} · {c['board']} · {truncate(t.get('title'), 50)}"
+                         + (f" · hace {int(max(0, now - c['since']) // 86400)} d" if c.get("since") else ""))
+        if len(tanda) > tope:
+            lines.append(f"… y {len(tanda) - tope} más en esta tanda")
+        rec = {"task_id": "personal", "board": "", "lane": "",
+               "cards": [{"id": c["task"]["id"], "board": c["board"]} for c in tanda]}
+        markup = self.desk.store.issue(rec, [[{"text": f"✅ Mover {len(tanda)} a «{aj.board}»", "action": PERS_MOVE},
+                                              {"text": "✋ Dejarlas donde están", "action": PERS_KEEP}]])[1]
+        self._send(where, "\n".join(lines)[:TEXT_MAX], html=False, markup=markup)
+
+    def personal_step(self, action: str, rec: dict, where: dict) -> bool:
+        """[✅ Mover] / [✋ Dejarlas] de /personal. Solo se traslada lo que SIGUE siendo candidata (releída al pulsar)."""
+        from .decisions import PERS_KEEP
+        dest = (where["chat_id"], where["thread_id"])
+        ids = [m["id"] for m in rec.get("cards") or () if isinstance(m, dict) and m.get("id")]
+        if action == PERS_KEEP:
+            path = self._state_file("personal_state", _personal.DESCARTADAS_FILE)
+            if path is None:
+                self._send(dest, "No puedo recordar la elección (sin carpeta .state)", html=False)
+                return False
+            _personal.Descartadas(path, self._now).add(ids)
+            self._send(dest, f"✋ Vale: {len(ids)} tarjetas se quedan donde están y no vuelvo a proponerlas", html=False)
+            return True
+        aj = _personal.load_ajustes(getattr(self, "personal_settings", None))
+        vivas = {c["task"]["id"]: c for c in self.personal_candidatas()}
+        todo = [vivas[i] for i in ids if i in vivas]
+        moved, failed = [], []
+        for c in todo:
+            ok, detail = _personal.mover(c, self.hermes_for, aj)
+            (moved if ok else failed).append((c["task"]["id"], detail))
+            if len(failed) >= 3 and not moved:   # el board destino no existe o falla: no insistir 60 veces
+                break
+        lines = [f"🗃 Movidas a «{aj.board}»: {len(moved)}"
+                 + (f" · ya no eran candidatas: {len(ids) - len(todo)}" if len(ids) > len(todo) else "")]
+        lines += [f"⚠️ {tid}: {why}" for tid, why in failed[:5]]
+        if failed and not moved:
+            lines.append(f"No he movido nada. Si el board «{aj.board}» no existe, hay que crearlo en Hermes (necesita tu "
+                         "OK); luego repite /personal.")
+        self._send(dest, "\n".join(lines), html=False)
+        return bool(moved) or not failed
 
     def _top_decisions(self, where, pendings: list, stuck: list, cards: list[dict], now: float, brand: str | None,
                        total: int) -> None:
@@ -2041,14 +2190,17 @@ class CommandCenter:
         if not found:
             self._send(where, f"No encuentro {tid} en los tableros de los carriles", html=False)
             return
-        board, show = found
+        self._send_ficha(where, *found)
+
+    def _send_ficha(self, where, board: str, show: dict) -> None:
+        """Ficha de una tarea con los botones de su estado (/tarea y las líneas de /pendiente)."""
         text, markup = self.task_card(board, show)
         tree = self.tree_text(board, show)
         if tree and len(text) + 1 + len(tree) <= TEXT_MAX:
             text += "\n" + tree
         sent = self._send(where, text, markup=markup)
         if markup:
-            self._mirror(tid, sent, markup)
+            self._mirror(show["task"]["id"], sent, markup)
 
     def _find(self, tid: str) -> tuple[str, dict] | None:
         for board in dict.fromkeys(l.board for l in self.lanes.values() if l.board):

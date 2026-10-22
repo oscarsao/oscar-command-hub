@@ -230,6 +230,16 @@ cambia; cualquier cola, orden o escalada que se escriba aquí debe respetarla.
   el carril no reclama y el log dice ERROR una vez. Un carril nuevo sin `github:` queda parado.
 - /salud en el bot de carriles: runner, Hermes, servicios y alertas del monitor, develop↔master de MigraTeam, RAM/CPU
   y decisiones pendientes. Solo lecturas locales (sin HTTP: eso lo hace el monitor).
+- **/pendiente («Lo tuyo»)** en el bot de carriles: UN mensaje con todo lo que espera a Oscar, agrupado por prioridad
+  (🔴 urgente / 🟡 normal / ⚪ cuando puedas): preguntas de agentes, PR por aprobar, cola del integrador
+  (`integrador_cola.json`), PR de sesiones interactivas, tarjetas «· tuyo»/«· decidir» y pasos de `integrador_estado.md`
+  que esperan a Oscar. Cada línea lleva su botón (✍️ Responder / ✅ Aprobar / 👁 Ver / 🔗 PR) y abre la ficha de siempre con
+  sus botones (nunca aprueba a ciegas). Umbrales en `lo_tuyo.yaml`. Para Hermes: `py -3.12 lanes.py pendiente [--json]`
+  (solo lectura, misma lista; no toca la config de Hermes).
+- **/personal**: backlog personal fuera de los carriles. Propone (lista) las tarjetas a nombre de «oscar» en `ready`/`todo`
+  que NO son decisiones de carril y, solo si Oscar pulsa [✅ Mover], las pasa al board `personal` (crea la nueva y archiva
+  la original; si el board no existe no toca nada). [✋ Dejarlas] las excluye de futuras propuestas
+  (`.state/personal_descartadas.json`). Ajustes en `personal.yaml`. El board `personal` hay que crearlo en Hermes (OK de Oscar).
 - /hazlo <texto> en el bot de carriles crea una tarea pequeña (prioridad alta, tope 15 min en el cuerpo, línea
   `Origen-Telegram` del sitio donde se pidió); el carril sale de palabras clave del texto o de la marca del tema, y con
   duda pregunta con botones. /estado [marca]: en curso, lo que espera a Oscar y lo pendiente de desplegar, en un mensaje.
