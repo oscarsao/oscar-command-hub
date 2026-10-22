@@ -77,8 +77,18 @@ def build_prompt(task: dict, lane: Lane) -> str:
         + _coordinator_section(task.get("coordinator_notes"))
         + _feedback_section(task.get("review_feedback"))
         + _conflict_section(task.get("merge_conflict"), lane)
+        + _clasificador_section(task.get("clasificador_avisos"))
         + preferencias.section_for("workers")
     )
+
+
+def _clasificador_section(avisos: list[str] | None) -> str:
+    if not avisos:
+        return ""
+    items = "\n".join(f"- {a}" for a in avisos)
+    return ("\n## Avisos del clasificador (la tarjeta no es del todo lo que parece)\n"
+            "Si necesitas esa otra rama, no la traigas por tu cuenta: devuelve needs_input pidiendo que la tarjeta "
+            f"lleve una línea `Rama-origen: <rama>`.\n\n{items}\n")
 
 
 def _conflict_section(conflict: str | None, lane: Lane) -> str:

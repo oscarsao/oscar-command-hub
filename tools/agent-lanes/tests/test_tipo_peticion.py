@@ -43,7 +43,8 @@ def test_detect_proposes_but_only_the_button_fixes_the_type(tmp_path):
     command(desk, "/pedir MigraTeam: el login falla con Google")
     ask = bot.sent[-1]
     assert "Parece algo que falla" in ask["text"]
-    assert texts(ask["markup"]) == ["🐞 Arreglar algo que falla", "✨ Crear algo nuevo", "🚫 Cancelar"]
+    assert texts(ask["markup"]) == ["🐞 Arreglar algo que falla", "✨ Crear algo nuevo", "❓ Solo una pregunta",
+                                   "🚫 Cancelar"]
     assert h.created == [] and reg.creadas == [] and reg.updates == []  # sin pulsar no hay tipo, ni tarjeta, ni registro
 
 
@@ -79,7 +80,7 @@ def test_cancel_creates_nothing(tmp_path):
     reg = Registro()
     cc, desk, bot, h = env(tmp_path, reg)
     command(desk, "/pedir el login falla")
-    press(desk, bot.sent[-1], 2)
+    press(desk, bot.sent[-1], 3)  # 0 bug, 1 feature, 2 consulta, 3 cancelar
     assert h.created == [] and reg.creadas == [] and "Cancelado" in bot.edits[-1]["text"]
 
 
@@ -219,7 +220,7 @@ def test_yaml_overrides_defaults_and_bad_values_are_ignored(tmp_path):
     f.write_text(yaml.safe_dump({"urgencias": [{"id": "P0", "texto": "Todo roto", "prioridad": 99}],
                                  "max_preguntas": {"bug": 1}, "modo_por_defecto": 7}), encoding="utf-8")
     cfg = tp.load_config(f)
-    assert cfg["urgencias"][0]["prioridad"] == 99 and cfg["max_preguntas"] == {"bug": 1, "feature": 3}
+    assert cfg["urgencias"][0]["prioridad"] == 99 and cfg["max_preguntas"] == {"bug": 1, "feature": 3, "consulta": 0}
     assert cfg["modo_por_defecto"] == "spec-lite"  # tipo inválido: se queda el valor por defecto
     assert tp.load_config(tmp_path / "no-existe.yaml") == tp.load_config(None)
     f.write_text("[: no yaml", encoding="utf-8")

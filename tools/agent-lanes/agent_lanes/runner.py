@@ -11,7 +11,9 @@ import uuid
 from pathlib import Path
 from typing import Callable
 
-from . import bloqueos
+from . import bloqueos, clasificador
+from . import consulta as _consulta
+from . import deps
 from . import proc as _proc
 from .config import ROOT, Lane
 from .hermes import GUARD_LIMIT_MARK, looks_like_guard_limit
@@ -109,8 +111,11 @@ class LaneRunner:
                  tree: Callable | None = None,
                  repo_guard: Callable[[Lane], str | None] | None = None,
                  kill: Callable[[int], None] = _proc.kill_tree,
-                 created_at: Callable[[int], float | None] = _proc.created_at):
+                 created_at: Callable[[int], float | None] = _proc.created_at,
+                 lanes: dict | None = None, consultor: Callable | None = None):
         self.lane = lane
+        self._lanes = lanes or {}  # el clasificador distingue «otro repo» por los repos de los demás carriles
+        self._consultor = consultor or _consulta.responder  # tipo «consulta»: (lane, task) -> (texto, coste)
         self._kill = kill
         self._created_at = created_at
         self._tree = tree  # deps.TreeReader: líneas 🔗/⏸/↳ (padre e hijas) en cada aviso; None = sin árbol
@@ -132,6 +137,7 @@ class LaneRunner:
         self._active: dict[str, dict] = {}  # tid -> task being processed (for notice routing)
         self._preflighted: set[str] = set()  # tareas ya avisadas por el chequeo previo (una vez por arranque)
         self._subs_dropped: set[str] = set()  # tareas con la suscripción de Hermes ya quitada (listado o claim)
+        self._held: set[str] = set()  # tareas retenidas por «Esperar a…» (se registra una sola vez)
         self._reasked: set[str] = set()  # tareas relanzadas UNA vez porque el worker repitió una pregunta ya respondida
 
     def notify(self, state: str, tid: str, task: dict | None, status: str, *, alert: bool = False,
@@ -240,9 +246,31 @@ class LaneRunner:
                     self._repo_warned = True
                 return []
         ready = [t for t in self.hermes.list_ready(self.lane.name) if t["id"] not in self.exclude]
+        ready = [t for t in ready if not self._dependency_hold(t["id"])]
         for t in ready:  # antes del claim: el notificador de Hermes ya duplicó un aviso en la ventana claim -> baja
             self._drop_hermes_subs(t["id"])
         return [(t["id"], lambda t=t: self.process(t)) for t in ready[: self.lane.max_parallel]]
+
+    def _dependency_hold(self, tid: str) -> bool:
+        """«Esperar a…» de Oscar (deps.WAIT_PREFIX): la tarjeta no se reclama mientras la dependencia siga pendiente.
+        Al resolverse (hecha o fusionada) se reencola sola con un comentario, una vez. Sin poder leer la tarjeta no se
+        retiene (el claim y el worker siguen su camino de siempre)."""
+        try:
+            show = self.hermes.show(tid) or {}
+            waiting = deps.waiting_on(self.hermes, show)
+            if waiting:
+                if tid not in self._held:
+                    log.info("%s: %s; no se reclama", tid, deps.waiting_line(waiting))
+                    self._held.add(tid)
+                return True
+            self._held.discard(tid)
+            if deps.resolution_unannounced(show):
+                waited = ", ".join(deps.declared_waits(show))
+                self.hermes.comment(tid, f"{deps.WAIT_RESOLVED_PREFIX} {waited}: hecha o fusionada; la tarjeta vuelve al "
+                                         "carril sola")
+        except Exception as exc:
+            log.info("%s: dependencias no leídas: %s", tid, exc)
+        return False
 
     def run_once(self) -> dict[str, str]:
         """One pass, sequential. Returns {task_id: outcome}."""
@@ -337,7 +365,8 @@ class LaneRunner:
     def _work(self, task: dict, tid: str, session_id: str, deadline: float) -> str:
         lane = self.lane
         ops = lane.kind == "ops"
-        where = "workspace ops (sin git)" if ops else f"rama lane/{tid}"
+        where = "workspace ops (sin git)" if ops else \
+            "consulta (sin rama)" if clasificador.es_consulta(task) else f"rama lane/{tid}"
         self.hermes.comment(tid, f"LANE claim por {lane.name} · session_id={session_id} · {where}")
 
         repeated = ""  # nota con las respuestas previas si el worker insiste en una pregunta ya respondida
@@ -354,9 +383,20 @@ class LaneRunner:
                 notes = self.hermes.coordinator_notes(tid) if hasattr(self.hermes, "coordinator_notes") else []
                 if notes:
                     task = {**task, "coordinator_notes": notes}
+                if not ops and clasificador.es_consulta(task):  # sin rama ni verificación: responde y cierra
+                    return self._consulta(task, tid)
+                # Clasificador (clasificador.py): lo que un carril no puede va a la cola del integrador SIN gastar worker.
+                # Si ya hubo una decisión (respuesta de Oscar, nota, revisión) no se reclasifica: sería un bucle.
+                if not ops and not (feedback or answers or notes):
+                    veredicto = clasificador.evaluar(lane, task, lanes=self._lanes)
+                    if veredicto.va_al_integrador:
+                        return self._to_integrador(tid, task, veredicto)
+                    if veredicto.avisos:
+                        task = {**task, "clasificador_avisos": [m for _, m in veredicto.avisos]}
                 # Aviso previo (antes de gastar la pasada): lo que pide la tarjeta y los límites del carril no
                 # permiten. Solo informa, una vez por tarea y arranque; no bloquea ni toca la config.
                 warns = [] if tid in self._preflighted else self._preflight(lane, tid, task)
+                warns += list(task.get("clasificador_avisos") or [])
                 self.notify("running", tid, task,
                             status_line("en curso", f"aplicando cambios de revisión (ronda {len(feedback)})"
                                         if feedback else None), branch_link=bool(feedback) and not ops,
@@ -477,6 +517,34 @@ class LaneRunner:
                   "aplica estas decisiones, termina la tarea y devuelve el JSON del schema.\n\n" + pairs)
         return self.worker.resume(lane, cwd, session_id, timeout=max(60.0, deadline - self.clock()), task_id=tid,
                                   prompt=prompt), ""
+
+    def _to_integrador(self, tid: str, task: dict, veredicto) -> str:
+        """El clasificador vio que un carril no puede con la tarjeta: misma cola del integrador que una limitación del
+        guard (aviso único, sin Reintentar), pero sin haber gastado una ejecución del worker."""
+        detail = veredicto.texto_integrador()
+        self.hermes.comment(tid, "LANE clasificador: un carril no puede hacerlo; va a la cola del integrador:\n" + detail)
+        return self._block_console(tid, task, detail, {
+            "summary": "Un carril no puede hacer esto solo: " + "; ".join(veredicto.motivos()),
+            "for_oscar": "Lo detecté antes de gastar una ejecución: esta tarjeta necesita al integrador (consola)."})
+
+    def _consulta(self, task: dict, tid: str) -> str:
+        """Tipo «consulta»: respuesta de solo lectura en un comentario y tarjeta cerrada, sin rama ni verificación."""
+        self.notify("running", tid, task, status_line("en curso", "respondiendo una consulta (solo lectura)"),
+                    branch_link=False)
+        text, cost = self._consultor(self.lane, task)
+        if not text:
+            return self._block(tid, "transient", "consulta sin respuesta (falló la llamada de solo lectura)", task,
+                               public="no pude responder la consulta")
+        self.hermes.comment(tid, "CONSULTA respondida (solo lectura, sin rama):\n\n" + text)
+        ok, err = self.hermes.complete(tid, text, {"lane": self.lane.name, "kind": "consulta", "cost_usd": cost,
+                                                  "verified": False})
+        if not ok:
+            return self._block(tid, "transient", f"complete rechazado: {err}", task,
+                               public="el kanban rechazó cerrar la consulta")
+        self._clear_retry(tid)
+        self.notify("done", tid, task, status_line("consulta respondida", money(cost)), branch_link=False,
+                    bullets=[text[:1500]])
+        return "consulta"
 
     def _block_console(self, tid: str, task: dict | None, detail: str, result: dict) -> str:
         """Limitación PERMANENTE del guard (no es una pregunta): bloqueo needs_input con motivo estructurado. Ni la

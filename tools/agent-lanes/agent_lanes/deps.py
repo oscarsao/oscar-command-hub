@@ -12,6 +12,7 @@ Un padre sin rama (tarea manual o de decisión) deja de bloquear en cuanto está
 from __future__ import annotations
 
 import logging
+import re
 import threading
 import time
 from typing import Callable
@@ -55,8 +56,13 @@ def pending_parents(hermes, tid: str, show: dict | None = None) -> list[dict]:
     """Padres de `tid` que aún bloquean su integración: [{id, title, status, reason}]. Fail-closed: un padre que
     no se puede leer cuenta como pendiente (mejor esperar que fusionar sin saber)."""
     show = show if show is not None else (hermes.show(tid) or {})
+    return pending_ids(hermes, _parent_ids(show))
+
+
+def pending_ids(hermes, ids: list[str]) -> list[dict]:
+    """De las tareas `ids`, las que aún bloquean (misma regla y mismo fail-closed que pending_parents)."""
     out = []
-    for pid in _parent_ids(show):
+    for pid in ids:
         try:
             ps = hermes.show(pid) or {}
         except Exception:
@@ -73,6 +79,50 @@ def pending_parents(hermes, tid: str, show: dict | None = None) -> list[dict]:
         reason = "sin integrar" if status in DONE_STATUSES else f"en {status or '?'}"
         out.append({"id": pid, "title": task.get("title") or "", "status": status, "reason": reason})
     return out
+
+
+# --- «Esperar a…» (dependency_wait) ---------------------------------------------------------------------------
+# Oscar decide esperar a otra tarjeta: se crea el enlace padre -> hija (`hermes kanban link`) y se deja un comentario
+# `ESPERA-A t_x`. Esa marca es lo que el runner mira (las hijas "normales" de un flujo no se retienen): la tarjeta no
+# se reclama mientras t_x siga pendiente (pending_ids: no terminada, o terminada con rama sin INTEGRADO) y, al
+# resolverse, se anota `DEPENDENCIA-RESUELTA` una sola vez.
+WAIT_PREFIX = "ESPERA-A"
+WAIT_RESOLVED_PREFIX = "DEPENDENCIA-RESUELTA"
+_WAIT_ID_RE = re.compile(r"\bt_[0-9a-f]{8}\b")
+
+
+def wait_comment(parent: str) -> str:
+    return f"{WAIT_PREFIX} {parent}: Oscar decidió esperar; el runner no la reclama hasta que {parent} esté hecha o fusionada"
+
+
+def declared_waits(show: dict | None) -> list[str]:
+    """Ids de las tarjetas a las que Oscar mandó esperar (comentarios `ESPERA-A t_x`), sin repetir."""
+    out: list[str] = []
+    for c in (show or {}).get("comments") or []:
+        body = (c.get("body") or "").strip()
+        if body.startswith(WAIT_PREFIX + " "):
+            found = _WAIT_ID_RE.search(body)
+            if found and found.group(0) not in out:
+                out.append(found.group(0))
+    return out
+
+
+def waiting_on(hermes, show: dict | None) -> list[dict]:
+    """Dependencias declaradas con «Esperar a…» que siguen pendientes (vacío = nada que esperar)."""
+    ids = declared_waits(show)
+    return pending_ids(hermes, ids) if ids else []
+
+
+def resolution_unannounced(show: dict | None) -> bool:
+    """¿Hay un `ESPERA-A` sin `DEPENDENCIA-RESUELTA` posterior? (para anotar la reencolada una sola vez)."""
+    last = None
+    for i, c in enumerate((show or {}).get("comments") or []):
+        body = (c.get("body") or "").strip()
+        if body.startswith(WAIT_PREFIX + " "):
+            last = i
+        elif body.startswith(WAIT_RESOLVED_PREFIX) and last is not None:
+            last = None
+    return last is not None
 
 
 def waiting_line(waiting: list[dict], limit: int = 3) -> str:
