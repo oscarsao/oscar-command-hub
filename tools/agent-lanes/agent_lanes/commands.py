@@ -29,6 +29,8 @@ también como /cmd@<bot>. Un /cmd@otro_bot (p. ej. el de Hermes) se ignora.
     /salud               runner y carriles, gateway de Hermes, servicios y alertas (del monitor), develop↔master de
                          MigraTeam, RAM/CPU y decisiones pendientes; sin peticiones HTTP (agent_lanes/health.py)
     /ram                 RAM ahora y los 5 procesos que más gastan (el monitor lo manda solo al DM cada 4 h)
+    /silenciar <clave> <horas>  calla una alerta repetida del monitor (0 horas = quitar el silencio); sin argumentos
+                         lista los silencios y las claves recientes
     /sesion [nombre]     abre una sesión de correcciones: el texto libre del DM se acumula como puntos numerados;
                          /sesion fin [tablero] crea UNA tarjeta [CORRECCIONES] (con preguntas de clarificación y mejoras
                          de Claude), /sesion cancelar la descarta y /sesion estado cuenta los puntos (sesion.py)
@@ -100,6 +102,7 @@ COMMANDS = (
     ("lote", "Montar ya el lote de un proyecto: /lote migrateam|oscarhq"),
     ("salud", "Estado de runner, Hermes, servicios, MigraTeam y equipo"),
     ("ram", "Consumo de RAM ahora y qué procesos más gastan"),
+    ("silenciar", "Calla una alerta del monitor un tiempo: /silenciar <clave> <horas>"),
     ("sesion", "Correcciones agrupadas: /sesion [nombre] abre; fin | cancelar | estado"),
     ("flujo", "Una petición -> cadena de hasta 8 tarjetas (se crean al pulsar): /flujo <texto>"),
     ("pendiente", "Lo tuyo en UN mensaje: preguntas, PR por aprobar, cola del integrador y tarjetas, con botones"),
@@ -1825,6 +1828,29 @@ class CommandCenter:
         """RAM bajo demanda; el monitor manda el mismo informe al DM cada 4 h (ya no hay aviso continuo)."""
         from . import health
         self._send(where, health.ram_report(), html=False)
+
+    def cmd_silenciar(self, where, args: str, brand: str | None) -> None:
+        """/silenciar <clave> <horas>: el monitor deja de avisar de esa clave (y las que empiezan por ella)."""
+        from . import silencios
+        parts = args.split()
+        if len(parts) != 2:
+            vivos = silencios.activos()
+            lines = ["Uso: /silenciar <clave> <horas>   (0 horas quita el silencio)"]
+            lines += [f"🔕 {k} hasta {datetime.fromtimestamp(v):%d-%m %H:%M}" for k, v in sorted(vivos.items())]
+            recientes = silencios.claves_recientes()
+            if recientes:
+                lines.append("Claves avisadas últimamente: " + ", ".join(recientes))
+            self._send(where, "\n".join(lines), html=False)
+            return
+        try:
+            horas = float(parts[1].replace(",", "."))
+            hasta = silencios.silenciar(parts[0], horas)
+        except ValueError as exc:
+            self._send(where, str(exc) if "clave" in str(exc) or "horas" in str(exc) else
+                       "Las horas tienen que ser un número, por ejemplo: /silenciar ram 12", html=False)
+            return
+        self._send(where, f"🔕 «{parts[0].lower()}» silenciada hasta {datetime.fromtimestamp(hasta):%d-%m %H:%M}"
+                   if horas else f"🔔 «{parts[0].lower()}» vuelve a avisar", html=False)
 
     def health_text(self) -> str:
         """Todo local (health.py): .state, `hermes kanban list`, ficheros del monitor y git sin fetch."""

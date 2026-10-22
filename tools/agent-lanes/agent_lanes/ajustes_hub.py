@@ -91,6 +91,12 @@ def _build() -> dict[str, Ajuste]:
                "Cuántas decisiones pendientes se nombran; el resto se cuenta.", 1, 20, (3, 5, 8, 10)),
         Ajuste("avisos.recordatorio_atascadas_horas", "Avisos", "Recordatorio de [ATENCIÓN] sin respuesta", 24, "float",
                "Horas sin respuesta antes de recordar una tarjeta atascada.", 1, 168, (12, 24, 48, 72)),
+        Ajuste("avisos.alerta_cada_horas", "Avisos", "Horas mínimas entre avisos repetidos del monitor", 24, "float",
+               "Una misma alerta (RAM, develop↔master…) sale como mucho una vez en este plazo. /silenciar <clave> <horas> "
+               "la calla del todo un tiempo. Lo lee el monitor.", 1, 168, (6, 12, 24, 48)),
+        Ajuste("avisos.retro_hora", "Avisos", "Hora de la retro semanal del lunes", 9, "int",
+               "Hora (0-23, Madrid) desde la que el lunes sale el informe de fricción de la semana.", 0, 23,
+               (8, 9, 10, 12)),
         Ajuste("atascos.escalado_guard_horas", "Atascos", "Escalado a Oscar de un bloqueo de guard", 2.0, "float",
                "Horas en la cola del integrador antes de pasar a Oscar (mínimo 1).", 1, 72, (1, 2, 4, 8)),
         Ajuste("atascos.aplazar_horas", "Atascos", "Duración de «Aplazar»", 24.0, "float",

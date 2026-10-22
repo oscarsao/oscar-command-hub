@@ -1,0 +1,9 @@
+# Back-merge automático (retro del 22-10: «develop va N commits por detrás de master» saltó 178 veces en 7 días y
+# nadie lo devolvía). Si `desde` tiene commits que `hacia` no, el integrador crea UNA tarjeta para el carril (clave
+# idempotente) en vez de repetir el aviso; hasta que `hacia` no contiene a `desde` no se crea otra.
+# Código: agent_lanes/backmerge.py. Se edita aquí (o se quita el carril para apagarlo).
+cada_minutos: 30
+carriles:
+  claude-migrateam:
+    desde: master
+    hacia: develop

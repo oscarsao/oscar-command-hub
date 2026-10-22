@@ -424,6 +424,8 @@ class GateResult:
 
 
 class Integrator:
+    automatismos = True  # back-merge automático y retro semanal en cada pasada (los tests de otros flujos lo apagan)
+
     def __init__(self, settings: IntegratorSettings, lanes: dict, *, hermes_for: Callable[[str], object],
                  links=None, notifier=None, messages: MessageStore | None = None, desk=None,
                  runner=_proc.run, gh_exe: str = GH_EXE, railway_exe: str = RAILWAY_EXE,
@@ -549,6 +551,12 @@ class Integrator:
             self.check_live_lag()
         except Exception as exc:  # nunca tumba la pasada
             log.warning("integrador: Aplicar/checkout vivo: %s", exc)
+        from . import backmerge, retro  # import tardío: ambos usan el integrador por duck typing
+        for step in (backmerge.check, retro.check) if self.automatismos else ():  # back-merge y retro del lunes
+            try:
+                step(self)
+            except Exception as exc:  # nunca tumba la pasada
+                log.warning("integrador: %s: %s", step.__module__.rsplit(".", 1)[-1], exc)
         results = {}
         seen = []
         for name, policy in self.settings.policies.items():
