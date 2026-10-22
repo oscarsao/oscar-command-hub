@@ -131,7 +131,7 @@ def test_arreglar_creates_fix_card_and_takes_branch_out_of_the_queue(env):
     sec = next(n for n in notices(env) if "clave" in n["text"])
     press(env.desk, env.tg, markup=sec["markup"], n=0)
     [card] = env.created_cards
-    assert card["assignee"] == "claude-oscarhq" and card["by"] == "oscar" and card["title"].startswith("Arreglar #")
+    assert card["assignee"] == "claude-oscarhq" and card["by"] == "oscar" and card["title"].startswith("[OHQ] Arreglar #")
     assert "origin/lane/t_sec" in card["body"] and "falso positivo" in card["body"]
     assert env.integ._state("t_sec")["status"] == "batch_replaced"
     assert any("sustituido por la tarjeta" in c[1] for c in env.h.comments if c[0] == "t_sec")
@@ -145,7 +145,7 @@ def test_rebasar_card_points_at_the_lote_branch(env):
     conf = next(n for n in notices(env) if "rebasarla" in n["text"])
     press(env.desk, env.tg, markup=conf["markup"], n=0)
     [card] = env.created_cards
-    assert card["title"].startswith("Rebasar #") and "release/lote-oscarhq-" in card["body"]
+    assert card["title"].startswith("[") and "Rebasar #" in card["title"] and "release/lote-oscarhq-" in card["body"]
     assert env.integ._state("t_conf")["status"] == "batch_replaced"
 
 

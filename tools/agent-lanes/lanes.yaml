@@ -55,6 +55,12 @@ telegram:
 # Sin esta clave, los avisos siguen en el tema del carril con el formato de siempre.
 integration_telegram: {chat: -1003530490339, thread: 398}   # Gestión · 🚦 Integración y despliegues
 
+# Mensaje vivo del fijado (22-10, Oscar): el mismo mensaje fijado de arriba pasa a mostrar también 🔧 en marcha,
+# ⏳ siguientes en cola, ✅ terminadas y ⚠️ conflictos vigentes con botones [🛠 Resolver] [👁 Ver] [⏸ Aparcar].
+# Con enabled: true dejan de mandarse los avisos sueltos de «PR esperando» (PR en conflicto): viven en el panel.
+# enabled: false (o quitar el bloque) = el fijado queda solo con «pendiente de integrar», como antes.
+live_panel: {enabled: true, queue: 3, done: 5, done_hours: 24, conflicts: 6}
+
 # Topes de los avisos de Telegram (los de fábrica están en notices.LIMITS). Nada se recorta en silencio: lo que no cabe
 # se marca ("➕ +2 preguntas más", "[…recortado]") y el resto va en un segundo mensaje o en la tarjeta.
 notices:

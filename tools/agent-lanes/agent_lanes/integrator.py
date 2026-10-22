@@ -59,6 +59,7 @@ from .deps import is_integration_comment, pending_parents, waiting_line  # noqa:
 from .hermes import OSCAR_AUTHOR, REVIEW_AUTHOR  # noqa: E402
 from .integration import (CHANNEL, FAILED, WAITING, PinnedSummary, link_line, phase_for, render_ficha,  # noqa: E402
                           repo_name, risk_of, summary_state, summary_text)
+from .titulos import rebase_title  # noqa: E402
 from .notices import MessageStore, TaskNotices, card_url, markup_token, render, status_line, truncate  # noqa: E402
 from .telegram import telegram_target  # noqa: E402
 from .verify import render_test_cmd  # noqa: E402
@@ -220,6 +221,8 @@ class IntegratorSettings:
     # (0 = apagado) y no repite el mismo conjunto antes de `pr_watch_repeat_hours`.
     pr_watch_hours: float = 2.0
     pr_watch_repeat_hours: float = 6.0
+    # Mensaje vivo del tema de Integración (panel_vivo.py): bloque `live_panel:` de lanes.yaml (vacío = apagado).
+    live_panel: dict = field(default_factory=dict)
     commit_name: str = DEFAULT_COMMIT_NAME
     commit_email: str = DEFAULT_COMMIT_EMAIL
 
@@ -290,7 +293,8 @@ def load_integrator_settings(path: Path | None = None, env: dict | None = None, 
                               integration_telegram=_chat_thread(data.get("integration_telegram")),
                               batch_pending_days=int(cfg.get("batch_pending_days") or 3),
                               pr_watch_hours=float(2 if cfg.get("pr_watch_hours") is None else cfg["pr_watch_hours"]),
-                              pr_watch_repeat_hours=float(cfg.get("pr_watch_repeat_hours") or 6))
+                              pr_watch_repeat_hours=float(cfg.get("pr_watch_repeat_hours") or 6),
+                              live_panel=data.get("live_panel") if isinstance(data.get("live_panel"), dict) else {})
 
 
 # Texto de prueba ficticio (hub #171: «sk-ABCD…» en un test de redacción). Se admite si la COINCIDENCIA lleva ABCD,
@@ -466,6 +470,9 @@ class Integrator:
         target = settings.integration_telegram
         self.pinned = (PinnedSummary(notifier, target, self.state_dir / "pinned.json")
                        if target and notifier and not dry_run else None)
+        from .panel_vivo import LivePanel, PanelSettings  # import tardío: panel_vivo no importa este módulo
+        panel_cfg = PanelSettings.from_cfg(settings.live_panel)
+        self.panel = LivePanel(self, panel_cfg) if panel_cfg.enabled and self.pinned else None
         self._seen: list[tuple[object, Policy, str]] = []  # (carril, política, tarea) vistos en la última pasada
         from .batch import BatchPlanner  # import tardío: batch usa constantes de este módulo
         self.batches = BatchPlanner(self)  # lote diario: solo actúa en carriles con `batch: daily`
@@ -591,18 +598,21 @@ class Integrator:
     def _promote_markup(self) -> dict | None:
         """[🚀 Promover a producción] en el resumen fijado 🚦 (uno por proyecto con `promote:` en lanes.yaml)."""
         promoter = getattr(self.desk, "promoter", None)
-        if not promoter or not promoter.configs:
-            return None
         rows = []
-        for key in promoter.configs:
+        for key in (promoter.configs if promoter and promoter.configs else ()):
             rec = {"task_id": f"promo-start-{key}", "board": "", "lane": "", "key": key}
             rows.append([{"text": f"🚀 Promover {key.capitalize()} a producción", "action": "promo_start"}])
             token_markup = self.desk.store.issue(rec, [rows[-1]])[1]
             rows[-1] = token_markup["inline_keyboard"][0]
-        return {"inline_keyboard": rows}
+        if self.panel and self.desk:  # botones de los conflictos del panel vivo (🛠 Resolver · 👁 Ver · ⏸ Aparcar)
+            rows += self.panel.markup_rows(self.desk.store.issue)
+        return {"inline_keyboard": rows} if rows else None
+
+    def reissue_panel_markup(self) -> str | None:
+        return self.reissue_promote_markup()
 
     def reissue_promote_markup(self) -> str | None:
-        """Repone el botón 🚀 del fijado tras pulsarlo (token de un solo uso). Nunca lanza."""
+        """Repone los botones del fijado (🚀 y los del panel) tras pulsarlos (token de un solo uso). Nunca lanza."""
         if not self.pinned or self.dry_run:
             return None
         try:
@@ -629,7 +639,16 @@ class Integrator:
                                 "state": state, "since": st.get("since"), "repo": repo_name(lane),
                                 "url": st.get("pr_url"),
                                 "card": card_url(getattr(self.links, "kanban_base_url", None), lane.board, tid)})
-            return self.pinned.update(summary_text(entries, self._now()), self._promote_markup)
+            text = summary_text(entries, self._now())
+            if self.panel:  # panel vivo: en marcha / cola / terminadas / conflictos delante de lo pendiente
+                from .panel_vivo import compose, render_sections
+                data = self.panel.gather()  # si Hermes falla lanza: el fijado se queda como estaba
+                conflicts = self.panel.conflict_entries()
+                sections = render_sections(conflicts=self.panel.conflicts, now=self._now(), cfg=self.panel.cfg, **data)
+                if len(conflicts) > len(self.panel.conflicts):
+                    sections += f"\n… y {len(conflicts) - len(self.panel.conflicts)} más"
+                text = compose(sections, text)
+            return self.pinned.update(text, self._promote_markup)
         except Exception as exc:
             log.warning("resumen de integración falló: %s", exc)
             return None
@@ -748,7 +767,8 @@ class Integrator:
             log.info("%s: PR #%s gates fallidos: %s", tid, number, "; ".join(result.reasons)[:300])
             self._publish_failed(lane, task, number, url, result)
             self._save(tid, status="failed", pr=number, pr_url=url, head_sha=result.head_sha, base_sha=result.base_sha,
-                       gate_fp=gate_fingerprint(), **about)
+                       gate_fp=gate_fingerprint(), fail_reasons=[truncate(r, 80) for r in result.reasons[:3]],
+                       conflict=any(r.startswith("tiene conflictos con") for r in result.reasons), **about)
             return "gates_failed"
         self._offer(lane, policy, task, number, url, result)
         self._save(tid, status="offered", pr=number, pr_url=url, head_sha=result.head_sha, base_sha=result.base_sha,
@@ -834,7 +854,7 @@ class Integrator:
         body = pr_branch_card_body(branch, number, lane.base, lane.base, rebase=True,
                                    origin=f"conflicto del PR #{number}: {'; '.join(result.detail[:2])[:400]}")
         try:
-            new = self.hermes_for(lane.board).create(truncate(f"Rebasar #{number}: conflicto con {lane.base}", 70), body,
+            new = self.hermes_for(lane.board).create(rebase_title(lane.name, number, lane.base), body,
                                                      lane.name, priority=10, key=f"conflicto-{tid}-{(result.head_sha or '')[:8]}",
                                                      created_by="oscar")
         except Exception as exc:
@@ -843,6 +863,16 @@ class Integrator:
         self._comment(lane, tid, f"INTEGRADOR: PR #{number} con conflicto de código; tarjeta {new} en {lane.name} "
                                  f"para rebasar la rama {branch}. {who}.")
         return True
+
+    def rebase_card(self, lane, tid: str, number: int) -> bool:
+        """[🛠 Resolver] del panel vivo: crea (o reanuda: misma clave idempotente) la tarjeta de rebase del PR."""
+        if self.dry_run:
+            return False
+        st = self._state(tid)
+        result = GateResult(ok=False, reasons=["tiene conflictos con " + str(lane.base)],
+                            detail=list(st.get("fail_reasons") or ["conflicto con la base"]),
+                            head_sha=st.get("head_sha") or "")
+        return self._conflict_card(lane, tid, number, result, f"Lo pide Oscar desde el panel: carril {lane.name}")
 
     def _push_pr_branch(self, wt: str, remote: str, tid: str) -> subprocess.CompletedProcess:
         """ÚNICO push del integrador (atascos.py): HEAD del worktree -> `lane/<tid>`, la rama del PR. Sin force (un
