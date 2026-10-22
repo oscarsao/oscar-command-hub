@@ -207,6 +207,29 @@ def _git_branch_state(lane: Lane, tid: str, head_sha: str | None, run=_proc.run)
     return exists, merged
 
 
+def listo_para_aprobar(lane: Lane, show: dict, branch_state=_git_branch_state, out: Callable[[str], None] = print) -> dict | None:
+    """Metadatos de la tarea done si de verdad espera el OK de Oscar: review aprobada, sin aprobar ni integrar y con la
+    rama lane/<id> aún en el remote y sin fusionar. None en cualquier otro caso (ya integrada, archivada, sin review...).
+    La misma regla para el aviso del renotifier y para la bandeja /pendiente."""
+    task = show["task"]
+    tid = task["id"]
+    if task.get("status") == "archived":
+        return None
+    meta = implementation_metadata(show)
+    if (meta.get("review") or {}).get("status") != "approve":
+        return None
+    comments = show.get("comments") or []
+    if any((c.get("body") or "").startswith(APPROVED_PREFIX) and c.get("author") == OSCAR_AUTHOR for c in comments):
+        return None
+    if any((c.get("body") or "").startswith(INTEGRATED_PREFIX + " ") for c in comments):  # no "INTEGRADOR:"
+        return None
+    exists, merged = branch_state(lane, tid, meta.get("head_sha"))
+    if not exists or merged:
+        out(f"{tid}: se salta (rama lane/{tid} {'ya fusionada' if merged else 'no está en el remote'})")
+        return None
+    return meta
+
+
 class Renotifier:
     def __init__(self, lanes: dict[str, Lane], *, hermes_for: Callable[[str], object], notifier,
                  messages: MessageStore, links, desk,
@@ -348,20 +371,10 @@ class Renotifier:
     def _plan_done(self, lane: Lane, show: dict) -> Pending | None:
         task = show["task"]
         tid = task["id"]
-        meta = implementation_metadata(show)
+        meta = listo_para_aprobar(lane, show, self.branch_state, self.out)
+        if meta is None:
+            return None
         review = meta.get("review") or {}
-        if review.get("status") != "approve":
-            return None
-        comments = show.get("comments") or []
-        if any((c.get("body") or "").startswith(APPROVED_PREFIX) and c.get("author") == OSCAR_AUTHOR
-               for c in comments):
-            return None
-        if any((c.get("body") or "").startswith(INTEGRATED_PREFIX + " ") for c in comments):  # no "INTEGRADOR:"
-            return None
-        exists, merged = self.branch_state(lane, tid, meta.get("head_sha"))
-        if not exists or merged:
-            self.out(f"{tid}: se salta (rama lane/{tid} {'ya fusionada' if merged else 'no está en el remote'})")
-            return None
         changed = meta.get("changed_files") or []
         cost = sum(float(c or 0) for c in (meta.get("cost_usd"), review.get("cost_usd")))
         status = status_line("review aprobada", files_label(len(changed)), test_label(meta.get("runner_test_exit")),

@@ -14,6 +14,11 @@ también como /cmd@<bot>. Un /cmd@otro_bot (p. ej. el de Hermes) se ignora.
     /tarea t_xxx         ficha de la tarea con los botones de su estado
     /hazlo <texto>       crea una tarea pequeña (prioridad alta, tope 15 min): marca y carril salen del texto; con
                          duda, botones para elegir carril. El resultado vuelve a donde lo pediste
+    /pendiente           «Lo tuyo» en UN mensaje agrupado por prioridad: preguntas, PR por aprobar, cola del integrador,
+                         PR de sesiones, tarjetas tuyas y pasos del integrador, con un botón por línea que abre su
+                         ficha (lo_tuyo.py; `lanes.py pendiente` es la misma lista para Hermes)
+    /personal            propone mover tus tarjetas personales (no son decisiones de carril) al board `personal`;
+                         no mueve nada hasta pulsar [✅ Mover] (personal.py, personal.yaml)
     /estado [marca]      en un solo mensaje: en curso, lo que espera a Oscar y lo pendiente de desplegar
     /falta [marca]       checklist de lo que frena una salida (lote, ramas fuera, SQL, variables, deploy), con el
                          siguiente paso arriba y botones donde ya existe la acción (falta.py)
@@ -24,6 +29,8 @@ también como /cmd@<bot>. Un /cmd@otro_bot (p. ej. el de Hermes) se ignora.
     /salud               runner y carriles, gateway de Hermes, servicios y alertas (del monitor), develop↔master de
                          MigraTeam, RAM/CPU y decisiones pendientes; sin peticiones HTTP (agent_lanes/health.py)
     /ram                 RAM ahora y los 5 procesos que más gastan (el monitor lo manda solo al DM cada 4 h)
+    /silenciar <clave> <horas>  calla una alerta repetida del monitor (0 horas = quitar el silencio); sin argumentos
+                         lista los silencios y las claves recientes
     /sesion [nombre]     abre una sesión de correcciones: el texto libre del DM se acumula como puntos numerados;
                          /sesion fin [tablero] crea UNA tarjeta [CORRECCIONES] (con preguntas de clarificación y mejoras
                          de Claude), /sesion cancelar la descarta y /sesion estado cuenta los puntos (sesion.py)
@@ -57,10 +64,13 @@ from typing import Callable
 from urllib.parse import urlsplit
 
 from . import bandeja as _bandeja
-from . import tipo_peticion, titulos
+from . import clasificador
+from . import lo_tuyo as _lo_tuyo
+from . import personal as _personal
+from . import tipo_peticion, titulos, triaje, workflows
 from .aviso import UrgentBlockWatcher, mention
 from .card_options import PREPARED_AUTHOR, PREPARED_PREFIX, CardSpec, card_message, parse_card
-from .decisions import DEPLOY_ASK, DEPLOY_NO, FALTA, FLUJO, HAZLO, OWNER_TELEGRAM_ID
+from .decisions import DEPLOY_ASK, DEPLOY_NO, FALTA, FLUJO, HAZLO, OWNER_TELEGRAM_ID, TRIAJE, WORKFLOW
 from .deps import (ShowCache, child_bucket, dependency_order, family, pending_parents, tree_lines,
                    waiting_line)
 from .notices import (BOARD_BRANDS, BRANDS, DECISION_CARD_STATUSES, OSCAR_ASSIGNEE, TEXT_MAX, card_url,
@@ -90,10 +100,16 @@ COMMANDS = (
     ("desplegar", "Despliega lo fusionado de un proyecto, con doble confirmación: /desplegar oscarhq"),
     ("promover", "Promover MigraTeam a producción (doble confirmación): /promover migrateam"),
     ("lote", "Montar ya el lote de un proyecto: /lote migrateam|oscarhq"),
+    ("al_dia", "Poner al día ramas, ver lo listo e integrarlo (dev): /al_dia [proyecto|todos] [dev]"),
+    ("aldia", "Alias de /al_dia"),
     ("salud", "Estado de runner, Hermes, servicios, MigraTeam y equipo"),
     ("ram", "Consumo de RAM ahora y qué procesos más gastan"),
+    ("silenciar", "Calla una alerta del monitor un tiempo: /silenciar <clave> <horas>"),
     ("sesion", "Correcciones agrupadas: /sesion [nombre] abre; fin | cancelar | estado"),
     ("flujo", "Una petición -> cadena de hasta 8 tarjetas (se crean al pulsar): /flujo <texto>"),
+    ("pendiente", "Lo tuyo en UN mensaje: preguntas, PR por aprobar, cola del integrador y tarjetas, con botones"),
+    ("personal", "Propone sacar tu backlog personal del kanban de carriles (confirmas con botones)"),
+    ("workflow", "Trabajo largo: plan y coste, nada se crea hasta aprobar: /workflow <texto>"),
     ("pendientes", "Tus pendientes (pasos «tuyo» y «decidir») con botones"),
     ("epicas", "Vista de épicas (fuera de la cola de decisiones)"),
     ("retenidas", "Vista de tarjetas retenidas"),
@@ -104,7 +120,8 @@ HELP_ALIASES = ("start", "ayuda", "help")
 NOT_OWNER = ("Este comando es solo para operadores. Pide a Oscar o a María que lo haga, o escribe tu petición en "
              "texto libre y se la paso")
 # Comandos sin marca clara o con efecto directo en repos/sesiones de Oscar: un operador acotado por marca no los usa.
-SOLO_TODAS_LAS_MARCAS = ("integrador", "encolar", "preparar", "pedir", "sesion", "flujo", "ajustes")
+SOLO_TODAS_LAS_MARCAS = ("integrador", "encolar", "preparar", "pedir", "sesion", "flujo", "workflow", "ajustes",
+                         "pendiente", "personal")
 BRAND_ARGS = {"migrateam": "MigraTeam", "pildora": "Píldora", "píldora": "Píldora", "nextjobs": "NextJobs"}
 TASK_ID_RE = re.compile(r"^t_[0-9a-f]{8}$")
 STATUS_TEXT = {"running": ("running", "en curso"), "ready": ("ready", "en cola"), "review": ("review", "en review"),
@@ -129,7 +146,6 @@ LANE_HINTS = {
                    "hermes"),
 }
 PREPARE_MAX = 10  # /preparar todas: tope de tarjetas por orden (0,5 $ como máximo cada una)
-READY_PER_LANE = 8  # tareas en cola listadas por carril en /tareas
 COLA_PER_LANE = 5  # siguientes tareas por carril en /cola
 PRIORITY_MAX = 99
 PRIORITY_STEP = 1  # lo que suben o bajan «sube»/«baja» de /prioridad
@@ -258,7 +274,9 @@ class CommandCenter:
                  health: Callable[[], str] | None = None, preparer: Callable[[dict], str | None] | None = None,
                  sesiones=None, suggester: Callable[[dict], dict | None] | None = None,
                  flow_planner: Callable[[str, dict], list[dict]] | None = None,
-                 bandeja: _bandeja.Bandeja | None = None, asker: Callable[[str, str], str | None] | None = None):
+                 bandeja: _bandeja.Bandeja | None = None, asker: Callable[[str, str], str | None] | None = None,
+                 classifier: Callable[[str, dict], str] | None = None, triaje_cfg: dict | None = None,
+                 workflow_store: workflows.Store | None = None):
         self.bandeja = bandeja or _bandeja.Bandeja()  # umbrales de la bandeja (bandeja.yaml; el runner pasa load())
         self.notifier = notifier
         self.desk = desk
@@ -280,6 +298,9 @@ class CommandCenter:
         self._suggester = suggester  # /sesion fin: sesión -> {sección: [viñetas]} (None = sesion.suggest)
         self._asker = asker  # texto libre del DM: (pregunta, estado) -> respuesta (explain.answer); None = solo la ayuda
         self._ask_lock = threading.Lock()  # una pregunta libre a la vez (cada una cuesta una llamada a haiku)
+        self._classifier = classifier  # entrada inteligente: (texto, cfg) -> categoría de triaje.py (None = triaje apagado)
+        self._triaje_cfg = triaje_cfg  # triaje.yaml ya cargado (None = se lee en cada texto: editable en caliente)
+        self._workflow_store = workflow_store  # /workflow: workflows.Store (None = .state/workflows.json)
         self._health = health  # /salud: texto HTML ya montado (tests); None = health.build con lo real
         self._tipo = None  # /pedir: tipo_peticion.TipoPeticion (perezoso); `peticiones` = registro de A1, si lo hay
         self.peticiones = None
@@ -339,6 +360,10 @@ class CommandCenter:
 
         if cmd in SOLO_TODAS_LAS_MARCAS:
             return desk.aviso_marca(actor, None)
+        if cmd in ("al_dia", "aldia"):  # un proyecto = su marca; "todos" abarca todas las marcas
+            al_dia = self._al_dia()
+            clave = next((t for t in args.lower().split() if t in al_dia.proyectos()), None)
+            return check(BRANDS.get(f"claude-{clave}")) if clave else desk.aviso_marca(actor, None)
         if cmd in ("desplegar", "promover", "lote"):
             arg = args.strip()
             if cmd == "desplegar":
@@ -381,7 +406,11 @@ class CommandCenter:
         return ("Comandos del bot de trabajos:\n" + "\n".join(f"/{c} · {d}" for c, d in COMMANDS)
                 + "\n\nCon /hazlo la tarea se crea ya, con prioridad alta y tope de 15 minutos; te aviso al terminar."
                 + "\nCon /sesion abres una sesión: lo que escribas aquí se acumula y /sesion fin lo agrupa en UNA tarjeta."
-                + "\n/desplegar pide dos toques (🚀 y ✅ Sí); /promover también pide doble confirmación.")
+                + "\n/desplegar pide dos toques (🚀 y ✅ Sí); /promover también pide doble confirmación."
+                + "\n\nSi me escribes en texto libre: una pregunta se responde con datos reales (sin crear nada); un "
+                  "trabajo pequeño lleva 2-4 preguntas con botones y luego se crea (⚡ Créala ya salta las preguntas); "
+                  "uno largo te propone /workflow (plan y coste; nada se crea hasta aprobar); lo de producción, SQL "
+                  "u otro repo va al integrador.")
 
     # --- datos ----------------------------------------------------------------------------------------
 
@@ -846,6 +875,145 @@ class CommandCenter:
                       for c in loose[:MAX_CARDS]]
             self._send(where, "\n".join(lines))
 
+    # --- /pendiente: bandeja única «Lo tuyo» (lo_tuyo.py) ----------------------------------------------------------
+
+    def lo_tuyo_items(self, brand: str | None = None) -> list[dict]:
+        """Todo lo que espera a Oscar, de las fuentes de siempre. Una fuente que falla no vacía la bandeja."""
+        def board_of(lane):
+            return getattr(self.lanes.get(lane), "board", "")
+
+        def tuyo() -> list[dict]:
+            snoozed = self._snoozed()
+            mine = [c for c in self.board_tasks(brand) if c["task"].get("assignee") == OSCAR_ASSIGNEE
+                    and titulos.step_of(c["task"]) in titulos.OSCAR_STEPS and c["task"]["id"] not in snoozed]
+            return _lo_tuyo.de_tarjetas(mine + self.oscar_cards(brand)[0])
+
+        def cola() -> list[dict]:
+            queue = self.guard_queue()
+            return _lo_tuyo.de_cola_guard(queue.entries(), board_of) if queue and not brand else []
+
+        def externos() -> list[dict]:
+            ext = self.cola_externos()
+            return _lo_tuyo.de_externos(ext.items()) if ext and not brand else []
+
+        fuentes = (("preguntas", lambda: _lo_tuyo.de_pendientes(self.pending_decisions(brand), "pregunta")),
+                   ("atascadas", lambda: _lo_tuyo.de_pendientes(self.stuck_tasks(brand), "atascada")),
+                   ("por aprobar", lambda: _lo_tuyo.de_pendientes(self.ready_to_approve(brand), "aprobar")),
+                   ("cola del integrador", cola), ("PR de sesiones", externos), ("tarjetas tuyas", tuyo),
+                   ("estado del integrador", lambda: [] if brand else _lo_tuyo.de_estado(self.estado_integrador())))
+        out: list[dict] = []
+        for name, fn in fuentes:
+            try:
+                out += fn()
+            except Exception as exc:
+                log.warning("/pendiente: %s no leído: %s", name, exc)
+        return out
+
+    def cmd_pendiente(self, where, args: str, brand: str | None) -> None:
+        """UN mensaje con todo lo tuyo agrupado por prioridad y un botón por línea (cada botón abre la ficha de siempre)."""
+        aj = _lo_tuyo.load_ajustes(getattr(self, "lo_tuyo_settings", None))
+        text, shown = _lo_tuyo.render(self.lo_tuyo_items(brand), aj, self._now(), f" · {brand}" if brand else "")
+        self._send(where, text, html=False, markup=self._lo_tuyo_markup(shown))
+
+    def _lo_tuyo_markup(self, shown: list[dict]) -> dict | None:
+        """Un token por botón (cada uno de un solo uso e independiente), todos en el mismo teclado de dos columnas."""
+        from .decisions import ESTADO_MAS, LT_OPEN
+        buttons = []
+        for n, it in enumerate(shown, 1):
+            text = f"{n} {_lo_tuyo.verbo(it)}"
+            if it.get("url"):
+                buttons.append({"text": text, "url": it["url"]})
+                continue
+            rec = {"task_id": "pendiente", "board": it.get("board") or "", "lane": "", "kind": it["kind"], "tid": it["tid"]}
+            action = ESTADO_MAS if it["kind"] == "integrador" else LT_OPEN
+            buttons.append(self.desk.store.issue(rec, [[{"text": text, "action": action}]])[1]["inline_keyboard"][0][0])
+        return {"inline_keyboard": [buttons[i:i + 2] for i in range(0, len(buttons), 2)]} if buttons else None
+
+    def lt_open(self, rec: dict, where: dict) -> bool:
+        """Botón de una línea de /pendiente: la ficha de esa cosa, con los botones que le tocan hoy (siempre fresca)."""
+        dest, tid, board = (where["chat_id"], where["thread_id"]), rec.get("tid") or "", rec.get("board") or ""
+        if rec.get("kind") == "tuyo":
+            card = next((c for c in self.board_tasks() if c["task"]["id"] == tid), None)
+            if card:
+                self._send_card(dest, card, self._now())
+                return True
+        elif TASK_ID_RE.match(tid):
+            try:
+                show = self.hermes_for(board).show(tid) if board else None
+            except Exception:
+                show = None
+            found = (board, show) if show and show.get("task") else self._find(tid)
+            if found:
+                self._send_ficha(dest, *found)
+                return True
+        self._send(dest, f"No encuentro {tid}: puede que ya se haya resuelto", html=False)
+        return True
+
+    # --- /personal: backlog personal fuera del kanban de carriles (personal.py) ---------------------------------------
+
+    def personal_candidatas(self) -> list[dict]:
+        aj = _personal.load_ajustes(getattr(self, "personal_settings", None))
+        cards = [c for c in self.board_tasks() if not aj.boards_origen or c["board"] in aj.boards_origen]
+        path = self._state_file("personal_state", _personal.DESCARTADAS_FILE)
+        excluidas = self._snoozed() | (_personal.Descartadas(path).ids() if path else set())
+        return _personal.candidatas(cards, aj, self._now(), excluidas)
+
+    def cmd_personal(self, where, args: str, brand: str | None) -> None:
+        """Propone mover a Oscar sus tarjetas personales (no son decisiones de carril) al board `personal`. No mueve nada
+        hasta que pulse [✅ Mover]; [✋ Dejarlas] las excluye de futuras propuestas."""
+        from .decisions import PERS_KEEP, PERS_MOVE
+        aj = _personal.load_ajustes(getattr(self, "personal_settings", None))
+        cands = self.personal_candidatas()
+        if not cands:
+            self._send(where, "Backlog personal: no hay tarjetas tuyas que mover 🎉", html=False)
+            return
+        now, tanda, tope = self._now(), cands[:aj.max_por_tanda], MAX_CARDS * 2
+        lines = [f"🗃 Backlog personal · {len(cands)} tarjetas a tu nombre que no son decisiones de carril",
+                 f"Propongo moverlas al board «{aj.board}». No se mueve nada hasta que pulses ✅."
+                 + (f" Esta tanda: las {len(tanda)} más antiguas." if len(cands) > len(tanda) else "")]
+        for c in tanda[:tope]:
+            t = c["task"]
+            lines.append(f"• {t['id']} · {c['board']} · {truncate(t.get('title'), 50)}"
+                         + (f" · hace {int(max(0, now - c['since']) // 86400)} d" if c.get("since") else ""))
+        if len(tanda) > tope:
+            lines.append(f"… y {len(tanda) - tope} más en esta tanda")
+        rec = {"task_id": "personal", "board": "", "lane": "",
+               "cards": [{"id": c["task"]["id"], "board": c["board"]} for c in tanda]}
+        markup = self.desk.store.issue(rec, [[{"text": f"✅ Mover {len(tanda)} a «{aj.board}»", "action": PERS_MOVE},
+                                              {"text": "✋ Dejarlas donde están", "action": PERS_KEEP}]])[1]
+        self._send(where, "\n".join(lines)[:TEXT_MAX], html=False, markup=markup)
+
+    def personal_step(self, action: str, rec: dict, where: dict) -> bool:
+        """[✅ Mover] / [✋ Dejarlas] de /personal. Solo se traslada lo que SIGUE siendo candidata (releída al pulsar)."""
+        from .decisions import PERS_KEEP
+        dest = (where["chat_id"], where["thread_id"])
+        ids = [m["id"] for m in rec.get("cards") or () if isinstance(m, dict) and m.get("id")]
+        if action == PERS_KEEP:
+            path = self._state_file("personal_state", _personal.DESCARTADAS_FILE)
+            if path is None:
+                self._send(dest, "No puedo recordar la elección (sin carpeta .state)", html=False)
+                return False
+            _personal.Descartadas(path, self._now).add(ids)
+            self._send(dest, f"✋ Vale: {len(ids)} tarjetas se quedan donde están y no vuelvo a proponerlas", html=False)
+            return True
+        aj = _personal.load_ajustes(getattr(self, "personal_settings", None))
+        vivas = {c["task"]["id"]: c for c in self.personal_candidatas()}
+        todo = [vivas[i] for i in ids if i in vivas]
+        moved, failed = [], []
+        for c in todo:
+            ok, detail = _personal.mover(c, self.hermes_for, aj)
+            (moved if ok else failed).append((c["task"]["id"], detail))
+            if len(failed) >= 3 and not moved:   # el board destino no existe o falla: no insistir 60 veces
+                break
+        lines = [f"🗃 Movidas a «{aj.board}»: {len(moved)}"
+                 + (f" · ya no eran candidatas: {len(ids) - len(todo)}" if len(ids) > len(todo) else "")]
+        lines += [f"⚠️ {tid}: {why}" for tid, why in failed[:5]]
+        if failed and not moved:
+            lines.append(f"No he movido nada. Si el board «{aj.board}» no existe, hay que crearlo en Hermes (necesita tu "
+                         "OK); luego repite /personal.")
+        self._send(dest, "\n".join(lines), html=False)
+        return bool(moved) or not failed
+
     def _top_decisions(self, where, pendings: list, stuck: list, cards: list[dict], now: float, brand: str | None,
                        total: int) -> None:
         scope = f" · {brand}" if brand else ""
@@ -1125,7 +1293,13 @@ class CommandCenter:
         tid = self.hermes_for(lane.board).create(truncate(text.splitlines()[0], HAZLO_TITLE_MAX), body, lane_name,
                                                  priority=HAZLO_PRIORITY, key=key, created_by="oscar")
         return (f"✅ Creada <code>{html.escape(tid)}</code> en {html.escape(lane_name)} · prioridad alta, tope "
-                f"{HAZLO_MINUTES} min. Te aviso al terminar.")
+                f"{HAZLO_MINUTES} min. Te aviso al terminar." + self._aviso_clasificador(lane, title_body=(text, body)))
+
+    def _aviso_clasificador(self, lane, *, title_body: tuple[str, str]) -> str:
+        """Aviso (HTML) de que un carril no podrá con la tarjeta recién creada; '' si puede. Ver clasificador.py."""
+        title, body = title_body
+        verdict = clasificador.evaluar(lane, {"title": title, "body": body}, lanes=self.lanes)
+        return html.escape(clasificador.aviso_creacion(verdict))
 
     def hazlo_choice(self, rec: dict, button: dict, where: dict) -> bool:
         """Botón de carril de un /hazlo con duda. True = hecho (tarjeta creada o cancelado); False = fallo (vuelven
@@ -1167,9 +1341,12 @@ class CommandCenter:
         board, assignee = (self.lanes[lane].board, lane) if lane in self.lanes else ("default", OSCAR_ASSIGNEE)
         key = tipo_peticion.card_key(st["confirmado_por"], tuple(st["where"]), st["texto"], self._now())
         tid = self.hermes_for(board).create(title, body, assignee, priority=priority, key=key, created_by="oscar")
+        aviso = "" if st["tipo"] == "consulta" or lane not in self.lanes else self._aviso_clasificador(
+            self.lanes[lane], title_body=(title, body))
         return (f"✅ Creada <code>{html.escape(tid)}</code> en {html.escape(assignee)} · "
                 f"{html.escape(st['tipo'])}" + (f" {html.escape(st['urgencia'])}" if st.get("urgencia") else "")
-                + ". Te aviso al terminar.")
+                + (". Te respondo en un comentario, sin rama." if st["tipo"] == "consulta" else ". Te aviso al terminar.")
+                + aviso)
 
     # --- /sesion --------------------------------------------------------------------------------------
 
@@ -1356,6 +1533,226 @@ class CommandCenter:
         self.notifier.edit(where["chat_id"], where["message_id"], head + "\n" + "\n".join(lines), html=False)
         return not failed
 
+    # --- entrada inteligente (triaje.py) ---------------------------------------------------------------
+
+    @staticmethod
+    def _tbtn(text: str, index: int) -> dict:
+        return {"text": text, "action": TRIAJE, "index": index}
+
+    def triaje_route(self, where, text: str, cat: str, cfg: dict) -> None:
+        """Qué hace el bot con un texto ya clasificado. Aquí no se crea ninguna tarjeta: solo se pregunta o se propone."""
+        t = cfg["textos"]
+        brand = scope_brand(where[0], where[1], self.lanes, self.generic_origins)
+        base = {"task_id": "triaje", "board": "", "lane": "", "kind": "triaje", "text": text,
+                "origin": [where[0], where[1]], "answers": [], "step": 0}
+        if cat == triaje.GRANDE:
+            rec = dict(base, stage="grande")
+            spec = [[self._tbtn(t["boton_workflow"], -3)], [self._tbtn(t["boton_pequena"], -4)],
+                    [self._tbtn(t["boton_cancelar"], -1)]]
+            self._send(where, t["propone_workflow"] + "\n\n" + truncate(text, 300), html=False,
+                       markup=self.desk.store.issue(rec, spec)[1])
+        elif cat == triaje.NO_CARRIL:
+            rec = dict(base, stage="integrador")
+            spec = [[self._tbtn(t["boton_integrador"], -7), self._tbtn(t["boton_cancelar"], -1)]]
+            self._send(where, t["no_carril"] + "\n\n" + truncate(text, 300), html=False,
+                       markup=self.desk.store.issue(rec, spec)[1])
+        else:
+            self._triaje_small(where, base, brand, cfg)
+
+    def _triaje_cards(self, boards: list[str]) -> list[dict]:
+        """Tarjetas abiertas y hechas de los tableros dados (para detectar duplicados). Un fallo de lectura = sin dato."""
+        out: list[dict] = []
+        for board in boards:
+            try:
+                h = self.hermes_for(board)
+                for status in ("triage", "todo", "ready", "running", "blocked", "review", "done"):
+                    out += list(h.list_status_all(status))
+            except Exception as exc:
+                log.warning("triaje: no pude leer el tablero %s: %s", board, type(exc).__name__)
+        return out
+
+    def _triaje_small(self, where, rec: dict, brand: str | None, cfg: dict) -> None:
+        text, t = rec["text"], cfg["textos"]
+        lane = self.infer_lane(text, brand)
+        names = [lane] if lane else ([n for n in self._implement_lanes() if not brand or BRANDS.get(n) == brand]
+                                     or self._implement_lanes())
+        qs = triaje.preguntas(cfg, lanes=None if lane else names)
+        rec = dict(rec, lane_name=lane or (names[0] if len(names) == 1 else None), qs=qs, lanes=names)
+        boards = sorted({self.lanes[n].board or "default" for n in names if n in self.lanes})
+        dup = triaje.buscar_duplicado(text, self._triaje_cards(boards), cfg, ahora=self._now())
+        if dup:
+            rec.update(stage="dup", dup=dup)
+            spec = [[self._tbtn(t["boton_anadir"], -5)], [self._tbtn(t["boton_nueva"], -6)],
+                    [self._tbtn(t["boton_cancelar"], -1)]]
+            self._send(where, f"Se parece a {dup['id']} ({dup['status']}): {truncate(dup['title'], 100)}. ¿La amplío "
+                       "en vez de crear otra?", html=False, markup=self.desk.store.issue(rec, spec)[1])
+            return
+        self._triaje_ask(where, dict(rec, stage="pregunta"), cfg)
+
+    def _triaje_ask(self, where, rec: dict, cfg: dict) -> None:
+        """Envía la pregunta `step` con sus botones (la recomendada, primero y con ⭐) o crea la tarjeta si no quedan."""
+        t, qs, step = cfg["textos"], rec["qs"], rec["step"]
+        if step >= len(qs):
+            self._send(where, self._triaje_create(rec, cfg, ya=False), html=True)
+            return
+        q = qs[step]
+        spec = [[self._tbtn(("⭐ " if i == 0 else "") + o, i)] for i, o in enumerate(q["opciones"])]
+        spec.append([self._tbtn(t["boton_ya"], -2), self._tbtn(t["boton_cancelar"], -1)])
+        head = t["pregunta_cabecera"].format(n=len(qs)) + "\n\n" if step == 0 else ""
+        self._send(where, f"{head}{step + 1}/{len(qs)} · {q['texto']}", html=False,
+                   markup=self.desk.store.issue(rec, spec)[1])
+
+    def _triaje_create(self, rec: dict, cfg: dict, *, ya: bool) -> str:
+        """Crea la tarjeta con las respuestas en el cuerpo y devuelve el aviso (HTML). Clave idempotente por texto/hueco."""
+        answers = [tuple(a) for a in rec.get("answers") or []]
+        lane_name = rec.get("lane_name") or next((a for q, a in answers if q == "¿En qué carril lo pongo?"), None)
+        if lane_name not in self.lanes:
+            return "⚠️ No sé en qué carril ponerla; usa /hazlo o dime la marca."
+        origin = tuple(rec.get("origin") or ()) or None
+        body = triaje.card_body(rec["text"], [a for a in answers if a[0] != "¿En qué carril lo pongo?"], origin, ya=ya)
+        prio = next((v for q, a in answers for k, v in (cfg.get("prioridades") or {}).items()
+                     if q == "¿Cuánto urge?" and a.startswith(k)), None)
+        chat, thread = origin or ("", "")
+        key = "triaje-" + hashlib.sha1(f"{lane_name}|{chat}|{thread}|{int(self._now() // 600)}|{rec['text']}"
+                                      .encode()).hexdigest()[:16]
+        tid = self.hermes_for(self.lanes[lane_name].board).create(
+            truncate(rec["text"].splitlines()[0], HAZLO_TITLE_MAX), body, lane_name, priority=prio, key=key,
+            created_by="oscar")
+        return f"✅ Creada <code>{html.escape(tid)}</code> en {html.escape(lane_name)}. Te aviso al terminar."
+
+    def triaje_choice(self, rec: dict, button: dict, where: dict) -> bool:
+        """Botones de la entrada inteligente. True = terminado (el teclado queda gastado); False = fallo (vuelven)."""
+        cfg, idx, stage = self.triaje_config(), button.get("index"), rec.get("stage")
+        chat, mid = where["chat_id"], where["message_id"]
+        dest = (where["chat_id"], where["thread_id"])
+        edit = lambda s, h=False: self.notifier.edit(chat, mid, s, html=h)
+        if idx == -1:
+            edit("🚫 Cancelado, no he creado nada")
+            return True
+        try:
+            if idx == -2:  # Créala ya: sin más preguntas, con lo contestado hasta ahora
+                if not rec.get("lane_name") and len(rec.get("lanes") or []) > 1:
+                    edit("⚠️ Dime en qué carril va (usa /hazlo con la marca).")
+                    return True
+                edit(self._triaje_create(rec, cfg, ya=True), True)
+                return True
+            if idx == -3:  # como workflow
+                edit("🧩 Preparando el plan…")
+                self.cmd_workflow((dest[0], dest[1]), rec["text"], None)
+                return True
+            if idx == -4:  # una sola tarjeta en vez de workflow
+                edit("📝 De acuerdo, una sola tarjeta.")
+                self._triaje_small(dest, dict(rec, stage="pregunta", step=0, answers=[]),
+                                   scope_brand(dest[0], dest[1], self.lanes, self.generic_origins), cfg)
+                return True
+            if idx == -5:  # añadir a la existente
+                dup = rec.get("dup") or {}
+                ok = self.hermes_for(self.lanes[rec["lane_name"]].board if rec.get("lane_name") in self.lanes
+                                     else "default").comment(dup.get("id", ""), "Ampliación pedida desde el DM:\n"
+                                                             + rec["text"], "oscar")
+                edit(f"➕ Añadido como comentario a {dup.get('id')}" if ok else f"⚠️ No pude comentar {dup.get('id')}")
+                return bool(ok)
+            if idx == -6:  # crear nueva igualmente
+                edit("🆕 Sigo con una tarjeta nueva.")
+                self._triaje_ask(dest, dict(rec, stage="pregunta"), cfg)
+                return True
+            if idx == -7:  # integrador
+                tid = self.hermes_for("default").create(
+                    truncate("[INTEGRADOR] " + rec["text"].splitlines()[0], HAZLO_TITLE_MAX),
+                    triaje.card_body(rec["text"], [], tuple(rec.get("origin") or ()) or None),
+                    OSCAR_ASSIGNEE, key="triaje-int-" + hashlib.sha1(
+                        f"{rec['text']}|{int(self._now() // 600)}".encode()).hexdigest()[:16], created_by="oscar")
+                edit(f"📨 Pasado al integrador (a tu nombre, sin carril): {tid}")
+                return True
+            qs = rec.get("qs") or []
+            step = rec.get("step", 0)
+            if stage != "pregunta" or not isinstance(idx, int) or not 0 <= step < len(qs) \
+                    or not 0 <= idx < len(qs[step]["opciones"]):
+                return False
+            q = qs[step]
+            answer = q["opciones"][idx]
+            rec = dict(rec, answers=list(rec.get("answers") or []) + [[q["texto"], answer]], step=step + 1)
+            if q.get("id") == "carril" and answer in self.lanes:
+                rec["lane_name"] = answer
+            edit(f"✔ {q['texto']} → {answer}")
+            self._triaje_ask(dest, rec, cfg)
+            return True
+        except Exception as exc:
+            log.warning("triaje: botón falló: %s", type(exc).__name__)
+            return False
+
+    # --- /workflow ------------------------------------------------------------------------------------
+
+    @property
+    def workflow_store(self) -> workflows.Store:
+        if self._workflow_store is None:
+            self._workflow_store = workflows.Store()
+        return self._workflow_store
+
+    def cmd_workflow(self, where, args: str, brand: str | None) -> None:
+        """/workflow <texto>: plan (tarjetas enlazadas), coste estimado y tope; NO crea nada hasta [Aprobar plan y gasto]."""
+        text = args.strip()
+        if not text:
+            self._send(where, "Uso: /workflow <trabajo largo>. Te enseño el plan y el coste; no se crea nada hasta que "
+                       "apruebes.", html=False)
+            return
+        from . import flujo
+        cfg = self.triaje_config()
+        lanes = {n: f"{BRANDS.get(n, 'Sistema')} (tablero {self.lanes[n].board or 'default'})"
+                 for n in self._implement_lanes()}
+        self._send(where, "Claude está preparando el plan…", html=False)
+        cards = (self._flow_planner or flujo.propose)(text, lanes)
+        if not cards:
+            self._send(where, "No pude proponer un plan válido. Reformula la petición o usa /hazlo", html=False)
+            return
+        wid = "wf_" + hashlib.sha1(f"{where[0]}|{where[1]}|{int(self._now() // 600)}|{text}".encode()).hexdigest()[:10]
+        titulo = truncate(text.splitlines()[0], HAZLO_TITLE_MAX)
+        req = (self.peticiones.crear(None, titulo, "workflow") if self.peticiones else "req_" + wid[3:])
+        by_n = {c["n"]: c["titulo"] for c in cards}
+        plan = [{"titulo": c["titulo"], "carril": c["carril"], "depende": [by_n[p] for p in c["padres"]],
+                 "codigo": True, "cuerpo": c.get("cuerpo", ""), "limites": c.get("limites", "")} for c in cards]
+        riesgos = [f"«{c['titulo']}» pide tu confirmación (merge/despliegue/envío)" for c in cards if c["confirmar"]]
+        wf = workflows.propose(self.workflow_store, wid=wid, titulo=titulo, req=req, preguntas=[], tarjetas=plan,
+                               riesgos=riesgos, prueba="Cada tarjeta pasa los tests de su carril y se revisa antes de "
+                               "integrar", coste_estimado_eur=round(len(plan) * cfg["coste_por_tarjeta_eur"], 2))
+        rec = {"task_id": "workflow", "board": "", "lane": "", "kind": "workflow", "wid": wid}
+        spec = [[{"text": "✅ Aprobar plan y gasto", "action": WORKFLOW, "index": 1},
+                 {"text": "🚫 Cancelar", "action": WORKFLOW, "index": 0}]]
+        self._send(where, workflows.render_plan(wf)[0], html=False, markup=self.desk.store.issue(rec, spec)[1])
+
+    def workflow_choice(self, rec: dict, button: dict, where: dict) -> bool:
+        """Botón del plan. Solo [Aprobar] crea tarjetas (la primera tanda: las que no dependen de otra)."""
+        wid, store = rec.get("wid") or "", self.workflow_store
+        if button.get("index") != 1:
+            if store.get(wid):
+                workflows.parar(store, wid)
+            self.notifier.edit(where["chat_id"], where["message_id"], "🚫 Plan descartado, no he creado nada", html=False)
+            return True
+        wf = store.get(wid)
+        if not wf:
+            return False
+        origin = (where["chat_id"], where["thread_id"])
+
+        def create_card(item: dict, req: str) -> str:
+            lane = self.lanes[item["carril"]]
+            body = (f"## Objetivo\n{item.get('cuerpo') or item['titulo']}\n\n## Límites\n"
+                    f"{item.get('limites') or '- Solo lo que pide el objetivo; nada más.'}\n\n"
+                    f"req: {req}\nOrigen: /workflow {wid}\nOrigen-Telegram: chat={origin[0]} thread={origin[1]}\n")
+            key = "wf-" + hashlib.sha1(f"{wid}|{item['titulo']}".encode()).hexdigest()[:16]
+            return self.hermes_for(lane.board).create(truncate(item["titulo"], HAZLO_TITLE_MAX), body, item["carril"],
+                                                      key=key, created_by="oscar")
+
+        try:
+            workflows.approve(store, wid)
+            new = workflows.launch(store, wid, create_card)
+        except Exception as exc:
+            log.warning("/workflow %s: no se pudo lanzar: %s", wid, type(exc).__name__)
+            return False
+        self.notifier.edit(where["chat_id"], where["message_id"],
+                           f"✅ Plan aprobado ({wf['req']}) · creadas {len(new)} tarjeta(s): {', '.join(new)}. Las que "
+                           "dependen de otras quedan en el plan hasta que las anteriores terminen.", html=False)
+        return True
+
     # --- /estado --------------------------------------------------------------------------------------
 
     def estado_peticiones(self, where, proyecto: str | None) -> None:
@@ -1527,7 +1924,8 @@ class CommandCenter:
         PRs sueltos. None = sin integrador activo (no se sabe)."""
         from .batch import OPEN_STATUSES, brand_of
         from .falta import env_pending, plain_reason
-        from .integrator import INT_BATCH_MERGE, INT_MIGRATION_APPLIED, MIGRATION_KINDS, pending_migration
+        from .integrator import (DEPLOY_BUTTON, INT_BATCH_MERGE, INT_MIGRATION_APPLIED, MIGRATION_KINDS,
+                                 pending_migration)
         integ = getattr(self.desk, "integrator", None)
         if not integ or not integ.settings.enabled:
             return None
@@ -1569,7 +1967,7 @@ class CommandCenter:
                 if mig in MIGRATION_KINDS:
                     sql.append(f"🗄 Aplicar el SQL/migración ({e(mig)}) de PR #{pr} ({e(tid)}){e(who)} y marcarla")
                     targets.append({"action": INT_MIGRATION_APPLIED, "rec": rec, "text": f"✅ Migración aplicada #{pr}"})
-                elif policy.deploy == "railway_up":
+                elif policy.deploy in DEPLOY_BUTTON:
                     deploy.append(f"🚀 Desplegar PR #{pr} ({e(tid)}){e(who)}: fusionado y sin desplegar")
                     targets.append({"action": DEPLOY_ASK, "rec": {**rec, "migration": None}, "text": f"🚀 Desplegar #{pr}"})
                 else:
@@ -1629,19 +2027,37 @@ class CommandCenter:
 
     @property
     def can_answer(self) -> bool:
-        return self._asker is not None
+        return self._asker is not None or self._classifier is not None
+
+    def triaje_config(self) -> dict:
+        return self._triaje_cfg if self._triaje_cfg is not None else triaje.load_config()
 
     def free_text(self, msg: dict) -> bool:
-        """Pregunta suelta del dueño en su DM (ni comando, ni /sesion abierta): responde con el estado real. Solo
-        informa: nunca ejecuta nada. False = no actúa (sin asker configurado: queda la ayuda de siempre)."""
+        """Texto libre del dueño en su DM (ni comando, ni /sesion abierta). Con el triaje activo se clasifica antes de
+        nada: CONSULTA responde con el estado real (sin tarjeta); lo demás pregunta/propone y solo crea tras tus botones.
+        Sin triaje solo informa. False = no actúa (sin asker ni triaje: queda la ayuda de siempre)."""
         text = (msg.get("text") or "").strip()
-        if not self._asker or not text:
+        cfg = self.triaje_config()
+        triaging = self._classifier is not None and cfg["activo"]
+        if not text or not (self._asker or triaging):
             return False
         where = self._where(msg)
         if not self._ask_lock.acquire(blocking=False):
             self._send(where, "Sigo con tu pregunta anterior; dame un momento.", html=False)
             return True
         try:
+            if triaging:
+                try:
+                    cat = self._classifier(text, cfg)
+                except Exception as exc:  # nunca se pierde una petición: ante la duda, trabajo pequeño
+                    log.warning("triaje: clasificador falló: %s", type(exc).__name__)
+                    cat = triaje.PEQUENA
+                if cat != triaje.CONSULTA:
+                    self.triaje_route(where, text, cat if cat in triaje.CATEGORIAS else triaje.PEQUENA, cfg)
+                    return True
+                if not self._asker:
+                    self._send(where, cfg["textos"]["consulta_sin_dato"], html=False)
+                    return True
             try:
                 plain = lambda s: html.unescape(re.sub(r"<[^>]+>", "", s))
                 brand = scope_brand(where[0], where[1], self.lanes, self.generic_origins)
@@ -1665,6 +2081,29 @@ class CommandCenter:
         """RAM bajo demanda; el monitor manda el mismo informe al DM cada 4 h (ya no hay aviso continuo)."""
         from . import health
         self._send(where, health.ram_report(), html=False)
+
+    def cmd_silenciar(self, where, args: str, brand: str | None) -> None:
+        """/silenciar <clave> <horas>: el monitor deja de avisar de esa clave (y las que empiezan por ella)."""
+        from . import silencios
+        parts = args.split()
+        if len(parts) != 2:
+            vivos = silencios.activos()
+            lines = ["Uso: /silenciar <clave> <horas>   (0 horas quita el silencio)"]
+            lines += [f"🔕 {k} hasta {datetime.fromtimestamp(v):%d-%m %H:%M}" for k, v in sorted(vivos.items())]
+            recientes = silencios.claves_recientes()
+            if recientes:
+                lines.append("Claves avisadas últimamente: " + ", ".join(recientes))
+            self._send(where, "\n".join(lines), html=False)
+            return
+        try:
+            horas = float(parts[1].replace(",", "."))
+            hasta = silencios.silenciar(parts[0], horas)
+        except ValueError as exc:
+            self._send(where, str(exc) if "clave" in str(exc) or "horas" in str(exc) else
+                       "Las horas tienen que ser un número, por ejemplo: /silenciar ram 12", html=False)
+            return
+        self._send(where, f"🔕 «{parts[0].lower()}» silenciada hasta {datetime.fromtimestamp(hasta):%d-%m %H:%M}"
+                   if horas else f"🔔 «{parts[0].lower()}» vuelve a avisar", html=False)
 
     def health_text(self) -> str:
         """Todo local (health.py): .state, `hermes kanban list`, ficheros del monitor y git sin fetch."""
@@ -1820,24 +2259,104 @@ class CommandCenter:
         dest = {"chat_id": where[0], "thread_id": where[1]}
         self._spawn(lambda: promoter.start(key, dest))
 
+    # --- /al_dia (al_dia.py) ----------------------------------------------------------------
+
+    def _al_dia(self):
+        from .al_dia import AlDia
+        return AlDia(getattr(self.desk, "integrator", None))
+
+    def cmd_aldia(self, where, args: str, brand: str | None) -> None:
+        self.cmd_al_dia(where, args, brand)
+
+    def cmd_al_dia(self, where, args: str, brand: str | None) -> None:
+        """/al_dia [proyecto|todos] [dev|prod]: un mensaje que se edita con el progreso y termina con el resumen y
+        los botones. Esta versión solo hace `dev` (sin desplegar); `prod` llega con la tarjeta hija."""
+        al_dia = self._al_dia()
+        proyectos = al_dia.proyectos()
+        if not proyectos:
+            self._send(where, "El integrador está apagado: no hay nada que poner al día.", html=False)
+            return
+        from .al_dia import parse_args
+        proyecto, destino, error = parse_args(args, proyectos)
+        if error:
+            self._send(where, error, html=False)
+            return
+        if destino == "prod":
+            self._send(where, "/al_dia prod aún no está disponible (llega en la tarjeta hija: producción con doble "
+                              "confirmación). Usa /desplegar para lo ya fusionado.", html=False)
+            return
+        claves = list(proyectos) if proyecto == "todos" else [proyecto]
+        sent = self._send(where, f"🔄 /al_dia {proyecto} dev · empiezo…", html=False)
+        mid = (sent or {}).get("message_id")
+
+        def run() -> None:
+            lineas = []
+            for clave in claves:
+                try:
+                    st = al_dia.diagnose(clave)
+                    acciones = al_dia.poner_al_dia(st)
+                    lineas.append(al_dia.resumen(st, destino) + ("\n" + "\n".join(acciones) if acciones else ""))
+                    markup = al_dia.botones(self.desk, st)
+                except Exception as exc:  # un proyecto roto no tumba el resto
+                    log.warning("/al_dia %s falló: %s", clave, exc)
+                    lineas.append(f"📁 {clave}: no pude diagnosticarlo (detalle en el log)")
+                    markup = None
+                if markup:  # los botones de cada proyecto van en su propio mensaje
+                    self._send(where, lineas[-1], html=False, markup=markup)
+                if mid:
+                    self.notifier.edit(where[0], mid, f"🔄 /al_dia {proyecto} dev · {len(lineas)}/{len(claves)} "
+                                                      "proyectos…", html=False)
+            texto = "✅ /al_dia terminado\n\n" + "\n\n".join(lineas)
+            if mid:
+                self.notifier.edit(where[0], mid, texto, html=False)
+            else:
+                self._send(where, texto, html=False)
+
+        self._spawn(run)
+
+    def al_dia_choice(self, action: str, rec: dict, where: dict, desk) -> bool:
+        """Botones de /al_dia: integrar todo lo listo (lote) o abrir la ficha de un PR con sus botones de siempre."""
+        from .al_dia import AD_INTEGRAR, AD_PR
+        dest = (where["chat_id"], where.get("thread_id") or "0")
+        if action == AD_PR:
+            self.cmd_tarea(dest, str(rec.get("task_id") or ""), None)
+            return True
+        if action != AD_INTEGRAR:
+            return False
+        al_dia, clave = self._al_dia(), str(rec.get("key") or "")
+        self._send(dest, f"Montando el lote de {clave}… pasa los gates y los tests, puede tardar unos minutos.",
+                   html=False)
+
+        def run() -> None:
+            try:
+                texto = al_dia.integrar_todo(clave)
+            except Exception as exc:
+                log.warning("/al_dia integrar %s falló: %s", clave, exc)
+                texto = "No pude montar el lote; detalle en el log."
+            self._send(dest, texto, html=False)
+
+        self._spawn(run)
+        return True
+
     # --- /desplegar -----------------------------------------------------------------------
 
     def _deploy_target(self, arg: str):
         """(carril, política) con deploy `railway_up` cuyo nombre, marca o palabra clave es `arg`; None si no hay."""
+        from .integrator import DEPLOY_BUTTON
         integ = getattr(self.desk, "integrator", None)
         if not integ or not integ.settings.enabled:
             return None
         want = re.sub(r"[^a-z0-9 -]+", "", (arg or "").lower()).strip()
         for name, policy in integ.settings.policies.items():
             lane = self.lanes.get(name)
-            if lane is not None and policy.deploy == "railway_up" and want and want in (
+            if lane is not None and policy.deploy in DEPLOY_BUTTON and want and want in (
                     name, name.removeprefix("claude-"), *LANE_HINTS.get(name, ())):
                 return lane, policy
         return None
 
     def cmd_desplegar(self, where, args: str, brand: str | None) -> None:
         """/desplegar <proyecto>: ficha de cada fusión sin desplegar con [🚀 Desplegar]; hace falta un 2.º toque."""
-        from .integrator import pending_migration
+        from .integrator import DEPLOY_BUTTON, pending_migration
         integ = getattr(self.desk, "integrator", None)
         arg = args.strip()
         if not integ or not integ.settings.enabled:
@@ -1846,7 +2365,7 @@ class CommandCenter:
         found = self._deploy_target(arg)
         if not found:
             names = sorted(n.removeprefix("claude-") for n, p in integ.settings.policies.items()
-                           if p.deploy == "railway_up")
+                           if p.deploy in DEPLOY_BUTTON)
             self._send(where, "Dime el proyecto: /desplegar " + ("|".join(names) or "(ninguno despliega con botón)")
                        + ". MigraTeam despliega staging al fusionar y producción va por /promover.", html=False)
             return
@@ -1870,18 +2389,20 @@ class CommandCenter:
 
     def deploy_step(self, action: str, rec: dict, where: dict, desk) -> bool:
         """1.er toque de /desplegar: edita la ficha con "¿Seguro?" y [✅ Sí, desplegar] (= int_deploy) / [✖ No]."""
-        from .integrator import INT_DEPLOY
+        from .integrator import DEPLOY_BUTTON, INT_DEPLOY
         if action == DEPLOY_NO:
             self.notifier.edit(where["chat_id"], where["message_id"], "✖ No despliego nada.", html=False)
             return True
         policy = desk.integrator.settings.policies.get(rec.get("lane")) if desk.integrator else None
-        if not policy or policy.deploy != "railway_up" or not rec.get("merge_sha"):
+        if not policy or policy.deploy not in DEPLOY_BUTTON or not rec.get("merge_sha"):
             return False
         markup = desk.store.issue(rec, [[{"text": "✅ Sí, desplegar", "action": INT_DEPLOY}],
                                         [{"text": "✖ No", "action": DEPLOY_NO}]])[1]
         self.notifier.edit(where["chat_id"], where["message_id"],
                            f"⚠️ ¿Seguro? Esto despliega {rec.get('lane')} (PR #{rec.get('pr_number')}, "
-                           f"{(rec.get('merge_sha') or '')[:7]}) con `railway up`.", html=False, reply_markup=markup)
+                           f"{(rec.get('merge_sha') or '')[:7]}) con "
+                           f"{'Dokploy' if policy.deploy == 'dokploy' else '`railway up`'}.", html=False,
+                           reply_markup=markup)
         return True
 
 
@@ -1895,7 +2416,8 @@ class CommandCenter:
                 self._send(where, "Marca desconocida: usa /tareas migrateam, /tareas pildora o /tareas nextjobs",
                            html=False)
                 return
-        self._send(where, self.tasks_text(brand))
+        for page in self.tasks_pages(brand):
+            self._send(where, page)
 
     def cmd_cola(self, where, args: str, brand: str | None) -> None:
         if args:
@@ -1958,46 +2480,72 @@ class CommandCenter:
             return
         self._send(where, f"✅ {tid} · prioridad {cur} → {new}", html=False)
 
-    def tasks_text(self, brand: str | None, *, with_links: bool = True) -> str:
+    def tasks_text(self, brand: str | None) -> str:
+        return "\n".join(self.tasks_pages(brand))
+
+    def tasks_pages(self, brand: str | None) -> list[str]:
+        """/tareas: «En marcha» (carril y tablero) y «En cola» entera; cada tarea con su `/tarea t_xxx` tocable.
+        Si no cabe en un mensaje se reparte en varios por líneas enteras: nunca se recorta nada."""
         e = html.escape
-        out = ["🛣 <b>Tareas en curso y en cola</b>" + (f" · {e(brand)}" if brand else "")]
         sections = []
         for name, lane in self.lanes.items():
             if lane.kind not in ("implement", "ops") or (brand and BRANDS.get(name) != brand):
                 continue
             h = self.hermes_for(lane.board)
-            running, ready = h.list_status(name, "running"), h.list_status(name, "ready")
-            items = [("▶️", lane, t) for t in running] + [("⏳", lane, t) for t in ready[:READY_PER_LANE]]
-            sections.append((name, lane, items, len(ready)))
+            sections.append((lane, h.list_status(name, "running"), h.list_status(name, "ready")))
         # Una hija cuyo padre también sale en la lista va debajo de él (aunque sea de otro carril del tablero).
-        shown = [it for _, _, items, _ in sections for it in items]
+        shown = [("▶️", lane, t) for lane, run, _ in sections for t in run] + \
+                [("⏳", lane, t) for lane, _, rdy in sections for t in rdy]
         parent_of = self._shown_parents(shown)
         kids: dict[str, list] = {}
         for it in shown:
             if it[2]["id"] in parent_of:
                 kids.setdefault(parent_of[it[2]["id"]], []).append(it)
 
-        def emit(it, depth: int = 0) -> None:
-            emoji, lane, t = it
-            out.append(("   " * depth + "↳ " if depth else "") + f"{emoji} " + self._task_ref(lane, t, with_links))
+        def emit(out: list[str], it, depth: int = 0) -> None:
+            emoji, _, t = it
+            pad = "   " * depth
+            out.append(pad + ("↳ " if depth else "") + f"{emoji} {e(truncate(t.get('title'), 60))} · "
+                       f"<code>{e(t['id'])}</code>")
+            out.append(pad + f"/tarea {e(t['id'])}")
             for kid in kids.get(t["id"], ()):  # _shown_parents deja un bosque (sin ciclos): termina
-                emit(kid, depth + 1)
+                emit(out, kid, depth + 1)
 
-        for name, lane, items, n_ready in sections:
-            out.append(f"\n<b>{e(name)}</b>" + (f" · {e(BRANDS[name])}" if name in BRANDS else ""))
-            if not items:
-                out.append("libre, sin cola")
-            top = [it for it in items if it[2]["id"] not in parent_of]
-            for it in top:
-                emit(it)
-            if items and not top:
-                out.append("(sus tareas van bajo su padre)")
-            if n_ready > READY_PER_LANE:
-                out.append(f"  +{n_ready - READY_PER_LANE} más en cola")
-        text = "\n".join(out)
-        if len(text) > TEXT_MAX and with_links:  # sin enlaces antes que cortar el HTML a medias
-            return self.tasks_text(brand, with_links=False)
-        return text[:TEXT_MAX]
+        suffix = f" · {e(brand)}" if brand else ""
+        lines = [f"▶️ <b>En marcha</b>{suffix}"]
+        busy = [(lane, run) for lane, run, _ in sections if run]
+        for lane, run in busy:
+            lines.append(f"\n<b>{e(lane.name)}</b> · tablero {e(lane.board)} · en ejecución")
+            for t in run:
+                if t["id"] not in parent_of:
+                    emit(lines, ("▶️", lane, t))
+        if not busy:
+            lines.append("Nada en marcha.")
+        lines.append("\n⏳ <b>En cola</b>" + suffix)
+        queued = [(lane, rdy) for lane, _, rdy in sections if rdy]
+        for lane, rdy in queued:
+            lines.append(f"\n<b>{e(lane.name)}</b> · tablero {e(lane.board)} · {len(rdy)} en cola")
+            top = [t for t in rdy if t["id"] not in parent_of]
+            for t in top:
+                emit(lines, ("⏳", lane, t))
+            if not top:
+                lines.append("(sus tareas van bajo su padre)")
+        if not queued:
+            lines.append("Cola vacía.")
+        return self._paginate(lines)
+
+    @staticmethod
+    def _paginate(lines: list[str]) -> list[str]:
+        """Junta líneas enteras en mensajes de ≤ TEXT_MAX (cada línea es corta: nunca se parte una)."""
+        pages, cur = [], ""
+        for line in lines:
+            if cur and len(cur) + 1 + len(line) > TEXT_MAX:
+                pages.append(cur)
+                cur = line.lstrip("\n")
+            else:
+                cur = f"{cur}\n{line}" if cur else line
+        pages.append(cur)
+        return pages
 
     def _shown_parents(self, items: list) -> dict[str, str]:
         """{hija: padre} entre las tareas listadas (mismo tablero). Una lectura `show` cacheada por tarea; si no se
@@ -2041,14 +2589,17 @@ class CommandCenter:
         if not found:
             self._send(where, f"No encuentro {tid} en los tableros de los carriles", html=False)
             return
-        board, show = found
+        self._send_ficha(where, *found)
+
+    def _send_ficha(self, where, board: str, show: dict) -> None:
+        """Ficha de una tarea con los botones de su estado (/tarea y las líneas de /pendiente)."""
         text, markup = self.task_card(board, show)
         tree = self.tree_text(board, show)
         if tree and len(text) + 1 + len(tree) <= TEXT_MAX:
             text += "\n" + tree
         sent = self._send(where, text, markup=markup)
         if markup:
-            self._mirror(tid, sent, markup)
+            self._mirror(show["task"]["id"], sent, markup)
 
     def _find(self, tid: str) -> tuple[str, dict] | None:
         for board in dict.fromkeys(l.board for l in self.lanes.values() if l.board):

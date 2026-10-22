@@ -121,7 +121,8 @@ Los enlaces `hermes kanban link <padre> <hija>` se ven también en Telegram:
   bloquean su integración, `deps.pending_parents`) y `↳ 3 subtareas: ✅ 1 · ▶️ 1 · ⏳ 1` (✅ done/archived,
   ▶️ running/review/blocked, ⏳ el resto). La ficha de Integración no repite ⏸: ya lo lista en "Depende de".
 - `/tarea t_x` añade el árbol: padre(s), hermanas, la tarea (👉) e hijas, con estado y enlace al panel.
-- `/tareas` pone cada hija debajo de su padre cuando ambos salen en la lista.
+- `/tareas` pone cada hija debajo de su padre cuando ambos salen en la lista. Muestra «En marcha» (carril y tablero) y
+  «En cola» completa, cada tarea con su `/tarea t_xxx` tocable; si no cabe, se reparte en varios mensajes.
 Las lecturas `show` se cachean (60 s, y se vacían en cada pasada del bucle; 30 s en los comandos).
 
 ## Carril del sistema (`claude-hub`)
@@ -230,6 +231,16 @@ cambia; cualquier cola, orden o escalada que se escriba aquí debe respetarla.
   el carril no reclama y el log dice ERROR una vez. Un carril nuevo sin `github:` queda parado.
 - /salud en el bot de carriles: runner, Hermes, servicios y alertas del monitor, develop↔master de MigraTeam, RAM/CPU
   y decisiones pendientes. Solo lecturas locales (sin HTTP: eso lo hace el monitor).
+- **/pendiente («Lo tuyo»)** en el bot de carriles: UN mensaje con todo lo que espera a Oscar, agrupado por prioridad
+  (🔴 urgente / 🟡 normal / ⚪ cuando puedas): preguntas de agentes, PR por aprobar, cola del integrador
+  (`integrador_cola.json`), PR de sesiones interactivas, tarjetas «· tuyo»/«· decidir» y pasos de `integrador_estado.md`
+  que esperan a Oscar. Cada línea lleva su botón (✍️ Responder / ✅ Aprobar / 👁 Ver / 🔗 PR) y abre la ficha de siempre con
+  sus botones (nunca aprueba a ciegas). Umbrales en `lo_tuyo.yaml`. Para Hermes: `py -3.12 lanes.py pendiente [--json]`
+  (solo lectura, misma lista; no toca la config de Hermes).
+- **/personal**: backlog personal fuera de los carriles. Propone (lista) las tarjetas a nombre de «oscar» en `ready`/`todo`
+  que NO son decisiones de carril y, solo si Oscar pulsa [✅ Mover], las pasa al board `personal` (crea la nueva y archiva
+  la original; si el board no existe no toca nada). [✋ Dejarlas] las excluye de futuras propuestas
+  (`.state/personal_descartadas.json`). Ajustes en `personal.yaml`. El board `personal` hay que crearlo en Hermes (OK de Oscar).
 - /hazlo <texto> en el bot de carriles crea una tarea pequeña (prioridad alta, tope 15 min en el cuerpo, línea
   `Origen-Telegram` del sitio donde se pidió); el carril sale de palabras clave del texto o de la marca del tema, y con
   duda pregunta con botones. /estado [marca]: en curso, lo que espera a Oscar y lo pendiente de desplegar, en un mensaje.
@@ -286,3 +297,50 @@ integrador_visibilidad.yaml. Quién puede pulsar botones (`tools/telegram/people
   lanes.yaml; por defecto `docs/kb/CHANGELOG.md`, `docs/kb/LEDGER_ESTATUS.md`, `docs/kb/archivo/CHANGELOG.md`,
   `CHANGELOG.md`; `[]` lo desactiva): el integrador fusiona la base en la rama del PR con `merge=union`, pasa los gates y
   empuja a `lane/<id>` (único push del integrador, sin force). Con código mezclado no toca nada: devuelve la tarjeta al carril.
+
+## `/al_dia [proyecto|todos] [dev]` (t_a1e4e8cf, `al_dia.py`)
+
+Diagnóstico por proyecto (PR de `lane/*`: listos / CI rojo / conflicto / sin aprobar / atrasados), pone al día las ramas
+con ≥ `rama_atras_commits` (10, en `al_dia.yaml`) vía `update-branch` de GitHub (la base nunca se toca; la aprobación se
+re-ata a la cabeza nueva), resuelve el conflicto trivial con `atascos` o crea la tarjeta de rebase, y ofrece
+«✅ Integrar todo lo listo» (monta el lote, `batch.py`) más un botón por PR. Solo `dev`; `prod`, «🛠 Resolver» y la oferta
+proactiva son la tarjeta hija (`specs/al-dia-prod.md`). Alias `/aldia`. Con un proyecto vale su marca; «todos» exige acceso
+a todas las marcas.
+
+## Tras la migración a Dokploy (22-10, t_ffffc632)
+Oscar HQ y NextJobs corren en el servidor pildora-01 (Hetzner) con Dokploy; MigraTeam sigue en Railway hasta su corte.
+- **Autor de los commits del integrador** (`integrator.commit_author` en lanes.yaml; por defecto
+  `oscarsao <oscarsao@users.noreply.github.com>`). Vercel bloquea los despliegues de commits cuyo autor no es del equipo
+  («Failed deployment from agent-lanes@localhost»). Si tu noreply lleva el id numérico (`<id>+oscarsao@users.noreply…`,
+  mira Settings → Emails en GitHub), ponlo ahí: es un dato, no hace falta tocar código.
+- **🚀 Desplegar con Dokploy** (`deploy: dokploy` en `integrator.lanes.<carril>`): `application.deploy` (no `redeploy`), sondeo de
+  `application.one` hasta `done`/`error` del despliegue NUEVO y comprobación de `health_url`. Campos: `dokploy_url` (https, o
+  `http://localhost:3300` mientras el panel vaya por túnel SSH), `dokploy_application_id` y `dokploy_token_env` (el NOMBRE de
+  la variable de agent-lanes/.env con el token; el token nunca va en lanes.yaml). `railway_up` sigue funcionando para quien lo use.
+- **Avisos del monitor** (`monitor_alerts` en lanes.yaml, `tools/monitor/prodwatch.py`, cada 5 min, por Telegram y sin
+  repetir): despliegue de PRODUCCIÓN fallido en Vercel (`vercel.token_env` = nombre de la variable con el token de Vercel,
+  `vercel.projects`; las vistas previas de lane/* no avisan; un aviso por despliegue) y salud del servidor (`health_url` de
+  cada carril + estado de su aplicación en Dokploy; `skip_health` excluye carriles, p. ej. Railway pausado).
+- **Silenciar el ruido de Vercel** (lo haces tú en el panel; no hay código): *Project → Settings → Git → Pull Request
+  Comments → off* (por proyecto) y *Account → Notifications → Deployments* → deja solo los de producción
+  (desmarca vistas previas / «Preview Deployments»).
+
+## Clasificador de tarjetas y tipo «consulta»
+
+- **Clasificador** (`agent_lanes/clasificador.py`, reglas como datos en `clasificador.yaml`, se leen en cada pasada): antes
+  de lanzar al worker, si la tarjeta pide producción/variables de entorno, SQL remoto (Supabase/Alembic), escribir fuera
+  del worktree (`~/.hermes`), instalar binarios u otro repo distinto del carril, el runner la deja en la cola del
+  integrador (`/integrador`, mismo bloqueo `LIMITACION-GUARD`) con aviso, sin gastar una ejecución. Si menciona la rama de
+  otra tarea (`lane/t_…`) sin línea `Rama-origen:`, avisa a Oscar y al worker (parte de la base). `/pedir` y `/hazlo`
+  avisan ya al crear. No reclasifica si ya hay respuesta de Oscar, nota del coordinador o revisión. Salida de emergencia:
+  línea `Clasificador: omitir` en el cuerpo.
+- **Consulta** (`Tipo: consulta` en el cuerpo o título `[Consulta] …`; `/pedir` ofrece el botón «❓ Solo una pregunta»): sin
+  rama, sin worktree y sin verificación mecánica. El carril responde con `claude -p` de SOLO LECTURA (`Read,Grep,Glob`) en
+  el checkout de su repo, deja la respuesta como comentario y completa la tarjeta (`agent_lanes/consulta.py`).
+
+## Limpieza propuesta de tarjetas resueltas (`limpieza.py`, `limpieza.yaml`)
+Una vez al día (hora de `limpieza.yaml`) el runner propone por Telegram las tarjetas abiertas que parecen resueltas
+(PR mergeado, hermana `done`, pregunta ya respondida, duplicada, tarjeta de `oscar` parada) con [✅ Cerrar] [⏳ Mantener]
+[👁 Ver]. Nunca cierra solo. Umbrales, reglas, tableros y hora se editan en `limpieza.yaml` (se relee sin reiniciar).
+Ver las candidatas sin enviar nada: `py -3.12 -m agent_lanes.limpieza --dry-run` (desde `tools/agent-lanes`).
+Spec: `specs/kanban-limpieza-propuesta.md`.

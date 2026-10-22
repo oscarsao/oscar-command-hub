@@ -1,0 +1,388 @@
+/*
+ * Píldora · Liquid Glass V4 para el panel y el kanban de Hermes.
+ *
+ * Fuente de verdad del estilo (solo lectura): oscar-hq/dashboard/src/app/globals.css (Design System V4),
+ * components/ui/card.tsx (Card liquid glass). Aquí solo se SOBREESCRIBE; no se toca el código de Hermes.
+ *
+ * Se inyecta como `customCSS` de un tema de usuario (ver README.md): `instalar_tema.py` lo une a
+ * `pildora-liquid-glass.theme.yaml`. Límite de Hermes: 32 KB de CSS (lo vigila tests/test_hermes_theme.py).
+ *
+ * Los selectores `.hermes-kanban-*` son las clases públicas del plugin kanban (plugins/kanban/dashboard/dist/style.css);
+ * el resto del panel se tiñe por variables `--color-*` (paleta del tema) y por elementos genéricos.
+ * Los colores salen de variables --pd-* para que un ajuste de marca sea tocar un solo bloque.
+ */
+
+:root {
+  --pd-bg: #0a0613;
+  --pd-surface: #13091e;
+  --pd-text: #fafafa;
+  --pd-text-dim: #b8afc7;
+  --pd-muted: #8f87a3;
+  --pd-accent: #ff6a52;
+  --pd-accent-rgb: 255, 106, 82;
+  --pd-accent-2: #ff9a45;
+  --pd-success: #10b981;
+  --pd-warning: #f59e0b;
+  --pd-error: #ef4444;
+  --pd-info: #3b82f6;
+  --pd-border: rgba(255, 255, 255, 0.08);
+  --pd-border-hi: rgba(255, 255, 255, 0.15);
+  --pd-glass: linear-gradient(135deg, rgba(255, 255, 255, 0.045), rgba(255, 255, 255, 0.02));
+  --pd-glass-hi: linear-gradient(135deg, rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0.04));
+  --pd-blur: blur(26px) saturate(160%);
+  --pd-gradient: linear-gradient(95deg, #ff6a52 0%, #ff9a45 100%);
+  --pd-radius: 15px;
+}
+
+/* ---- Fondo ambiental ------------------------------------------------- */
+
+html,
+body {
+  background-color: var(--pd-bg) !important;
+  color: var(--pd-text);
+}
+body {
+  background-image:
+    radial-gradient(900px 600px at 12% -8%, rgba(var(--pd-accent-rgb), 0.16), transparent 60%),
+    radial-gradient(800px 560px at 100% 8%, rgba(255, 154, 69, 0.10), transparent 60%),
+    radial-gradient(700px 520px at 50% 115%, rgba(139, 92, 246, 0.10), transparent 60%) !important;
+  background-attachment: fixed !important;
+  font-family: "Manrope", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Barras de scroll discretas */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.18) transparent;
+}
+
+/* Selección y foco con el coral de marca */
+::selection {
+  background: rgba(var(--pd-accent-rgb), 0.35);
+  color: #fff;
+}
+:focus-visible {
+  outline: 2px solid var(--pd-accent);
+  outline-offset: 2px;
+}
+
+/* ---- Cristal en los contenedores genéricos del panel ------------------ */
+
+aside,
+header,
+[role="dialog"],
+[role="menu"],
+[role="listbox"],
+[data-radix-popper-content-wrapper] > * {
+  background-image: var(--pd-glass) !important;
+  -webkit-backdrop-filter: var(--pd-blur);
+  backdrop-filter: var(--pd-blur);
+  border-color: var(--pd-border) !important;
+}
+aside,
+header {
+  background-color: rgba(19, 9, 30, 0.72) !important;
+}
+[role="dialog"],
+[role="menu"],
+[role="listbox"],
+[data-radix-popper-content-wrapper] > * {
+  background-color: rgba(19, 9, 30, 0.92) !important;
+}
+
+/* ---- Kanban: columnas ------------------------------------------------- */
+
+.hermes-kanban-column {
+  background: var(--pd-glass);
+  background-color: rgba(255, 255, 255, 0.02);
+  border: 1px solid var(--pd-border);
+  border-radius: var(--pd-radius);
+  -webkit-backdrop-filter: var(--pd-blur);
+  backdrop-filter: var(--pd-blur);
+  box-shadow: 0 8px 32px -12px rgba(0, 0, 0, 0.55), inset 0 1px 0 rgba(255, 255, 255, 0.05);
+}
+.hermes-kanban-column--drop {
+  border-color: rgba(var(--pd-accent-rgb), 0.7);
+  background-color: rgba(var(--pd-accent-rgb), 0.08);
+  box-shadow: 0 0 60px -10px rgba(var(--pd-accent-rgb), 0.25);
+}
+.hermes-kanban-column-header {
+  color: var(--pd-text);
+  font-weight: 700;
+}
+.hermes-kanban-column-count,
+.hermes-kanban-column-sub,
+.hermes-kanban-card-id,
+.hermes-kanban-card-meta {
+  color: var(--pd-muted);
+}
+.hermes-kanban-column-sub {
+  border-bottom-color: var(--pd-border);
+}
+.hermes-kanban-column-add {
+  border-radius: 999px;
+  border-color: var(--pd-border-hi);
+}
+.hermes-kanban-column-add:hover {
+  background: rgba(var(--pd-accent-rgb), 0.15);
+  border-color: var(--pd-accent);
+}
+.hermes-kanban-empty {
+  border-color: var(--pd-border-hi);
+  border-radius: 12px;
+}
+
+/* ---- Kanban: tarjetas liquid glass ------------------------------------ */
+
+.hermes-kanban-card {
+  background: var(--pd-glass);
+  background-color: rgba(255, 255, 255, 0.035);
+  border: 1px solid var(--pd-border);
+  border-radius: 14px;
+  -webkit-backdrop-filter: var(--pd-blur);
+  backdrop-filter: var(--pd-blur);
+  box-shadow: 0 6px 22px -10px rgba(0, 0, 0, 0.6), inset 0 1px 0 rgba(255, 255, 255, 0.07);
+  transition: transform 140ms ease, box-shadow 140ms ease, border-color 140ms ease, background-color 140ms ease;
+}
+.hermes-kanban-card-content {
+  background: transparent;
+}
+.hermes-kanban-card:hover {
+  transform: translateY(-1px);
+  border-color: rgba(var(--pd-accent-rgb), 0.45);
+  background-color: rgba(255, 255, 255, 0.06);
+  box-shadow: 0 10px 30px -10px rgba(0, 0, 0, 0.65), 0 0 40px -14px rgba(var(--pd-accent-rgb), 0.35),
+    inset 0 1px 0 rgba(255, 255, 255, 0.1);
+}
+.hermes-kanban-card:active {
+  transform: scale(0.995);
+}
+.hermes-kanban-card-title {
+  color: var(--pd-text);
+  font-weight: 600;
+}
+.hermes-kanban-assignee {
+  color: var(--pd-text-dim);
+}
+.hermes-kanban-card--selected .hermes-kanban-card-content {
+  background: rgba(var(--pd-accent-rgb), 0.10);
+  box-shadow: inset 0 0 0 1px rgba(var(--pd-accent-rgb), 0.6);
+  border-radius: 14px;
+}
+.hermes-kanban-card--stale-amber .hermes-kanban-card-content {
+  border-radius: 14px;
+  box-shadow: inset 0 0 0 1px rgba(245, 158, 11, 0.55);
+}
+.hermes-kanban-card--stale-red .hermes-kanban-card-content,
+.hermes-kanban-card--failed .hermes-kanban-card-content {
+  border-radius: 14px;
+  box-shadow: inset 0 0 0 1px rgba(239, 68, 68, 0.7), 0 0 18px -6px rgba(239, 68, 68, 0.5);
+}
+.hermes-kanban-card-check,
+.hermes-kanban-col-check {
+  accent-color: var(--pd-accent);
+}
+
+/* ---- Insignias de estado (puntos, prioridad, etiquetas, progreso) ------ */
+
+.hermes-kanban-dot {
+  width: 0.55rem;
+  height: 0.55rem;
+  box-shadow: 0 0 8px -1px currentColor;
+}
+.hermes-kanban-dot-triage   { background: #a78bfa; color: #a78bfa; }
+.hermes-kanban-dot-todo     { background: var(--pd-muted); color: var(--pd-muted); }
+.hermes-kanban-dot-ready    { background: var(--pd-warning); color: var(--pd-warning); }
+.hermes-kanban-dot-running  { background: var(--pd-accent); color: var(--pd-accent); }
+.hermes-kanban-dot-blocked  { background: var(--pd-error); color: var(--pd-error); }
+.hermes-kanban-dot-review   { background: var(--pd-info); color: var(--pd-info); }
+.hermes-kanban-dot-done     { background: var(--pd-success); color: var(--pd-success); }
+.hermes-kanban-dot-archived { background: rgba(255, 255, 255, 0.2); color: transparent; box-shadow: none; }
+
+.hermes-kanban-priority,
+.hermes-kanban-tag,
+.hermes-kanban-progress {
+  border-radius: 999px;
+}
+.hermes-kanban-priority {
+  background: rgba(var(--pd-accent-rgb), 0.16);
+  border-color: rgba(var(--pd-accent-rgb), 0.45);
+  color: #ffb88c;
+}
+.hermes-kanban-progress--full {
+  background: rgba(16, 185, 129, 0.18);
+  border-color: rgba(16, 185, 129, 0.45);
+}
+.hermes-kanban-needs-assignee {
+  border-radius: 999px;
+  background: rgba(245, 158, 11, 0.14);
+  border-color: rgba(245, 158, 11, 0.45);
+}
+.hermes-kanban-home-sub--on {
+  background: rgba(var(--pd-accent-rgb), 0.28);
+  border-color: var(--pd-accent);
+}
+
+/* Avisos y diagnósticos con la paleta de estado V4 */
+.hermes-kanban-attention,
+.hermes-kanban-recovery,
+.hermes-kanban-boardswitcher,
+.hermes-kanban-bulk {
+  border-radius: var(--pd-radius);
+  -webkit-backdrop-filter: var(--pd-blur);
+  backdrop-filter: var(--pd-blur);
+}
+.hermes-kanban-bulk {
+  background: rgba(var(--pd-accent-rgb), 0.10);
+  border-color: rgba(var(--pd-accent-rgb), 0.4);
+}
+.hermes-kanban-boardswitcher {
+  background: var(--pd-glass);
+  border-color: var(--pd-border);
+}
+.hermes-kanban-msg-ok,
+.hermes-kanban-recovery-msg--ok,
+.hermes-kanban-diag-msg--ok {
+  background: rgba(16, 185, 129, 0.12);
+  color: #34d399;
+  border-color: rgba(16, 185, 129, 0.35);
+}
+.hermes-kanban-msg-err,
+.hermes-kanban-recovery-msg--err,
+.hermes-kanban-diag-msg--err {
+  background: rgba(239, 68, 68, 0.12);
+  color: #f87171;
+  border-color: rgba(239, 68, 68, 0.35);
+}
+
+/* ---- Kanban: cajón de detalle y diálogos ------------------------------- */
+
+.hermes-kanban-drawer-shade {
+  background: rgba(10, 6, 19, 0.6);
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
+}
+.hermes-kanban-drawer,
+.hermes-kanban-dialog {
+  background: var(--pd-glass);
+  background-color: rgba(19, 9, 30, 0.9);
+  border-color: var(--pd-border-hi);
+  -webkit-backdrop-filter: var(--pd-blur);
+  backdrop-filter: var(--pd-blur);
+}
+.hermes-kanban-dialog {
+  border-radius: 20px;
+  box-shadow: 0 24px 60px -12px rgba(0, 0, 0, 0.7), 0 0 80px -30px rgba(var(--pd-accent-rgb), 0.3);
+}
+.hermes-kanban-dialog-backdrop {
+  background: rgba(10, 6, 19, 0.6);
+}
+.hermes-kanban-drawer-head,
+.hermes-kanban-drawer-comment-foot {
+  border-color: var(--pd-border);
+}
+.hermes-kanban-drawer-meta,
+.hermes-kanban-run,
+.hermes-kanban-pre {
+  background: rgba(255, 255, 255, 0.03);
+  border-color: var(--pd-border);
+  border-radius: 12px;
+}
+.hermes-kanban-comment {
+  border-left-color: rgba(var(--pd-accent-rgb), 0.5);
+}
+.hermes-kanban-md a,
+.hermes-kanban-attachment-link {
+  color: var(--pd-accent-2);
+}
+.hermes-kanban-run--active { border-left-color: var(--pd-accent); }
+.hermes-kanban-run--completed { border-left-color: var(--pd-success); }
+.hermes-kanban-textarea,
+.hermes-kanban-recovery-input,
+.hermes-kanban-recovery-select {
+  background: rgba(255, 255, 255, 0.04);
+  border-color: var(--pd-border-hi);
+  border-radius: 12px;
+}
+.hermes-kanban-textarea:focus {
+  border-color: var(--pd-accent);
+  box-shadow: 0 0 0 3px rgba(var(--pd-accent-rgb), 0.25);
+}
+.hermes-kanban-trash {
+  border-radius: var(--pd-radius);
+  border-color: var(--pd-border-hi);
+}
+
+/* ---- Botones, campos y pestañas (elementos genéricos del panel) ------- */
+
+button,
+[role="button"] {
+  border-radius: 999px;
+}
+/* Botón primario de shadcn/Hermes: usa --color-primary (coral por colorOverrides) */
+button[class*="bg-primary"],
+[role="button"][class*="bg-primary"] {
+  background-image: var(--pd-gradient) !important;
+  border-color: transparent !important;
+  color: #fff !important;
+  font-weight: 600;
+  box-shadow: 0 6px 20px -8px rgba(var(--pd-accent-rgb), 0.6);
+}
+button[class*="bg-primary"]:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+input:not([type="checkbox"]):not([type="radio"]),
+select,
+textarea {
+  background-color: rgba(255, 255, 255, 0.04) !important;
+  border-color: var(--pd-border-hi) !important;
+  border-radius: 12px;
+  color: var(--pd-text);
+}
+input:focus,
+select:focus,
+textarea:focus {
+  border-color: var(--pd-accent) !important;
+  box-shadow: 0 0 0 3px rgba(var(--pd-accent-rgb), 0.25) !important;
+  outline: none;
+}
+[role="tab"][aria-selected="true"],
+[role="tab"][data-state="active"] {
+  color: var(--pd-accent) !important;
+  border-color: var(--pd-accent) !important;
+}
+a {
+  color: var(--pd-accent-2);
+}
+a:hover {
+  color: #ffb88c;
+}
+
+/* Cabeceras de tabla y filas con el mismo vidrio sutil */
+table {
+  border-collapse: separate;
+  border-spacing: 0;
+}
+th {
+  color: var(--pd-text-dim);
+  font-weight: 600;
+}
+td,
+th {
+  border-color: var(--pd-border) !important;
+}
+tr:hover td {
+  background: rgba(255, 255, 255, 0.025);
+}
+
+/* Preferencia de movimiento reducido: sin elevaciones animadas */
+@media (prefers-reduced-motion: reduce) {
+  .hermes-kanban-card,
+  .hermes-kanban-card:hover,
+  .hermes-kanban-drawer {
+    transition: none;
+    animation: none;
+    transform: none;
+  }
+}

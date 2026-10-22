@@ -616,7 +616,8 @@ class TaskNotices:
 
     def publish(self, tid: str, text: str, target=None, lane_target=None, *, alert: bool = False,
                 reply_markup: dict | None = None, mirror_to: str | None = None, channel: str | None = None,
-                leave_behind: Callable[[dict], str] | None = None, followup: list[str] | None = None) -> None:
+                leave_behind: Callable[[dict], str] | None = None, followup: list[str] | None = None,
+                keep_previous: bool = False) -> None:
         """`mirror_to`: chat (DM de Oscar) que recibe además una copia del aviso, con los mismos botones. Si el aviso
         principal ya cayó en ese chat, no se duplica.
 
@@ -673,7 +674,7 @@ class TaskNotices:
         if rec and same_bot and alert and not same_channel and leave_behind:
             # Cambio de canal (tema del carril -> Integración): el viejo queda como una línea con enlace al nuevo.
             trail = {k: rec.get(k) for k in ("chat_id", "thread_id", "message_id")}
-        elif rec and same_bot and alert:  # el aviso nuevo sustituye al mensaje de progreso: un mensaje por tarea
+        elif rec and same_bot and alert and not keep_previous:  # el aviso nuevo sustituye al mensaje de progreso: un mensaje por tarea
             try:
                 self.notifier.delete(rec["chat_id"], rec["message_id"])
             except Exception as exc:

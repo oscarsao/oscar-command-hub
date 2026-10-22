@@ -170,7 +170,7 @@ def test_register_commands_in_three_scopes_with_spanish_descriptions():
     assert set(bot.commands) == {"default", "all_private_chats", "all_group_chats"}
     names = [c for c, _ in bot.commands["all_group_chats"]]
     assert names == ["ajustes", "hoy", "integrador", "encolar", "decisiones", "atencion", "aprobar", "tareas", "cola", "prioridad", "tarea", "preparar", "hazlo", "pedir", "estado", "falta", "desplegar", "promover",
-                     "lote", "salud", "ram", "sesion", "flujo", "pendientes", "epicas", "retenidas", "backlog"]
+                     "lote", "al_dia", "aldia", "salud", "ram", "silenciar", "sesion", "flujo", "pendiente", "personal", "workflow", "pendientes", "epicas", "retenidas", "backlog"]
     assert all(d and len(d) <= 256 for _, d in bot.commands["default"])
 
 
@@ -411,12 +411,27 @@ def test_tareas_one_message_per_brand_filter(tmp_path):
     command(desk, "/tareas migrateam")
     [msg] = bot.sent
     assert "<b>claude-migrateam</b>" in msg["text"] and "claude-oscarhq" not in msg["text"]
-    assert "▶️ <a href=\"https://k/tasks/migrateam/t_run00001\">t_run00001</a> · Corre" in msg["text"]
-    assert "⏳ " in msg["text"]
+    assert "▶️ Corre · <code>t_run00001</code>\n/tarea t_run00001" in msg["text"]
+    assert "⏳ Espera · <code>t_rdy00001</code>\n/tarea t_rdy00001" in msg["text"]
+    assert msg["text"].index("En marcha") < msg["text"].index("t_run00001") < msg["text"].index("En cola") \
+        < msg["text"].index("t_rdy00001")
     command(desk, "/tareas", uid=2)
-    assert all(l in bot.sent[-1]["text"] for l in ("claude-migrateam", "claude-oscarhq", "claude-nextjobs"))
+    assert all(l in bot.sent[-1]["text"] for l in ("claude-migrateam", "claude-oscarhq"))  # los carriles sin nada no salen
     command(desk, "/tareas marte", uid=3)
     assert bot.sent[-1]["text"].startswith("Marca desconocida")
+
+
+def test_tareas_lists_whole_queue_and_paginates_without_cutting(tmp_path):
+    shows = {f"t_q{i:07d}": {"task": {"id": f"t_q{i:07d}", "title": f"Tarea larga número {i} " * 3,
+                                       "assignee": "claude-migrateam", "status": "ready"}} for i in range(120)}
+    cc, desk, bot, h, _ = center(tmp_path, shows)
+    command(desk, "/tareas migrateam")
+    assert len(bot.sent) > 1 and all(len(m["text"]) <= 4000 for m in bot.sent)
+    body = "\n".join(m["text"] for m in bot.sent)
+    assert "Nada en marcha." in body
+    for i in range(120):  # ni una recortada: cada una con su comando literal
+        assert f"\n/tarea t_q{i:07d}" in body
+    assert body.count("<b>") == body.count("</b>")
 
 
 def test_tarea_validates_id_and_shows_card_with_state_buttons(tmp_path):

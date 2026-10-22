@@ -113,6 +113,11 @@ class Reconciler:
         self.state = _State(Path(state_path))
         self.clock = clock
         self.lane_for = lane_for or (lambda board: "")
+        self.peer: Callable[[str], bool] | None = None  # LimpiezaRunner.silenciada: no proponer dos veces lo mismo
+
+    def silenciada(self, tid: str) -> bool:
+        """¿Ya propuesta o en «Mantener»? La consulta la limpieza para no duplicar propuestas."""
+        return self.state.data["kept"].get(tid, 0) > self.clock() or tid in self.state.data["proposed"]
 
     def _find(self, tid: str) -> tuple[str, dict] | None:
         for board in self.boards:
@@ -187,7 +192,7 @@ class Reconciler:
                     continue
                 for card in cards:
                     tid = card["id"]
-                    if self.state.data["kept"].get(tid, 0) > now or tid in self.state.data["proposed"]:
+                    if self.silenciada(tid) or (self.peer and self.peer(tid)):
                         continue
                     try:
                         show = h.show(tid)
