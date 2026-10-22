@@ -99,6 +99,9 @@ defaults:
     - "Bash(git commit:*)"
     - "Bash(git push:*)"
     - "Bash(py -3.12 -m pytest:*)"
+    # 22-10 (OK de Oscar): skills de usuario que los workers pueden invocar en -p (skills/README.md del hub).
+    - "Skill(integrar-lote)"
+    - "Skill(tarjeta-carril)"
   forbidden_paths:
     - .github/workflows/
 
