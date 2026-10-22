@@ -288,7 +288,10 @@ integrator:
       railway_project: 34da294f-afdf-47f9-8ea9-5ffe3551e8f0      # Oscar HQ
       railway_service: 8dcda4bf-5a6f-49f5-aa75-b0b38f82e9ed      # Oscar HQ
       railway_environment: 3236716d-c75a-41fe-b426-9953deb7e426  # production
-      health_url: https://oscar-hq-production.up.railway.app/api/health   # 2ª señal tras SUCCESS, nunca la única
+      # 22-10: el backend de Oscar HQ YA NO se despliega en Railway: corre en Dokploy en el servidor propio pildora-01
+      # (https://api.pildoradigital.com). Los railway_* de arriba se dejan intactos a propósito; el botón [🚀 Desplegar]
+      # (deploy: railway_up) se adaptará a Dokploy en otra tarea. Hasta entonces, no usarlo para Oscar HQ.
+      health_url: https://api.pildoradigital.com/api/health   # 2ª señal tras SUCCESS, nunca la única
     claude-migrateam:
       # 28-09: fusiona en develop, que DESPLIEGA STAGING solo (Railway staging + Vercel develop, alembic contra la BD
       # de staging). Nunca master: la promoción a producción es release/<fecha> con OK de Oscar, fuera del carril.
