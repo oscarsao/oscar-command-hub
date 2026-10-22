@@ -1,0 +1,23 @@
+# Choques entre tareas (agent_lanes/choques.py, entrega E1: SOLO AVISA, no frena ni encola). Se relee en cada pasada: no hace
+# falta reiniciar el runner. Lo que falte o no sea válido vale el default que se indica.
+activo: true                  # false = apagado (no barre ni avisa)
+minutos: 10                   # cada cuánto se barre
+fuentes:
+  tarjetas: true              # tarjetas activas de los tableros (con su rama lane/<id> si ya existe)
+  ramas_lane: true            # ramas remotas lane/* aún sin fusionar en la base
+  pr: true                    # PR abiertos (gh pr list); si gh falla se ignora
+  ramas_personas: true        # ramas remotas NO lane/* con commits recientes y sin fusionar (Angel, equipo…)
+ramas_personas_dias: 14       # antigüedad máxima del último commit de una rama de persona
+estados: [ready, todo, running, blocked]
+nivel: modulo                 # archivo = solo si comparten un fichero; modulo = también si comparten carpeta
+modulo_min_profundidad: 2
+max_unidades: 40              # unidades (ramas/tarjetas) que se comparan por repo (más = se recorta, no se cae)
+max_avisos: 6                 # avisos nuevos por pasada
+comparten_max: 5              # rutas compartidas que se citan
+# Contradicción de intención: si dos unidades de la misma zona casan un par (una dice A, la otra dice B) -> «revisar».
+# Cada par son expresiones regulares sobre título+cuerpo, en minúsculas. Nunca se resuelve solo.
+contradiccion:
+  patrones:
+    - [añad|agreg|crea|activ|habilit|introduc, quita|elimin|borra|desactiv|deshabilit|retira]
+    - [renombr, borra|elimin]
+    - [mueve|mover|trasl, deja en su sitio|no mover]
