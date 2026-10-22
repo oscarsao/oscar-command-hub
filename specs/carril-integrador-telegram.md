@@ -1,8 +1,9 @@
 # Spec-Lite · Carril integrador desde Telegram
 
-**Estado: PROPUESTA, pendiente del OK de Oscar.** Decisión de Oscar (22-10): lo que hoy hace el integrador desde la
+**Estado: APROBADA por Oscar (22-10): fases 1-2 ya hechas; variables: el valor lo introduce el aprobador en formulario local.** Decisión de Oscar (22-10): lo que hoy hace el integrador desde la
 consola de Claude Code debe poder hacerse desde Telegram con un carril integrador. Esta spec fija el diseño; el código
-de las fases 2-4 NO se ha escrito. Hecho ya: permiso `aprobar_produccion` en `people.yaml` (fase 0).
+de las fases 3-4 NO se ha escrito. Hecho ya: fase 0 (`people.yaml`) y fases 1-2 (`agent_lanes/acciones_prod.py`,
+`integrador_telegram.yaml`: registro, validadores, redacción, auditoría y nivel A con dobles; nivel B rechazado).
 
 ## Qué puede hacer (decisión de Oscar)
 | Nivel | Acciones | Cómo |
@@ -64,7 +65,6 @@ SQL con datos: solo hash y longitud. Las acciones A también se registran. El av
 - Riesgo: un aprobador (María/Angel) con "todas las marcas" para producción es más amplio que su `brands` de operador.
 - Tamaño: Pitch (~1-2 semanas por la fase 3 y la revisión de seguridad).
 
-## Preguntas para Oscar
-1. ¿OK a esta spec y a las fases 1-4 tal cual? (recomendada: sí, empezando por 1-2)
-2. ¿Variables de entorno: el valor lo introduce el aprobador en un formulario local (recomendada) o prefieres que
-   siga siendo solo por consola?
+## Decisiones de Oscar (22-10)
+1. OK a la spec; empezar por las fases 1-2.
+2. Variables de entorno: el valor lo introduce el aprobador en un formulario local, nunca el worker.
