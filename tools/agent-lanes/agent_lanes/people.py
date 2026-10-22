@@ -15,6 +15,7 @@ marca distinta o con un destino sin marca conocida se rechaza (falla cerrado). O
 from __future__ import annotations
 
 import logging
+import re
 import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -23,6 +24,7 @@ import yaml
 
 log = logging.getLogger("agent_lanes")
 
+_USERNAME_RE = re.compile(r"^[A-Za-z0-9_]{4,32}$")
 PEOPLE_FILE = Path(__file__).resolve().parents[2] / "telegram" / "people.yaml"
 
 CONSULTA, ESTADO, IDEA, CONTENIDO, CARRIL, PRODUCCION = "consulta", "estado", "idea", "contenido", "carril", "produccion"
@@ -56,6 +58,9 @@ class Person:
     brands: tuple = ()
     caps: frozenset = field(default_factory=frozenset)
     operador: bool = False  # people.yaml `operador: true`: mismo acceso que Oscar en el bot (comandos, botones, aprobaciones)
+    username: str = ""      # @usuario de Telegram sin @ (opcional): para mencionarlo en las tareas del equipo
+    tareas_equipo: bool = True   # `tareas_equipo: false` = no participa en /asignar (ni asignable ni avisos)
+    grupo_tareas: str = ""  # grupo (clave de lanes.yaml tareas_equipo.grupos) donde se publican sus tareas
 
     def can(self, cap: str) -> bool:
         return cap in self.caps
@@ -99,6 +104,10 @@ class People:
             return True
         wanted = norm_marca(marca)
         return bool(wanted) and wanted in {norm_marca(b) for b in self.lookup(user_id).brands}
+
+    def personas(self) -> list[Person]:
+        """Las personas de people.yaml (sin Oscar), en el orden del fichero."""
+        return list(self._by_id.values())
 
     def collaborator_ids(self) -> set[str]:
         return set(self._by_id)
@@ -151,6 +160,8 @@ def load_people(owner_id: str, path: Path | str | None = None) -> People:
         caps = BASE_CAPS[role] | (frozenset(str(c) for c in asked) & OPTIONAL_CAPS.get(role, frozenset()))
         brands = tuple(_clean(b) for b in (cfg.get("brands") or ()) if _clean(b)) if isinstance(
             cfg.get("brands"), (list, tuple)) else ()
+        username = _clean(cfg.get("username"), 32).lstrip("@")
         persons.append(Person(_clean(key), _clean(cfg.get("name") or key) or _clean(key), uid, role, brands, caps,
-                              cfg.get("operador") is True))
+                              cfg.get("operador") is True, username if _USERNAME_RE.match(username) else "",
+                              cfg.get("tareas_equipo") is not False, _clean(cfg.get("grupo_tareas"))))
     return People(owner_id, persons)

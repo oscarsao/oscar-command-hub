@@ -422,6 +422,7 @@ class DecisionDesk:
         self.promoter = None      # promote.Promoter: /promover y botones promo_* (producción de MigraTeam)
         self.commands = None      # CommandCenter: /hoy, /decisiones, /aprobar, /tareas, /tarea
         self.team_notice: dict | None = None  # telegram.team_notice de lanes.yaml (enabled, chats, text); None = apagado
+        self.equipo = None        # equipo.Equipo: /asignar, /tareas_equipo, /mis_tareas, /hecha y sus botones; None = apagado
         self.collab = None        # CollabIntake: DM de colaboradores (people.yaml) -> tarjeta [IDEA]; None = como antes
         self.people: People | None = None  # people.yaml; None = se lee la primera vez que hace falta (el runner lo fija)
         self._tl = threading.local()       # quién actúa en este hilo (nombre de un operador que no es Oscar)
@@ -654,6 +655,10 @@ class DecisionDesk:
         target = command_target(text, getattr(self.commands, "bot_username", None)) if is_cmd else None
         name = target[0] if target else None
         is_owner = self.es_operador((msg.get("from") or {}).get("id"))  # operador = Oscar o people.yaml `operador: true`
+        if self.equipo and self.equipo.wants(msg):  # tareas del equipo: lo usan también quienes no son operadores
+            self._log_update(chat.get("id"), kind, name, "respondido")
+            self._spawn(lambda: self.equipo.handle(msg))
+            return
         if self.collab and not is_owner and self.collab.claims(msg, self.owner_id):
             # DM privado de alguien que no es operador: nunca llega a los comandos ni a _reply (hermes: segundos).
             self._log_update(chat.get("id"), kind, None, "respondido")  # sin nombre: lo escribe un desconocido
@@ -767,6 +772,10 @@ class DecisionDesk:
         answer = self.notifier.answer_callback
         chat = ((cq.get("message") or {}).get("chat") or {}).get("id")
         actor = (cq.get("from") or {}).get("id")
+        if self.equipo and (cq.get("data") or "").startswith("eq:"):  # botones de tareas del equipo (no son de operador)
+            self._log_update(chat, "callback", "equipo", "respondido")
+            self._spawn(lambda: self.equipo.handle_callback(cq))
+            return
         if not self.es_operador(actor):
             answer(cq.get("id"), NOT_OWNER, alert=True)
             self._log_update(chat, "callback", None, "rechazado")

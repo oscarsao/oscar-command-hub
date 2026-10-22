@@ -170,7 +170,8 @@ def test_register_commands_in_three_scopes_with_spanish_descriptions():
     assert set(bot.commands) == {"default", "all_private_chats", "all_group_chats"}
     names = [c for c, _ in bot.commands["all_group_chats"]]
     assert names == ["ajustes", "hoy", "integrador", "encolar", "decisiones", "atencion", "aprobar", "tareas", "cola", "prioridad", "tarea", "preparar", "hazlo", "pedir", "estado", "falta", "desplegar", "promover",
-                     "lote", "salud", "ram", "sesion", "flujo", "pendientes", "epicas", "retenidas", "backlog"]
+                     "lote", "salud", "ram", "sesion", "flujo", "pendientes", "epicas", "retenidas", "backlog",
+                     "asignar", "tareas_equipo", "mis_tareas", "hecha"]
     assert all(d and len(d) <= 256 for _, d in bot.commands["default"])
 
 

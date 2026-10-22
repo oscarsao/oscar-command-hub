@@ -98,6 +98,10 @@ COMMANDS = (
     ("epicas", "Vista de épicas (fuera de la cola de decisiones)"),
     ("retenidas", "Vista de tarjetas retenidas"),
     ("backlog", "Vista del backlog del bot del equipo"),
+    ("asignar", "Tarea para alguien del equipo: /asignar @persona Título | detalle [!alta] [para:dd-mm]"),
+    ("tareas_equipo", "Tareas abiertas del equipo, por persona"),
+    ("mis_tareas", "Las tareas del equipo que tienes asignadas"),
+    ("hecha", "Cierra una tarea del equipo: /hecha t_xxx"),
 )
 COMMAND_SCOPES = ("default", "all_private_chats", "all_group_chats")
 HELP_ALIASES = ("start", "ayuda", "help")
@@ -381,7 +385,20 @@ class CommandCenter:
         return ("Comandos del bot de trabajos:\n" + "\n".join(f"/{c} · {d}" for c, d in COMMANDS)
                 + "\n\nCon /hazlo la tarea se crea ya, con prioridad alta y tope de 15 minutos; te aviso al terminar."
                 + "\nCon /sesion abres una sesión: lo que escribas aquí se acumula y /sesion fin lo agrupa en UNA tarjeta."
-                + "\n/desplegar pide dos toques (🚀 y ✅ Sí); /promover también pide doble confirmación.")
+                + "\n/desplegar pide dos toques (🚀 y ✅ Sí); /promover también pide doble confirmación."
+                + "\nTareas del equipo: /asignar @persona Título | detalle (opcional !alta y para:dd-mm), "
+                  "/tareas_equipo, /mis_tareas y /hecha t_xxx; también con los botones del aviso.")
+
+    def _equipo_apagado(self, where, args, brand):
+        self._send(where, "Las tareas del equipo no están activas (falta el bloque tareas_equipo en lanes.yaml).",
+                   html=False)
+
+    cmd_asignar = cmd_tareas_equipo = cmd_mis_tareas = cmd_hecha = _equipo_apagado  # los atiende equipo.Equipo
+
+    def equipo_tick(self):
+        """Recordatorio diario de las tareas del equipo (lo cuelga veto_tick, que ya late cada minuto)."""
+        equipo = getattr(self.desk, "equipo", None)
+        return equipo.tick() if equipo else None
 
     # --- datos ----------------------------------------------------------------------------------------
 
@@ -948,7 +965,7 @@ class CommandCenter:
             self.urgent_tick()
         except Exception as exc:
             log.warning("avisos urgentes: %s", exc)
-        for tick in (self.guard_tick, self.daily_tick, self.peticiones_tick):  # cola del integrador y partes de las 9:00
+        for tick in (self.guard_tick, self.daily_tick, self.peticiones_tick, self.equipo_tick):  # cola del integrador y partes de las 9:00
             try:
                 tick()
             except Exception as exc:

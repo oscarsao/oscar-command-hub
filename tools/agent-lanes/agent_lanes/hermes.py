@@ -347,6 +347,13 @@ class HermesCLI:
             raise HermesError(f"list failed: {cp.stderr.strip()[:300]}")
         return json.loads(cp.stdout or "[]")
 
+    def list_board(self) -> list[dict]:
+        """Todas las tarjetas del tablero, de cualquier estado y assignee (tablero «equipo»: el que filtra es el llamador)."""
+        cp = self._call("list", "--json")
+        if cp.returncode != 0:
+            raise HermesError(f"list failed: {cp.stderr.strip()[:300]}")
+        return json.loads(cp.stdout or "[]")
+
     def list_ready(self, assignee: str) -> list[dict]:
         return self.list_status(assignee, "ready")
 

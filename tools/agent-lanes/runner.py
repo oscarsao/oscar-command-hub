@@ -22,6 +22,7 @@ from agent_lanes.config import (ROOT, load_env, load_lanes, load_notice_limits, 
 from agent_lanes.commands import CommandCenter, register_commands
 from agent_lanes.collab_intake import CollabIntake
 from agent_lanes.people import load_people
+from agent_lanes.equipo import Equipo, load_equipo_config
 from agent_lanes.decisions import CALLBACKS_DIR, OWNER_TELEGRAM_ID, CallbackStore, DecisionDesk, UpdatePoller
 from agent_lanes import explain
 from agent_lanes.deps import ShowCache, TreeReader
@@ -48,6 +49,7 @@ TG_OFFSET = ROOT / ".state" / "tg_offset"      # offset de getUpdates del bot de
 REMINDERS_STATE = ROOT / ".state" / "reminders.json"  # franjas 13:00/18:00 ya enviadas
 STUCK_STATE = ROOT / ".state" / "stuck_avisos.json"  # avisos de 🧊 atascadas ya enviados (tarjeta:estado:ronda)
 COLLAB_STATE = ROOT / ".state" / "collab_reject.json"  # DM de desconocidos ya rechazados (1 cada 6 h)
+EQUIPO_STATE = ROOT / ".state" / "equipo.json"  # tareas del equipo: mensajes recordados y recordatorio diario
 
 
 def effective_max_workers(arg: int, settings: dict) -> int:
@@ -121,6 +123,12 @@ def main(argv: list[str] | None = None) -> int:
         decisions.commands = commands
         decisions.team_notice = tg_settings.get("team_notice") or None
         decisions.collab = CollabIntake(notify, load_people(owner), hermes_for=hermes_for, state_path=COLLAB_STATE)
+        # Tareas del equipo (tablero «equipo», fuera de los carriles): apagado si lanes.yaml no trae `tareas_equipo:`.
+        team_cfg = load_equipo_config(lane_boards=[l.board for l in all_lanes.values()])
+        if team_cfg.activo:
+            decisions.equipo = Equipo(notify, hermes_for(team_cfg.tablero), load_people(owner), team_cfg, owner_id=owner,
+                                      state_path=EQUIPO_STATE, bot_username=username)
+            log.info("tareas del equipo activas (tablero %s)", team_cfg.tablero)
         log.info("comandos del bot registrados en: %s", register_commands(notify))
         UpdatePoller(notify, decisions, TG_OFFSET).start()
         watch = None
