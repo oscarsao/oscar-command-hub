@@ -314,3 +314,16 @@ Oscar HQ y NextJobs corren en el servidor pildora-01 (Hetzner) con Dokploy; Migr
 - **Silenciar el ruido de Vercel** (lo haces tú en el panel; no hay código): *Project → Settings → Git → Pull Request
   Comments → off* (por proyecto) y *Account → Notifications → Deployments* → deja solo los de producción
   (desmarca vistas previas / «Preview Deployments»).
+
+## Clasificador de tarjetas y tipo «consulta»
+
+- **Clasificador** (`agent_lanes/clasificador.py`, reglas como datos en `clasificador.yaml`, se leen en cada pasada): antes
+  de lanzar al worker, si la tarjeta pide producción/variables de entorno, SQL remoto (Supabase/Alembic), escribir fuera
+  del worktree (`~/.hermes`), instalar binarios u otro repo distinto del carril, el runner la deja en la cola del
+  integrador (`/integrador`, mismo bloqueo `LIMITACION-GUARD`) con aviso, sin gastar una ejecución. Si menciona la rama de
+  otra tarea (`lane/t_…`) sin línea `Rama-origen:`, avisa a Oscar y al worker (parte de la base). `/pedir` y `/hazlo`
+  avisan ya al crear. No reclasifica si ya hay respuesta de Oscar, nota del coordinador o revisión. Salida de emergencia:
+  línea `Clasificador: omitir` en el cuerpo.
+- **Consulta** (`Tipo: consulta` en el cuerpo o título `[Consulta] …`; `/pedir` ofrece el botón «❓ Solo una pregunta»): sin
+  rama, sin worktree y sin verificación mecánica. El carril responde con `claude -p` de SOLO LECTURA (`Read,Grep,Glob`) en
+  el checkout de su repo, deja la respuesta como comentario y completa la tarjeta (`agent_lanes/consulta.py`).

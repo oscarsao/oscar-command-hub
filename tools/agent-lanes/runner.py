@@ -150,7 +150,7 @@ def main(argv: list[str] | None = None) -> int:
     # Candado de repos: un carril de código solo reclama si el remote de su repo es el `github:` de lanes.yaml.
     runners: list = [LaneRunner(l, hermes=hermes_for(l.board), git=git, worker=ClaudeWorker(pid_dir=STATE_DIR),
                                 verifier=verify, notify=notify, exclude=set(args.exclude), messages=messages, links=links,
-                                decisions=decisions, tree=tree, repo_guard=github_slug_problem)
+                                decisions=decisions, tree=tree, repo_guard=github_slug_problem, lanes=all_lanes)
                      for l in impl.values()]
     # Carril ops: sin repo. Carpeta de trabajo por tarea + verificación por evidencias; siempre acaba en review para
     # Oscar (no está en `review.reviews`, y sweep_done no lo toca: el workspace se conserva).

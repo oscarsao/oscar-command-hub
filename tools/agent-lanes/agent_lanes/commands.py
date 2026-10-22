@@ -62,6 +62,7 @@ from typing import Callable
 from urllib.parse import urlsplit
 
 from . import bandeja as _bandeja
+from . import clasificador
 from . import lo_tuyo as _lo_tuyo
 from . import personal as _personal
 from . import tipo_peticion, titulos
@@ -1274,7 +1275,13 @@ class CommandCenter:
         tid = self.hermes_for(lane.board).create(truncate(text.splitlines()[0], HAZLO_TITLE_MAX), body, lane_name,
                                                  priority=HAZLO_PRIORITY, key=key, created_by="oscar")
         return (f"✅ Creada <code>{html.escape(tid)}</code> en {html.escape(lane_name)} · prioridad alta, tope "
-                f"{HAZLO_MINUTES} min. Te aviso al terminar.")
+                f"{HAZLO_MINUTES} min. Te aviso al terminar." + self._aviso_clasificador(lane, title_body=(text, body)))
+
+    def _aviso_clasificador(self, lane, *, title_body: tuple[str, str]) -> str:
+        """Aviso (HTML) de que un carril no podrá con la tarjeta recién creada; '' si puede. Ver clasificador.py."""
+        title, body = title_body
+        verdict = clasificador.evaluar(lane, {"title": title, "body": body}, lanes=self.lanes)
+        return html.escape(clasificador.aviso_creacion(verdict))
 
     def hazlo_choice(self, rec: dict, button: dict, where: dict) -> bool:
         """Botón de carril de un /hazlo con duda. True = hecho (tarjeta creada o cancelado); False = fallo (vuelven
@@ -1316,9 +1323,12 @@ class CommandCenter:
         board, assignee = (self.lanes[lane].board, lane) if lane in self.lanes else ("default", OSCAR_ASSIGNEE)
         key = tipo_peticion.card_key(st["confirmado_por"], tuple(st["where"]), st["texto"], self._now())
         tid = self.hermes_for(board).create(title, body, assignee, priority=priority, key=key, created_by="oscar")
+        aviso = "" if st["tipo"] == "consulta" or lane not in self.lanes else self._aviso_clasificador(
+            self.lanes[lane], title_body=(title, body))
         return (f"✅ Creada <code>{html.escape(tid)}</code> en {html.escape(assignee)} · "
                 f"{html.escape(st['tipo'])}" + (f" {html.escape(st['urgencia'])}" if st.get("urgencia") else "")
-                + ". Te aviso al terminar.")
+                + (". Te respondo en un comentario, sin rama." if st["tipo"] == "consulta" else ". Te aviso al terminar.")
+                + aviso)
 
     # --- /sesion --------------------------------------------------------------------------------------
 
