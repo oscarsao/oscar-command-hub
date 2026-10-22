@@ -46,7 +46,7 @@ TOPICS = {
     "-1004277259008": {None: "General", "1": "General", "74": "Planificación", "77": "MigraTeam", "80": "Píldora",
                        "83": "Recursos"},
 }
-HEALTH = {"Oscar HQ": "https://oscar-hq-production.up.railway.app/api/health",
+HEALTH = {"Oscar HQ": "https://api.pildoradigital.com/api/health",  # 22-10: fuera de Railway (Dokploy, pildora-01)
           "MigraTeam": "https://ocr-pdf-and-images-production.up.railway.app/health",
           "Panel kanban": "https://kanban.pildoradigital.com/kanban",
           "Dashboard local": "http://127.0.0.1:9119/"}
@@ -377,8 +377,8 @@ class Monitor:
             ok = 200 <= code < 400 or (name == "Panel kanban" and code in (302, 401, 403))
             limited = code == 429  # vivo pero limitando peticiones: no es una caída
             self.health[name] = f"{'✅' if ok else ('🟡' if limited else '❌')} {code or 'sin respuesta'}"
-            fixes = {"Oscar HQ": "mira el último deploy en railway.app → Oscar HQ → Deployments (si falló, "
-                                 "pulsa Redeploy del anterior) y dime qué ves.",
+            fixes = {"Oscar HQ": "mira el último deploy en Dokploy (servidor pildora-01) → Oscar HQ → Deployments "
+                                 "(si falló, redespliega el anterior) y dime qué ves.",
                      "MigraTeam": "¡producción! mira railway.app → MigraTeam → Deployments y los logs; si es un "
                                   "deploy reciente, avísame para revertirlo.",
                      "Panel kanban": "el túnel de Cloudflare o el dashboard de Hermes: en el PC, servicios → "
