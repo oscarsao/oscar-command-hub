@@ -1,6 +1,7 @@
 # Carpetas de MigraTeam y Píldora en Google Drive: inventario y propuesta (22-10-2026)
 
-> Fase 1: solo inventario y propuesta. No se ha movido, copiado, borrado ni compartido nada.
+> Fase 1: solo inventario y propuesta. **Fase 2 hecha el 22-10** (ver sección 4): estructura creada, carpetas
+> movidas y lo local subido. No se ha compartido ni borrado nada.
 > Decisión de Oscar (22-10, botones): las carpetas viven en **su Mi unidad (oscarsao20)** y se comparten con el
 > equipo. Quiere sincronización en los dos sentidos con su PC («si subo algo ahí se sube a la nube y viceversa»).
 
@@ -136,3 +137,85 @@ Correos: los de `ohq_users` (gmail salvo César, mnee.es). Compartir por carpeta
 
 Fase 2 (con OK): mover con «Mover» de Drive en el orden de la tabla, subir lo local (Pildora-Assets, Downloads), compartir
 según la matriz, y marcar sin conexión.
+
+## 4. Fase 2 — Hecho (22-10-2026, OK de Oscar con botones)
+
+Decisiones: estructura «Sí, así»; sincronizar «las 2 carpetas sin conexión»; accesos «la ajusto yo» (no se ha
+compartido nada); Oscar HQ → Drive «más adelante» (no hecho).
+
+**Estructura creada:** `G:\Mi unidad\MigraTeam\` (Comercial, Marketing\Imágenes, Marketing\Referencias,
+Documentación, Clientes, Entregables generados, Legal-producto, Investigación) y `G:\Mi unidad\Píldora Digital\`
+(Comercial, Marketing\Imágenes, Marketing\Referencias, Documentación, Clientes\Multiverse, Entregables generados).
+
+**Movido dentro de Drive (61 elementos, «Mover», conserva enlaces):** listado completo origen→destino en
+[`drive-fase2-movimientos-2026-10-22.tsv`](drive-fase2-movimientos-2026-10-22.tsv). Resumen:
+
+| Origen | Destino |
+|---|---|
+| `MIGRATEAM 2027\IMAGENES MIGRATEAM` | `MigraTeam\Marketing\Imágenes\` |
+| `MIGRATEAM 2027\Investigaciones…`, `RESIDENCIAS` | `MigraTeam\Investigación\` |
+| `documentacion migrateam\00…04, 06` | `MigraTeam\Documentación\documentacion migrateam\` |
+| `documentacion migrateam\05_LEGAL_OPERACIONES\{deploy, manual, rgpd}` | `MigraTeam\Legal-producto\` |
+| Sueltos: auditorías DocketWise (×6), Auditoría de todo Migrateam, Cambios (×2), smoke | `MigraTeam\Documentación\` |
+| Sueltos: Análisis Migratorio, Directorios Abogados | `MigraTeam\Comercial\` |
+| Sueltos: Immigration Tech EE.UU. (×2), Trámites EE.UU. (×2) | `MigraTeam\Investigación\` |
+| `Pildora Digital 2026\Pildora Digital\comercial` | `Píldora Digital\Comercial\` |
+| `…\Pildora Digital\{ads, assets, content, marketing, Logos, VIEJO}` | `Píldora Digital\Marketing\` |
+| `…\Pildora Digital\{audits, reports, brain}` | `Píldora Digital\Documentación\` |
+| `Pildora Digital 2026\{CLAUDE.md, CLAUDE (1).md, Transcripción 1ra reunión}` | `Píldora Digital\Documentación\Pildora Digital 2026\` |
+| `Pildora Digital 2026\Multiverse\*` (salvo privados) | `Píldora Digital\Clientes\Multiverse\` |
+| `pildora-digital\plantillas` | `Píldora Digital\Marketing\Imágenes\` |
+| `Pildora Digital V4 design.zip` | `Píldora Digital\Marketing\Referencias\` |
+
+**Se quedan donde estaban (privados, no movidos):** `documentacion migrateam\05_LEGAL_OPERACIONES\legal`;
+`Pildora Digital 2026\Multiverse\Contratos`, `Invoice_PD _25010.pdf` y `Multiverse - Invoice (Proforma).docx/.pdf`;
+todo lo LLC/bancario/personal de la raíz y la carpeta prohibida. Las carpetas antiguas (`MIGRATEAM 2027`,
+`pildora-digital`, `Pildora Digital 2026\Pildora Digital`) quedan vacías y NO se han borrado (Oscar decide).
+
+**Subido desde el PC (copia; los originales locales siguen intactos), verificado recuento y tamaño = origen:**
+
+| Origen local | Destino | Archivos |
+|---|---|---|
+| `Pildora-Assets\banco-imagenes-drive` (sin lo de MigraTeam) | `Píldora Digital\Marketing\Imágenes\banco-imagenes-drive\` | 303 (445 MB) |
+| `banco-imagenes-drive\MigraTeam` + `MigraTeam-Branding-Oficial` + subcarpetas `migrateam` de `Generadas-*` | `MigraTeam\Marketing\Imágenes\banco-imagenes-drive\` | 160 + 22 + 68 |
+| `Downloads\IMAGENES MIGRATEAM` | `MigraTeam\Marketing\Imágenes\Descargas IMAGENES MIGRATEAM\` | 44 |
+| `Downloads\IMAGENES cHATGPT` (17 de Píldora) | `Píldora Digital\Marketing\Imágenes\IMAGENES cHATGPT\` | 17 |
+| `Downloads\IMAGENES cHATGPT` (`…042`, `…045`, MigraTeam) | `MigraTeam\Marketing\Imágenes\IMAGENES cHATGPT\` | 2 |
+| `Documents\MigraTeam-Presentacion-Comercial.pdf` | `MigraTeam\Comercial\` | 1 |
+
+Notas: un `.docx` de `MigraTeam\6_Legacy_Research` tenía un espacio al inicio del nombre (Drive no lo admite) y se
+subió sin ese espacio. `Escritorio-Hermes-Generadas\_categorizado\migrateam_*` quedó en el lado de Píldora (está
+dentro del banco de Píldora); se puede mover a MigraTeam si Oscar quiere. `IMAGENES cHATGPT` es idéntica a
+`banco-imagenes-drive\Pildora-ChatGPT-Referencias` (mismas 19 imágenes por hash).
+
+**Duplicados «(1)» (no borrados; decide Oscar):**
+- `MigraTeam\Investigación\Auditoría Immigration Tech EE.UU. para España (1).gdoc`
+- `MigraTeam\Investigación\Trámites Migratorios de EE. UU. (1).gdoc`
+- `MigraTeam\Investigación\RESIDENCIAS\RESIDENCIAS\NACIONALIDAD\Requisitos Nacionalidad Residencia (1).pdf`
+- `Píldora Digital\Documentación\Pildora Digital 2026\CLAUDE (1).md`
+- `Píldora Digital\Clientes\Multiverse\Multiverse - Pitch Deck (… original sin revisar) (1).pdf`
+- `Píldora Digital\Clientes\Multiverse\Multiverse - Propuesta comercial v5 (1).pdf`
+- `6014764994546830606 (1).jpg` en `banco-imagenes-drive\Pildora-ChatGPT-Referencias` y en `IMAGENES cHATGPT`
+
+**«Disponible sin conexión»: pendiente de Oscar (no se puede por script).** `G:` es una unidad virtual de Drive
+para escritorio y el atributo de anclado (`attrib +P`) no se aplica. Pasos: Explorador → `G:\Mi unidad` → clic
+derecho en `MigraTeam` → «Acceso sin conexión» (u «Opciones de Drive») → «Disponible sin conexión»; repetir con
+`Píldora Digital`. Ocupa ~1,6 GB en disco.
+
+## 5. Accesos — tabla para que Oscar la ajuste (NO compartido todavía)
+
+Edita la columna «Rol» (Editor / Comentador / Lector / —). Correos de `ohq_users` (Oscar HQ). Compartir por carpeta.
+
+| Persona | Correo | Carpeta | Rol propuesto | Rol final (Oscar) |
+|---|---|---|---|---|
+| Ingerber (CMO Píldora) | ingerber.azuaje@gmail.com | `Píldora Digital` (todo) | Editor | |
+| Andrea (marketing) | requenaanden@gmail.com | `Píldora Digital\Marketing` | Editor | |
+| Angel (desarrollo) | granadoangelv@gmail.com | `MigraTeam\Documentación` | Lector | |
+| Angel (desarrollo) | granadoangelv@gmail.com | `Píldora Digital\Documentación` | Lector | |
+| María (socia, Gestión) | pildoradigital@gmail.com (usuario «Admin») | `MigraTeam` y `Píldora Digital` | Editor | |
+| Linda (COO) | lindabernal@gmail.com | `MigraTeam` y `Píldora Digital` | Lector | |
+| César (mnee.es) | cesar@mnee.es | — | — | |
+| Cuenta empresa | oscar@pildoradigital.com | `MigraTeam` y `Píldora Digital` | Editor (opcional) | |
+
+`Clientes\Multiverse` contiene propuestas y documentos técnicos del cliente: revisar antes de dar acceso a quien no
+lleve esa cuenta.
