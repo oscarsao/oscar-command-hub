@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Callable
 
 from . import bloqueos
+from . import deps
 from . import proc as _proc
 from .config import ROOT, Lane
 from .hermes import GUARD_LIMIT_MARK, looks_like_guard_limit
@@ -132,6 +133,7 @@ class LaneRunner:
         self._active: dict[str, dict] = {}  # tid -> task being processed (for notice routing)
         self._preflighted: set[str] = set()  # tareas ya avisadas por el chequeo previo (una vez por arranque)
         self._subs_dropped: set[str] = set()  # tareas con la suscripción de Hermes ya quitada (listado o claim)
+        self._held: set[str] = set()  # tareas retenidas por «Esperar a…» (se registra una sola vez)
         self._reasked: set[str] = set()  # tareas relanzadas UNA vez porque el worker repitió una pregunta ya respondida
 
     def notify(self, state: str, tid: str, task: dict | None, status: str, *, alert: bool = False,
@@ -240,9 +242,31 @@ class LaneRunner:
                     self._repo_warned = True
                 return []
         ready = [t for t in self.hermes.list_ready(self.lane.name) if t["id"] not in self.exclude]
+        ready = [t for t in ready if not self._dependency_hold(t["id"])]
         for t in ready:  # antes del claim: el notificador de Hermes ya duplicó un aviso en la ventana claim -> baja
             self._drop_hermes_subs(t["id"])
         return [(t["id"], lambda t=t: self.process(t)) for t in ready[: self.lane.max_parallel]]
+
+    def _dependency_hold(self, tid: str) -> bool:
+        """«Esperar a…» de Oscar (deps.WAIT_PREFIX): la tarjeta no se reclama mientras la dependencia siga pendiente.
+        Al resolverse (hecha o fusionada) se reencola sola con un comentario, una vez. Sin poder leer la tarjeta no se
+        retiene (el claim y el worker siguen su camino de siempre)."""
+        try:
+            show = self.hermes.show(tid) or {}
+            waiting = deps.waiting_on(self.hermes, show)
+            if waiting:
+                if tid not in self._held:
+                    log.info("%s: %s; no se reclama", tid, deps.waiting_line(waiting))
+                    self._held.add(tid)
+                return True
+            self._held.discard(tid)
+            if deps.resolution_unannounced(show):
+                waited = ", ".join(deps.declared_waits(show))
+                self.hermes.comment(tid, f"{deps.WAIT_RESOLVED_PREFIX} {waited}: hecha o fusionada; la tarjeta vuelve al "
+                                         "carril sola")
+        except Exception as exc:
+            log.info("%s: dependencias no leídas: %s", tid, exc)
+        return False
 
     def run_once(self) -> dict[str, str]:
         """One pass, sequential. Returns {task_id: outcome}."""
