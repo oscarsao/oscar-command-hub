@@ -23,7 +23,7 @@ from agent_lanes.commands import CommandCenter, register_commands
 from agent_lanes.collab_intake import CollabIntake
 from agent_lanes.people import load_people
 from agent_lanes.decisions import CALLBACKS_DIR, OWNER_TELEGRAM_ID, CallbackStore, DecisionDesk, UpdatePoller
-from agent_lanes import explain
+from agent_lanes import explain, triaje
 from agent_lanes.deps import ShowCache, TreeReader
 from agent_lanes.hermes_answers import HermesAnswers
 from agent_lanes.reminders import Reminders
@@ -117,7 +117,8 @@ def main(argv: list[str] | None = None) -> int:
             log.warning("getMe falló (los comandos con @sufijo no se reconocerán): %s", exc)
         commands = CommandCenter(notify, decisions, lanes=all_lanes, hermes_for=hermes_for, messages=messages,
                                  links=links, generic_origins=tg_settings["generic_origins"], bot_username=username,
-                                 owner_id=owner, bandeja=load_bandeja(), asker=explain.answer)
+                                 owner_id=owner, bandeja=load_bandeja(), asker=explain.answer,
+                                 classifier=triaje.clasificar)
         decisions.commands = commands
         decisions.team_notice = tg_settings.get("team_notice") or None
         decisions.collab = CollabIntake(notify, load_people(owner), hermes_for=hermes_for, state_path=COLLAB_STATE)

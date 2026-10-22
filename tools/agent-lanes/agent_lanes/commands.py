@@ -57,10 +57,10 @@ from typing import Callable
 from urllib.parse import urlsplit
 
 from . import bandeja as _bandeja
-from . import tipo_peticion, titulos
+from . import tipo_peticion, titulos, triaje, workflows
 from .aviso import UrgentBlockWatcher, mention
 from .card_options import PREPARED_AUTHOR, PREPARED_PREFIX, CardSpec, card_message, parse_card
-from .decisions import DEPLOY_ASK, DEPLOY_NO, FALTA, FLUJO, HAZLO, OWNER_TELEGRAM_ID
+from .decisions import DEPLOY_ASK, DEPLOY_NO, FALTA, FLUJO, HAZLO, OWNER_TELEGRAM_ID, TRIAJE, WORKFLOW
 from .deps import (ShowCache, child_bucket, dependency_order, family, pending_parents, tree_lines,
                    waiting_line)
 from .notices import (BOARD_BRANDS, BRANDS, DECISION_CARD_STATUSES, OSCAR_ASSIGNEE, TEXT_MAX, card_url,
@@ -94,6 +94,7 @@ COMMANDS = (
     ("ram", "Consumo de RAM ahora y qué procesos más gastan"),
     ("sesion", "Correcciones agrupadas: /sesion [nombre] abre; fin | cancelar | estado"),
     ("flujo", "Una petición -> cadena de hasta 8 tarjetas (se crean al pulsar): /flujo <texto>"),
+    ("workflow", "Trabajo largo: plan y coste, nada se crea hasta aprobar: /workflow <texto>"),
     ("pendientes", "Tus pendientes (pasos «tuyo» y «decidir») con botones"),
     ("epicas", "Vista de épicas (fuera de la cola de decisiones)"),
     ("retenidas", "Vista de tarjetas retenidas"),
@@ -104,7 +105,7 @@ HELP_ALIASES = ("start", "ayuda", "help")
 NOT_OWNER = ("Este comando es solo para operadores. Pide a Oscar o a María que lo haga, o escribe tu petición en "
              "texto libre y se la paso")
 # Comandos sin marca clara o con efecto directo en repos/sesiones de Oscar: un operador acotado por marca no los usa.
-SOLO_TODAS_LAS_MARCAS = ("integrador", "encolar", "preparar", "pedir", "sesion", "flujo", "ajustes")
+SOLO_TODAS_LAS_MARCAS = ("integrador", "encolar", "preparar", "pedir", "sesion", "flujo", "workflow", "ajustes")
 BRAND_ARGS = {"migrateam": "MigraTeam", "pildora": "Píldora", "píldora": "Píldora", "nextjobs": "NextJobs"}
 TASK_ID_RE = re.compile(r"^t_[0-9a-f]{8}$")
 STATUS_TEXT = {"running": ("running", "en curso"), "ready": ("ready", "en cola"), "review": ("review", "en review"),
@@ -258,7 +259,9 @@ class CommandCenter:
                  health: Callable[[], str] | None = None, preparer: Callable[[dict], str | None] | None = None,
                  sesiones=None, suggester: Callable[[dict], dict | None] | None = None,
                  flow_planner: Callable[[str, dict], list[dict]] | None = None,
-                 bandeja: _bandeja.Bandeja | None = None, asker: Callable[[str, str], str | None] | None = None):
+                 bandeja: _bandeja.Bandeja | None = None, asker: Callable[[str, str], str | None] | None = None,
+                 classifier: Callable[[str, dict], str] | None = None, triaje_cfg: dict | None = None,
+                 workflow_store: workflows.Store | None = None):
         self.bandeja = bandeja or _bandeja.Bandeja()  # umbrales de la bandeja (bandeja.yaml; el runner pasa load())
         self.notifier = notifier
         self.desk = desk
@@ -280,6 +283,9 @@ class CommandCenter:
         self._suggester = suggester  # /sesion fin: sesión -> {sección: [viñetas]} (None = sesion.suggest)
         self._asker = asker  # texto libre del DM: (pregunta, estado) -> respuesta (explain.answer); None = solo la ayuda
         self._ask_lock = threading.Lock()  # una pregunta libre a la vez (cada una cuesta una llamada a haiku)
+        self._classifier = classifier  # entrada inteligente: (texto, cfg) -> categoría de triaje.py (None = triaje apagado)
+        self._triaje_cfg = triaje_cfg  # triaje.yaml ya cargado (None = se lee en cada texto: editable en caliente)
+        self._workflow_store = workflow_store  # /workflow: workflows.Store (None = .state/workflows.json)
         self._health = health  # /salud: texto HTML ya montado (tests); None = health.build con lo real
         self._tipo = None  # /pedir: tipo_peticion.TipoPeticion (perezoso); `peticiones` = registro de A1, si lo hay
         self.peticiones = None
@@ -381,7 +387,11 @@ class CommandCenter:
         return ("Comandos del bot de trabajos:\n" + "\n".join(f"/{c} · {d}" for c, d in COMMANDS)
                 + "\n\nCon /hazlo la tarea se crea ya, con prioridad alta y tope de 15 minutos; te aviso al terminar."
                 + "\nCon /sesion abres una sesión: lo que escribas aquí se acumula y /sesion fin lo agrupa en UNA tarjeta."
-                + "\n/desplegar pide dos toques (🚀 y ✅ Sí); /promover también pide doble confirmación.")
+                + "\n/desplegar pide dos toques (🚀 y ✅ Sí); /promover también pide doble confirmación."
+                + "\n\nSi me escribes en texto libre: una pregunta se responde con datos reales (sin crear nada); un "
+                  "trabajo pequeño lleva 2-4 preguntas con botones y luego se crea (⚡ Créala ya salta las preguntas); "
+                  "uno largo te propone /workflow (plan y coste; nada se crea hasta aprobar); lo de producción, SQL "
+                  "u otro repo va al integrador.")
 
     # --- datos ----------------------------------------------------------------------------------------
 
@@ -1356,6 +1366,226 @@ class CommandCenter:
         self.notifier.edit(where["chat_id"], where["message_id"], head + "\n" + "\n".join(lines), html=False)
         return not failed
 
+    # --- entrada inteligente (triaje.py) ---------------------------------------------------------------
+
+    @staticmethod
+    def _tbtn(text: str, index: int) -> dict:
+        return {"text": text, "action": TRIAJE, "index": index}
+
+    def triaje_route(self, where, text: str, cat: str, cfg: dict) -> None:
+        """Qué hace el bot con un texto ya clasificado. Aquí no se crea ninguna tarjeta: solo se pregunta o se propone."""
+        t = cfg["textos"]
+        brand = scope_brand(where[0], where[1], self.lanes, self.generic_origins)
+        base = {"task_id": "triaje", "board": "", "lane": "", "kind": "triaje", "text": text,
+                "origin": [where[0], where[1]], "answers": [], "step": 0}
+        if cat == triaje.GRANDE:
+            rec = dict(base, stage="grande")
+            spec = [[self._tbtn(t["boton_workflow"], -3)], [self._tbtn(t["boton_pequena"], -4)],
+                    [self._tbtn(t["boton_cancelar"], -1)]]
+            self._send(where, t["propone_workflow"] + "\n\n" + truncate(text, 300), html=False,
+                       markup=self.desk.store.issue(rec, spec)[1])
+        elif cat == triaje.NO_CARRIL:
+            rec = dict(base, stage="integrador")
+            spec = [[self._tbtn(t["boton_integrador"], -7), self._tbtn(t["boton_cancelar"], -1)]]
+            self._send(where, t["no_carril"] + "\n\n" + truncate(text, 300), html=False,
+                       markup=self.desk.store.issue(rec, spec)[1])
+        else:
+            self._triaje_small(where, base, brand, cfg)
+
+    def _triaje_cards(self, boards: list[str]) -> list[dict]:
+        """Tarjetas abiertas y hechas de los tableros dados (para detectar duplicados). Un fallo de lectura = sin dato."""
+        out: list[dict] = []
+        for board in boards:
+            try:
+                h = self.hermes_for(board)
+                for status in ("triage", "todo", "ready", "running", "blocked", "review", "done"):
+                    out += list(h.list_status_all(status))
+            except Exception as exc:
+                log.warning("triaje: no pude leer el tablero %s: %s", board, type(exc).__name__)
+        return out
+
+    def _triaje_small(self, where, rec: dict, brand: str | None, cfg: dict) -> None:
+        text, t = rec["text"], cfg["textos"]
+        lane = self.infer_lane(text, brand)
+        names = [lane] if lane else ([n for n in self._implement_lanes() if not brand or BRANDS.get(n) == brand]
+                                     or self._implement_lanes())
+        qs = triaje.preguntas(cfg, lanes=None if lane else names)
+        rec = dict(rec, lane_name=lane or (names[0] if len(names) == 1 else None), qs=qs, lanes=names)
+        boards = sorted({self.lanes[n].board or "default" for n in names if n in self.lanes})
+        dup = triaje.buscar_duplicado(text, self._triaje_cards(boards), cfg, ahora=self._now())
+        if dup:
+            rec.update(stage="dup", dup=dup)
+            spec = [[self._tbtn(t["boton_anadir"], -5)], [self._tbtn(t["boton_nueva"], -6)],
+                    [self._tbtn(t["boton_cancelar"], -1)]]
+            self._send(where, f"Se parece a {dup['id']} ({dup['status']}): {truncate(dup['title'], 100)}. ¿La amplío "
+                       "en vez de crear otra?", html=False, markup=self.desk.store.issue(rec, spec)[1])
+            return
+        self._triaje_ask(where, dict(rec, stage="pregunta"), cfg)
+
+    def _triaje_ask(self, where, rec: dict, cfg: dict) -> None:
+        """Envía la pregunta `step` con sus botones (la recomendada, primero y con ⭐) o crea la tarjeta si no quedan."""
+        t, qs, step = cfg["textos"], rec["qs"], rec["step"]
+        if step >= len(qs):
+            self._send(where, self._triaje_create(rec, cfg, ya=False), html=True)
+            return
+        q = qs[step]
+        spec = [[self._tbtn(("⭐ " if i == 0 else "") + o, i)] for i, o in enumerate(q["opciones"])]
+        spec.append([self._tbtn(t["boton_ya"], -2), self._tbtn(t["boton_cancelar"], -1)])
+        head = t["pregunta_cabecera"].format(n=len(qs)) + "\n\n" if step == 0 else ""
+        self._send(where, f"{head}{step + 1}/{len(qs)} · {q['texto']}", html=False,
+                   markup=self.desk.store.issue(rec, spec)[1])
+
+    def _triaje_create(self, rec: dict, cfg: dict, *, ya: bool) -> str:
+        """Crea la tarjeta con las respuestas en el cuerpo y devuelve el aviso (HTML). Clave idempotente por texto/hueco."""
+        answers = [tuple(a) for a in rec.get("answers") or []]
+        lane_name = rec.get("lane_name") or next((a for q, a in answers if q == "¿En qué carril lo pongo?"), None)
+        if lane_name not in self.lanes:
+            return "⚠️ No sé en qué carril ponerla; usa /hazlo o dime la marca."
+        origin = tuple(rec.get("origin") or ()) or None
+        body = triaje.card_body(rec["text"], [a for a in answers if a[0] != "¿En qué carril lo pongo?"], origin, ya=ya)
+        prio = next((v for q, a in answers for k, v in (cfg.get("prioridades") or {}).items()
+                     if q == "¿Cuánto urge?" and a.startswith(k)), None)
+        chat, thread = origin or ("", "")
+        key = "triaje-" + hashlib.sha1(f"{lane_name}|{chat}|{thread}|{int(self._now() // 600)}|{rec['text']}"
+                                      .encode()).hexdigest()[:16]
+        tid = self.hermes_for(self.lanes[lane_name].board).create(
+            truncate(rec["text"].splitlines()[0], HAZLO_TITLE_MAX), body, lane_name, priority=prio, key=key,
+            created_by="oscar")
+        return f"✅ Creada <code>{html.escape(tid)}</code> en {html.escape(lane_name)}. Te aviso al terminar."
+
+    def triaje_choice(self, rec: dict, button: dict, where: dict) -> bool:
+        """Botones de la entrada inteligente. True = terminado (el teclado queda gastado); False = fallo (vuelven)."""
+        cfg, idx, stage = self.triaje_config(), button.get("index"), rec.get("stage")
+        chat, mid = where["chat_id"], where["message_id"]
+        dest = (where["chat_id"], where["thread_id"])
+        edit = lambda s, h=False: self.notifier.edit(chat, mid, s, html=h)
+        if idx == -1:
+            edit("🚫 Cancelado, no he creado nada")
+            return True
+        try:
+            if idx == -2:  # Créala ya: sin más preguntas, con lo contestado hasta ahora
+                if not rec.get("lane_name") and len(rec.get("lanes") or []) > 1:
+                    edit("⚠️ Dime en qué carril va (usa /hazlo con la marca).")
+                    return True
+                edit(self._triaje_create(rec, cfg, ya=True), True)
+                return True
+            if idx == -3:  # como workflow
+                edit("🧩 Preparando el plan…")
+                self.cmd_workflow((dest[0], dest[1]), rec["text"], None)
+                return True
+            if idx == -4:  # una sola tarjeta en vez de workflow
+                edit("📝 De acuerdo, una sola tarjeta.")
+                self._triaje_small(dest, dict(rec, stage="pregunta", step=0, answers=[]),
+                                   scope_brand(dest[0], dest[1], self.lanes, self.generic_origins), cfg)
+                return True
+            if idx == -5:  # añadir a la existente
+                dup = rec.get("dup") or {}
+                ok = self.hermes_for(self.lanes[rec["lane_name"]].board if rec.get("lane_name") in self.lanes
+                                     else "default").comment(dup.get("id", ""), "Ampliación pedida desde el DM:\n"
+                                                             + rec["text"], "oscar")
+                edit(f"➕ Añadido como comentario a {dup.get('id')}" if ok else f"⚠️ No pude comentar {dup.get('id')}")
+                return bool(ok)
+            if idx == -6:  # crear nueva igualmente
+                edit("🆕 Sigo con una tarjeta nueva.")
+                self._triaje_ask(dest, dict(rec, stage="pregunta"), cfg)
+                return True
+            if idx == -7:  # integrador
+                tid = self.hermes_for("default").create(
+                    truncate("[INTEGRADOR] " + rec["text"].splitlines()[0], HAZLO_TITLE_MAX),
+                    triaje.card_body(rec["text"], [], tuple(rec.get("origin") or ()) or None),
+                    OSCAR_ASSIGNEE, key="triaje-int-" + hashlib.sha1(
+                        f"{rec['text']}|{int(self._now() // 600)}".encode()).hexdigest()[:16], created_by="oscar")
+                edit(f"📨 Pasado al integrador (a tu nombre, sin carril): {tid}")
+                return True
+            qs = rec.get("qs") or []
+            step = rec.get("step", 0)
+            if stage != "pregunta" or not isinstance(idx, int) or not 0 <= step < len(qs) \
+                    or not 0 <= idx < len(qs[step]["opciones"]):
+                return False
+            q = qs[step]
+            answer = q["opciones"][idx]
+            rec = dict(rec, answers=list(rec.get("answers") or []) + [[q["texto"], answer]], step=step + 1)
+            if q.get("id") == "carril" and answer in self.lanes:
+                rec["lane_name"] = answer
+            edit(f"✔ {q['texto']} → {answer}")
+            self._triaje_ask(dest, rec, cfg)
+            return True
+        except Exception as exc:
+            log.warning("triaje: botón falló: %s", type(exc).__name__)
+            return False
+
+    # --- /workflow ------------------------------------------------------------------------------------
+
+    @property
+    def workflow_store(self) -> workflows.Store:
+        if self._workflow_store is None:
+            self._workflow_store = workflows.Store()
+        return self._workflow_store
+
+    def cmd_workflow(self, where, args: str, brand: str | None) -> None:
+        """/workflow <texto>: plan (tarjetas enlazadas), coste estimado y tope; NO crea nada hasta [Aprobar plan y gasto]."""
+        text = args.strip()
+        if not text:
+            self._send(where, "Uso: /workflow <trabajo largo>. Te enseño el plan y el coste; no se crea nada hasta que "
+                       "apruebes.", html=False)
+            return
+        from . import flujo
+        cfg = self.triaje_config()
+        lanes = {n: f"{BRANDS.get(n, 'Sistema')} (tablero {self.lanes[n].board or 'default'})"
+                 for n in self._implement_lanes()}
+        self._send(where, "Claude está preparando el plan…", html=False)
+        cards = (self._flow_planner or flujo.propose)(text, lanes)
+        if not cards:
+            self._send(where, "No pude proponer un plan válido. Reformula la petición o usa /hazlo", html=False)
+            return
+        wid = "wf_" + hashlib.sha1(f"{where[0]}|{where[1]}|{int(self._now() // 600)}|{text}".encode()).hexdigest()[:10]
+        titulo = truncate(text.splitlines()[0], HAZLO_TITLE_MAX)
+        req = (self.peticiones.crear(None, titulo, "workflow") if self.peticiones else "req_" + wid[3:])
+        by_n = {c["n"]: c["titulo"] for c in cards}
+        plan = [{"titulo": c["titulo"], "carril": c["carril"], "depende": [by_n[p] for p in c["padres"]],
+                 "codigo": True, "cuerpo": c.get("cuerpo", ""), "limites": c.get("limites", "")} for c in cards]
+        riesgos = [f"«{c['titulo']}» pide tu confirmación (merge/despliegue/envío)" for c in cards if c["confirmar"]]
+        wf = workflows.propose(self.workflow_store, wid=wid, titulo=titulo, req=req, preguntas=[], tarjetas=plan,
+                               riesgos=riesgos, prueba="Cada tarjeta pasa los tests de su carril y se revisa antes de "
+                               "integrar", coste_estimado_eur=round(len(plan) * cfg["coste_por_tarjeta_eur"], 2))
+        rec = {"task_id": "workflow", "board": "", "lane": "", "kind": "workflow", "wid": wid}
+        spec = [[{"text": "✅ Aprobar plan y gasto", "action": WORKFLOW, "index": 1},
+                 {"text": "🚫 Cancelar", "action": WORKFLOW, "index": 0}]]
+        self._send(where, workflows.render_plan(wf)[0], html=False, markup=self.desk.store.issue(rec, spec)[1])
+
+    def workflow_choice(self, rec: dict, button: dict, where: dict) -> bool:
+        """Botón del plan. Solo [Aprobar] crea tarjetas (la primera tanda: las que no dependen de otra)."""
+        wid, store = rec.get("wid") or "", self.workflow_store
+        if button.get("index") != 1:
+            if store.get(wid):
+                workflows.parar(store, wid)
+            self.notifier.edit(where["chat_id"], where["message_id"], "🚫 Plan descartado, no he creado nada", html=False)
+            return True
+        wf = store.get(wid)
+        if not wf:
+            return False
+        origin = (where["chat_id"], where["thread_id"])
+
+        def create_card(item: dict, req: str) -> str:
+            lane = self.lanes[item["carril"]]
+            body = (f"## Objetivo\n{item.get('cuerpo') or item['titulo']}\n\n## Límites\n"
+                    f"{item.get('limites') or '- Solo lo que pide el objetivo; nada más.'}\n\n"
+                    f"req: {req}\nOrigen: /workflow {wid}\nOrigen-Telegram: chat={origin[0]} thread={origin[1]}\n")
+            key = "wf-" + hashlib.sha1(f"{wid}|{item['titulo']}".encode()).hexdigest()[:16]
+            return self.hermes_for(lane.board).create(truncate(item["titulo"], HAZLO_TITLE_MAX), body, item["carril"],
+                                                      key=key, created_by="oscar")
+
+        try:
+            workflows.approve(store, wid)
+            new = workflows.launch(store, wid, create_card)
+        except Exception as exc:
+            log.warning("/workflow %s: no se pudo lanzar: %s", wid, type(exc).__name__)
+            return False
+        self.notifier.edit(where["chat_id"], where["message_id"],
+                           f"✅ Plan aprobado ({wf['req']}) · creadas {len(new)} tarjeta(s): {', '.join(new)}. Las que "
+                           "dependen de otras quedan en el plan hasta que las anteriores terminen.", html=False)
+        return True
+
     # --- /estado --------------------------------------------------------------------------------------
 
     def estado_peticiones(self, where, proyecto: str | None) -> None:
@@ -1629,19 +1859,37 @@ class CommandCenter:
 
     @property
     def can_answer(self) -> bool:
-        return self._asker is not None
+        return self._asker is not None or self._classifier is not None
+
+    def triaje_config(self) -> dict:
+        return self._triaje_cfg if self._triaje_cfg is not None else triaje.load_config()
 
     def free_text(self, msg: dict) -> bool:
-        """Pregunta suelta del dueño en su DM (ni comando, ni /sesion abierta): responde con el estado real. Solo
-        informa: nunca ejecuta nada. False = no actúa (sin asker configurado: queda la ayuda de siempre)."""
+        """Texto libre del dueño en su DM (ni comando, ni /sesion abierta). Con el triaje activo se clasifica antes de
+        nada: CONSULTA responde con el estado real (sin tarjeta); lo demás pregunta/propone y solo crea tras tus botones.
+        Sin triaje solo informa. False = no actúa (sin asker ni triaje: queda la ayuda de siempre)."""
         text = (msg.get("text") or "").strip()
-        if not self._asker or not text:
+        cfg = self.triaje_config()
+        triaging = self._classifier is not None and cfg["activo"]
+        if not text or not (self._asker or triaging):
             return False
         where = self._where(msg)
         if not self._ask_lock.acquire(blocking=False):
             self._send(where, "Sigo con tu pregunta anterior; dame un momento.", html=False)
             return True
         try:
+            if triaging:
+                try:
+                    cat = self._classifier(text, cfg)
+                except Exception as exc:  # nunca se pierde una petición: ante la duda, trabajo pequeño
+                    log.warning("triaje: clasificador falló: %s", type(exc).__name__)
+                    cat = triaje.PEQUENA
+                if cat != triaje.CONSULTA:
+                    self.triaje_route(where, text, cat if cat in triaje.CATEGORIAS else triaje.PEQUENA, cfg)
+                    return True
+                if not self._asker:
+                    self._send(where, cfg["textos"]["consulta_sin_dato"], html=False)
+                    return True
             try:
                 plain = lambda s: html.unescape(re.sub(r"<[^>]+>", "", s))
                 brand = scope_brand(where[0], where[1], self.lanes, self.generic_origins)

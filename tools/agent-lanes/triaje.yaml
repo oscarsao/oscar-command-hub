@@ -1,0 +1,43 @@
+# Entrada inteligente (triaje.py): qué hace el bot con un texto libre antes de crear una tarjeta. Todo son datos: se
+# edita aquí sin tocar código. Si falta el fichero o un valor no es válido, vale el de DEFAULTS en triaje.py.
+
+activo: true               # false = se vuelve al comportamiento de antes (solo responder, nunca preguntar)
+modelo: sonnet             # clasificador: una llamada sin herramientas
+max_budget_usd: 0.1        # tope de coste de cada clasificación
+timeout_s: 60
+max_preguntas: 4           # preguntas de recomendación antes de crear la tarjeta (2-4)
+duplicado_umbral: 0.6      # parecido (0-1) a partir del cual se ofrece «añadir a la existente»
+ventana_dias: 14           # tarjetas hechas hace menos de estos días también cuentan como duplicado
+coste_por_tarjeta_eur: 1.5 # estimación para el plan de un workflow (tope real en workflows.yaml)
+
+prioridades:               # la respuesta a «¿Cuánto urge?» que EMPIEZA por la clave fija la prioridad (más alto = antes)
+  Alta: 8
+  Baja: 2
+
+textos:
+  pregunta_cabecera: "Antes de crearla, {n} preguntas rápidas (la ⭐ es la recomendada):"
+  boton_ya: "⚡ Créala ya"
+  boton_cancelar: "🚫 Cancelar"
+  boton_workflow: "🧩 Hacerlo como workflow"
+  boton_pequena: "📝 Una sola tarjeta"
+  boton_anadir: "➕ Añadir a la existente"
+  boton_nueva: "🆕 Crear nueva igualmente"
+  boton_integrador: "📨 Pasar al integrador"
+  propone_workflow: "Esto parece trabajo largo (varios pasos). Te recomiendo hacerlo como workflow: te enseño el plan y el coste y no se crea nada hasta que lo apruebes."
+  no_carril: "Esto toca producción, variables, SQL u otro repo: no es de un carril, lo lleva el integrador."
+  consulta_sin_dato: "No tengo ese dato; no quiero inventarlo. Prueba con /estado o /falta."
+
+# Preguntas de recomendación (se usan las primeras `max_preguntas`). La primera opción es la recomendada.
+preguntas:
+  - id: alcance
+    texto: "¿Qué alcance tiene?"
+    opciones: ["Solo lo que he pedido, nada más", "Lo pedido y sus tests/documentación", "Lo pedido y revisar lo parecido"]
+  - id: prioridad
+    texto: "¿Cuánto urge?"
+    opciones: ["Normal (cuando toque)", "Alta (hoy)", "Baja (cuando haya hueco)"]
+  - id: hecho
+    texto: "¿Cómo sabremos que está hecho?"
+    opciones: ["Funciona y los tests pasan", "Lo veo yo funcionando", "Basta con el PR revisado"]
+  - id: quien
+    texto: "¿Quién lo va a usar?"
+    opciones: ["Solo Oscar", "El equipo", "Clientes o usuarios finales"]
