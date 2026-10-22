@@ -52,6 +52,6 @@ people:
     role: dev
     brands: [Píldora, Signal]   # SIN MigraTeam salvo que Oscar lo confirme; sin credenciales Railway/Supabase/Vercel
     can: []
-    # PASO FINAL PENDIENTE (decision de Oscar 21-10: "OK final aparte"): poner `operador: true` SOLO cuando Oscar lo
-    # confirme de forma explicita. Acotado a Pildora (=OscarHQ) y Signal: nada en MigraTeam ni en lo demas.
-    operador: false
+    # OK final de Oscar el 22-10 (consola del integrador): operador acotado a Pildora (=OscarHQ) y Signal por el veto
+    # de marca (#72). Nada en MigraTeam ni en lo demas.
+    operador: true
