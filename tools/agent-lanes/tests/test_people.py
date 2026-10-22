@@ -87,18 +87,22 @@ def test_default_path_points_to_versioned_file():
     assert people.PEOPLE_FILE.exists()
 
 
-def test_dev_entries_mauredy_angel_are_scoped_operators_without_id_yet():
-    """Mauredy (solo MigraTeam) y Angel (OscarHQ/Signal): operadores ACOTADOS por marca (`brands` ya limita lo que
-    ejecutan; ver test_operador_marca.py), pero sin user_id hasta que Oscar lo rellene, así que aún no existen."""
+def test_dev_entries_mauredy_angel_are_scoped_devs():
+    """Mauredy (solo MigraTeam, sin id aún) y Angel (OscarHQ/Signal, con id pero SIN operador hasta el OK final de
+    Oscar): ACOTADOS por marca (`brands` limita lo que ejecutan; ver test_operador_marca.py)."""
     import yaml
     entries = yaml.safe_load(people.PEOPLE_FILE.read_text(encoding="utf-8"))["people"]
     assert entries["mauredy"]["brands"] == ["MigraTeam"]
     assert "MigraTeam" not in entries["angel"]["brands"] and "Signal" in entries["angel"]["brands"]
     for key in ("mauredy", "angel"):
-        assert entries[key]["user_id"] is None and entries[key]["role"] == "dev"
-        assert entries[key].get("operador") is True  # activo: la restricción por marca ya existe
-        assert not entries[key].get("can")
-    assert not any(p.key in ("mauredy", "angel") for p in load_people(OWNER)._by_id.values())  # sin id = ignorados
+        assert entries[key]["role"] == "dev" and not entries[key].get("can")
+    assert entries["mauredy"]["user_id"] is None and entries["mauredy"].get("operador") is True
+    assert entries["angel"]["user_id"] == "8770041085"
+    assert entries["angel"].get("operador") is False  # el OK final de Oscar lo pasa a true
+    ppl = load_people(OWNER)
+    assert not any(p.key == "mauredy" for p in ppl._by_id.values())  # sin id = ignorado
+    angel = ppl.lookup("8770041085")
+    assert angel.key == "angel" and angel.brands == ("Píldora", "Signal") and not ppl.es_operador("8770041085")
 
 
 def test_dev_role_has_no_carril_or_production_and_is_not_operator(tmp_path):

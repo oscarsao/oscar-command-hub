@@ -48,8 +48,10 @@ people:
     operador: true  # acotado: solo actua en las marcas de `brands` (el codigo rechaza el resto); decision de Oscar 21-10
   angel:
     name: Angel
-    user_id: null   # PENDIENTE - rellenar cuando Oscar confirme el Telegram ID (apoyo tecnico OscarHQ y Signal)
+    user_id: "8770041085"   # Angel (CTO OscarHQ + Signal); chat_id/DM dado por Oscar 21-10
     role: dev
     brands: [Píldora, Signal]   # SIN MigraTeam salvo que Oscar lo confirme; sin credenciales Railway/Supabase/Vercel
     can: []
-    operador: true  # acotado a Pildora (=OscarHQ) y Signal: nada en MigraTeam ni en lo demas
+    # PASO FINAL PENDIENTE (decision de Oscar 21-10: "OK final aparte"): poner `operador: true` SOLO cuando Oscar lo
+    # confirme de forma explicita. Acotado a Pildora (=OscarHQ) y Signal: nada en MigraTeam ni en lo demas.
+    operador: false

@@ -78,7 +78,7 @@ def test_el_yaml_real_deja_a_maria_en_todo_y_acota_a_mauredy_y_angel():
                          .read_text(encoding="utf-8"))["people"]
     assert raw["maria"]["brands"][-1] == "*" and raw["maria"]["brands"][0] == "Píldora"  # el tablero de sus ideas no cambia
     assert raw["mauredy"]["operador"] is True and raw["mauredy"]["brands"] == ["MigraTeam"]
-    assert raw["angel"]["operador"] is True and raw["angel"]["brands"] == ["Píldora", "Signal"]
+    assert raw["angel"]["operador"] is False and raw["angel"]["brands"] == ["Píldora", "Signal"]
     assert not raw["ingerber"].get("operador") and not raw["andrea"].get("operador")
 
 
