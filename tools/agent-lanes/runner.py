@@ -150,13 +150,14 @@ def main(argv: list[str] | None = None) -> int:
     # Candado de repos: un carril de código solo reclama si el remote de su repo es el `github:` de lanes.yaml.
     runners: list = [LaneRunner(l, hermes=hermes_for(l.board), git=git, worker=ClaudeWorker(pid_dir=STATE_DIR),
                                 verifier=verify, notify=notify, exclude=set(args.exclude), messages=messages, links=links,
-                                decisions=decisions, tree=tree, repo_guard=github_slug_problem)
+                                decisions=decisions, tree=tree, repo_guard=github_slug_problem,
+                                final_only=tg_settings["final_only"])
                      for l in impl.values()]
     # Carril ops: sin repo. Carpeta de trabajo por tarea + verificación por evidencias; siempre acaba en review para
     # Oscar (no está en `review.reviews`, y sweep_done no lo toca: el workspace se conserva).
     runners += [LaneRunner(l, hermes=hermes_for(l.board), git=OpsWorkspace(), worker=ClaudeWorker(pid_dir=STATE_DIR), verifier=verify_ops,
                            notify=notify, exclude=set(args.exclude), messages=messages, links=links, decisions=decisions,
-                           tree=tree)
+                           tree=tree, final_only=tg_settings["final_only"])
                 for l in selected.values() if l.kind == "ops"]
     # Tema de Integración (integration_telegram): la tarjeta done con ✅ Aprobar va allí aunque el integrador esté apagado.
     integration = (IntegrationRoute(tg_settings["integration"], load_integrator_settings(env=env, lane_filter=False).policies)

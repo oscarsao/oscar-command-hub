@@ -96,6 +96,8 @@ def load_telegram_settings(path: Path | None = None) -> dict:
     cfg = data.get("telegram") or {}
     return {"generic_origins": {_chat_thread(o, "*") for o in cfg.get("generic_origins") or ()},
             "kanban_base_url": cfg.get("kanban_base_url") or None,
+            # Chats «solo resultado final» (grupo de desarrollo de Angel): el ruido de proceso va al DM de Oscar.
+            "final_only": {_chat_thread(o, "*") for o in cfg.get("final_only") or ()},
             # Aviso al equipo en grupos (decisions._team_notice): {enabled, chats, text}; sin la clave = apagado.
             "team_notice": cfg.get("team_notice") or {},
             # Texto libre como respuesta a la decisión pendiente del tema ({window_hours, max_choices}); None = apagado.
