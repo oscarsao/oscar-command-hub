@@ -31,6 +31,7 @@ from rich.text import Text
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import dbwatch  # noqa: E402  (sonda de la base de Supabase; mismo directorio)
+import prodwatch  # noqa: E402  (despliegues de producción en Vercel y salud del servidor; mismo directorio)
 
 HOME = Path.home()
 HERMES = Path(os.environ.get("LOCALAPPDATA", HOME / "AppData" / "Local")) / "hermes"
@@ -46,7 +47,7 @@ TOPICS = {
     "-1004277259008": {None: "General", "1": "General", "74": "Planificación", "77": "MigraTeam", "80": "Píldora",
                        "83": "Recursos"},
 }
-HEALTH = {"Oscar HQ": "https://oscar-hq-production.up.railway.app/api/health",
+HEALTH = {"Oscar HQ": "https://api.pildoradigital.com/api/health",  # 22-10: ya no en Railway; servidor pildora-01 (Dokploy)
           "MigraTeam": "https://ocr-pdf-and-images-production.up.railway.app/health",
           "Panel kanban": "https://kanban.pildoradigital.com/kanban",
           "Dashboard local": "http://127.0.0.1:9119/"}
@@ -54,7 +55,8 @@ WATCH_PROCS = ("claude", "python", "pythonw", "node", "chrome", "hermes", "cloud
 LOG_LEVEL_RE = re.compile(r"\b(WARNING|ERROR|CRITICAL)\b")
 # Silencio del DM de 23:00 a 08:00 (30-09): solo pasan las caídas reales (runner, Hermes, servicios, listado de tareas).
 QUIET_START, QUIET_END = 23, 8
-OUTAGE_KEYS = ("runner-dead", "gw-dead", "health-", "list-fail", "db-down", "db-slow")
+OUTAGE_KEYS = ("runner-dead", "gw-dead", "health-", "list-fail", "db-down", "db-slow", "vercel-prod")
+PROD_EVERY = 300      # s entre comprobaciones de Vercel (producción) y del servidor (health + Dokploy)
 DB_EVERY = 300        # s entre sondas de la base de Supabase (01-10: saturada 30-09 y 01-10)
 DB_MAX_CONNS = 45     # AVISO por encima (el plan Micro admite 60)
 DB_MIN_MEM_PCT = 15   # AVISO si la memoria disponible baja de esto
@@ -142,9 +144,10 @@ def dm_pusher():
 
 
 class Monitor:
-    def __init__(self, *, write_log: bool = False, push=None, db=None):
+    def __init__(self, *, write_log: bool = False, push=None, db=None, prod=None):
         STATE.mkdir(exist_ok=True)
         self.write_log, self.push = write_log, push
+        self.prod, self.prod_at = prod, 0.0  # prodwatch.ProdWatch o None (sin avisos de producción/servidor)
         self.db, self.db_at = db, 0.0  # dbwatch.DbWatch o None (vigilancia de Supabase desactivada)
         self.alerts: deque[tuple[str, str, str]] = deque(maxlen=14)  # (hora, nivel, texto)
         self._seen: dict[str, float] = {}
@@ -377,7 +380,7 @@ class Monitor:
             ok = 200 <= code < 400 or (name == "Panel kanban" and code in (302, 401, 403))
             limited = code == 429  # vivo pero limitando peticiones: no es una caída
             self.health[name] = f"{'✅' if ok else ('🟡' if limited else '❌')} {code or 'sin respuesta'}"
-            fixes = {"Oscar HQ": "mira el último deploy en railway.app → Oscar HQ → Deployments (si falló, "
+            fixes = {"Oscar HQ": "mira el último deploy en Dokploy (pildora-01) → oscar-hq → Deployments (si falló, "
                                  "pulsa Redeploy del anterior) y dime qué ves.",
                      "MigraTeam": "¡producción! mira railway.app → MigraTeam → Deployments y los logs; si es un "
                                   "deploy reciente, avísame para revertirlo.",
@@ -428,6 +431,20 @@ class Monitor:
         self.condition("db-conns", conns is not None and conns > DB_MAX_CONNS,
                        f"Supabase: {conns} conexiones abiertas (máximo del plan: 60).",
                        fix, min_hits=2, every=3600, level="AVISO")
+
+    def refresh_prod(self, force: bool = False) -> None:
+        """Solo el servicio headless (cada 5 min): despliegues de PRODUCCIÓN fallidos en Vercel (un aviso por
+        despliegue; las vistas previas de lane/* no cuentan) y salud del servidor (health_url + Dokploy)."""
+        if not (self.write_log and self.prod) or (not force and time.time() - self.prod_at < PROD_EVERY):
+            return
+        self.prod_at = time.time()
+        for f in self.prod.vercel_failures():
+            self.alert("ALTA", f"Vercel: falló el despliegue de PRODUCCIÓN de {f['project']} (commit {f['sha']}"
+                       + (f", «{f['message']}»" if f["message"] else "") + ").\n👉 Qué hacer: mira el log en vercel.com → "
+                       "proyecto → Deployments. Si dice «Failed deployment from …», el autor del commit no es del "
+                       "equipo (lanes.yaml → integrator.commit_author).", f"vercel-prod-{f['id']}", every=10 ** 9)
+        for key, active, text, fix in self.prod.server_checks():
+            self.condition(key, active, text, fix, min_hits=2)
 
     def refresh_branch_drift(self) -> str:
         """MigraTeam: develop debe contener master. Tras un hotfix directo a master hay que devolverlo a develop
@@ -651,11 +668,13 @@ def run_headless(interval: float = 15.0) -> int:
     except (OSError, ValueError, psutil.Error):
         pass
     pidf.write_text(str(os.getpid()))
-    mon = Monitor(write_log=True, push=dm_pusher(), db=dbwatch.from_env([LANES / ".env", Path(__file__).resolve().parent / ".env"]))
+    envs = [LANES / ".env", Path(__file__).resolve().parent / ".env"]
+    prod = prodwatch.from_config(LANES / "lanes.yaml", envs, STATE / "prodwatch.json", skip_urls=HEALTH.values())
+    mon = Monitor(write_log=True, push=dm_pusher(), db=dbwatch.from_env(envs), prod=prod)
     mon.alert("INFO", "Monitor headless arrancado" + ("" if mon.db else " (vigilancia de Supabase desactivada: falta "
               + dbwatch.ENV_KEY + ")"), every=0)
     while True:
-        for step in (mon.pc, mon.system, mon.chats, mon.alerts_panel, mon.refresh_db):
+        for step in (mon.pc, mon.system, mon.chats, mon.alerts_panel, mon.refresh_db, mon.refresh_prod):
             try:
                 step()
             except Exception as exc:  # una comprobación rota no para las demás

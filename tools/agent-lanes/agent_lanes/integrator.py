@@ -41,6 +41,7 @@ import tempfile
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -92,6 +93,15 @@ def pending_migration(st: dict) -> str | None:
     mig = st.get("migration")
     return None if (mig in MIGRATION_KINDS and st.get("migration_applied")) else (mig or None)
 DEPLOY_RAILWAY_UP, DEPLOY_ON_MERGE, DEPLOY_NONE = "railway_up", "on_merge", "none"
+DEPLOY_DOKPLOY = "dokploy"                       # 22-10: Oscar HQ / NextJobs corren en pildora-01 (Hetzner) con Dokploy
+DEPLOY_BUTTON = (DEPLOY_RAILWAY_UP, DEPLOY_DOKPLOY)  # fusionar NO despliega: botón aparte [🚀 Desplegar]
+DOKPLOY_OK, DOKPLOY_BAD = {"done"}, {"error"}    # applicationStatus de application.one (idle/running = en curso)
+# Autor de los commits de fusión (lanes.yaml `integrator.commit_author`). Vercel bloquea los despliegues de commits cuyo
+# autor no es miembro del equipo («Failed deployment from agent-lanes@localhost», 22-10): por defecto, el noreply de
+# GitHub de Oscar. Es un dato: se cambia en lanes.yaml sin tocar código.
+DEFAULT_COMMIT_NAME, DEFAULT_COMMIT_EMAIL = "oscarsao", "oscarsao@users.noreply.github.com"
+IDENT_RE = re.compile(r"[^\s<>=,\"']([^<>\r\n\"]*[^\s<>\r\n\"])?")
+EMAIL_RE = re.compile(r"[^\s@<>\"']+@[^\s@<>\"']+\.[^\s@<>\"']+")
 CHECK_GITHUB_DEPLOYMENTS = "github_deployments"
 GH_DEPLOY_OK, GH_DEPLOY_BAD = {"success"}, {"failure", "error", "inactive"}
 # `apply` de una política con deploy none: qué hace [🔁 Aplicar] tras fusionar. Solo restart_drain (claude-hub):
@@ -159,6 +169,11 @@ class Policy:
     railway_project: str = ""
     railway_service: str = ""
     railway_environment: str = ""
+    # dokploy: API de Dokploy (https://…), id de la aplicación y NOMBRE de la variable de entorno con el token
+    # (agent-lanes/.env o entorno del runner). El token nunca va en lanes.yaml.
+    dokploy_url: str = ""
+    dokploy_application_id: str = ""
+    dokploy_token_env: str = ""
     health_url: str = ""
     health_commit_key: str = ""              # clave del JSON de health con el sha desplegado (MigraTeam: commit_sha)
     # on_merge: cómo se comprueba el deploy. Vacío = /health (health_url + health_commit_key); github_deployments =
@@ -205,6 +220,18 @@ class IntegratorSettings:
     # (0 = apagado) y no repite el mismo conjunto antes de `pr_watch_repeat_hours`.
     pr_watch_hours: float = 2.0
     pr_watch_repeat_hours: float = 6.0
+    commit_name: str = DEFAULT_COMMIT_NAME
+    commit_email: str = DEFAULT_COMMIT_EMAIL
+
+
+def _api_url_ok(url: str) -> bool:
+    """https, o http solo hacia este mismo PC (túnel SSH al panel de Dokploy: http://localhost:3300)."""
+    return url.startswith("https://") or bool(re.match(r"http://(?:localhost|127\.0\.0\.1)(?::\d+)?(?:/|$)", url))
+
+
+def ident_args(name: str = DEFAULT_COMMIT_NAME, email: str = DEFAULT_COMMIT_EMAIL) -> tuple[str, ...]:
+    """Argumentos `-c` de git con el autor de los commits de fusión del integrador."""
+    return ("-c", f"user.name={name}", "-c", f"user.email={email}", "-c", "commit.gpgsign=false")
 
 
 def _truthy(v) -> bool:
@@ -240,13 +267,23 @@ def load_integrator_settings(path: Path | None = None, env: dict | None = None, 
         if p.get("health_url") and not str(p["health_url"]).startswith("https://"):
             raise ValueError(f"integrator.lanes.{name}.health_url debe ser https://")
         policies[name] = Policy(lane=name, **{k: ("" if v is None else v) for k, v in p.items()})
-        if policies[name].deploy not in (DEPLOY_RAILWAY_UP, DEPLOY_ON_MERGE, DEPLOY_NONE):
+        if policies[name].deploy not in (DEPLOY_RAILWAY_UP, DEPLOY_ON_MERGE, DEPLOY_NONE, DEPLOY_DOKPLOY):
             raise ValueError(f"integrator.lanes.{name}.deploy desconocido: {policies[name].deploy}")
+        if policies[name].dokploy_url and not _api_url_ok(str(policies[name].dokploy_url)):
+            raise ValueError(f"integrator.lanes.{name}.dokploy_url debe ser https:// (o http://localhost: el túnel SSH)")
+        if policies[name].dokploy_token_env and not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", policies[name].dokploy_token_env):
+            raise ValueError(f"integrator.lanes.{name}.dokploy_token_env es el NOMBRE de la variable, no el token")
         if policies[name].deploy_check not in ("", CHECK_GITHUB_DEPLOYMENTS):
             raise ValueError(f"integrator.lanes.{name}.deploy_check desconocido: {policies[name].deploy_check}")
         if policies[name].apply and (policies[name].apply not in APPLY_ARGV or policies[name].deploy != DEPLOY_NONE):
             raise ValueError(f"integrator.lanes.{name}.apply: solo {sorted(APPLY_ARGV)} y con deploy none")
+    author = cfg.get("commit_author") or {}
+    c_name = str(author.get("name") or DEFAULT_COMMIT_NAME).strip()
+    c_email = str(author.get("email") or DEFAULT_COMMIT_EMAIL).strip()
+    if not IDENT_RE.fullmatch(c_name) or not EMAIL_RE.fullmatch(c_email):
+        raise ValueError("integrator.commit_author: name/email no válidos")
     return IntegratorSettings(enabled=enabled, interval_seconds=int(cfg.get("interval_seconds") or 300),
+                              commit_name=c_name, commit_email=c_email,
                               worktree_root=cfg.get("worktree_root") or str(ROOT / ".state" / "integrator" / "wt"),
                               deploy_timeout_seconds=int(cfg.get("deploy_timeout_seconds") or 900),
                               poll_seconds=int(cfg.get("poll_seconds") or 20), policies=policies,
@@ -394,8 +431,11 @@ class Integrator:
                  http_get: Callable[[str], tuple[int, str]] | None = None, state_dir: Path = STATE_DIR,
                  dry_run: bool = False, out: Callable[[str], None] = print,
                  now: Callable[[], float] = time.time, launcher: Callable[[list[str], str], None] | None = None,
-                 apply_probe: Callable[[str], bool] | None = None):
+                 apply_probe: Callable[[str], bool] | None = None, env: dict | None = None,
+                 http_json: Callable[..., tuple[int, object]] | None = None):
         self.settings = settings
+        self.env = env or {}                            # .env de agent-lanes: token de Dokploy por nombre de variable
+        self._http_json = http_json or _http_json
         self._launch = launcher or launch_detached      # [🔁 Aplicar]: lanza sin esperar (reinicia este proceso)
         self._apply_probe = apply_probe or apply_available  # ¿existe ya el subcomando? (lectura estática)
         self.apply_result_path = drain.RESULT_FILE  # veredicto del último `restart --drain` (tests: otra ruta)
@@ -432,6 +472,10 @@ class Integrator:
         self.pr_watch = ReadyPRWatcher(self)  # recordatorio de PR de carriles abiertos (MERGEABLE/CONFLICTING/UNKNOWN)
 
     # --- utilidades ----------------------------------------------------------------------------------
+
+    def _ident(self) -> tuple[str, ...]:
+        """Autor de los commits de fusión (lanes.yaml `integrator.commit_author`)."""
+        return ident_args(self.settings.commit_name, self.settings.commit_email)
 
     def _exec(self, args: list[str], *, cwd: str | None = None, timeout: int = 300, shell: bool = False,
               env: dict | None = None) -> subprocess.CompletedProcess:
@@ -905,8 +949,7 @@ class Integrator:
         w = str(wt)
         # Hooks neutralizados: MigraTeam apunta core.hooksPath a .githooks (versionado), y el merge ejecutaría
         # código del PR. Identidad por -c: nunca se toca la config del repo.
-        merge = self._git(w, "-c", f"core.hooksPath={self._nohooks()}", "-c", "user.name=agent-lanes-integrator",
-                          "-c", "user.email=agent-lanes@localhost", "-c", "commit.gpgsign=false",
+        merge = self._git(w, "-c", f"core.hooksPath={self._nohooks()}", *self._ident(),
                           "merge", "--no-ff", "--no-edit", res.head_sha)
         if merge.returncode != 0:
             conflicts = (self._git(w, "diff", "--name-only", "--diff-filter=U").stdout or "").split()
@@ -1097,7 +1140,7 @@ class Integrator:
     def _deploy_note(policy: Policy, result: GateResult) -> str | None:
         if policy.deploy == DEPLOY_ON_MERGE:
             return NEEDS_MIGRATION if result.migration else (policy.merge_warning or MIGRATEAM_WARNING)
-        if policy.deploy == DEPLOY_RAILWAY_UP:
+        if policy.deploy in DEPLOY_BUTTON:
             return ("fusionar NO despliega; el deploy es otro botón" if not result.migration else
                     "fusionar NO despliega; " + NEEDS_MIGRATION)
         if policy.apply:
@@ -1168,7 +1211,7 @@ class Integrator:
             return self._merge(lane, policy, rec, where, desk)
         if action == INT_MERGE_DEPLOY and policy.deploy == DEPLOY_ON_MERGE and not rec.get("migration"):
             return self._merge(lane, policy, rec, where, desk)
-        if action == INT_DEPLOY and policy.deploy == DEPLOY_RAILWAY_UP and not rec.get("migration") \
+        if action == INT_DEPLOY and policy.deploy in DEPLOY_BUTTON and not rec.get("migration") \
                 and rec.get("merge_sha"):
             return self._deploy_railway(lane, policy, rec, where, desk)
         if action == INT_MIGRATION_APPLIED:
@@ -1216,7 +1259,7 @@ class Integrator:
                 if msg.get("token"):
                     desk.store.consume(msg["token"])  # el ✅ de las demás copias ya no vale
             markup = None
-            if policy and policy.deploy == DEPLOY_RAILWAY_UP and sha:
+            if policy and policy.deploy in DEPLOY_BUTTON and sha:
                 markup = desk.store.issue(rec, [[{"text": "🚀 Desplegar", "action": INT_DEPLOY}]])[1]
             self._edit(desk, lane, rec, where, "done", status_line(
                 f"✅ fusionado · {sha[:7] or '?'}", "migración aplicada", "sin desplegar" if markup else None),
@@ -1356,7 +1399,7 @@ class Integrator:
             self._edit(desk, lane, rec, where, "running", status_line(
                 f"🚀 fusionado en {lane.base} · {short}", "Railway despliega solo; comprobando…"))
             return self._verify_on_merge(lane, policy, rec, where, desk)
-        if policy.deploy == DEPLOY_RAILWAY_UP:
+        if policy.deploy in DEPLOY_BUTTON:
             if rec.get("migration"):
                 # Oscar aplica la migración a mano y lo dice con [✅ Migración aplicada]: desbloquea el 🚀.
                 markup = (desk.store.issue(rec, [[dict(MIGRATION_BUTTON)]])[1]
@@ -1543,6 +1586,8 @@ class Integrator:
             self._edit(desk, lane, rec, where, "blocked", "⛔ ya hay un deploy en curso; vuelve a pulsar cuando acabe")
             return False
         try:
+            if policy.deploy == DEPLOY_DOKPLOY:
+                return self._deploy_dokploy_locked(lane, policy, rec, where, desk)
             return self._deploy_railway_locked(lane, policy, rec, where, desk)
         finally:
             self._deploying.release()
@@ -1620,6 +1665,123 @@ class Integrator:
             why = "sin terminar en 15 min" if status is None else status
             self._comment(lane, tid, f"DEPLOY-FALLIDO {tip} · railway deployment {dep_id} {why}")
             self._edit(desk, lane, rec, where, "blocked", status_line("⛔ deploy falló", why, "revisa Railway"))
+        return True
+
+    # --- deploy: Dokploy (pildora-01) -----------------------------------------------------------------
+
+    def _dokploy(self, policy: Policy, method: str, endpoint: str, body: dict | None = None,
+                 query: dict | None = None) -> tuple[int, dict | list | None]:
+        """Llamada a la API de Dokploy (`x-api-key`). El token se lee por el NOMBRE de variable de la política y no
+        se registra jamás. (código HTTP, JSON o None); 0 si no hay red."""
+        url = policy.dokploy_url.rstrip("/") + "/api/" + endpoint
+        if query:
+            url += "?" + urllib.parse.urlencode(query)
+        token = os.environ.get(policy.dokploy_token_env) or self.env.get(policy.dokploy_token_env) or ""
+        try:
+            return self._http_json(method, url, {"x-api-key": token, "Accept": "application/json"}, body)
+        except Exception as exc:
+            log.warning("dokploy %s: %s", endpoint, type(exc).__name__)
+            return 0, None
+
+    def _dokploy_app(self, policy: Policy) -> dict | None:
+        code, data = self._dokploy(policy, "GET", "application.one", query={"applicationId": policy.dokploy_application_id})
+        return data if code == 200 and isinstance(data, dict) else None
+
+    @staticmethod
+    def _dokploy_deployments(app: dict) -> dict[str, str]:
+        """id → estado de los despliegues que enumera application.one (vacío si esta versión no los devuelve)."""
+        out = {}
+        for d in app.get("deployments") or []:
+            if isinstance(d, dict) and d.get("deploymentId"):
+                out[str(d["deploymentId"])] = str(d.get("status") or "").lower()
+        return out
+
+    def _poll_dokploy(self, policy: Policy, before_ids: set) -> tuple[str | None, str]:
+        """Sondea application.one hasta done/error del despliegue NUEVO. Un `done` leído justo tras pedir el redeploy
+        es el del despliegue anterior: solo cuenta tras ver arrancar el nuevo (despliegue desconocido o estado
+        `running`); sin esa señal se acepta tras 3 lecturas seguidas iguales. (done | error | None, id)."""
+        deadline = self._clock() + self.settings.deploy_timeout_seconds
+        started, steady, dep_id = False, 0, ""
+        while self._clock() < deadline:
+            app = self._dokploy_app(policy)
+            if app is not None:
+                status = str(app.get("applicationStatus") or "").lower()
+                new = {k: v for k, v in self._dokploy_deployments(app).items() if k not in before_ids}
+                if new:
+                    started, dep_id = True, sorted(new)[-1]
+                    bad = [k for k, v in new.items() if v in DOKPLOY_BAD]
+                    if bad:
+                        return "error", bad[0]
+                    if all(v in DOKPLOY_OK for v in new.values()):
+                        return "done", dep_id
+                elif status == "running":
+                    started = True
+                elif status in DOKPLOY_OK | DOKPLOY_BAD:
+                    steady += 1
+                    if started or steady >= 3:
+                        return status, dep_id
+            self._sleep(self.settings.poll_seconds)
+        return None, dep_id
+
+    def _deploy_dokploy_locked(self, lane, policy: Policy, rec: dict, where: dict, desk) -> bool:
+        """🚀 Desplegar con Dokploy: application.redeploy → sondeo de application.one hasta done/error → health_url.
+        Dokploy reconstruye lo último de la rama que tiene configurada (la base): no hay worktree ni `up`."""
+        tid, sha = rec["task_id"], rec["merge_sha"]
+        if not (policy.dokploy_url and policy.dokploy_application_id and policy.dokploy_token_env):
+            self._edit(desk, lane, rec, where, "blocked", "⛔ deploy no configurado (url, applicationId y variable del "
+                                                          "token de Dokploy en lanes.yaml)")
+            return True
+        if not (os.environ.get(policy.dokploy_token_env) or self.env.get(policy.dokploy_token_env)):
+            self._edit(desk, lane, rec, where, "blocked", f"⛔ no se despliega: falta la variable {policy.dokploy_token_env} "
+                                                          "(token de Dokploy) en el entorno del runner")
+            return True
+        with self._lock:
+            self._git(lane.repo, "fetch", lane.remote, f"+refs/heads/{lane.base}:refs/remotes/{lane.remote}/{lane.base}")
+            tip = (self._git(lane.repo, "rev-parse", f"{lane.remote}/{lane.base}").stdout or "").strip()
+            problem = self._tip_problem(lane, policy, tid, sha, tip)
+        if problem:
+            self._edit(desk, lane, rec, where, "blocked", status_line("⛔ no se despliega", problem, "despliega a mano"))
+            return True
+        extra = self._count(lane, f"{sha}..{tip}") if tip != sha else 0
+        app = self._dokploy_app(policy)
+        if app is None:
+            self._edit(desk, lane, rec, where, "blocked", "⛔ no se despliega: Dokploy no responde (¿túnel o token?)")
+            return False
+        before = set(self._dokploy_deployments(app))
+        self._edit(desk, lane, rec, where, "running", status_line(
+            f"🚀 desplegando {tip[:7]}…", f"lo último de {lane.base}, {extra} commit(s) después de esta fusión"
+            if extra else None))
+        code, _ = self._dokploy(policy, "POST", "application.redeploy", {"applicationId": policy.dokploy_application_id})
+        if not 200 <= code < 300:
+            log.warning("%s: dokploy redeploy falló: HTTP %s", tid, code)
+            self._edit(desk, lane, rec, where, "blocked", "⛔ deploy falló al pedirlo a Dokploy (detalle en el log)")
+            self._comment(lane, tid, f"DEPLOY-FALLIDO {tip} · dokploy application.redeploy HTTP {code}")
+            return True
+        status, dep_id = self._poll_dokploy(policy, before)
+        dep = dep_id or "dokploy"
+        health = None
+        if status == "done":
+            for attempt in range(6):  # el contenedor nuevo tarda unos segundos en responder
+                health = self._health(policy)
+                if not policy.health_url or health == "OK":
+                    break
+                if attempt < 5:
+                    self._sleep(self.settings.poll_seconds)
+            if policy.health_url and health != "OK":
+                status = f"health {health}"
+        if status == "done":
+            self._comment(lane, tid, f"DESPLEGADO {tip} · dokploy deployment {dep} done"
+                          + (f" · health {health}" if health else "")
+                          + (f" · incluye la fusión {sha[:12]} de esta tarea" if tip != sha else ""))
+            self._save(tid, status="deployed", deployment=dep, deployed_sha=tip)
+            also = self._mark_included(lane, tid, tip, dep, desk, via="dokploy deployment")
+            self._edit(desk, lane, rec, where, "done", status_line(
+                f"🚀 desplegado · {tip[:7]}", f"health {health}" if health else None,
+                ("también PR " + ", ".join(f"#{n}" for n in also)) if also else None))
+        else:
+            why = "sin terminar en 15 min" if status is None else status
+            self._comment(lane, tid, f"DEPLOY-FALLIDO {tip} · dokploy deployment {dep} {why}")
+            self._edit(desk, lane, rec, where, "blocked", status_line("⛔ deploy falló", why, "revisa Dokploy"))
         return True
 
     def _railway_incident(self, lane, sha: str, *, abrir: bool) -> None:
@@ -1711,14 +1873,14 @@ class Integrator:
         files = (cp.stdout or "").split() if cp.returncode == 0 else []
         return [f for f in files if any(f.startswith(p) for p in policy.manual_migrations)]
 
-    def _mark_included(self, lane, tid: str, tip: str, dep_id: str, desk) -> list:
+    def _mark_included(self, lane, tid: str, tip: str, dep_id: str, desk, via: str = "railway deployment") -> list:
         """Tras un deploy correcto de `tip`: toda ficha fusionada cuyo merge_sha está en lo desplegado queda como
         desplegada (comentario, estado, avisos editados y su 🚀 Desplegar retirado). Devuelve sus números de PR."""
         done = []
         for other, st in self._merged_states(lane, tid):
             if pending_migration(st) or not self._is_ancestor(lane, st["merge_sha"], tip):
                 continue
-            self._comment(lane, other, f"DESPLEGADO {tip} · railway deployment {dep_id} SUCCESS · incluido en el "
+            self._comment(lane, other, f"DESPLEGADO {tip} · {via} {dep_id} SUCCESS · incluido en el "
                                        f"deploy pedido desde {tid} (fusión {st['merge_sha'][:12]})")
             self._save(other, status="deployed", deployment=dep_id, deployed_sha=tip)
             rec = {"kind": "integrate", "task_id": other, "board": lane.board, "lane": lane.name,
@@ -1932,11 +2094,32 @@ def _http_get(url: str, timeout: float = 15) -> tuple[int, str]:
         return exc.code, ""
 
 
+def _http_json(method: str, url: str, headers: dict, body: dict | None = None,
+               timeout: float = 20) -> tuple[int, dict | list | None]:
+    """Petición JSON (API de Dokploy). Sin redirecciones; (código, JSON o None). Solo https."""
+    if not _api_url_ok(url):
+        raise ValueError("la URL debe ser https (o http://localhost)")
+    data = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request(url, data=data, method=method, headers={
+        "User-Agent": "agent-lanes-integrator", **({"Content-Type": "application/json"} if data else {}), **headers})
+    try:
+        with urllib.request.build_opener(_NoRedirect).open(req, timeout=timeout) as resp:
+            raw = resp.read(2_000_000).decode("utf-8", "replace")
+            code = resp.status
+    except urllib.error.HTTPError as exc:
+        return exc.code, None
+    try:
+        return code, json.loads(raw) if raw.strip() else None
+    except ValueError:
+        return code, None
+
+
 def build_integrator(env: dict, lanes: dict, **kw) -> Integrator | None:
     """Integrator del runner, o None si INTEGRATOR_ENABLED no está activo."""
     settings = load_integrator_settings(env=env)
     if not settings.enabled:
         return None
+    kw.setdefault("env", env)
     return Integrator(settings, lanes, **kw)
 
 

@@ -52,7 +52,6 @@ BATCH_BRANCH_RE = re.compile(r"release/lote-[a-z0-9]+(?:-[a-z0-9]+)*-\d{4}-\d{2}
 OPEN_STATUSES = ("offered", "stale")  # lote con PR abierto pendiente del botón
 EXCLUDED_TITLE_MAX = 80  # por defecto; el vigente se edita con /ajustes (lotes.titulo_excluido_max)
 EXPLAIN_BUTTON = {"text": "💬 Explícame más", "action": "explain"}  # = decisions.EXPLAIN (sin importar decisions aquí)
-IDENT = ("-c", "user.name=agent-lanes-integrator", "-c", "user.email=agent-lanes@localhost", "-c", "commit.gpgsign=false")
 
 
 def brand_of(policy: Policy) -> str:
@@ -331,7 +330,7 @@ class BatchPlanner:
         return out
 
     def _merge(self, w: str, sha: str) -> subprocess.CompletedProcess:
-        return self.i._git(w, "-c", f"core.hooksPath={self.i._nohooks()}", *IDENT, "merge", "--no-ff", "--no-edit", sha)
+        return self.i._git(w, "-c", f"core.hooksPath={self.i._nohooks()}", *self.i._ident(), "merge", "--no-ff", "--no-edit", sha)
 
     def _abort(self, w: str) -> None:
         self.i._git(w, "-c", f"core.hooksPath={self.i._nohooks()}", "merge", "--abort")

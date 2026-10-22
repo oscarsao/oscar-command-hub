@@ -286,3 +286,21 @@ integrador_visibilidad.yaml. Quién puede pulsar botones (`tools/telegram/people
   lanes.yaml; por defecto `docs/kb/CHANGELOG.md`, `docs/kb/LEDGER_ESTATUS.md`, `docs/kb/archivo/CHANGELOG.md`,
   `CHANGELOG.md`; `[]` lo desactiva): el integrador fusiona la base en la rama del PR con `merge=union`, pasa los gates y
   empuja a `lane/<id>` (único push del integrador, sin force). Con código mezclado no toca nada: devuelve la tarjeta al carril.
+
+## Tras la migración a Dokploy (22-10, t_ffffc632)
+Oscar HQ y NextJobs corren en el servidor pildora-01 (Hetzner) con Dokploy; MigraTeam sigue en Railway hasta su corte.
+- **Autor de los commits del integrador** (`integrator.commit_author` en lanes.yaml; por defecto
+  `oscarsao <oscarsao@users.noreply.github.com>`). Vercel bloquea los despliegues de commits cuyo autor no es del equipo
+  («Failed deployment from agent-lanes@localhost»). Si tu noreply lleva el id numérico (`<id>+oscarsao@users.noreply…`,
+  mira Settings → Emails en GitHub), ponlo ahí: es un dato, no hace falta tocar código.
+- **🚀 Desplegar con Dokploy** (`deploy: dokploy` en `integrator.lanes.<carril>`): `application.redeploy`, sondeo de
+  `application.one` hasta `done`/`error` del despliegue NUEVO y comprobación de `health_url`. Campos: `dokploy_url` (https, o
+  `http://localhost:3300` mientras el panel vaya por túnel SSH), `dokploy_application_id` y `dokploy_token_env` (el NOMBRE de
+  la variable de agent-lanes/.env con el token; el token nunca va en lanes.yaml). `railway_up` sigue funcionando para quien lo use.
+- **Avisos del monitor** (`monitor_alerts` en lanes.yaml, `tools/monitor/prodwatch.py`, cada 5 min, por Telegram y sin
+  repetir): despliegue de PRODUCCIÓN fallido en Vercel (`vercel.token_env` = nombre de la variable con el token de Vercel,
+  `vercel.projects`; las vistas previas de lane/* no avisan; un aviso por despliegue) y salud del servidor (`health_url` de
+  cada carril + estado de su aplicación en Dokploy; `skip_health` excluye carriles, p. ej. Railway pausado).
+- **Silenciar el ruido de Vercel** (lo haces tú en el panel; no hay código): *Project → Settings → Git → Pull Request
+  Comments → off* (por proyecto) y *Account → Notifications → Deployments* → deja solo los de producción
+  (desmarca vistas previas / «Preview Deployments»).
