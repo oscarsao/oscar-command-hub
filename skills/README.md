@@ -4,7 +4,7 @@
 
 **Carriles:** los workers de agent-lanes son sesiones `claude -p` del mismo usuario de Windows, así que cargan las skills de usuario (`~/.claude/skills`) igual que las sesiones interactivas: no hace falta copiarlas a cada repo. Para que en modo `-p` puedan invocarlas sin permiso interactivo, `lanes.yaml` (defaults.allowed_tools) incluye `Skill(integrar-lote)` y `Skill(tarjeta-carril)`. El guard de cada carril sigue mandando: un worker nunca fusiona a main/master ni despliega aunque la skill lo describa (esos pasos son del integrador).
 
-Borradores pendientes de aprobar: `../skills-borrador/` (no instalados).
+Borrador pendiente: `../skills-borrador/rotar-clave` (no instalado; espera a migrar claves a la Bóveda).
 
 ## Inventario
 
@@ -38,11 +38,11 @@ Uso medido en los transcripts de Claude Code de los últimos 30 días (1.508 ses
 
 | # | Nombre | Disparador | Qué evita (incidentes reales) | Dónde | Forma |
 |---|---|---|---|---|---|
-| 1 | desplegar-dokploy | Publicar un merge aprobado o reaplicar env | deploy vs redeploy confundidos (22-10); health que no prueba la versión | usuario | skill (borrador) |
-| 2 | integrar-lote | Oscar aprueba integrar PR | `npm ci` en dashboard pnpm (19 h de rebases falsos); autor agent-lanes bloqueado por Vercel | usuario + hub | skill (borrador) |
-| 3 | barrido-carriles | Inicio de sesión, «qué tengo pendiente», tras cada bloque | 37 tarjetas ruidosas, triage del que no se sale, repreguntas | usuario | skill (borrador); luego `/pendiente` del bot (t_d6ff8363) |
-| 4 | tarjeta-carril | Crear cualquier tarjeta de carril | 36 bloqueos LIMITACION-GUARD/semana, falta Rama-origen, backticks ejecutados en bash | usuario + hub | skill (borrador) |
-| 5 | migracion-supabase | Aplicar migración aprobada de OHQ | prefijo duplicado (20261038), MCP de Supabase caído | usuario | skill (borrador) |
+| 1 | desplegar-dokploy | Publicar un merge aprobado o reaplicar env | deploy vs redeploy confundidos (22-10); health que no prueba la versión | usuario | skill (instalada 22-10) |
+| 2 | integrar-lote | Oscar aprueba integrar PR | `npm ci` en dashboard pnpm (19 h de rebases falsos); autor agent-lanes bloqueado por Vercel | usuario + hub | skill (instalada 22-10) |
+| 3 | barrido-carriles | Inicio de sesión, «qué tengo pendiente», tras cada bloque | 37 tarjetas ruidosas, triage del que no se sale, repreguntas | usuario | skill (instalada 22-10); luego `/pendiente` del bot (t_d6ff8363) |
+| 4 | tarjeta-carril | Crear cualquier tarjeta de carril | 36 bloqueos LIMITACION-GUARD/semana, falta Rama-origen, backticks ejecutados en bash | usuario + hub | skill (instalada 22-10) |
+| 5 | migracion-supabase | Aplicar migración aprobada de OHQ | prefijo duplicado (20261038), MCP de Supabase caído | usuario | skill (instalada 22-10) |
 | 6 | rotar-clave | Rotar y propagar una clave (o pasarla a la Bóveda) | rotación manual post-incidente; claves en 5 sitios; .bak con secretos | usuario | skill (cuando la Bóveda esté en master) |
 | 7 | verificar-bot-telegram | Un bot no responde o responde raro | webhook con secreto distinto tras migración; token de carriles confundido con el de Hermes | usuario | skill |
 | 8 | smoke-produccion | Tras desplegar algo con UI | bugs P0 que solo salen en prod (memoria 26-07) | usuario | skill (Chrome) |
@@ -55,7 +55,7 @@ Uso medido en los transcripts de Claude Code de los últimos 30 días (1.508 ses
 - **Retirar:** ninguna por ahora (no estorban); revisar `synced`.
 
 ## Borradores pendientes de aprobar (22-10)
-En `skills-borrador/` (no instalados): `verificar-bot-telegram`, `smoke-produccion`, `alta-persona-equipo`, `revisar-correo-infra` y `rotar-clave` (solo esqueleto: esperar a que la Bóveda, oscar-hq PR #254, esté en master).
+Instaladas el 22-10 con OK de Oscar: `verificar-bot-telegram`, `smoke-produccion`, `alta-persona-equipo` y `revisar-correo-infra` (en `skills/`). En `skills-borrador/` queda solo `rotar-clave` (esqueleto: la Bóveda ya está en master; se instala cuando se migren las claves).
 
 ## Actualizadas el 22-10 (fuera del repo, en `~/.claude`, con copia `.bak-20261022`)
 `skills/healthcheck` (Railway → Dokploy y api.pildoradigital.com; MigraTeam en Railway hasta su corte), `skills/distill` (sin el gotcha de nvm; lecciones duraderas también a la memoria real `projects/C--Users-oscar/memory/`), `agents/db-migration-checker.md` y `agents/cto-audit-360.md` (host actual).
