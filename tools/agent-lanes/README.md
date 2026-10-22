@@ -297,6 +297,15 @@ integrador_visibilidad.yaml. Quién puede pulsar botones (`tools/telegram/people
   `CHANGELOG.md`; `[]` lo desactiva): el integrador fusiona la base en la rama del PR con `merge=union`, pasa los gates y
   empuja a `lane/<id>` (único push del integrador, sin force). Con código mezclado no toca nada: devuelve la tarjeta al carril.
 
+## `/al_dia [proyecto|todos] [dev]` (t_a1e4e8cf, `al_dia.py`)
+
+Diagnóstico por proyecto (PR de `lane/*`: listos / CI rojo / conflicto / sin aprobar / atrasados), pone al día las ramas
+con ≥ `rama_atras_commits` (10, en `al_dia.yaml`) vía `update-branch` de GitHub (la base nunca se toca; la aprobación se
+re-ata a la cabeza nueva), resuelve el conflicto trivial con `atascos` o crea la tarjeta de rebase, y ofrece
+«✅ Integrar todo lo listo» (monta el lote, `batch.py`) más un botón por PR. Solo `dev`; `prod`, «🛠 Resolver» y la oferta
+proactiva son la tarjeta hija (`specs/al-dia-prod.md`). Alias `/aldia`. Con un proyecto vale su marca; «todos» exige acceso
+a todas las marcas.
+
 ## Tras la migración a Dokploy (22-10, t_ffffc632)
 Oscar HQ y NextJobs corren en el servidor pildora-01 (Hetzner) con Dokploy; MigraTeam sigue en Railway hasta su corte.
 - **Autor de los commits del integrador** (`integrator.commit_author` en lanes.yaml; por defecto

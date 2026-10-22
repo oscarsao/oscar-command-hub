@@ -970,6 +970,8 @@ class DecisionDesk:
             return bool(self.commands) and self.commands.req_choice(rec, button, where)
         if action == FLUJO:  # /flujo: crear o descartar la propuesta
             return bool(self.commands) and self.commands.flujo_choice(rec, button, where)
+        if action in ("ad_integrar", "ad_pr"):  # /al_dia: integrar todo lo listo / abrir la ficha de un PR
+            return bool(self.commands) and self.commands.al_dia_choice(action, rec, where, self)
         if action in (DEPLOY_ASK, DEPLOY_NO):  # /desplegar: confirmación previa al int_deploy
             return bool(self.commands) and self.commands.deploy_step(action, rec, where, self)
         if action == CARD_ACCEPT_ALL:
