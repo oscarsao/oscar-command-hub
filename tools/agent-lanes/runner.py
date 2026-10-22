@@ -24,7 +24,7 @@ from agent_lanes.commands import CommandCenter, register_commands
 from agent_lanes.collab_intake import CollabIntake
 from agent_lanes.people import load_people
 from agent_lanes.decisions import CALLBACKS_DIR, OWNER_TELEGRAM_ID, CallbackStore, DecisionDesk, UpdatePoller
-from agent_lanes import explain, triaje
+from agent_lanes import explain, telegram_lane, triaje
 from agent_lanes.deps import ShowCache, TreeReader
 from agent_lanes.hermes_answers import HermesAnswers
 from agent_lanes.reminders import Reminders
@@ -189,6 +189,8 @@ def main(argv: list[str] | None = None) -> int:
     interval = args.interval or settings["interval_seconds"]
     log.info("runner: carriles=%s max_workers=%s interval=%ss", list(selected), service.max_workers, interval)
 
+    if not args.once:  # plaza reservada: hilo propio, para que arranque aunque la pasada general espere a sus workers
+        service.start_reserved_ticker(interval, paused=drain.active)
     started = time.monotonic()
     drain.discard_stale()  # un drain.json de más de 2 h (restart muerto a medias) no deja los carriles parados
     for r in runners:
@@ -274,7 +276,15 @@ def main(argv: list[str] | None = None) -> int:
             reconcile.tick()
         if limpieza:
             limpieza.tick()
+        try:  # tarjetas de Telegram que ya estaban en hub/oscarhq (ready) -> claude-telegram; las running no se tocan
+            if moved := telegram_lane.reasignar_abiertas(hermes_for, all_lanes):
+                log.info("claude-telegram: tarjetas reasignadas: %s", moved)
+        except Exception as exc:
+            log.warning("reasignación a claude-telegram falló: %s", exc)
         results = service.run_pass()
+        if args.once:  # sin hilo de fondo: la plaza reservada también se atiende y se espera
+            service.reserved_pass()
+            results.update(service.wait_reserved())
         if watch:
             watch.observe(service.list_errors)
         if results:
