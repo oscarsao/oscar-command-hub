@@ -20,7 +20,10 @@ def test_lanes_yaml_corre_tsc_y_vitest_del_dashboard_en_oscarhq():
     pol = load_integrator_settings(LANES_YAML, lane_filter=False).policies["claude-oscarhq"]
     assert pol.batch_frontend_paths == ("dashboard/",)
     assert "tsc --noEmit" in pol.batch_frontend_cmd and "vitest run" in pol.batch_frontend_cmd
-    assert "npm ci" in pol.batch_frontend_cmd  # el worktree del lote no trae node_modules
+    # El worktree del lote no trae node_modules: instalación limpia con el gestor del lockfile del dashboard
+    # (pnpm-lock.yaml). `npm ci` sin package-lock.json falla siempre con EUSAGE (lote del 22-10).
+    assert "pnpm" in pol.batch_frontend_cmd and "--frozen-lockfile" in pol.batch_frontend_cmd
+    assert "npm ci" not in pol.batch_frontend_cmd
 
 
 def _env(tmp_path):

@@ -277,8 +277,11 @@ integrator:
       batch: daily                  # lote diario (agent_lanes/batch.py): un solo botón [🔀 Fusionar lote] a las 08:30 o con /lote oscarhq
       manual_migrations: [supabase/migrations/]
       # Mismo gate que el build de Vercel (#172 dijo «tests OK» con el dashboard roto): tsc + vitest en un worktree limpio.
+      # El dashboard usa pnpm (pnpm-lock.yaml, sin package-lock.json): con `npm ci` el gate fallaba SIEMPRE en ~2 s
+      # (EUSAGE) y el lote echaba como «rompe el build» a toda rama que tocara dashboard/ (lote del 22-10).
+      # pnpm no está en PATH: va por corepack, versión fijada; safe_env() no hereda COREPACK_*, de ahí el `set`.
       batch_frontend_paths: [dashboard/]
-      batch_frontend_cmd: cd dashboard && npm ci --no-audit --no-fund && npx tsc --noEmit && npx vitest run
+      batch_frontend_cmd: cd dashboard && set COREPACK_ENABLE_DOWNLOAD_PROMPT=0&& corepack pnpm@10.18.3 install --frozen-lockfile && npx tsc --noEmit && npx vitest run
       # Infraestructura de arranque/deploy: se puede fusionar, pero sin botón de deploy (lo revisa Oscar).
       sensitive_paths: [railway.json, railway.toml, nixpacks.toml, Procfile, Dockerfile, .railwayignore, requirements.txt, .github/]
       railway_dir: C:/Users/oscar/dev/oscar-hq
