@@ -140,7 +140,6 @@ LANE_HINTS = {
                    "hermes"),
 }
 PREPARE_MAX = 10  # /preparar todas: tope de tarjetas por orden (0,5 $ como máximo cada una)
-READY_PER_LANE = 8  # tareas en cola listadas por carril en /tareas
 COLA_PER_LANE = 5  # siguientes tareas por carril en /cola
 PRIORITY_MAX = 99
 PRIORITY_STEP = 1  # lo que suben o bajan «sube»/«baja» de /prioridad
@@ -2058,7 +2057,8 @@ class CommandCenter:
                 self._send(where, "Marca desconocida: usa /tareas migrateam, /tareas pildora o /tareas nextjobs",
                            html=False)
                 return
-        self._send(where, self.tasks_text(brand))
+        for page in self.tasks_pages(brand):
+            self._send(where, page)
 
     def cmd_cola(self, where, args: str, brand: str | None) -> None:
         if args:
@@ -2121,46 +2121,72 @@ class CommandCenter:
             return
         self._send(where, f"✅ {tid} · prioridad {cur} → {new}", html=False)
 
-    def tasks_text(self, brand: str | None, *, with_links: bool = True) -> str:
+    def tasks_text(self, brand: str | None) -> str:
+        return "\n".join(self.tasks_pages(brand))
+
+    def tasks_pages(self, brand: str | None) -> list[str]:
+        """/tareas: «En marcha» (carril y tablero) y «En cola» entera; cada tarea con su `/tarea t_xxx` tocable.
+        Si no cabe en un mensaje se reparte en varios por líneas enteras: nunca se recorta nada."""
         e = html.escape
-        out = ["🛣 <b>Tareas en curso y en cola</b>" + (f" · {e(brand)}" if brand else "")]
         sections = []
         for name, lane in self.lanes.items():
             if lane.kind not in ("implement", "ops") or (brand and BRANDS.get(name) != brand):
                 continue
             h = self.hermes_for(lane.board)
-            running, ready = h.list_status(name, "running"), h.list_status(name, "ready")
-            items = [("▶️", lane, t) for t in running] + [("⏳", lane, t) for t in ready[:READY_PER_LANE]]
-            sections.append((name, lane, items, len(ready)))
+            sections.append((lane, h.list_status(name, "running"), h.list_status(name, "ready")))
         # Una hija cuyo padre también sale en la lista va debajo de él (aunque sea de otro carril del tablero).
-        shown = [it for _, _, items, _ in sections for it in items]
+        shown = [("▶️", lane, t) for lane, run, _ in sections for t in run] + \
+                [("⏳", lane, t) for lane, _, rdy in sections for t in rdy]
         parent_of = self._shown_parents(shown)
         kids: dict[str, list] = {}
         for it in shown:
             if it[2]["id"] in parent_of:
                 kids.setdefault(parent_of[it[2]["id"]], []).append(it)
 
-        def emit(it, depth: int = 0) -> None:
-            emoji, lane, t = it
-            out.append(("   " * depth + "↳ " if depth else "") + f"{emoji} " + self._task_ref(lane, t, with_links))
+        def emit(out: list[str], it, depth: int = 0) -> None:
+            emoji, _, t = it
+            pad = "   " * depth
+            out.append(pad + ("↳ " if depth else "") + f"{emoji} {e(truncate(t.get('title'), 60))} · "
+                       f"<code>{e(t['id'])}</code>")
+            out.append(pad + f"/tarea {e(t['id'])}")
             for kid in kids.get(t["id"], ()):  # _shown_parents deja un bosque (sin ciclos): termina
-                emit(kid, depth + 1)
+                emit(out, kid, depth + 1)
 
-        for name, lane, items, n_ready in sections:
-            out.append(f"\n<b>{e(name)}</b>" + (f" · {e(BRANDS[name])}" if name in BRANDS else ""))
-            if not items:
-                out.append("libre, sin cola")
-            top = [it for it in items if it[2]["id"] not in parent_of]
-            for it in top:
-                emit(it)
-            if items and not top:
-                out.append("(sus tareas van bajo su padre)")
-            if n_ready > READY_PER_LANE:
-                out.append(f"  +{n_ready - READY_PER_LANE} más en cola")
-        text = "\n".join(out)
-        if len(text) > TEXT_MAX and with_links:  # sin enlaces antes que cortar el HTML a medias
-            return self.tasks_text(brand, with_links=False)
-        return text[:TEXT_MAX]
+        suffix = f" · {e(brand)}" if brand else ""
+        lines = [f"▶️ <b>En marcha</b>{suffix}"]
+        busy = [(lane, run) for lane, run, _ in sections if run]
+        for lane, run in busy:
+            lines.append(f"\n<b>{e(lane.name)}</b> · tablero {e(lane.board)} · en ejecución")
+            for t in run:
+                if t["id"] not in parent_of:
+                    emit(lines, ("▶️", lane, t))
+        if not busy:
+            lines.append("Nada en marcha.")
+        lines.append("\n⏳ <b>En cola</b>" + suffix)
+        queued = [(lane, rdy) for lane, _, rdy in sections if rdy]
+        for lane, rdy in queued:
+            lines.append(f"\n<b>{e(lane.name)}</b> · tablero {e(lane.board)} · {len(rdy)} en cola")
+            top = [t for t in rdy if t["id"] not in parent_of]
+            for t in top:
+                emit(lines, ("⏳", lane, t))
+            if not top:
+                lines.append("(sus tareas van bajo su padre)")
+        if not queued:
+            lines.append("Cola vacía.")
+        return self._paginate(lines)
+
+    @staticmethod
+    def _paginate(lines: list[str]) -> list[str]:
+        """Junta líneas enteras en mensajes de ≤ TEXT_MAX (cada línea es corta: nunca se parte una)."""
+        pages, cur = [], ""
+        for line in lines:
+            if cur and len(cur) + 1 + len(line) > TEXT_MAX:
+                pages.append(cur)
+                cur = line.lstrip("\n")
+            else:
+                cur = f"{cur}\n{line}" if cur else line
+        pages.append(cur)
+        return pages
 
     def _shown_parents(self, items: list) -> dict[str, str]:
         """{hija: padre} entre las tareas listadas (mismo tablero). Una lectura `show` cacheada por tarea; si no se

@@ -121,7 +121,8 @@ Los enlaces `hermes kanban link <padre> <hija>` se ven también en Telegram:
   bloquean su integración, `deps.pending_parents`) y `↳ 3 subtareas: ✅ 1 · ▶️ 1 · ⏳ 1` (✅ done/archived,
   ▶️ running/review/blocked, ⏳ el resto). La ficha de Integración no repite ⏸: ya lo lista en "Depende de".
 - `/tarea t_x` añade el árbol: padre(s), hermanas, la tarea (👉) e hijas, con estado y enlace al panel.
-- `/tareas` pone cada hija debajo de su padre cuando ambos salen en la lista.
+- `/tareas` pone cada hija debajo de su padre cuando ambos salen en la lista. Muestra «En marcha» (carril y tablero) y
+  «En cola» completa, cada tarea con su `/tarea t_xxx` tocable; si no cabe, se reparte en varios mensajes.
 Las lecturas `show` se cachean (60 s, y se vacían en cada pasada del bucle; 30 s en los comandos).
 
 ## Carril del sistema (`claude-hub`)
