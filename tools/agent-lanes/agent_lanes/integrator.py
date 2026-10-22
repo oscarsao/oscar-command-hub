@@ -1682,6 +1682,7 @@ class Integrator:
             log.warning("%s: railway up falló: %s", tid, (up.stderr or up.stdout or "").strip()[-300:])
             self._edit(desk, lane, rec, where, "blocked", "⛔ deploy falló al subir (detalle en el log)")
             self._comment(lane, tid, f"DEPLOY-FALLIDO {tip} · railway up exit {up.returncode}")
+            self._deploy_fallo(tid, tip, f"railway up exit {up.returncode}")
             return True
         dep_id = self._new_deployment_id(policy, up.stdout + up.stderr, {d.get("id") for d in before})
         if not dep_id:
@@ -1702,6 +1703,7 @@ class Integrator:
         else:
             why = "sin terminar en 15 min" if status is None else status
             self._comment(lane, tid, f"DEPLOY-FALLIDO {tip} · railway deployment {dep_id} {why}")
+            self._deploy_fallo(tid, tip, f"railway deployment {dep_id} {why}")
             self._edit(desk, lane, rec, where, "blocked", status_line("⛔ deploy falló", why, "revisa Railway"))
         return True
 
@@ -1794,6 +1796,7 @@ class Integrator:
             log.warning("%s: dokploy deploy falló: HTTP %s", tid, code)
             self._edit(desk, lane, rec, where, "blocked", "⛔ deploy falló al pedirlo a Dokploy (detalle en el log)")
             self._comment(lane, tid, f"DEPLOY-FALLIDO {tip} · dokploy application.deploy HTTP {code}")
+            self._deploy_fallo(tid, tip, f"dokploy application.deploy HTTP {code}")
             return True
         status, dep_id = self._poll_dokploy(policy, before)
         dep = dep_id or "dokploy"
@@ -1819,6 +1822,7 @@ class Integrator:
         else:
             why = "sin terminar en 15 min" if status is None else status
             self._comment(lane, tid, f"DEPLOY-FALLIDO {tip} · dokploy deployment {dep} {why}")
+            self._deploy_fallo(tid, tip, f"dokploy deployment {dep} {why}")
             self._edit(desk, lane, rec, where, "blocked", status_line("⛔ deploy falló", why, "revisa Dokploy"))
         return True
 
@@ -1873,6 +1877,23 @@ class Integrator:
             if st.get("lane") == lane.name and st.get("status") == "merged" \
                     and re.fullmatch(r"[0-9a-f]{40}", st.get("merge_sha") or ""):
                 out.append((tid, st))
+        return out
+
+    def _deploy_fallo(self, tid: str, sha: str, motivo: str) -> None:
+        """Deja constancia del último fallo de despliegue (lo lee /al_dia para ofrecer «🛠 Resolver»). Nunca lanza."""
+        try:
+            self._save(tid, deploy_fallo={"sha": sha, "motivo": truncate(motivo, 300)})
+        except Exception as exc:
+            log.warning("%s: no se pudo anotar el fallo de despliegue: %s", tid, exc)
+
+    def _estados_de(self, lane) -> list[tuple[str, dict]]:
+        """Fichas locales (estado del integrador) de este carril, de cualquier estado."""
+        out = []
+        for path in sorted(self.state_dir.glob("t_*.json")):
+            if TID_RE.fullmatch(path.stem):
+                st = self._state(path.stem)
+                if st.get("lane") == lane.name:
+                    out.append((path.stem, st))
         return out
 
     def _tip_problem(self, lane, policy: Policy, tid: str, sha: str, tip: str) -> str | None:
@@ -2062,6 +2083,7 @@ class Integrator:
                 return True
             if last in GH_DEPLOY_BAD:
                 self._comment(lane, tid, f"DEPLOY-FALLIDO {sha} · GitHub Deployments {last}")
+                self._deploy_fallo(tid, sha, f"GitHub Deployments {last}")
                 self._edit(desk, lane, rec, where, "blocked", status_line(
                     "⛔ deploy falló", f"GitHub Deployments: {last}", "revisa Railway"))
                 return True

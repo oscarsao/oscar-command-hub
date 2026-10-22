@@ -84,7 +84,8 @@ def test_threshold_is_10_by_default_and_comes_from_yaml(tmp_path):
     assert load_ajustes("no-existe.yaml")["rama_atras_commits"] == 10
     f = tmp_path / "a.yaml"
     f.write_text("rama_atras_commits: 4\nmax_prs: basura\n", encoding="utf-8")
-    assert load_ajustes(f) == {"rama_atras_commits": 4, "max_prs": 20, "pr_listo_horas": 24, "sin_desplegar_horas": 24}
+    assert load_ajustes(f) == {"rama_atras_commits": 4, "max_prs": 20, "pr_listo_horas": 24, "sin_desplegar_horas": 24,
+                              "develop_atras_commits": 1, "oferta_cada_minutos": 60}
 
 
 # --- diagnóstico ---------------------------------------------------------------------------------------

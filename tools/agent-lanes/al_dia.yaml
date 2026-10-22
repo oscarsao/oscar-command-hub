@@ -2,4 +2,6 @@
 rama_atras_commits: 10   # una rama lane/* con al menos tantos commits de retraso respecto a su base se pone al día
 pr_listo_horas: 24       # oferta «🔄 Poner al día»: PR listos para fusionar desde hace al menos tantas horas
 sin_desplegar_horas: 24  # ... y fusionado sin desplegar desde hace al menos tantas horas
-max_prs: 20             # PR listos que se ofrecen con botón propio en el resumen de un proyecto
+develop_atras_commits: 1  # oferta: develop (proyectos con /promover) va por detrás de master al menos tantos commits
+oferta_cada_minutos: 60  # el monitor del runner revisa la deriva y ofrece «🔄 Poner al día» como mucho cada tantos minutos
+max_prs: 20            # PR listos que se ofrecen con botón propio en el resumen de un proyecto

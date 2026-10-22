@@ -302,6 +302,7 @@ class CommandCenter:
         self._triaje_cfg = triaje_cfg  # triaje.yaml ya cargado (None = se lee en cada texto: editable en caliente)
         self._workflow_store = workflow_store  # /workflow: workflows.Store (None = .state/workflows.json)
         self._health = health  # /salud: texto HTML ya montado (tests); None = health.build con lo real
+        self._ctx = threading.local()  # actor del comando en curso (por hilo)
         self._tipo = None  # /pedir: tipo_peticion.TipoPeticion (perezoso); `peticiones` = registro de A1, si lo hay
         self.peticiones = None
 
@@ -328,6 +329,7 @@ class CommandCenter:
             self._send(where, veto, html=False)
             return True
         actuando = getattr(self.desk, "actuando", None)  # firma las acciones con el nombre del operador (no Oscar)
+        self._ctx.actor = actor  # quién pidió el comando (las ofertas de /hoy se filtran por sus marcas)
         try:
             with actuando(actor) if actuando else contextlib.nullcontext():
                 if cmd in HELP_ALIASES:
@@ -768,16 +770,33 @@ class CommandCenter:
             from brief import brief_diario  # perezoso: solo el runner-servicio lo necesita
             text = brief_diario.build(hermes_for=self.hermes_for, brand_name=brand)
         self._send(where, text)
-        self._ofertas_al_dia(where)
+        self._ofertas_al_dia(where, getattr(self._ctx, "actor", None))
 
-    def _ofertas_al_dia(self, where) -> None:
-        """Tras el resumen: «🔄 Poner al día» por proyecto con deriva NUEVA (una oferta por estado; al_dia.yaml)."""
+    def _marca_permitida(self, actor):
+        """Filtro de carriles para las ofertas: un operador acotado por marca solo ve los proyectos de sus marcas."""
+        restringido = getattr(self.desk, "restringido", None)
+        if actor is None or not restringido or not restringido(actor):
+            return None
+        return lambda lane: self.desk.puede_en(actor, BRANDS.get(lane.name))
+
+    def _ofertas_al_dia(self, where, actor=None) -> None:
+        """«🔄 Poner al día» por proyecto con deriva NUEVA (una oferta por estado; al_dia.yaml), solo de las marcas del
+        actor. La clave de `.state/al_dia/ofertas.json` es la misma para /hoy y para el monitor (`al_dia_tick`)."""
         try:
-            for clave, texto, rec in self._al_dia().ofertas():
+            for clave, texto, rec in self._al_dia().ofertas(permitido=self._marca_permitida(actor)):
                 markup = self.desk.store.issue(rec, [[{"text": "🔄 Poner al día", "action": "ad_poner"}]])[1]
                 self._send(where, texto, html=False, markup=markup)
         except Exception as exc:  # la oferta nunca estropea el resumen
-            log.warning("/hoy: ofertas de /al_dia: %s", exc)
+            log.warning("ofertas de /al_dia: %s", exc)
+
+    def al_dia_tick(self) -> None:
+        """Monitor del runner (enganchado a `veto_tick`): ofrece a Oscar, por DM, «🔄 Poner al día» ante deriva nueva.
+        Como mucho una pasada cada `oferta_cada_minutos` (al_dia.yaml)."""
+        now = self._now()
+        if now - getattr(self, "_al_dia_at", 0) < self._al_dia()._aj()["oferta_cada_minutos"] * 60:
+            return
+        self._al_dia_at = now
+        self._ofertas_al_dia((self.owner_id, "0"))
 
     # --- /decisiones ----------------------------------------------------------------------------------
 
@@ -1128,7 +1147,7 @@ class CommandCenter:
             self.urgent_tick()
         except Exception as exc:
             log.warning("avisos urgentes: %s", exc)
-        for tick in (self.guard_tick, self.daily_tick, self.peticiones_tick):  # cola del integrador y partes de las 9:00
+        for tick in (self.guard_tick, self.daily_tick, self.peticiones_tick, self.al_dia_tick):  # cola, partes de las 9:00, /al_dia
             try:
                 tick()
             except Exception as exc:
@@ -2332,11 +2351,17 @@ class CommandCenter:
                 self._send(dest, "🔒 Producción solo la despliega Oscar (o quien tenga todas las marcas).", html=False)
                 return True
             return self._al_dia_prod(action, al_dia, clave, rec, where, dest)
+        if action in (AD_PONER, AD_RESOLVER) and not self.desk.puede_con(where.get("user_id"), rec):
+            self._send(dest, self.desk._rechazo_marca(where.get("user_id"), rec), html=False)   # veto de marca
+            return True
         if action == AD_PONER:
             self.cmd_al_dia(dest, clave, None)
             return True
         if action == AD_RESOLVER:
             st = al_dia.diagnose(clave)
+            if rec.get("fallo"):  # gate rojo / deploy con error / health KO
+                self._send(dest, al_dia.resolver_fallo(st, rec), html=False)
+                return True
             p = next((p for p in st.prs if p.tid == rec.get("task_id") and p.estado == "ci_rojo"), None)
             self._send(dest, al_dia.resolver_ci(st, p) if p else "Ese PR ya no tiene el CI en rojo.", html=False)
             return True

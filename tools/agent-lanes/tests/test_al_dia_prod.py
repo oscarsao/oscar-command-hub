@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 from agent_lanes.al_dia import AlDia
 from tests import test_commands as tc
 from tests.test_al_dia import FakeIntegrator, pr, tid
@@ -23,8 +25,9 @@ class Hermes:
 
 
 class Integ(FakeIntegrator):
-    def __init__(self, prs, tmp_path, merged=(), migracion=None, **kw):
+    def __init__(self, prs, tmp_path, merged=(), migracion=None, states=None, **kw):
         super().__init__(prs, **kw)
+        self.states = states or {}
         self.state_dir = tmp_path / ".state" / "integrator"
         self.merged = {t: {"title": "x", "pr": 5, "merge_sha": SHA, "migration": migracion} for t in merged}
         self.hermes, self.deploys = Hermes(), []
@@ -35,6 +38,9 @@ class Integ(FakeIntegrator):
 
     def _state(self, t):
         return self.merged.get(t, {})
+
+    def _estados_de(self, lane):
+        return list(self.states.items())
 
     def hermes_for(self, board):
         return self.hermes

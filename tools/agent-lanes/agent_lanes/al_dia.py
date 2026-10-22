@@ -26,10 +26,12 @@ log = logging.getLogger("agent-lanes.al_dia")
 
 ROOT = Path(__file__).resolve().parent.parent
 SETTINGS_PATH = ROOT / "al_dia.yaml"
-DEFAULTS = {"rama_atras_commits": 10, "max_prs": 20, "pr_listo_horas": 24, "sin_desplegar_horas": 24}
+DEFAULTS = {"rama_atras_commits": 10, "max_prs": 20, "pr_listo_horas": 24, "sin_desplegar_horas": 24,
+            "develop_atras_commits": 1, "oferta_cada_minutos": 60}
 DESTINOS = ("dev", "prod")
 AD_INTEGRAR, AD_PR = "ad_integrar", "ad_pr"   # botones: «✅ Integrar todo lo listo» / uno por PR
 AD_ACTIONS = (AD_INTEGRAR, AD_PR, AD_PROD, AD_PROD_OK, AD_RESOLVER, AD_PONER)
+FALLO_TEXTO = {"gate_rojo": "gate rojo", "deploy_error": "deploy con error", "health_ko": "health KO"}
 BRANCH_PREFIX = "lane/"
 CI_ROJO = {"FAILURE", "ERROR", "TIMED_OUT", "CANCELLED", "STARTUP_FAILURE", "ACTION_REQUIRED"}
 CI_EN_CURSO = {"PENDING", "IN_PROGRESS", "QUEUED", "WAITING", "EXPECTED"}
@@ -88,6 +90,8 @@ class ProjectState:
     prs: list[PRInfo] = field(default_factory=list)
     sin_desplegar: list[str] = field(default_factory=list)   # tarjetas fusionadas y sin desplegar
     aviso: str = ""                                          # p. ej. «no pude listar los PR»
+    fallos: list[dict] = field(default_factory=list)         # gate rojo, deploy error, health KO (ver leer_fallos)
+    develop_atras: int = 0                                   # commits de master que le faltan a develop (/promover)
 
     def con(self, estado: str) -> list[PRInfo]:
         return [p for p in self.prs if p.estado == estado]
@@ -120,6 +124,8 @@ class AlDia(ProdMixin):
         slug = i.links.repo_slug(lane) if i.links else None
         st = ProjectState(key, lane, policy, slug or "")
         st.sin_desplegar = [tid for tid, _ in i._merged_states(lane, "")] if policy.deploy != "none" else []
+        st.fallos = self.leer_fallos(lane)
+        st.develop_atras = self.develop_atras(key)
         if not slug:
             st.aviso = "sin repo en GitHub: no se pueden listar los PR"
             return st
@@ -245,6 +251,10 @@ class AlDia(ProdMixin):
                 out.append(f"Atrasadas (≥{umbral} commits): " + ", ".join(f"#{p.number} (−{p.atras})" for p in atras))
         elif not st.aviso:
             out.append("Sin PR abiertos de carril.")
+        if st.develop_atras:
+            out.append(f"⏪ develop va {st.develop_atras} commit(s) por detrás de master (se resuelve con /promover {st.key})")
+        for f in st.fallos:
+            out.append(f"❌ {FALLO_TEXTO.get(f['fallo'], f['fallo'])}: {f['titulo']}")
         if st.sin_desplegar:
             out.append(f"🚀 Fusionado sin desplegar: {len(st.sin_desplegar)}"
                        + ("" if destino == "prod" else " (se despliega con `/al_dia … prod`)"))
@@ -265,6 +275,8 @@ class AlDia(ProdMixin):
                           dict(base, task_id=listos[0].tid)))
             filas += [(f"🔎 #{p.number} {p.title[:30]}", AD_PR, dict(base, task_id=p.tid)) for p in listos]
         filas += [(f"🛠 Resolver #{p.number} (CI rojo)", AD_RESOLVER, dict(base, task_id=p.tid)) for p in rojos]
+        filas += [(f"🛠 Resolver {f['titulo'][:28]} ({FALLO_TEXTO[f['fallo']]})", AD_RESOLVER,
+                   dict(base, task_id=f["tid"], fallo=f["fallo"])) for f in st.fallos[:tope]]
         if destino == "prod" and st.sin_desplegar:
             filas.append((f"🚀 Desplegar producción ({len(st.sin_desplegar)})", AD_PROD,
                           dict(base, task_id=st.sin_desplegar[0])))

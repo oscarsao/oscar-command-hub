@@ -15,6 +15,7 @@ import os
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 from .titulos import proyecto_de_carril
 
@@ -22,7 +23,8 @@ log = logging.getLogger("agent-lanes.al_dia")
 
 AD_PROD, AD_PROD_OK = "ad_prod", "ad_prod_ok"           # «🚀 Desplegar producción» → «¿Seguro?» → «✅ Sí, desplegar»
 AD_RESOLVER, AD_PONER = "ad_resolver", "ad_poner"       # «🛠 Resolver» / «🔄 Poner al día» (oferta proactiva)
-PRIORIDAD_ALTA = 10                                      # kanban: más alto = antes (igual que /hazlo)
+FALLO_TITULO = {"gate_rojo": "Gate rojo", "deploy_error": "Deploy con error", "health_ko": "Health KO"}
+PRIORIDAD_ALTA = 10                                     # kanban: más alto = antes (igual que /hazlo)
 
 
 def edad_horas(creado: str, ahora: float) -> float:
@@ -112,7 +114,49 @@ class ProdMixin:
         return self.crear_arreglo(st.lane, "ci_rojo", p.head, f"CI rojo en #{p.number} {p.title[:40]}", detalle,
                                   rama=f"lane/{p.tid}")
 
+    def leer_fallos(self, lane) -> list[dict]:
+        """Fallos del carril con fuente en el estado del integrador: gate rojo (`failed`), deploy con error y health KO
+        (`deploy_fallo` de una fusión aún sin desplegar). El CI rojo sale del PR (`resolver_ci`). Nunca lanza."""
+        try:
+            estados = self.i._estados_de(lane)
+        except Exception as exc:
+            log.debug("al_dia: sin estados del integrador: %s", exc)
+            return []
+        out = []
+        for tid, s in estados:
+            titulo = f"{s.get('title') or tid}"
+            if s.get("status") == "failed":
+                out.append({"fallo": "gate_rojo", "tid": tid, "titulo": titulo, "sha": s.get("head_sha") or "",
+                            "detalle": f"Gate rojo de {tid} (PR #{s.get('pr')} {s.get('pr_url') or ''}):\n"
+                                       + "\n".join(f"- {r}" for r in s.get("fail_reasons") or ["(sin motivo guardado)"])})
+            elif s.get("status") == "merged" and s.get("deploy_fallo"):
+                d = s["deploy_fallo"]
+                motivo = str(d.get("motivo") or "")
+                out.append({"fallo": "health_ko" if "health" in motivo.lower() else "deploy_error", "tid": tid,
+                            "titulo": titulo, "sha": d.get("sha") or s.get("merge_sha") or "",
+                            "detalle": f"Despliegue de {tid} fallido en {str(d.get('sha') or '?')[:12]}: {motivo}"})
+        return out
+
+    def resolver_fallo(self, st, rec: dict) -> str:
+        """«🛠 Resolver» de un gate rojo / deploy error / health KO: tarjeta con el log, idempotente por (fallo, SHA)."""
+        f = next((f for f in st.fallos if f["tid"] == rec.get("task_id") and f["fallo"] == rec.get("fallo")), None)
+        if not f:
+            return "Ese fallo ya no consta (se resolvió o se reintentó)."
+        return self.crear_arreglo(st.lane, f["fallo"], f["sha"], f"{FALLO_TITULO[f['fallo']]}: {f['titulo'][:40]}",
+                                  f["detalle"], rama=f"lane/{f['tid']}")
+
     # --- oferta proactiva ----------------------------------------------------------------------------------------------
+
+    def develop_atras(self, key: str) -> int:
+        """Commits de master que le faltan a develop en proyectos con /promover (GitHub compare). 0 si no aplica."""
+        cfg = ((getattr(getattr(self.i, "desk", None), "promoter", None) or SimpleNamespace(configs={})).configs or {}).get(key)
+        if not cfg:
+            return 0
+        try:
+            cp = self.i._gh("api", f"repos/{cfg.repo}/compare/{cfg.base}...{cfg.head}", "--jq", ".behind_by")
+            return int((cp.stdout or "0").strip()) if cp.returncode == 0 else 0
+        except Exception:
+            return 0
 
     def deriva(self, st, ahora: float) -> dict:
         aj = self._aj()
@@ -125,15 +169,22 @@ class ProdMixin:
             "listos_viejos": sorted(p.number for p in st.prs if p.estado == "listo"
                                     and edad_horas(p.creado, ahora) >= aj["pr_listo_horas"]),
             "atrasadas": sorted(p.number for p in st.prs if p.atras >= aj["rama_atras_commits"]),
+            "develop_atras": st.develop_atras >= aj["develop_atras_commits"] > 0,   # booleano: la cuenta crece sola
             "sin_desplegar": sorted(t for t in st.sin_desplegar
                                     if ahora - vistos[f"{st.key}:{t}"] >= aj["sin_desplegar_horas"] * 3600)}
         return {k: v for k, v in hecho.items() if v}
 
-    def ofertas(self, ahora: float | None = None) -> list[tuple[str, str, dict]]:
-        """[(clave, texto, rec)] de proyectos con deriva NUEVA: una oferta por estado; al volver a estar al día se olvida."""
+    def ofertas(self, ahora: float | None = None, permitido=None) -> list[tuple[str, str, dict]]:
+        """[(clave, texto, rec)] de proyectos con deriva NUEVA: una oferta por estado; al volver a estar al día se olvida.
+        `permitido(carril)` filtra por marca ANTES de marcar la oferta como hecha (la comparten /hoy y el monitor)."""
         ahora = time.time() if ahora is None else ahora
+        proyectos = self.proyectos()
+        if not proyectos:
+            return []
         hechas, nuevas = self._leer("ofertas.json"), []
-        for key, (lane, _) in self.proyectos().items():
+        for key, (lane, _) in proyectos.items():
+            if permitido and not permitido(lane):
+                continue
             try:
                 st = self.diagnose(key)
                 hecho = self.deriva(st, ahora)
@@ -153,6 +204,8 @@ class ProdMixin:
                               + ", ".join(f"#{n}" for n in hecho["listos_viejos"]))
             if hecho.get("atrasadas"):
                 partes.append("ramas atrasadas: " + ", ".join(f"#{n}" for n in hecho["atrasadas"]))
+            if hecho.get("develop_atras"):
+                partes.append(f"develop va {st.develop_atras} commit(s) por detrás de master (/promover {key})")
             if hecho.get("sin_desplegar"):
                 partes.append("fusionado sin desplegar: " + ", ".join(hecho["sin_desplegar"]))
             nuevas.append((key, f"🔄 {key} se ha quedado atrás: " + "; ".join(partes) + ".",
