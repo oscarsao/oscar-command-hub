@@ -37,13 +37,16 @@ REGISTRO_CAMPOS = ("tipo", "tipo_confirmado_por", "urgencia", "modo_oasp")
 ANSWER_MAX = 600
 
 DEFAULTS: dict = {
-    "tipos": {"bug": "🐞 Arreglar algo que falla", "feature": "✨ Crear algo nuevo"},
-    "etiquetas": {"bug": "Bug", "feature": "Feature"},
+    "tipos": {"bug": "🐞 Arreglar algo que falla", "feature": "✨ Crear algo nuevo",
+              "consulta": "❓ Solo una pregunta"},
+    "etiquetas": {"bug": "Bug", "feature": "Feature", "consulta": "Consulta"},
     "pistas_tipo": {
         "bug": ["falla", "fallo", "error", "no funciona", "roto", "rompe", "bug", "se cae", "no carga", "no deja",
                 "arregla", "corrige", "no sale", "no aparece"],
         "feature": ["añade", "añadir", "crea", "crear", "nuevo", "nueva", "quiero que", "implementa", "soporte para",
                     "feature", "me gustaría", "permite"],
+        "consulta": ["consulta", "pregunta", "explícame", "explica", "dime", "cómo funciona", "por qué", "qué hace",
+                     "dónde está", "cuántos", "cuántas"],
     },
     # P0-P3: `prioridad` = prioridad de la tarjeta en el kanban (más alto = antes). /hazlo usa 10.
     "urgencias": [
@@ -64,7 +67,7 @@ DEFAULTS: dict = {
     },
     "modo_por_defecto": "spec-lite",
     "palabras_modo_largo": 120,  # un encargo con más palabras que esto sube de Fast-Track a Spec-Lite
-    "max_preguntas": {"bug": 4, "feature": 3},
+    "max_preguntas": {"bug": 4, "feature": 3, "consulta": 0},  # una consulta se contesta tal cual, sin cuestionario
     "preguntas": {
         "bug": [
             {"id": "repro", "texto": "¿Cómo se reproduce? (pasos o qué estabas haciendo)", "opciones": [],
@@ -89,6 +92,7 @@ DEFAULTS: dict = {
     "textos": {
         "propone_bug": "Parece algo que falla. ¿Lo confirmas?",
         "propone_feature": "Parece algo nuevo. ¿Lo confirmas?",
+        "propone_consulta": "Parece una pregunta (se responde sin crear rama). ¿Lo confirmas?",
         "pregunta_tipo": "¿Qué es esto?",
         "modo": "¿Con qué tamaño lo hacemos? Te propongo {modo}:",
     },
@@ -132,7 +136,9 @@ def detect_tipo(text: str, cfg: dict) -> str | None:
     low = (text or "").casefold()
     score = {t: sum(1 for w in words if re.search(rf"(?<!\w){re.escape(w.casefold())}(?!\w)", low))
              for t, words in cfg["pistas_tipo"].items()}
-    bug, feat = score.get("bug", 0), score.get("feature", 0)
+    bug, feat, ask = score.get("bug", 0), score.get("feature", 0), score.get("consulta", 0)
+    if ask > bug and ask > feat:
+        return "consulta"
     return "bug" if bug > feat else "feature" if feat > bug else None
 
 
@@ -198,7 +204,8 @@ def card_body(st: dict, cfg: dict, req_id: str | None, origin: str) -> str:
 def tipo_spec(cfg: dict) -> list[list[dict]]:
     return [[{"text": cfg["tipos"]["bug"], "action": A_TIPO, "index": 0},
              {"text": cfg["tipos"]["feature"], "action": A_TIPO, "index": 1}],
-            [{"text": "🚫 Cancelar", "action": A_NO}]]
+            [{"text": cfg["tipos"]["consulta"], "action": A_TIPO, "index": 2},
+             {"text": "🚫 Cancelar", "action": A_NO}]]
 
 
 def question_spec(q: dict, accept_all: bool) -> list[list[dict]]:
@@ -266,7 +273,7 @@ class TipoPeticion:
                 self._close(where, "🚫 Cancelado, no he creado nada")
                 return True
             if action == A_TIPO:
-                return self._set_tipo(st, ("bug", "feature")[idx], actor, where)
+                return self._set_tipo(st, ("bug", "feature", "consulta")[idx], actor, where)
             if action == A_MODO:
                 modes = [m["id"] for m in self.cfg["modos"]]
                 if not isinstance(idx, int) or not 0 <= idx < len(modes):

@@ -286,3 +286,16 @@ integrador_visibilidad.yaml. Quién puede pulsar botones (`tools/telegram/people
   lanes.yaml; por defecto `docs/kb/CHANGELOG.md`, `docs/kb/LEDGER_ESTATUS.md`, `docs/kb/archivo/CHANGELOG.md`,
   `CHANGELOG.md`; `[]` lo desactiva): el integrador fusiona la base en la rama del PR con `merge=union`, pasa los gates y
   empuja a `lane/<id>` (único push del integrador, sin force). Con código mezclado no toca nada: devuelve la tarjeta al carril.
+
+## Clasificador de tarjetas y tipo «consulta»
+
+- **Clasificador** (`agent_lanes/clasificador.py`, reglas como datos en `clasificador.yaml`, se leen en cada pasada): antes
+  de lanzar al worker, si la tarjeta pide producción/variables de entorno, SQL remoto (Supabase/Alembic), escribir fuera
+  del worktree (`~/.hermes`), instalar binarios u otro repo distinto del carril, el runner la deja en la cola del
+  integrador (`/integrador`, mismo bloqueo `LIMITACION-GUARD`) con aviso, sin gastar una ejecución. Si menciona la rama de
+  otra tarea (`lane/t_…`) sin línea `Rama-origen:`, avisa a Oscar y al worker (parte de la base). `/pedir` y `/hazlo`
+  avisan ya al crear. No reclasifica si ya hay respuesta de Oscar, nota del coordinador o revisión. Salida de emergencia:
+  línea `Clasificador: omitir` en el cuerpo.
+- **Consulta** (`Tipo: consulta` en el cuerpo o título `[Consulta] …`; `/pedir` ofrece el botón «❓ Solo una pregunta»): sin
+  rama, sin worktree y sin verificación mecánica. El carril responde con `claude -p` de SOLO LECTURA (`Read,Grep,Glob`) en
+  el checkout de su repo, deja la respuesta como comentario y completa la tarjeta (`agent_lanes/consulta.py`).
