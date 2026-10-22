@@ -226,8 +226,13 @@ def main(argv: list[str] | None = None) -> int:
                                  state_path=ROOT / ".state" / "board_guard.json",
                                  minutes=float(env.get("BOARD_GUARD_MINUTES") or 10))
         # Solape de alcance entre tarjetas activas del mismo repo: avisa a Oscar, no fusiona nada (solapes.yaml).
-        solapes = SolapeTicker(all_lanes, hermes_for, send=lambda text: notify.send_to(owner_dm, None, text, html=False),
-                               state_path=ROOT / ".state" / "solapes.json")
+        solapes = SolapeTicker(all_lanes, hermes_for,
+                               send=lambda text, markup=None: notify.send_to(owner_dm, None, text, html=False,
+                                                                             reply_markup=markup),
+                               state_path=ROOT / ".state" / "solapes.json",
+                               issue=decisions.store.issue if decisions else None)
+        if decisions:
+            decisions.solapes = solapes  # los botones del aviso los atiende el despachador de decisiones
         # Choques reales en git (ramas lane/*, PR, ramas de personas): solo avisa a Oscar con propuesta (choques.yaml).
         choques = ChoquesTicker(all_lanes, hermes_for, send=lambda text: notify.send_to(owner_dm, None, text, html=False),
                                 state_path=ROOT / ".state" / "choques.json")

@@ -22,6 +22,10 @@ CRITERIO (sin IA; lo que se compara y nada más):
    propósito y no se avisan entre sí.
 Un conjunto de tarjetas se avisa una sola vez (clave = ids ordenados). Los ajustes viven en `solapes.yaml` (se relee en
 cada pasada; ausente o inválido = defaults de `Ajustes`).
+
+BOTONES (t_e31e4d9c): el aviso lleva [🔀 Son duplicadas] [✅ No son duplicadas] [⏸ Luego]. «No son duplicadas» guarda la
+pareja en `.state/solapes_descartados.json` y `detectar` no vuelve a juntarla; «Son duplicadas» NO fusiona nada: comenta
+en las tarjetas para que Oscar/Hermes decidan; «Luego» no hace nada (la clave ya está en `seen`, no se repite).
 """
 from __future__ import annotations
 
@@ -44,6 +48,9 @@ ESTADOS = ("ready", "todo", "running", "blocked")
 URL_RE = re.compile(r"https?://\S+")
 TOKEN_RE = re.compile(r"[\w.\-]+(?:/[\w.\-]+)*/?")
 MAX_ESTADO = 500  # claves recordadas en el fichero de estado
+DESCARTES_PATH = ROOT / ".state" / "solapes_descartados.json"
+SOL_FUSIONAR, SOL_DISTINTAS, SOL_LUEGO = "sol_fusionar", "sol_distintas", "sol_luego"
+SOL_ACTIONS = (SOL_FUSIONAR, SOL_DISTINTAS, SOL_LUEGO)
 
 
 @dataclass(frozen=True)
@@ -84,6 +91,19 @@ def load_ajustes(path: Path | str | None = None) -> Ajustes:
                 and all(isinstance(x, str) and x for x in v):
             out[f.name] = tuple(x.lower().lstrip(".") if f.name == "extensiones" else x for x in v)
     return Ajustes(**{**{f.name: getattr(d, f.name) for f in fields(Ajustes)}, **out})
+
+
+def par(a: str, b: str) -> str:
+    return "|".join(sorted((a, b)))
+
+
+def load_descartes(path: Path | str | None = None) -> set[str]:
+    """Parejas de tarjetas que Oscar marcó como «no son duplicadas» (claves `par`). Ilegible = ninguna."""
+    try:
+        data = json.loads(Path(path or DESCARTES_PATH).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return set()
+    return {str(x) for x in data} if isinstance(data, list) else set()
 
 
 def _norm_repo(path: str) -> str:
@@ -202,9 +222,11 @@ def _enlazadas(a: Card, b: Card, hermes_for, cache: dict) -> bool:
     return b.tid in rel(a) or a.tid in rel(b)
 
 
-def detectar(lanes: dict, hermes_for, ajustes: Ajustes | None = None) -> list[Grupo]:
-    """Conjuntos de 2+ tarjetas del mismo repo con solape (componentes conexos de los pares que solapan)."""
+def detectar(lanes: dict, hermes_for, ajustes: Ajustes | None = None, descartes: set[str] | None = None) -> list[Grupo]:
+    """Conjuntos de 2+ tarjetas del mismo repo con solape (componentes conexos de los pares que solapan).
+    `descartes`: parejas (`par`) que Oscar ya dijo que no son duplicadas; no se juntan."""
     ajustes = ajustes or Ajustes()
+    descartes = descartes or set()
     grupos: list[Grupo] = []
     cache: dict = {}
     for repo, cards in sorted(tarjetas_activas(lanes, hermes_for, ajustes).items()):
@@ -219,7 +241,7 @@ def detectar(lanes: dict, hermes_for, ajustes: Ajustes | None = None) -> list[Gr
         for i, a in enumerate(cards):
             for b in cards[i + 1:]:
                 c = compartido(a.rutas, b.rutas, ajustes)
-                if c and not _enlazadas(a, b, hermes_for, cache):
+                if c and par(a.tid, b.tid) not in descartes and not _enlazadas(a, b, hermes_for, cache):
                     parent[raiz(a.tid)] = raiz(b.tid)
                     comun.setdefault(a.tid, []).extend(c)
                     comun.setdefault(b.tid, []).extend(c)
@@ -251,15 +273,68 @@ def aviso(g: Grupo, ajustes: Ajustes | None = None) -> str:
     return "\n".join(lines)
 
 
+def teclado(g: Grupo) -> list[list[dict]]:
+    return [[{"text": "🔀 Son duplicadas", "action": SOL_FUSIONAR}, {"text": "✅ No son duplicadas", "action": SOL_DISTINTAS}],
+            [{"text": "⏸ Luego", "action": SOL_LUEGO}]]
+
+
+def registro(g: Grupo) -> dict:
+    """Registro del teclado (CallbackStore.issue): la primera tarjeta da task_id/board/lane; `cards` las lista todas."""
+    first = g.cards[0]
+    return {"task_id": first.tid, "board": first.board, "lane": first.lane, "title": first.title, "solape": True,
+            "cards": [{"tid": c.tid, "board": c.board} for c in g.cards]}
+
+
 class SolapeTicker:
     """Pasada periódica en el bucle del runner. Avisa una vez por conjunto de tarjetas (estado en `state_path`); nunca
     lanza: un fallo de Hermes, de Telegram o del YAML solo se registra."""
 
     def __init__(self, lanes: dict, hermes_for, *, send, state_path: Path, settings_path: Path | str | None = None,
-                 clock=time.monotonic):
+                 clock=time.monotonic, issue=None, descartes_path: Path | None = None):
+        """`issue(rec, spec)` -> (token, reply_markup) (CallbackStore.issue): con él el aviso lleva botones y se llama
+        `send(texto, markup)`; sin él, `send(texto)` y solo texto."""
         self.lanes, self.hermes_for, self.send = lanes, hermes_for, send
         self.state_path, self.settings_path, self._clock = state_path, settings_path, clock
+        self.issue = issue
+        self.descartes_path = descartes_path or state_path.with_name("solapes_descartados.json")
         self._last: float | None = None
+
+    def _enviar(self, g: Grupo, ajustes: Ajustes) -> None:
+        if self.issue:
+            self.send(aviso(g, ajustes), self.issue(registro(g), teclado(g))[1])
+        else:
+            self.send(aviso(g, ajustes))
+
+    def on_button(self, action: str, rec: dict, where: dict | None, desk) -> bool:
+        """Botones del aviso. Nunca fusiona, mueve ni cierra tarjetas."""
+        cards = [c for c in rec.get("cards") or () if c.get("tid")]
+        tids = [c["tid"] for c in cards]
+        if action == SOL_LUEGO:
+            desk._edit_text(where, f"⏸ Solape de {', '.join(tids)}: lo dejas para luego (no se repite este aviso)")
+            return True
+        if action == SOL_DISTINTAS:
+            descartes = load_descartes(self.descartes_path)
+            descartes.update(par(a, b) for i, a in enumerate(tids) for b in tids[i + 1:])
+            try:
+                self.descartes_path.parent.mkdir(parents=True, exist_ok=True)
+                self.descartes_path.write_text(json.dumps(sorted(descartes)), encoding="utf-8")
+            except OSError as exc:
+                log.warning("solapes: no se pudo guardar el descarte: %s", exc)
+                desk._edit_text(where, "No se pudo guardar el descarte; detalle en el log")
+                return False
+            desk._edit_text(where, f"✅ {', '.join(tids)}: no son duplicadas; no se vuelve a avisar de esta pareja")
+            return True
+        who = desk._who()
+        for c in cards:  # SOL_FUSIONAR: solo deja constancia; fusionar lo decide Oscar/Hermes
+            otras = ", ".join(t for t in tids if t != c["tid"])
+            try:
+                self.hermes_for(c["board"]).comment(
+                    c["tid"], f"{who} marcó como duplicada con {otras} (aviso de solape). Pendiente de fusionar: decide "
+                              "Oscar/Hermes; no se ha movido ni cerrado nada.", author="oscar-telegram")
+            except Exception as exc:
+                log.warning("solapes: comentario en %s falló: %s", c["tid"], exc)
+        desk._edit_text(where, f"🔀 {', '.join(tids)}: anotado como duplicadas en las tarjetas; no se fusiona nada solo")
+        return True
 
     def _seen(self) -> list[str]:
         try:
@@ -275,13 +350,13 @@ class SolapeTicker:
             if not ajustes.activo or (self._last is not None and now - self._last < ajustes.minutos * 60):
                 return []
             self._last = now
-            grupos = detectar(self.lanes, self.hermes_for, ajustes)
+            grupos = detectar(self.lanes, self.hermes_for, ajustes, load_descartes(self.descartes_path))
             seen = self._seen()
             fresh = [g for g in grupos if clave(g) not in seen]
             n = len(seen)
             try:
                 for g in fresh:  # si un envío falla, ese conjunto se reintenta en la pasada siguiente
-                    self.send(aviso(g, ajustes))
+                    self._enviar(g, ajustes)
                     seen.append(clave(g))
             finally:
                 if len(seen) > n:
