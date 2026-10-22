@@ -361,6 +361,8 @@ class CommandCenter:
         if cmd in SOLO_TODAS_LAS_MARCAS:
             return desk.aviso_marca(actor, None)
         if cmd in ("al_dia", "aldia"):  # un proyecto = su marca; "todos" abarca todas las marcas
+            if "prod" in args.lower().split():  # producción: solo Oscar o quien tenga "*"
+                return desk.aviso_marca(actor, None)
             al_dia = self._al_dia()
             clave = next((t for t in args.lower().split() if t in al_dia.proyectos()), None)
             return check(BRANDS.get(f"claude-{clave}")) if clave else desk.aviso_marca(actor, None)
@@ -766,6 +768,16 @@ class CommandCenter:
             from brief import brief_diario  # perezoso: solo el runner-servicio lo necesita
             text = brief_diario.build(hermes_for=self.hermes_for, brand_name=brand)
         self._send(where, text)
+        self._ofertas_al_dia(where)
+
+    def _ofertas_al_dia(self, where) -> None:
+        """Tras el resumen: «🔄 Poner al día» por proyecto con deriva NUEVA (una oferta por estado; al_dia.yaml)."""
+        try:
+            for clave, texto, rec in self._al_dia().ofertas():
+                markup = self.desk.store.issue(rec, [[{"text": "🔄 Poner al día", "action": "ad_poner"}]])[1]
+                self._send(where, texto, html=False, markup=markup)
+        except Exception as exc:  # la oferta nunca estropea el resumen
+            log.warning("/hoy: ofertas de /al_dia: %s", exc)
 
     # --- /decisiones ----------------------------------------------------------------------------------
 
@@ -2281,12 +2293,8 @@ class CommandCenter:
         if error:
             self._send(where, error, html=False)
             return
-        if destino == "prod":
-            self._send(where, "/al_dia prod aún no está disponible (llega en la tarjeta hija: producción con doble "
-                              "confirmación). Usa /desplegar para lo ya fusionado.", html=False)
-            return
         claves = list(proyectos) if proyecto == "todos" else [proyecto]
-        sent = self._send(where, f"🔄 /al_dia {proyecto} dev · empiezo…", html=False)
+        sent = self._send(where, f"🔄 /al_dia {proyecto} {destino} · empiezo…", html=False)
         mid = (sent or {}).get("message_id")
 
         def run() -> None:
@@ -2296,7 +2304,7 @@ class CommandCenter:
                     st = al_dia.diagnose(clave)
                     acciones = al_dia.poner_al_dia(st)
                     lineas.append(al_dia.resumen(st, destino) + ("\n" + "\n".join(acciones) if acciones else ""))
-                    markup = al_dia.botones(self.desk, st)
+                    markup = al_dia.botones(self.desk, st, destino)
                 except Exception as exc:  # un proyecto roto no tumba el resto
                     log.warning("/al_dia %s falló: %s", clave, exc)
                     lineas.append(f"📁 {clave}: no pude diagnosticarlo (detalle en el log)")
@@ -2304,7 +2312,7 @@ class CommandCenter:
                 if markup:  # los botones de cada proyecto van en su propio mensaje
                     self._send(where, lineas[-1], html=False, markup=markup)
                 if mid:
-                    self.notifier.edit(where[0], mid, f"🔄 /al_dia {proyecto} dev · {len(lineas)}/{len(claves)} "
+                    self.notifier.edit(where[0], mid, f"🔄 /al_dia {proyecto} {destino} · {len(lineas)}/{len(claves)} "
                                                       "proyectos…", html=False)
             texto = "✅ /al_dia terminado\n\n" + "\n\n".join(lineas)
             if mid:
@@ -2316,14 +2324,27 @@ class CommandCenter:
 
     def al_dia_choice(self, action: str, rec: dict, where: dict, desk) -> bool:
         """Botones de /al_dia: integrar todo lo listo (lote) o abrir la ficha de un PR con sus botones de siempre."""
-        from .al_dia import AD_INTEGRAR, AD_PR
+        from .al_dia import AD_INTEGRAR, AD_PONER, AD_PR, AD_PROD, AD_PROD_OK, AD_RESOLVER
         dest = (where["chat_id"], where.get("thread_id") or "0")
+        al_dia, clave = self._al_dia(), str(rec.get("key") or "")
+        if action in (AD_PROD, AD_PROD_OK):  # producción: solo Oscar o "*" (el botón puede estar en un chat compartido)
+            if self.desk.restringido(where.get("user_id")):
+                self._send(dest, "🔒 Producción solo la despliega Oscar (o quien tenga todas las marcas).", html=False)
+                return True
+            return self._al_dia_prod(action, al_dia, clave, rec, where, dest)
+        if action == AD_PONER:
+            self.cmd_al_dia(dest, clave, None)
+            return True
+        if action == AD_RESOLVER:
+            st = al_dia.diagnose(clave)
+            p = next((p for p in st.prs if p.tid == rec.get("task_id") and p.estado == "ci_rojo"), None)
+            self._send(dest, al_dia.resolver_ci(st, p) if p else "Ese PR ya no tiene el CI en rojo.", html=False)
+            return True
         if action == AD_PR:
             self.cmd_tarea(dest, str(rec.get("task_id") or ""), None)
             return True
         if action != AD_INTEGRAR:
             return False
-        al_dia, clave = self._al_dia(), str(rec.get("key") or "")
         self._send(dest, f"Montando el lote de {clave}… pasa los gates y los tests, puede tardar unos minutos.",
                    html=False)
 
@@ -2336,6 +2357,27 @@ class CommandCenter:
             self._send(dest, texto, html=False)
 
         self._spawn(run)
+        return True
+
+    def _al_dia_prod(self, action: str, al_dia, clave: str, rec: dict, where: dict, dest) -> bool:
+        """`ad_prod` → «¿Seguro?»; `ad_prod_ok` → el despliegue de /desplegar (INT_DEPLOY) del integrador."""
+        from .al_dia import AD_PROD
+        from .integrator import INT_DEPLOY
+        if action == AD_PROD:
+            markup = self.desk.store.issue(rec, [[{"text": "✅ Sí, desplegar", "action": "ad_prod_ok"}],
+                                                 [{"text": "✖ No", "action": DEPLOY_NO}]])[1]
+            self.notifier.edit(where["chat_id"], where["message_id"], f"⚠️ ¿Seguro? Esto despliega {clave} a "
+                               "producción (lo fusionado y sin desplegar).", html=False, reply_markup=markup)
+            return True
+        promotor = getattr(self.desk, "promoter", None)
+        plan = al_dia.prod_plan(clave, tuple(getattr(promotor, "configs", ()) or ()))
+        if "texto" in plan:
+            self._send(dest, plan["texto"], html=False)
+            return True
+        sent = self._send(dest, f"🚀 Desplegando {clave}…", html=False)
+        w = {"chat_id": where["chat_id"], "thread_id": where.get("thread_id") or "0",
+             "message_id": (sent or {}).get("message_id"), "user_id": where.get("user_id")}
+        self._spawn(lambda: self.desk.integrator.on_button(INT_DEPLOY, plan["rec"], w, self.desk))
         return True
 
     # --- /desplegar -----------------------------------------------------------------------

@@ -84,7 +84,7 @@ def test_threshold_is_10_by_default_and_comes_from_yaml(tmp_path):
     assert load_ajustes("no-existe.yaml")["rama_atras_commits"] == 10
     f = tmp_path / "a.yaml"
     f.write_text("rama_atras_commits: 4\nmax_prs: basura\n", encoding="utf-8")
-    assert load_ajustes(f) == {"rama_atras_commits": 4, "max_prs": 20}
+    assert load_ajustes(f) == {"rama_atras_commits": 4, "max_prs": 20, "pr_listo_horas": 24, "sin_desplegar_horas": 24}
 
 
 # --- diagnóstico ---------------------------------------------------------------------------------------
@@ -170,12 +170,6 @@ def test_command_dev_reports_and_offers_integrate_all_with_one_button_per_pr(tmp
     assert integ.assembled == [("claude-oscarhq", True)]
     assert any(m["text"] == "lote montado" for m in bot.sent)
 
-
-def test_command_prod_is_refused_and_touches_nothing(tmp_path):
-    integ, _ = make([pr(1)], approved={tid(1)})
-    cc, desk, bot = command_center(tmp_path, integ)
-    command(desk, "/aldia oscarhq prod")
-    assert "aún no está disponible" in bot.sent[-1]["text"] and integ.calls == []
 
 
 def test_command_unknown_project_explains_usage(tmp_path):

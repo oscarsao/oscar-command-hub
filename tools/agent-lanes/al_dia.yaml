@@ -1,3 +1,5 @@
 # Ajustes de /al_dia (agent_lanes/al_dia.py). Se relee en cada uso: no hace falta reiniciar el runner.
 rama_atras_commits: 10   # una rama lane/* con al menos tantos commits de retraso respecto a su base se pone al día
-max_prs: 20              # PR listos que se ofrecen con botón propio en el resumen de un proyecto
+pr_listo_horas: 24       # oferta «🔄 Poner al día»: PR listos para fusionar desde hace al menos tantas horas
+sin_desplegar_horas: 24  # ... y fusionado sin desplegar desde hace al menos tantas horas
+max_prs: 20             # PR listos que se ofrecen con botón propio en el resumen de un proyecto

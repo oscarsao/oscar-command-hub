@@ -794,6 +794,7 @@ class DecisionDesk:
             return
         button = buttons[int(n)]
         where = self._where(cq.get("message") or {})
+        where["user_id"] = actor  # quién pulsó (producción de /al_dia exige Oscar o "*")
         self._log_update(chat, "callback", button.get("action"), "respondido")
         name = self.operador_nombre(actor)
         if name:
@@ -987,7 +988,7 @@ class DecisionDesk:
             return bool(self.commands) and self.commands.triaje_choice(rec, button, where)
         if action == WORKFLOW:  # /workflow: aprobar el plan o descartarlo
             return bool(self.commands) and self.commands.workflow_choice(rec, button, where)
-        if action in ("ad_integrar", "ad_pr"):  # /al_dia: integrar todo lo listo / abrir la ficha de un PR
+        if action in ("ad_integrar", "ad_pr", "ad_prod", "ad_prod_ok", "ad_resolver", "ad_poner"):  # /al_dia
             return bool(self.commands) and self.commands.al_dia_choice(action, rec, where, self)
         if action in (DEPLOY_ASK, DEPLOY_NO):  # /desplegar: confirmación previa al int_deploy
             return bool(self.commands) and self.commands.deploy_step(action, rec, where, self)
