@@ -77,9 +77,9 @@ DEFAULTS: dict = {
                     r"\b(?:lea|leer|lee|use|usar|usa|consuma|consulte|admita|soporte|respete|valide|resuelva)\b",
                     r"\b(?:despu[eé]s|luego|m[aá]s tarde|tras)\b.{0,40}\b(?:integrador|Oscar)\b",
                     r"\b(?:el integrador|Oscar) (?:lo |la )?(?:aplicar[aá]|desplegar[aá]|har[aá])"],
-        # Negación: hasta 4 palabras o rutas sin coma entre la negación y el verbo, y «ni» coordinado (t_cce5da81:
-        # «no tocar ~/.hermes ni la configuración de Hermes» bloqueaba por «configuración» tras la ruta).
-        "negacion": [r"\b(?:no|nunca|jam[aá]s|sin|ni|evita|prohib\w+)\s+(?:[^\s,;]+\s+){0,4}$"],
+        # «ni» coordinado también niega (t_cce5da81: «no tocar ~/.hermes ni la configuración de Hermes» bloqueaba por
+        # «configuración»). Un tema precedido por una negación tampoco cuenta (ver _intencion).
+        "negacion": [r"\b(?:no|nunca|jam[aá]s|sin|ni|evita|prohib\w+)\s+(?:\w+\s+){0,2}$"],
         "recordatorio": "La tarjeta menciona producción, variables de entorno, SQL remoto u otro repo, pero no parece "
                         "pedirte actuar sobre ellos. Haz solo el código/documento/tests en tu worktree: el guard no te "
                         "deja desplegar, cambiar variables ni escribir en otro repo ni fuera del worktree; lo que "

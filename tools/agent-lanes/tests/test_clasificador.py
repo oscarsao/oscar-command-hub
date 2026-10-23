@@ -249,3 +249,6 @@ def test_limites_negados_con_ruta_no_bloquean():
     for body in ("No te preocupes, escribe la config en ~/.hermes/config.yaml",
                  "Actualiza ~/.hermes/config.yaml y no toques nada más"):
         assert "fuera_worktree" in ids(clasificador.evaluar(HUB, task(body), lanes=LANES)), body
+    for rid, body in (("produccion_env", "No es urgente pero cambia la variable de entorno HERMES_X en Railway"),
+                      ("produccion_env", "No añadas tests y despliega a producción el runner")):
+        assert rid in ids(clasificador.evaluar(HUB, task(body), lanes=LANES)), body
