@@ -4,6 +4,12 @@
 > Versión de referencia: 2026-09-27. Antes de confiar en este doc en una sesión vieja, verifica
 > la fecha contra los repos reales si hay drift.
 
+> **PLAN VIGENTE (23-10-2026): leer primero [`decisions/2026-10-23-plan-workflows-deuda.md`](decisions/2026-10-23-plan-workflows-deuda.md).**
+> Trabajo por workflows integrales encadenados (máximo 3 de código a la vez), sin conflictos (prevención al
+> lanzar), toda función con sus pantallas y URL, una pasada completa con el sistema de diseño, ahorro de
+> tokens y limpieza de ramas y worktrees. Decisiones vivas de Oscar y deuda técnica medida en
+> https://claude.ai/artifact/FcnvknBmUPEMEuscHqYevf. Donde este CONTEXT.md diga otra prioridad, manda el plan.
+
 ## Identidad
 - **Oscar Alcántara** — solopreneur, bootstrapped. CEO. Idioma por defecto: Español (España).
 - Modelo de trabajo: multi-agente (Claude Code, Codex, Hermes) con un solo humano decisor: Oscar.
