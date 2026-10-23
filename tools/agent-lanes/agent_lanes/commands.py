@@ -2213,6 +2213,7 @@ class CommandCenter:
     def health_text(self) -> str:
         """Todo local (health.py): .state, `hermes kanban list`, ficheros del monitor y git sin fetch."""
         from . import ciego, drain, health
+        from .paradas import Paradas
         from .runner import STATE_DIR, pid_alive
         from .status import lane_rows, runner_alive, runner_line
         lock = drain.LOCK_FILE
@@ -2227,7 +2228,8 @@ class CommandCenter:
             drift=lambda: health.migrateam_drift(mig.repo if mig else ""),
             machine=health.machine_line,
             pending=lambda: (len(self.pending_decisions()), len(self.stuck_tasks()), len(self.decision_cards())),
-            now=now, blind=lambda: ciego.resumen(ciego.FILE, now))
+            now=now, blind=lambda: ciego.resumen(ciego.FILE, now),
+            paradas=lambda: Paradas(self.lanes, self.hermes_for, self._now).resumen())
 
     def _agent_questions(self, where, pendings: list, now: float, scope: str, limit: int = MAX_CARDS) -> None:
         """Preguntas de los agentes (tareas de carril en needs_input): cabecera + una tarjeta con botones por tarea.

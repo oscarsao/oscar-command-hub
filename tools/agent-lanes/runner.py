@@ -31,6 +31,7 @@ from agent_lanes.deps import ShowCache, TreeReader
 from agent_lanes.hermes_answers import HermesAnswers
 from agent_lanes.reminders import Reminders
 from agent_lanes.limpieza import LimpiezaRunner, LimpiezaTicker
+from agent_lanes.paradas import ParadasRunner, ParadasTicker
 from agent_lanes.reconcile import ReconcileTicker, Reconciler, gh_prs
 from agent_lanes.aviso import REMIND_HOURS, StuckWatcher
 from agent_lanes.git_ops import GitOps, github_slug_problem
@@ -220,6 +221,7 @@ def main(argv: list[str] | None = None) -> int:
     guard = None
     reconcile = None
     limpieza = None
+    paradas = None
     solapes = None
     choques = None
     if decisions and not args.once:  # PR resueltos -> tarjetas cerradas; propuesta diaria de obsoletas (con botón)
@@ -239,6 +241,14 @@ def main(argv: list[str] | None = None) -> int:
         recon.peer, limpieza_runner.peer = limpieza_runner.silenciada, recon.silenciada  # «Mantener» en uno silencia el otro
         decisions.limpieza = limpieza_runner
         limpieza = LimpiezaTicker(limpieza_runner, minutes=float(env.get("RECONCILE_MINUTES") or 10))
+        # Aviso de las 9:00 de tarjetas paradas > 24 h: al tema de Integración (lanes.yaml) o, sin él, al DM de Oscar.
+        p_chat, p_thread = integration.target if integration else (owner_dm, None)
+        paradas_runner = ParadasRunner(all_lanes, hermes_for,
+                                       lambda text, markup=None: notify.send_to(p_chat, p_thread, text, html=False,
+                                                                                reply_markup=markup),
+                                       issue=decisions.store.issue, state_path=ROOT / ".state" / "paradas.json")
+        decisions.paradas = paradas_runner
+        paradas = ParadasTicker(paradas_runner, minutes=float(env.get("RECONCILE_MINUTES") or 10))
     if not args.once:  # guarda de tablero (ADR-036): tarjetas en un tablero que su carril no lee
         owner_dm = env.get("OWNER_TELEGRAM_ID") or OWNER_TELEGRAM_ID
         guard = BoardGuardTicker(all_lanes, hermes_for, apply=env.get("BOARD_GUARD_APPLY", "").lower() == "true",
@@ -306,6 +316,8 @@ def main(argv: list[str] | None = None) -> int:
             reconcile.tick()
         if limpieza:
             limpieza.tick()
+        if paradas:
+            paradas.tick()
         try:  # tarjetas de Telegram que ya estaban en hub/oscarhq (ready) -> claude-telegram; las running no se tocan
             if moved := telegram_lane.reasignar_abiertas(hermes_for, all_lanes):
                 log.info("claude-telegram: tarjetas reasignadas: %s", moved)
