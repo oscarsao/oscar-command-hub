@@ -143,3 +143,17 @@ def test_live_checkout_behind_origin_over_30_min_alerts(monitor, monkeypatch):
     behind["n"] = 0
     clock["t"] += 301
     assert "✅" in m.refresh_live_lag()
+
+
+def test_runner_parado_solo_avisa_a_los_cinco_minutos(monitor, monkeypatch):
+    m, pushed = make(monitor)
+    t = [1_000_000.0]
+    monkeypatch.setattr(monitor.time, "time", lambda: t[0])
+    texto = "El runner de carriles lleva más de cinco minutos parado"
+    for k in range(10):  # 10 lecturas en 2,5 min: un reinicio o un `status` lento, no se avisa
+        t[0] = 1_000_000.0 + k * 15
+        m.condition("runner-dead", True, texto, "x", min_secs=monitor.RUNNER_DEAD_SECS)
+    assert pushed == []
+    t[0] = 1_000_000.0 + 301
+    m.condition("runner-dead", True, texto, "x", min_secs=monitor.RUNNER_DEAD_SECS)
+    assert pushed and "cinco minutos" in pushed[-1]
