@@ -415,6 +415,57 @@ def _spawn(fn: Callable[[], None]) -> None:
     threading.Thread(target=fn, name="lane-decision", daemon=True).start()
 
 
+class PendingDecisions:
+    """Decisiones de Oscar que fallaron por una causa transitoria (timeout de hermes/gh, base de datos de solo lectura,
+    red): se guardan en .state y el runner las reintenta en las pasadas siguientes (t_cce5da81: el 23-10 se perdieron
+    3 decisiones porque `gh pr list` agotó 120 s). Clave = token del teclado, que sigue consumido mientras está en
+    cola: los botones no vuelven hasta que se aplica o se abandona, así no se aplica dos veces."""
+
+    MAX_RETRIES = 8             # reintentos automáticos antes de devolver los botones a Oscar
+    MAX_AGE_SECONDS = 6 * 3600  # ni una decisión de hace más de 6 h: el contexto pudo cambiar
+    MIN_GAP_SECONDS = 60        # entre dos reintentos de la misma decisión
+
+    def __init__(self, path: Path | str, clock: Callable[[], float] = time.time):
+        self.path = Path(path)
+        self._clock = clock
+        self._lock = threading.Lock()
+
+    def _load(self) -> dict:
+        try:
+            data = json.loads(self.path.read_text(encoding="utf-8"))
+            return data if isinstance(data, dict) else {}
+        except (OSError, json.JSONDecodeError):
+            return {}
+
+    def _save(self, data: dict) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self.path.with_suffix(f".{os.getpid()}.{threading.get_ident()}.tmp")
+        tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        os.replace(tmp, self.path)
+
+    def put(self, token: str, entry: dict) -> None:
+        with self._lock:
+            data = self._load()
+            data[token] = {**entry, "last_at": self._clock()}
+            self._save(data)
+
+    def all(self) -> dict:
+        with self._lock:
+            return self._load()
+
+    def take_due(self) -> list[tuple[str, dict]]:
+        """Saca de la cola las que toca reintentar (el reintento las vuelve a meter si sigue el fallo transitorio)."""
+        now = self._clock()
+        with self._lock:
+            data = self._load()
+            due = [(t, e) for t, e in data.items() if now - float(e.get("last_at") or 0) >= self.MIN_GAP_SECONDS]
+            for t, _ in due:
+                data.pop(t, None)
+            if due:
+                self._save(data)
+        return due
+
+
 class DecisionDesk:
     """Construye los teclados de los avisos y ejecuta lo que Oscar pulsa."""
 
@@ -453,6 +504,9 @@ class DecisionDesk:
         # Aplazadas 7 días: junto a los teclados (.state/), así los tests con tmp_path no escriben en el .state real.
         self.snoozes = snoozes or CardSnoozes(Path(store.root).parent / "card_snooze.json")
         self.retries = RetryBook(Path(store.root).parent / "retry_marks.json")  # reintentos pulsados (aviso de resultado)
+        # Decisiones con fallo transitorio, a reintentar en las pasadas siguientes (retry_pending, desde el runner).
+        self.pending = PendingDecisions(Path(store.root).parent / "decisiones_pendientes.json")
+        self._sleep = time.sleep  # esperas entre reintentos de gh (los tests la sustituyen)
         self.vetos = VetoBook(Path(store.root).parent / "card_veto.json")  # plazo de veto de las tarjetas reversibles
         # Texto libre = respuesta a la decisión pendiente del tema (`telegram.free_text` de lanes.yaml); None = apagado.
         self.free = FreeText(self, **free_text) if free_text else None
@@ -839,7 +893,9 @@ class DecisionDesk:
             return
         answer(cq.get("id"), "Hecho, lo aplico")
         self._spawn(self._en_nombre_de(actor, lambda: self._safe(token, rec, where,
-                                                                 lambda: self._act(rec, button, where))))
+                                                                 lambda: self._act(rec, button, where),
+                                                                 replay={"kind": "act", "button": button,
+                                                                         "actor": actor})))
 
     def _reply(self, msg: dict) -> bool:
         """Respuesta de Oscar a un force_reply: pedir cambios o respuesta libre. True si había una pendiente."""
@@ -867,24 +923,46 @@ class DecisionDesk:
             return True
         self._spawn(self._en_nombre_de(actor, lambda: self._safe(
             token, rec, where, lambda: self._apply_reply(rec, button, where, text),
-            after=lambda: self._cleanup_messages(chat_id, [replied.get("message_id"), msg.get("message_id")]))))
+            after=lambda: self._cleanup_messages(chat_id, [replied.get("message_id"), msg.get("message_id")]),
+            replay={"kind": "reply", "button": button, "text": text, "actor": actor})))
         return True
 
     # --- acciones -------------------------------------------------------------------------------------
 
-    def _safe(self, token: str, rec: dict, where: dict, fn: Callable[[], bool], after=None) -> None:
-        """Ejecuta la acción; si falla, devuelve los botones para que Oscar pueda repetir."""
+    def _safe(self, token: str, rec: dict, where: dict, fn: Callable[[], bool], after=None,
+              replay: dict | None = None) -> None:
+        """Ejecuta la acción; si falla, devuelve los botones para que Oscar pueda repetir.
+
+        `replay` ({kind: act|reply, button, text, actor, attempts, first_at}) dice cómo repetirla. Si falla por una
+        causa transitoria (timeout, solo lectura, red: proc.take_transient) no se pierde: va a la cola persistente
+        (`self.pending`) y `retry_pending` la reintenta en las pasadas siguientes. Los botones vuelven solo cuando el
+        fallo deja de ser transitorio o se agotan los reintentos, y el aviso dice cuántos hubo (t_cce5da81)."""
         # Tokens de las copias ANTES de actuar: la acción puede emitir teclados nuevos para la misma tarea
         # (p. ej. [🚀 Desplegar] tras fusionar) y esos deben seguir vivos. Grupo y "aceptar todo" retiran por
         # miembro dentro de la acción, solo en los que salieron bien.
         before = set() if (rec.get("group") or rec.get("accept_all") or self._free(rec)) else self._tokens(rec)
+        attempts = int((replay or {}).get("attempts") or 0)  # reintentos automáticos hechos (este incluido)
+        _proc.take_transient()  # solo cuenta lo que falle durante ESTA acción
+        error = None
         try:
             ok = fn()
         except Exception as exc:
             log.warning("%s: la decisión de Oscar falló: %s", rec.get("task_id"), exc)
-            self._edit(rec, where, "blocked", "no se pudo aplicar la decisión; detalle en el log")
-            ok = False
+            error, ok = exc, False
+        transient = None if ok else _proc.take_transient()
+        if not ok and replay is not None and transient and self._requeue(token, rec, where, replay, transient):
+            return  # en cola: sin botones (no se aplica dos veces) ni `after` (la respuesta se limpia al final)
+        if not ok and attempts:
+            motivo = transient or (str(error)[:200] if error else "la acción no se pudo completar")
+            log.warning("%s: decisión abandonada tras %d reintento(s): %s", rec.get("task_id"), attempts, motivo)
+            plural = "s" if attempts != 1 else ""
+            self._edit_safe(rec, where, "blocked", f"no se pudo aplicar la decisión tras {attempts} reintento{plural} "
+                            f"automático{plural} ({motivo}); pulsa de nuevo para repetir")
+        elif error is not None:
+            self._edit_safe(rec, where, "blocked", "no se pudo aplicar la decisión; detalle en el log")
         if ok:
+            if attempts:
+                log.info("%s: decisión aplicada en el reintento %d", rec.get("task_id"), attempts)
             for tok in before - {token}:
                 self.store.consume(tok)
         if not ok:
@@ -898,6 +976,52 @@ class DecisionDesk:
                 after()
             except Exception:
                 pass
+
+    def _edit_safe(self, rec: dict, where: dict | None, state: str | None, status: str | None) -> None:
+        try:
+            self._edit(rec, where, state, status)
+        except Exception as exc:
+            log.warning("%s: no se pudo editar el aviso: %s", rec.get("task_id"), exc)
+
+    def _requeue(self, token: str, rec: dict, where: dict, replay: dict, transient: str) -> bool:
+        """Mete la decisión en la cola de reintentos. False si ya no toca (reintentos o antigüedad agotados)."""
+        attempts = int(replay.get("attempts") or 0)
+        first_at = float(replay.get("first_at") or time.time())
+        if attempts >= self.pending.MAX_RETRIES or time.time() - first_at > self.pending.MAX_AGE_SECONDS:
+            return False
+        self.pending.put(token, {"kind": replay.get("kind"), "rec": rec, "where": where, "button": replay.get("button"),
+                                 "text": replay.get("text"), "actor": replay.get("actor"), "attempts": attempts,
+                                 "first_at": first_at, "reason": transient})
+        log.warning("%s: la decisión de Oscar falló por algo transitorio (%s); en cola para reintentar (%d hechos)",
+                    rec.get("task_id"), transient, attempts)
+        self._edit_safe(rec, where, "blocked", "⏳ no se pudo aplicar ahora (Hermes o GitHub no responden); "
+                        "lo reintento solo en las próximas pasadas" + (f" · reintentos: {attempts}" if attempts else ""))
+        return True
+
+    def retry_pending(self) -> int:
+        """Pasada del runner: reintenta las decisiones en cola, cada una en su hilo como un botón. Nunca lanza."""
+        try:
+            due = self.pending.take_due()
+        except Exception as exc:
+            log.warning("cola de decisiones ilegible: %s", exc)
+            return 0
+        for token, e in due:
+            rec, where, button, text = e.get("rec") or {}, e.get("where") or {}, e.get("button") or {}, e.get("text")
+            if e.get("kind") == "reply":
+                def fn(rec=rec, button=button, where=where, text=text):
+                    return self._apply_reply(rec, button, where, text or "")
+            elif e.get("kind") == "act":
+                def fn(rec=rec, button=button, where=where):
+                    return self._act(rec, button, where)
+            else:
+                continue
+            replay = {"kind": e.get("kind"), "button": button, "text": text, "actor": e.get("actor"),
+                      "attempts": int(e.get("attempts") or 0) + 1, "first_at": e.get("first_at")}
+            log.info("%s: reintento %d de la decisión de Oscar (%s)", rec.get("task_id"), replay["attempts"],
+                     e.get("reason"))
+            self._spawn(self._en_nombre_de(e.get("actor"), lambda token=token, rec=rec, where=where, fn=fn,
+                                           replay=replay: self._safe(token, rec, where, fn, replay=replay)))
+        return len(due)
 
     @staticmethod
     def _free(rec: dict) -> bool:
@@ -1389,8 +1513,12 @@ class DecisionDesk:
         return True
 
     def _gh(self, *args: str):
-        return self._run([self.gh_exe, *args], capture_output=True, text=True, encoding="utf-8",
-                         errors="replace", timeout=120)
+        # Timeout o red: reintento con espera solo en lecturas; agotado, fallo (no excepción) y fallo transitorio
+        # anotado en el hilo, que `_safe` usa para encolar la decisión (t_cce5da81).
+        return _proc.run_retrying([self.gh_exe, *args], runner=self._run, sleep=self._sleep, label=f"gh {' '.join(args[:2])}",
+                                  retry_timeout=_proc.gh_is_read(args),
+                                  transient=_proc.gh_network_error if _proc.gh_is_read(args) else None,
+                                  capture_output=True, text=True, encoding="utf-8", errors="replace")
 
     def _find_pr(self, slug: str, tid: str) -> tuple[int, str] | None:
         cp = self._gh("pr", "list", "--repo", slug, "--head", f"lane/{tid}", "--state", "open",

@@ -23,8 +23,10 @@ def render_test_cmd(lane: Lane) -> str:
 
 
 def _git(cwd: str, *args: str, runner=_proc.run) -> subprocess.CompletedProcess:
-    return runner(["git", "-C", cwd, *args], capture_output=True, text=True, encoding="utf-8",
-                  errors="replace", timeout=120)
+    # Solo lecturas (ls-remote, cat-file, rev-list, rev-parse, diff): un timeout se reintenta con espera y, agotado,
+    # es un fallo de la verificación (transitorio), no una excepción que tumbe la pasada (t_cce5da81).
+    return _proc.run_retrying(["git", "-C", cwd, *args], runner=runner, label=f"git {args[0] if args else ''}",
+                              capture_output=True, text=True, encoding="utf-8", errors="replace")
 
 
 def verify(lane: Lane, task_id: str, cwd: str, result: dict, runner=_proc.run) -> VerifyResult:

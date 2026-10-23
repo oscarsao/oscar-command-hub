@@ -58,14 +58,15 @@ def pr_outcome(pr: dict) -> str | None:
     return "closed" if str(pr.get("state")).upper() == "CLOSED" else None
 
 
-def gh_prs(slugs: list[str], run=_proc.run, limit: int = 40) -> list[dict]:
+def gh_prs(slugs: list[str], run=_proc.run, limit: int = 40, sleep=None) -> list[dict]:
     """PR recientes (abiertos, mergeados y cerrados) de cada repo. Solo lectura; un repo que falla se salta."""
     out: list[dict] = []
     for slug in slugs:
         try:
-            cp = run([GH_EXE, "pr", "list", "--repo", slug, "--state", "all", "--limit", str(limit), "--json",
-                      "number,title,body,headRefName,state,mergedAt,url"], capture_output=True, text=True,
-                     encoding="utf-8", errors="replace", timeout=120)
+            cp = _proc.run_retrying([GH_EXE, "pr", "list", "--repo", slug, "--state", "all", "--limit", str(limit),
+                                     "--json", "number,title,body,headRefName,state,mergedAt,url"], runner=run,
+                                    sleep=sleep, label=f"gh pr list {slug}", transient=_proc.gh_network_error,
+                                    capture_output=True, text=True, encoding="utf-8", errors="replace")
             if cp.returncode == 0:
                 out += json.loads(cp.stdout or "[]")
             else:

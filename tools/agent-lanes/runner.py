@@ -323,6 +323,12 @@ def main(argv: list[str] | None = None) -> int:
                 log.info("claude-telegram: tarjetas reasignadas: %s", moved)
         except Exception as exc:
             log.warning("reasignación a claude-telegram falló: %s", exc)
+        if decisions:  # decisiones de Oscar que fallaron por timeout/solo lectura/red: se reintentan (t_cce5da81)
+            try:
+                if retried := decisions.retry_pending():
+                    log.info("decisiones en cola reintentadas: %d", retried)
+            except Exception as exc:
+                log.warning("reintento de decisiones en cola falló: %s", exc)
         if args.once:  # una pasada con barrera: la plaza reservada también se atiende y se espera
             results = service.run_pass()
             service.reserved_pass()

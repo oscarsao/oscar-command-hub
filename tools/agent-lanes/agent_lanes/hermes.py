@@ -20,6 +20,8 @@ log = logging.getLogger("agent_lanes")
 READONLY_MARK = "is read-only for this user"
 NO_RETRY_MARK = "WinError 4551"
 READONLY_BACKOFF = (1.0, 2.0)  # esperas entre los 3 intentos
+# Subcomandos que se pueden repetir tras un timeout sin riesgo de aplicar dos veces (lecturas y asignaciones absolutas).
+TIMEOUT_IDEMPOTENT = frozenset({"list", "show", "notify-list", "heartbeat", "assign"})
 
 HERMES_EXE = Path.home() / "AppData/Local/hermes/bin/hermes.exe"
 HERMES_AGENT_DIR = Path.home() / "AppData/Local/hermes/hermes-agent"
@@ -314,25 +316,54 @@ class HermesError(RuntimeError):
 
 class HermesCLI:
     def __init__(self, board: str, exe: Path = HERMES_EXE, runner=_proc.run, author: str = "agent-lanes",
-                 sleep=time.sleep, backoff: tuple[float, ...] = READONLY_BACKOFF):
+                 sleep=time.sleep, backoff: tuple[float, ...] = READONLY_BACKOFF,
+                 timeout_backoff: tuple[float, ...] | None = None):
         self._sleep = sleep
         self._backoff = backoff
+        self._timeout_backoff = timeout_backoff  # None = runner.cli_timeout_backoff de lanes.yaml
         self.board = board
         self.exe = str(exe)
         self._run = runner
         self.author = author
 
-    def _call(self, *args: str, timeout: int = 120) -> subprocess.CompletedProcess:
+    def _call(self, *args: str, timeout: int | None = None) -> subprocess.CompletedProcess:
+        """`hermes kanban --board <b> <args>`. Base de datos read-only: reintento (la escritura no se hizo). Timeout
+        (t_cce5da81): reintento con espera progresiva solo en lo idempotente (TIMEOUT_IDEMPOTENT, `--help`); agotado,
+        o en una escritura, devuelve un fallo (returncode proc.TIMEOUT_RC) en vez de lanzar, y anota el fallo
+        transitorio en el hilo (lo usa la cola de decisiones). Tiempo y esperas: `runner.cli_timeout_*` de lanes.yaml."""
+        cfg = _proc.cli_settings()
+        timeout = timeout or cfg["timeout"]
+        tbackoff = self._timeout_backoff if self._timeout_backoff is not None else cfg["backoff"]
         cmd = [self.exe, "kanban", "--board", self.board, *args]
-        for attempt in range(len(self._backoff) + 1):
-            cp = self._run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
-            if cp.returncode == 0 or attempt >= len(self._backoff) or not _transient_readonly(cp):
+        sub = args[0] if args else "?"
+        idempotent = sub in TIMEOUT_IDEMPOTENT or "--help" in args
+        ro = to = 0
+        while True:
+            try:
+                cp = self._run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                               timeout=timeout)
+            except subprocess.TimeoutExpired:
+                if not idempotent or to >= len(tbackoff):
+                    reason = f"hermes kanban {sub}: sin respuesta en {int(timeout)} s ({to + 1} intento(s))"
+                    log.warning("%s; se sigue sin ella", reason)
+                    _proc.mark_transient(reason)
+                    return subprocess.CompletedProcess(cmd, _proc.TIMEOUT_RC, "", f"timeout (transitorio): {reason}")
+                wait = tbackoff[to]
+                to += 1
+                log.warning("hermes kanban %s: sin respuesta en %ss (transitorio); reintento %d/%d en %gs",
+                            sub, int(timeout), to, len(tbackoff), wait)
+                self._sleep(wait)
+                continue
+            if cp.returncode == 0 or not _transient_readonly(cp):
+                return cp
+            if ro >= len(self._backoff):
+                _proc.mark_transient(f"hermes kanban {sub}: base de datos read-only")
                 return cp  # agotados los reintentos se devuelve el resultado original, igual que antes
-            wait = self._backoff[attempt]
+            wait = self._backoff[ro]
+            ro += 1
             log.warning("hermes kanban %s: base de datos read-only (transitorio); reintento %d/%d en %gs",
-                        args[0] if args else "?", attempt + 1, len(self._backoff), wait)
+                        sub, ro, len(self._backoff), wait)
             self._sleep(wait)
-        return cp  # pragma: no cover
 
     def list_status(self, assignee: str, status: str, sort: str = "priority") -> list[dict]:
         cp = self._call("list", "--assignee", assignee, "--status", status, "--json", "--sort", sort)

@@ -17,7 +17,7 @@ from typing import Callable
 
 from . import telegram_lane
 from .config import ROOT, Lane
-from .hermes import REVIEW_AUTHOR
+from .hermes import OSCAR_AUTHOR, REVIEW_AUTHOR
 from .integration import CHANNEL, link_line, render_ficha, repo_name, risk_of, risks_from_files
 from .notices import (MessageStore, TaskNotices, files_label, fit_reason, money, questions_block, render, status_line,
                       test_label, truncate)
@@ -34,6 +34,18 @@ CHANGES_PREFIX = "CAMBIOS"
 READ_ONLY_TOOLS = ("Read", "Grep", "Glob", "Bash(git diff:*)", "Bash(git log:*)", "Bash(git show:*)",
                    "Bash(git status:*)")
 WRITE_TOOLS = ("Edit", "Write", "MultiEdit", "NotebookEdit")
+APPROVED_PREFIX = "APROBADO-OSCAR"  # = integrator.APPROVED_PREFIX / decisions._approve
+RECHEQUEO_ESCALADA = 120  # s entre relecturas de una tarjeta escalada (¿cabeza nueva? ¿aprobada?) al elegir trabajo
+SIN_COMMITS = "la rama no tiene commits sobre la base; empuja el trabajo"
+
+
+def aprobada_por_oscar(show: dict) -> bool:
+    """APROBADO-OSCAR de Oscar posterior a la última petición de review (`review_requested`): la aprobó desde la
+    escalada y el PR ya está abierto. Si el implementador vuelve a pedir review después, la aprobación ya no cuenta."""
+    events = (show or {}).get("events") or []
+    last_request = max((e.get("created_at") or 0 for e in events if e.get("kind") == "review_requested"), default=0)
+    return any(c.get("author") == OSCAR_AUTHOR and (c.get("body") or "").startswith(APPROVED_PREFIX)
+               and (c.get("created_at") or 0) >= last_request for c in (show or {}).get("comments") or [])
 
 
 def implementation_metadata(show: dict) -> dict:
@@ -100,6 +112,7 @@ class ReviewRunner:
         # avisada para no reprocesarlas ni repetir la alerta en cada vuelta. state_dir=None: solo en memoria.
         self._unblockable: dict[str, str] = {}
         self._heads: dict[str, str] = {}
+        self._aparcadas: dict[str, tuple[str, float]] = {}  # tid -> (motivo, instante): escaladas que no se relanzan
         self._state_dir = Path(state_dir) if state_dir else None
         self._tree = tree  # deps.TreeReader: líneas 🔗/⏸/↳ en los avisos; None = sin árbol
         # IntegrationRoute (tema de Integración): la tarjeta done con ✅ Aprobar va allí como ficha + copia en el DM.
@@ -187,7 +200,41 @@ class ReviewRunner:
             # Carril de varios repos (claude-telegram): se revisa en el repo que eligió la tarjeta.
             found += [(t, telegram_lane.lane_de_tarjeta({name: lane}, {**t, "assignee": name}), h)
                       for t in h.list_status(name, "review")]
+        # Escaladas sin cambios o ya aprobadas por Oscar: fuera ANTES del tope, para que no ocupen la plaza en bucle
+        # (t_cce5da81: t_fc0c293d se lanzó 97 veces, una cada ~30 s, tapando el resto del carril).
+        found = [(t, l, h) for t, l, h in found if not self._aparcada(h, t["id"])]
         return [(t["id"], lambda t=t, l=l, h=h: self.process(t, l, h)) for t, l, h in found[: self.lane.max_parallel]]
+
+    def _escalada(self, tid: str) -> bool:
+        path = self._unblockable_path(tid)
+        return tid in self._unblockable or bool(path and path.exists())
+
+    def _aparcada(self, h, tid: str) -> str | None:
+        """Tarjeta escalada que el carril no debe relanzar: 'aprobada' (APROBADO-OSCAR posterior a la última petición
+        de review: la lleva el integrador) o 'escalada' (la misma cabeza ya se avisó con botones). None = se revisa.
+        Solo relee (show) las que tienen escalada guardada, y como mucho cada RECHEQUEO_ESCALADA segundos."""
+        if not self._escalada(tid):
+            return None
+        now = self.clock()
+        cached = self._aparcadas.get(tid)
+        if cached and now - cached[1] < RECHEQUEO_ESCALADA:
+            return cached[0]
+        try:
+            show = h.show(tid)
+        except Exception:
+            return "escalada"  # sin poder leerla, sigue como estaba: escalada (se relee en la próxima)
+        if aprobada_por_oscar(show):
+            motivo = "aprobada"
+        else:
+            motivo = "escalada" if self._already_escalated(tid, str(implementation_metadata(show).get("head_sha") or "")) \
+                else None
+        if motivo:
+            if not cached:
+                log.info("%s: escalada en review (%s); el carril review no la relanza", tid, motivo)
+            self._aparcadas[tid] = (motivo, now)
+        else:
+            self._aparcadas.pop(tid, None)
+        return motivo
 
     def run_once(self) -> dict[str, str]:
         return {tid: job() for tid, job in self.jobs()}
@@ -203,6 +250,10 @@ class ReviewRunner:
         blocked = h.block(task["id"], kind, fit_reason(reason))
         if not blocked:  # block solo mueve running/ready: una tarea en review puede no quedar bloqueada
             log.error("no se pudo bloquear %s (%s) en el kanban", task["id"], kind)
+            # La escalada lleva [✅ Aprobar] (abre PR): con la rama sin commits sobre la base no se pregunta a Oscar,
+            # la tarjeta vuelve al carril (t_cce5da81: t_dd4f5d1c y t_faf4e4c2, «No commits between» 6 veces).
+            if (devuelta := self._sin_commits(h, task)) is not None:
+                return devuelta
             # 9 alertas sin botones seguidas (escalada de review): se anota la cabeza y se emite UNA con botones.
             self._remember_unblockable(task["id"], kind)
             self.notify("blocked", task, status_line(f"en review, requiere tu decisión: {public}", "detalle en la tarjeta"),
@@ -216,6 +267,40 @@ class ReviewRunner:
             self.notify("blocked", task, status_line("bloqueada en review", public, "detalle en la tarjeta"),
                         alert=True, buttons=bool(blocked), block_kind=kind)
         return f"blocked:{kind}"
+
+    def _sin_commits(self, h, task: dict) -> str | None:
+        """Rama lane/<id> con 0 commits sobre la base: si ya hay un PR fusionado, se cierra (integrada); si no, vuelve
+        al carril con el motivo. None = tiene commits o no se sabe (se escala como siempre). Nunca lanza."""
+        tid = task["id"]
+        lane = telegram_lane.lane_de_tarjeta(self.lanes, task)
+        ahead_fn = getattr(self.git, "commits_ahead", None)
+        if lane is None or ahead_fn is None:
+            return None
+        try:
+            if ahead_fn(lane, tid) != 0:
+                return None
+            merged_fn = getattr(self.git, "merged_pr", None)
+            merged = merged_fn(lane, tid) if merged_fn else None
+        except Exception as exc:
+            log.info("%s: no se pudo contar los commits de la rama: %s", tid, exc)
+            return None
+        if merged:
+            ok, err = h.complete(tid, f"Ya integrada: {merged} fusionado; la rama no aporta nada sobre {lane.base}",
+                                 {"integrated_pr": merged})
+            if ok:
+                log.info("%s: rama sin commits sobre %s y PR fusionado (%s): cerrada sin preguntar", tid, lane.base,
+                         merged)
+                return "done:integrada"
+            log.warning("%s: no se pudo cerrar la tarjeta ya integrada: %s", tid, err)
+            return None
+        h.comment(tid, f"{SIN_COMMITS} (lane/{tid} no tiene commits sobre {lane.remote}/{lane.base}); "
+                       "no se pide decisión a Oscar", author=REVIEW_AUTHOR)
+        if not h.reopen_review(tid):
+            log.warning("%s: rama sin commits pero no se pudo devolver al carril; se escala", tid)
+            return None
+        log.info("%s: rama sin commits sobre %s: devuelta al carril sin preguntar a Oscar", tid, lane.base)
+        self.notify("changes", task, status_line("la rama no tiene commits sobre la base", "vuelve al carril"))
+        return "changes:sin_commits"
 
     @staticmethod
     def _cerrada(h, tid: str) -> str | None:
@@ -257,6 +342,8 @@ class ReviewRunner:
             task = {**show.get("task", {}), **task}
             if task.get("status") in CERRADAS:  # el integrador la cerró entre el listado y ahora: no se toca
                 return f"skip:{task['status']}"
+            if aprobada_por_oscar(show):  # Oscar ya la aprobó (PR abierto): es del integrador, review no la toca
+                return "skip:aprobada"
             meta = implementation_metadata(show)
             self._heads[tid] = str(meta.get("head_sha") or "")
             if self._already_escalated(tid, self._heads[tid]):

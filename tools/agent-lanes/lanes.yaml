@@ -18,6 +18,11 @@ runner:
   # Vigilante de «runner ciego» (agent_lanes/ciego.py): si no se pueden listar tareas (p. ej. WinError 4551 de App
   # Control) durante estos minutos seguidos, aviso ALTA al DM de Oscar y un `restart --drain` automático (máx. 1/hora).
   ciego_minutes: 5
+  # Llamadas a `hermes kanban`, `gh` y git remoto (t_cce5da81, 23-10): tiempo máximo por intento (s) y esperas entre
+  # reintentos tras un timeout (solo lecturas e idempotentes; una escritura con timeout no se repite). Agotados, la
+  # llamada devuelve un fallo (no tumba la pasada) y una decisión de Oscar afectada va a la cola de reintentos.
+  cli_timeout_seconds: 120
+  cli_timeout_backoff: [5, 20]
 
 # Avisos a Telegram. Destino de cada aviso de una tarea, por prioridad:
 #   1. La línea `Origen-Telegram: chat=<id> thread=<id>` del cuerpo, si el chat está en TELEGRAM_ALLOWED_CHATS (.env)

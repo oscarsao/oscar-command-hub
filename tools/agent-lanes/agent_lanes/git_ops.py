@@ -1,6 +1,7 @@
 """Worktree preparation: one worktree + branch lane/<task_id> per task, outside the repo."""
 from __future__ import annotations
 
+import json
 import logging
 import subprocess
 
@@ -97,6 +98,42 @@ class GitOps:
         else:
             self._git(lane.repo, "worktree", "add", str(path), "-b", branch, f"{lane.remote}/{branch}")
         return str(path)
+
+    def commits_ahead(self, lane: Lane, task_id: str) -> int | None:
+        """Commits de <remote>/lane/<id> sobre <remote>/<base> (tras fetch de ambas). None si no se sabe (la rama no
+        existe en el remoto, git falla o no responde): el llamador sigue como siempre."""
+        branch = f"lane/{task_id}"
+        fetch = _proc.run_retrying(["git", "-C", lane.repo, "fetch", lane.remote, lane.base,
+                                    f"+refs/heads/{branch}:refs/remotes/{lane.remote}/{branch}"], runner=self._run,
+                                   label="git fetch", capture_output=True, text=True, encoding="utf-8",
+                                   errors="replace")
+        if fetch.returncode != 0:
+            return None
+        cp = _proc.run_retrying(["git", "-C", lane.repo, "rev-list", "--count",
+                                 f"{lane.remote}/{lane.base}..{lane.remote}/{branch}"], runner=self._run,
+                                label="git rev-list", capture_output=True, text=True, encoding="utf-8",
+                                errors="replace")
+        try:
+            return int(cp.stdout.strip()) if cp.returncode == 0 else None
+        except ValueError:
+            return None
+
+    def merged_pr(self, lane: Lane, task_id: str, gh_exe: str = r"C:\Program Files\GitHub CLI\gh.exe") -> str | None:
+        """URL del PR fusionado de lane/<id> en el repo del carril, o None (sin PR fusionado, sin `github:` o gh falla)."""
+        slug = getattr(lane, "github", "") or ""
+        if not slug:
+            return None
+        cp = _proc.run_retrying([gh_exe, "pr", "list", "--repo", slug, "--head", f"lane/{task_id}", "--state", "merged",
+                                 "--json", "url", "--limit", "1"], runner=self._run, label="gh pr list",
+                                transient=_proc.gh_network_error, capture_output=True, text=True, encoding="utf-8",
+                                errors="replace")
+        if cp.returncode != 0:
+            return None
+        try:
+            prs = json.loads(cp.stdout or "[]")
+        except json.JSONDecodeError:
+            return None
+        return (prs[0].get("url") or "PR") if prs else None
 
     def _out(self, *args: str, timeout: int = 120) -> str | None:
         cp = self._run(list(args), capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)

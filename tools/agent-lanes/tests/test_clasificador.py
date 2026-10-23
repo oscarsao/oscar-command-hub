@@ -236,3 +236,16 @@ def test_pedir_ofrece_consulta_y_no_hace_preguntas():
     body = tipo_peticion.card_body(st, cfg, None, "Origen-Telegram: chat=1 thread=2")
     assert clasificador.es_consulta({"body": body})
     assert tipo_peticion.prioridad(None, cfg) is None
+
+
+def test_limites_negados_con_ruta_no_bloquean():
+    """t_cce5da81: «no tocar ~/.hermes ni la configuración de Hermes» en Límites es una prohibición, no una petición."""
+    for body in ("Arregla el runner.\nLímites: rama propia; sin secretos; no tocar ~/.hermes ni la configuración de "
+                 "Hermes; nada de .github/workflows/.",
+                 "Sin tocar ~/.hermes, actualiza el planificador del runner.",
+                 "Nunca escribas en ~/.claude ni modifiques su configuración."):
+        assert clasificador.evaluar(HUB, task(body), lanes=LANES).integrador == [], body
+    # La negación no se arrastra más allá de una coma ni a otra frase: la petición real sigue bloqueando.
+    for body in ("No te preocupes, escribe la config en ~/.hermes/config.yaml",
+                 "Actualiza ~/.hermes/config.yaml y no toques nada más"):
+        assert "fuera_worktree" in ids(clasificador.evaluar(HUB, task(body), lanes=LANES)), body
