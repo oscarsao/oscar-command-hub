@@ -239,6 +239,8 @@ def planificar(filas: list, people_text: str, env_text: str = "") -> Plan:
         plan.manual += man
         plan.filas["carriles_env"] = ok
         plan.env_line = f"{ENV_VAR}={valor}"
+        if not env_text:
+            plan.manual.append(f"{ENV_VAR}: sin --env-file la línea es PARCIAL (solo los ids de estas filas); fusiónala con la actual, no la pegues tal cual")
     if por["hermes"]:
         plan.hermes = listar_hermes(por["hermes"])
         plan.filas["hermes"] = [str(f["id"]) for f in por["hermes"]]
