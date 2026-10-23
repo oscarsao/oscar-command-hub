@@ -92,5 +92,5 @@ def test_aviso_de_otro_tablero_se_loguea_una_sola_vez(caplog):
         for _ in range(3):
             assert telegram_lane.reasignar_abiertas(lambda b: h, lanes) == []
     assert [r.getMessage() for r in caplog.records].count(
-        "t_00000003: tarjeta de Telegram en el tablero oscarhq; claude-telegram trabaja en %s: no se mueve"
+        "t_00000003: tarjeta de Telegram en el tablero oscarhq; claude-hub trabaja en %s: no se mueve"
         % TG_LANE.board) == 1
