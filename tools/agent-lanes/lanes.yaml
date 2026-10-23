@@ -131,7 +131,7 @@ defaults:
 
 lanes:
   claude-oscarhq:
-    telegram: {chat: -1003530490339, thread: 231}
+    telegram: {chat: -1003731090094, thread: 29}  # Desarrollo Píldora (Oscar 23-10: lo de Píldora, Signal y Hub va al grupo de Ángel)
     board: oscarhq
     repo: C:/Users/oscar/dev/oscar-hq
     # Candado (28-09): el runner solo reclama si `git remote get-url origin` del repo es este owner/repo de GitHub.
@@ -161,7 +161,7 @@ lanes:
       - backend/alembic/versions/
 
   claude-scraper:
-    telegram: {chat: -1003530490339, thread: 231}
+    telegram: {chat: -1003731090094, thread: 36}  # Desarrollo Píldora (Oscar 23-10: lo de Píldora, Signal y Hub va al grupo de Ángel)
     board: oscarhq
     repo: C:/Users/oscar/dev/Scraper
     github: oscarsao/icp-prospect-engine
@@ -186,7 +186,7 @@ lanes:
   # tools/agent-lanes/pytest.ini desde la ruta de tests: pythonpath = la copia del worker, nunca el checkout vivo).
   # OJO: la suite es código del worker y se ejecuta como Oscar (verify.py sin entorno mínimo; el integrador sí).
   claude-hub:
-    telegram: {chat: -1003530490339, thread: 5}
+    telegram: {chat: -1003731090094, thread: 38}  # Desarrollo Píldora (Oscar 23-10: lo de Píldora, Signal y Hub va al grupo de Ángel)
     board: default
     repo: C:/Users/oscar/oscar-command-hub
     github: oscarsao/oscar-command-hub
@@ -212,7 +212,7 @@ lanes:
   # Cada entrada de repos puede sobrescribir repo, github, base, test_cmd, role, forbidden_paths y remote. Mismos límites
   # que un carril de código: mismo hook (contract/guard.py), nada de producción/env/Hermes (clasificador), rama lane/<id>.
   claude-telegram:
-    telegram: {chat: -1003530490339, thread: 5}
+    telegram: {chat: -1003731090094, thread: 42}  # Desarrollo Píldora (Oscar 23-10: lo de Píldora, Signal y Hub va al grupo de Ángel)
     board: default
     repo: C:/Users/oscar/oscar-command-hub
     github: oscarsao/oscar-command-hub
