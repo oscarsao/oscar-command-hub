@@ -153,3 +153,25 @@ def test_poner_al_dia_button_is_vetoed_by_brand(tmp_path):
     where = {"chat_id": "1", "thread_id": "0", "message_id": 5, "user_id": 777}
     assert cc.al_dia_choice("ad_poner", rec, where, desk) is True
     assert integ.calls == [] and bot.sent and "Píldora" in bot.sent[-1]["text"]
+
+
+# --- plantilla de la tarjeta «Resolver»: título bien formado y límites que no disparan el clasificador -----------
+
+def test_resolver_title_has_one_prefix_and_card_body_does_not_trip_the_classifier(tmp_path):
+    from agent_lanes import clasificador
+    from agent_lanes.al_dia_prod import sin_prefijo
+    from agent_lanes.titulos import problems
+
+    assert sin_prefijo("[Hub] [Hub] Carril integrador") == "Carril integrador"
+    fallo = {"status": "failed", "head_sha": SHA, "pr": 4, "pr_url": "https://gh/4",
+             "title": "[Hub] Carril integrador desde Telegram", "fail_reasons": ["posible secreto en el código"]}
+    integ = Integ([], tmp_path, states={tid(7): {"lane": "claude-oscarhq", **fallo}})
+    cc, desk, bot, ad = cc_for(tmp_path, integ)
+    command(desk, "/al_dia oscarhq")
+    ficha, n = boton(bot, "Resolver")
+    press(desk, ficha, n)
+    [(titulo, cuerpo, carril, kw, _)] = integ.hermes.created
+    assert titulo.count("[") == 1 and "Gate rojo: Carril integrador" in titulo and titulo.endswith("· implementar")
+    assert not problems(titulo)
+    veredicto = clasificador.evaluar(SimpleNamespace(kind="implement"), {"title": titulo, "body": cuerpo})
+    assert not veredicto.va_al_integrador and not veredicto.dudas

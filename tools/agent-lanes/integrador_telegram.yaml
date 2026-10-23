@@ -1,0 +1,8 @@
+# Lista blanca del carril integrador desde Telegram (spec: specs/carril-integrador-telegram.md).
+# Lo lee agent_lanes/acciones_prod.py. Si falta o está mal formado, TODO se rechaza (falla cerrado).
+# Aquí solo hay NOMBRES (servicios, repos, bots, hosts); nunca valores secretos ni rutas de tokens.
+servicios_logs: [oscar-hq, nextjobs, signal, opendesign, postiz, migrateam]   # contenedores de pildora-01
+repos_pr: [pildora-mcp, pildora-handbook, Scraper, nextjobs, pildora-website, pildora-recursos]
+proyectos_sql: [kkkxptlwknyafbavajhj]            # ref de proyecto Supabase (solo lectura)
+hosts_health: [oscar-hq.pildoradigital.com, pildoradigital.com, recursos.pildoradigital.com]
+bots_webhook: [avisos, hermes, carriles]

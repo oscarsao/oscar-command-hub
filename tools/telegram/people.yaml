@@ -12,6 +12,10 @@
 #     aprobaciones (/aprobar, /desplegar, botones int_*, fusionar, migraciones...), por DM y en grupo. Decision de
 #     Oscar 19-10: hoy SOLO Maria. Sus acciones quedan firmadas con su nombre en el comentario de la tarjeta.
 #     Sin `operador: true` (Ingerber, Andrea) el acceso sigue siendo solo el DM de ideas.
+#   - `permisos: [aprobar_produccion]` = puede dar el OK con botón a las acciones de producción del carril integrador
+#     (fusionar a main/master, desplegar, migraciones, variables de entorno; ver specs/carril-integrador-telegram.md).
+#     Decisión de Oscar 22-10: Oscar (owner, implícito), María y Angel, en TODAS las marcas para este permiso (no
+#     depende de `brands`). Lo lee People.puede_aprobar_produccion; el resto de permisos del YAML se ignoran.
 #   - Tras rellenar un user_id (Oscar, a mano): anadirlo a TELEGRAM_ALLOWED_CHATS en tools/agent-lanes/.env para que
 #     los avisos vuelvan a su DM, y que la persona envie /start al bot. NO anadirlo a generic_origins de lanes.yaml.
 #   - brands: la primera marca decide el tablero de sus tarjetas (Pildora -> oscarhq, MigraTeam -> migrateam). Ademas
@@ -27,6 +31,7 @@ people:
     brands: [Píldora, MigraTeam, "*"]   # "*" = opera en TODAS las marcas (la primera decide el tablero de sus ideas)
     can: []         # [carril] reservado; desactivado por defecto
     operador: true  # mismo acceso que Oscar en el bot de carriles (comandos, botones, aprobaciones); decision de Oscar 19-10
+    permisos: [aprobar_produccion]  # OK con boton a produccion del carril integrador; decision de Oscar 22-10
   ingerber:
     name: Ingerber
     user_id: "8847860660"   # Ingerber (CMO Pildora); confirmado por nombre en los registros 13-10
@@ -55,3 +60,4 @@ people:
     # OK final de Oscar el 22-10 (consola del integrador): operador acotado a Pildora (=OscarHQ) y Signal por el veto
     # de marca (#72). Nada en MigraTeam ni en lo demas.
     operador: true
+    permisos: [aprobar_produccion]  # todas las marcas para este permiso (no depende de brands); decision de Oscar 22-10

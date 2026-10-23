@@ -26,6 +26,8 @@ log = logging.getLogger("agent_lanes")
 PEOPLE_FILE = Path(__file__).resolve().parents[2] / "telegram" / "people.yaml"
 
 CONSULTA, ESTADO, IDEA, CONTENIDO, CARRIL, PRODUCCION = "consulta", "estado", "idea", "contenido", "carril", "produccion"
+APROBAR_PRODUCCION = "aprobar_produccion"
+PERMISOS_YAML = frozenset({APROBAR_PRODUCCION})  # lo único que `permisos:` del YAML puede conceder
 TODAS_LAS_MARCAS = "*"
 _ALIAS_MARCA = {"oscarhq": "pildora"}  # OscarHQ es la marca Píldora para el control de acceso
 
@@ -56,6 +58,7 @@ class Person:
     brands: tuple = ()
     caps: frozenset = field(default_factory=frozenset)
     operador: bool = False  # people.yaml `operador: true`: mismo acceso que Oscar en el bot (comandos, botones, aprobaciones)
+    permisos: frozenset = field(default_factory=frozenset)  # people.yaml `permisos:` (solo los de PERMISOS_YAML)
 
     def can(self, cap: str) -> bool:
         return cap in self.caps
@@ -99,6 +102,14 @@ class People:
             return True
         wanted = norm_marca(marca)
         return bool(wanted) and wanted in {norm_marca(b) for b in self.lookup(user_id).brands}
+
+    def puede_aprobar_produccion(self, user_id) -> bool:
+        """Oscar (owner) o quien tenga `permisos: [aprobar_produccion]`, en cualquier marca (decisión de Oscar 22-10).
+        Es aparte de `puede_en`: no depende de `brands`. Quien no es operador no aprueba aunque figure el permiso."""
+        person = self.lookup(user_id)
+        if not person:
+            return False
+        return person.is_owner or (person.operador and APROBAR_PRODUCCION in person.permisos)
 
     def collaborator_ids(self) -> set[str]:
         return set(self._by_id)
@@ -153,6 +164,8 @@ def load_people(owner_id: str, path: Path | str | None = None) -> People:
         caps = BASE_CAPS[role] | (frozenset(str(c) for c in asked) & OPTIONAL_CAPS.get(role, frozenset()))
         brands = tuple(_clean(b) for b in (cfg.get("brands") or ()) if _clean(b)) if isinstance(
             cfg.get("brands"), (list, tuple)) else ()
+        pedidos = cfg.get("permisos") if isinstance(cfg.get("permisos"), list) else []
+        permisos = frozenset(str(x) for x in pedidos) & PERMISOS_YAML
         persons.append(Person(_clean(key), _clean(cfg.get("name") or key) or _clean(key), uid, role, brands, caps,
-                              cfg.get("operador") is True))
+                              cfg.get("operador") is True, permisos))
     return People(owner_id, persons)
