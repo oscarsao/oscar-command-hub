@@ -14,6 +14,8 @@ modulo_min_profundidad: 2
 max_unidades: 40              # unidades (ramas/tarjetas) que se comparan por repo (más = se recorta, no se cae)
 max_avisos: 6                 # avisos nuevos por pasada
 comparten_max: 5              # rutas compartidas que se citan
+recordar_dias: 30             # un par ya avisado no se vuelve a avisar hasta pasados N días
+avisar_compatibles: false     # true = avisar también «misma zona, compatibles»; false = solo conflicto y revisar
 # Contradicción de intención: si dos unidades de la misma zona casan un par (una dice A, la otra dice B) -> «revisar».
 # Cada par son expresiones regulares sobre título+cuerpo, en minúsculas. Nunca se resuelve solo.
 contradiccion:

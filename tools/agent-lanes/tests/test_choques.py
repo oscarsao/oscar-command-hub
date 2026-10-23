@@ -184,3 +184,83 @@ def test_git_real_con_runner_falso_parsea_ramas_y_merge_tree():
     old = Git(lambda c, **k: SimpleNamespace(returncode=0, stdout="git version 2.30.0", stderr=""))
     assert old.choque_real("r", "origin", "a", "b") is None
     assert Git(lambda c, **k: (_ for _ in ()).throw(OSError("sin git"))).prs("r") == []
+
+
+# --- 23-10: avisos repetidos en bucle (memoria de 500 pares) y choques falsos con ramas ya fusionadas ---
+
+def _par_real():
+    return FakeGit({"lane/t_1": (NOW, "x", [CMD]), "lane/t_2": (NOW, "y", [CMD])},
+                   reales={frozenset(("lane/t_1", "lane/t_2")): True})
+
+
+def test_ticker_no_repite_aunque_haya_mas_de_500_pares_recordados(tmp_path):
+    estado = tmp_path / "ch.json"
+    import json as _json
+    viejos = {f"conflicto:x{i}|y{i}": NOW - 60 for i in range(600)}  # más que el tope antiguo
+    estado.write_text(_json.dumps(viejos), encoding="utf-8")
+    sent, t = [], [0.0]
+    tk = ChoquesTicker(LANES, hermes([]), send=sent.append, state_path=estado, settings_path=tmp_path / "no.yaml",
+                       git=_par_real(), clock=lambda: t[0], wall=lambda: NOW)
+    tk.tick()
+    assert len(sent) == 1
+    for k in range(1, 6):  # varias pasadas: el par ya avisado no vuelve aunque el estado tenga >500 claves
+        t[0] = k * 1000
+        tk.tick()
+    assert len(sent) == 1
+    assert len(_json.loads(estado.read_text(encoding="utf-8"))) == 601
+
+
+def test_ticker_migra_estado_antiguo_en_lista(tmp_path):
+    estado = tmp_path / "ch.json"
+    import json as _json
+    clave_par = "conflicto:lane/t_1|lane/t_2"
+    estado.write_text(_json.dumps([clave_par]), encoding="utf-8")
+    sent = []
+    tk = ChoquesTicker(LANES, hermes([]), send=sent.append, state_path=estado, settings_path=tmp_path / "no.yaml",
+                       git=_par_real(), clock=lambda: 0.0, wall=lambda: NOW)
+    tk.tick()
+    assert sent == []  # el par de la lista vieja cuenta como ya avisado
+
+
+def test_ticker_vuelve_a_avisar_pasado_recordar_dias(tmp_path):
+    sent, t, w = [], [0.0], [NOW]
+    tk = ChoquesTicker(LANES, hermes([]), send=sent.append, state_path=tmp_path / "ch.json",
+                       settings_path=tmp_path / "no.yaml", git=_par_real(), clock=lambda: t[0], wall=lambda: w[0])
+    tk.tick()
+    t[0], w[0] = 1000, NOW + 29 * 86400
+    tk.tick()
+    assert len(sent) == 1
+    t[0], w[0] = 2000, NOW + 31 * 86400
+    tk.tick()
+    assert len(sent) == 2
+
+
+def test_ticker_compatibles_no_avisan_por_defecto(tmp_path):
+    g = FakeGit({"lane/t_1": (NOW, "x", [CMD]), "lane/t_2": (NOW, "y", [CMD])}, mt=False)  # sin merge-tree: compatible
+    sent = []
+    tk = ChoquesTicker(LANES, hermes([]), send=sent.append, state_path=tmp_path / "ch.json",
+                       settings_path=tmp_path / "no.yaml", git=g, clock=lambda: 0.0, wall=lambda: NOW)
+    choques_ = tk.tick()
+    assert choques_ and all(c.clase == "compatible" for c in choques_)
+    assert sent == []
+    assert (tmp_path / "ch.json").exists()  # queda registrado: no se reevalúa como nuevo
+
+
+def test_rama_con_pr_ya_fusionado_no_cuenta(tmp_path):
+    class G(FakeGit):
+        def ramas_cerradas(self, repo):
+            return {"feat/vieja"}
+    g = G({"feat/vieja": (NOW, "x", [CMD]), "lane/t_2": (NOW, "y", [CMD])},
+          reales={frozenset(("feat/vieja", "lane/t_2")): True})
+    assert run(g) == []
+    g2 = G({"feat/vieja": (NOW, "x", [CMD]), "lane/t_2": (NOW, "y", [CMD])},
+           prs=[{"number": 9, "headRefName": "feat/vieja", "title": "reabierta"}],
+           reales={frozenset(("feat/vieja", "lane/t_2")): True})
+    assert len(run(g2)) == 1  # con un PR abierto de nuevo, vuelve a contar
+
+
+def test_load_ajustes_recordar_y_compatibles(tmp_path):
+    p = tmp_path / "c.yaml"
+    p.write_text("recordar_dias: 7\navisar_compatibles: true\n", encoding="utf-8")
+    a = load_ajustes(p)
+    assert a.recordar_dias == 7 and a.avisar_compatibles is True

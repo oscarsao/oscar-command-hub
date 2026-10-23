@@ -64,6 +64,7 @@ LIST_FAIL = "no se pudieron listar tareas"
 LIST_FAIL_AFTER = 600  # s de fallos seguidos listando tareas (hermes/WinError) antes de abrir ALTA
 RETRY_TASKS = ("Resumen diario Hermes", "Auditor diario carriles")  # tareas programadas a relanzar si fallaron
 LIVE_LAG_AFTER = 30 * 60  # s con el checkout vivo por detrás de origin/main antes de avisar
+RUNNER_DEAD_SECS = 300  # s seguidos con el runner sin aparecer «VIVO» antes de avisar (Oscar, 23-10)
 LIST_FAIL_GAP = 240  # s sin fallos nuevos = recuperado (el runner lista cada ~60 s)
 
 
@@ -220,15 +221,16 @@ class Monitor:
 
     # --- alertas --------------------------------------------------------------------------------------
     def condition(self, key: str, active: bool, text: str, fix: str, *, min_hits: int = 3, every: float = 1800,
-                  level: str = "ALTA") -> None:
-        """Estado persistente (runner/Hermes/servicio caído): alerta solo si dura `min_hits` lecturas seguidas, con
-        qué hacer, y avisa cuando se resuelve. 28-09: un reinicio de 20 s del runner mandó "NO está vivo" sin más."""
+                  level: str = "ALTA", min_secs: float = 0) -> None:
+        """Estado persistente (runner/Hermes/servicio caído): alerta solo si dura `min_hits` lecturas seguidas y, si se
+        da, al menos `min_secs` segundos, con qué hacer, y avisa cuando se resuelve. 28-09: un reinicio de 20 s del
+        runner mandó "NO está vivo" sin más."""
         conds = self.__dict__.setdefault("_conds", {})
         c = conds.setdefault(key, {"hits": 0, "since": 0.0, "alerted": False})
         if active:
             c["hits"] += 1
             c["since"] = c["since"] or time.time()
-            if c["hits"] >= min_hits:
+            if c["hits"] >= min_hits and time.time() - c["since"] >= min_secs:
                 self.alert(level, f"{text}\n👉 Qué hacer: {fix}", key, every=every)
                 c["alerted"] = True
             return
@@ -427,13 +429,15 @@ class Monitor:
             self.lanes_text = (cp.stdout or cp.stderr).strip()
         except Exception as exc:
             self.lanes_text = f"lanes.py status falló: {exc}"
-        # Un reinicio (ordenado o no) deja el runner ~20 s sin proceso: 3 lecturas (~45 s) y nunca durante un drenaje.
+        # Un reinicio deja el runner ~20 s sin proceso, y con Hermes cargado `lanes.py status` tarda y el runner sale
+        # «no vivo» 2-3 min y se recupera solo (162 avisos el 23-10). Oscar, 23-10: avisar a los 5 min, no al minuto.
         draining = (LANES / ".state" / "drain.json").exists()
         self.condition("runner-dead", "VIVO" not in self.lanes_text and not draining,
-                       "El runner de carriles lleva más de un minuto parado: no se reclaman tareas (quedan en cola, "
+                       "El runner de carriles lleva más de cinco minutos parado: no se reclaman tareas (quedan en cola, "
                        "no se pierde nada).",
-                       "espera 2-3 min por si es un reinicio; si sigue, en el PC: Programador de tareas → "
-                       "'agent-lanes runner' → Ejecutar. /salud (bot de Trabajos) te dice el estado.")
+                       "en el PC: Programador de tareas → "
+                       "'agent-lanes runner' → Ejecutar. /salud (bot de Trabajos) te dice el estado.",
+                       min_secs=RUNNER_DEAD_SECS)
         self.condition("orphan", "huérfano" in self.lanes_text,
                        "Hay un worker funcionando sin runner que lo vigile.",
                        "normalmente se resuelve solo al terminar la tarea; si pasa de 30 min, avísame en la "
