@@ -504,10 +504,16 @@ class Integrator:
     def _git(self, repo: str, *args: str, timeout: int = 300) -> subprocess.CompletedProcess:
         return self._exec(["git", "-C", repo, *args], timeout=timeout)
 
-    def _gh(self, *args: str, timeout: int = 120) -> subprocess.CompletedProcess:
+    def _gh(self, *args: str, timeout: int | None = None) -> subprocess.CompletedProcess:
         # cwd fuera de cualquier clon: `gh pr merge --delete-branch` dentro de un checkout cambia de rama y borra
         # la local, y en el checkout raíz eso está prohibido.
-        return self._exec([self.gh_exe, *args], cwd=tempfile.gettempdir(), timeout=timeout)
+        # Timeout/red (t_cce5da81): reintento con espera solo en lecturas (pr view, api GET); en escrituras (merge,
+        # create) un timeout devuelve un fallo sin repetir: el llamador relee el PR (pudo aplicarse).
+        read = _proc.gh_is_read(args)
+        return _proc.run_retrying([self.gh_exe, *args], runner=lambda cmd, **kw: self._exec(cmd, **kw),
+                                  timeout=timeout, sleep=self._sleep, label=f"gh {' '.join(args[:2])}",
+                                  retry_timeout=read, transient=_proc.gh_network_error if read else None,
+                                  cwd=tempfile.gettempdir())
 
     def _railway(self, policy: Policy, *args: str, timeout: int = 120) -> subprocess.CompletedProcess:
         return self._exec([self.railway_exe, *args], cwd=policy.railway_dir, timeout=timeout)

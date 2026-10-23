@@ -121,8 +121,9 @@ def mark_integrator_active(path: Path = ACTIVE_FILE) -> None:
 
 
 def _git(run, repo: Path, *args: str) -> tuple[int, str]:
-    cp = run(["git", "-C", str(repo), *args], capture_output=True, text=True, encoding="utf-8", errors="replace",
-             timeout=120)
+    # fetch/rev-parse/status/merge-base/log: idempotentes; un timeout se reintenta y, agotado, es un fallo (t_cce5da81).
+    cp = _proc.run_retrying(["git", "-C", str(repo), *args], runner=run, label=f"git {args[0] if args else ''}",
+                            capture_output=True, text=True, encoding="utf-8", errors="replace")
     # rstrip: el primer carácter de `status --porcelain` puede ser un espacio significativo
     return cp.returncode, ((cp.stdout or "") if cp.returncode == 0 else (cp.stderr or cp.stdout or "")).rstrip()
 

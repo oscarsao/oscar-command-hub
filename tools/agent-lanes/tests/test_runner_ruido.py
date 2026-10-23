@@ -94,3 +94,50 @@ def test_aviso_de_otro_tablero_se_loguea_una_sola_vez(caplog):
     assert [r.getMessage() for r in caplog.records].count(
         "t_00000003: tarjeta de Telegram en el tablero oscarhq; claude-telegram trabaja en %s: no se mueve"
         % TG_LANE.board) == 1
+
+
+# --- 4. t_cce5da81: no se pide decisión de PR sobre una rama sin commits ------------------------------------------------
+
+def _revision_sin_commits(tmp_path, ahead, merged=None):
+    """Re-verificación fallida en review (h.block no puede mover una tarea en review) -> escalada con [✅ Aprobar].
+    Con la rama sin commits sobre la base, la escalada no debe salir."""
+    from agent_lanes.review import ReviewRunner
+    from tests.test_phase2 import LANE as L, REVIEW, FakeReviewGit, FakeVerifier
+    from tests.test_review_escalada import FailingBlockHermes, SpyDecisions
+    from tests.test_integrator import FakeTg
+
+    class Git(FakeReviewGit):
+        def commits_ahead(self, lane, tid):
+            return ahead
+
+        def merged_pr(self, lane, tid):
+            return merged
+
+    h = FailingBlockHermes([{"id": "t_1", "title": "T", "body": "B", "assignee": "claude-oscarhq", "status": "review"}])
+    n, d = FakeTg(), SpyDecisions()
+    r = ReviewRunner(REVIEW, {"claude-oscarhq": L}, hermes_for=lambda b: h, git=Git(), reviewer=None,
+                     verifier=FakeVerifier(False), notify=n, decisions=d, state_dir=tmp_path / "rb")
+    return r, h, n, d
+
+
+def test_rama_sin_commits_vuelve_al_carril_sin_preguntar(tmp_path):
+    r, h, n, d = _revision_sin_commits(tmp_path, ahead=0)
+    assert r.run_once() == {"t_1": "changes:sin_commits"}
+    assert d.markups == []  # ninguna decisión con [✅ Aprobar] a Oscar
+    assert ("reopen", "t_1") in h.calls
+    comment = next(c for c in h.calls if c[0] == "comment")
+    assert "no tiene commits sobre la base" in comment[2] and "empuja el trabajo" in comment[2]
+    assert all(s["markup"] is None for s in n.sent)
+
+
+def test_rama_sin_commits_ya_integrada_se_cierra(tmp_path):
+    r, h, n, d = _revision_sin_commits(tmp_path, ahead=0, merged="https://github.com/o/r/pull/9")
+    assert r.run_once() == {"t_1": "done:integrada"}
+    assert d.markups == [] and [c[0] for c in h.calls if c[0] in ("complete", "reopen")] == ["complete"]
+
+
+def test_rama_con_commits_o_sin_saberlo_escala_como_siempre(tmp_path):
+    for ahead in (3, None):
+        r, h, n, d = _revision_sin_commits(tmp_path / str(ahead), ahead=ahead)
+        assert r.run_once() == {"t_1": "blocked:transient"}
+        assert d.markups == [("blocked", "review_stuck")]

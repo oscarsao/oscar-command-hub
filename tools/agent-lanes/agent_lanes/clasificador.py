@@ -77,7 +77,9 @@ DEFAULTS: dict = {
                     r"\b(?:lea|leer|lee|use|usar|usa|consuma|consulte|admita|soporte|respete|valide|resuelva)\b",
                     r"\b(?:despu[eé]s|luego|m[aá]s tarde|tras)\b.{0,40}\b(?:integrador|Oscar)\b",
                     r"\b(?:el integrador|Oscar) (?:lo |la )?(?:aplicar[aá]|desplegar[aá]|har[aá])"],
-        "negacion": [r"\b(?:no|nunca|jam[aá]s|sin|evita|prohib\w+)\s+(?:\w+\s+){0,2}$"],
+        # «ni» coordinado también niega (t_cce5da81: «no tocar ~/.hermes ni la configuración de Hermes» bloqueaba por
+        # «configuración»). Un tema precedido por una negación tampoco cuenta (ver _intencion).
+        "negacion": [r"\b(?:no|nunca|jam[aá]s|sin|ni|evita|prohib\w+)\s+(?:\w+\s+){0,2}$"],
         "recordatorio": "La tarjeta menciona producción, variables de entorno, SQL remoto u otro repo, pero no parece "
                         "pedirte actuar sobre ellos. Haz solo el código/documento/tests en tu worktree: el guard no te "
                         "deja desplegar, cambiar variables ni escribir en otro repo ni fuera del worktree; lo que "
@@ -148,7 +150,12 @@ def _intencion(text: str, patrones, cfg: dict) -> str:
     verbos, mencion, negacion = ic.get("verbos") or (), ic.get("mencion") or (), ic.get("negacion") or ()
     resultado = ""
     for frase in re.split(r"(?<=[.;!?:])\s+|\n+", text):
-        if not any(re.search(p, frase, re.I | re.S) for p in patrones):
+        temas = [m for p in patrones for m in re.finditer(p, frase, re.I | re.S)]
+        if not temas:
+            continue
+        # «no tocar ~/.hermes», «sin tocar ~/.hermes»: el propio tema está negado; es un límite, no una petición.
+        if all(any(re.search(n, frase[:m.start()], re.I) for n in negacion) for m in temas):
+            resultado = resultado or "mencion"
             continue
         es_mencion = any(re.search(p, frase, re.I) for p in mencion)
         hay_verbo = False
