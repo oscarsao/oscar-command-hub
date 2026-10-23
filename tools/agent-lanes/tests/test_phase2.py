@@ -545,5 +545,6 @@ def test_real_lanes_yaml_destinations():
     from agent_lanes.config import load_lanes
     lanes = load_lanes()
     assert lanes["claude-migrateam"].telegram == (GESTION, "230")
-    assert lanes["claude-oscarhq"].telegram == lanes["claude-scraper"].telegram == (GESTION, "231")
+    assert lanes["claude-oscarhq"].telegram == ("-1003731090094", "29")  # Desarrollo · Píldora
+    assert lanes["claude-scraper"].telegram == ("-1003731090094", "36")  # Desarrollo · Signal
     assert lanes["claude-nextjobs"].telegram == (GESTION, "5")

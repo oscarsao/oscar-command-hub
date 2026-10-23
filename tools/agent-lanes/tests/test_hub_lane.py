@@ -28,7 +28,7 @@ def test_hub_lane_config():
     assert lane.kind == "implement"
     assert Path(lane.repo) == Path("C:/Users/oscar/oscar-command-hub")
     assert (lane.base, lane.board, lane.remote) == ("main", "default", "origin")
-    assert lane.telegram == ("-1003530490339", "5")  # Gestión · Operaciones General
+    assert lane.telegram == ("-1003731090094", "38")  # Desarrollo Píldora · Hub y carriles (23-10)
     assert lane.model == "sonnet" and lane.max_budget_usd == 3.0
     assert lane.role == "roles/hub.md" and lane.role_path.is_file()
     # la lista del carril sustituye a la de defaults: .github/workflows/ tiene que seguir ahí
