@@ -2664,9 +2664,22 @@ class CommandCenter:
         tree = self.tree_text(board, show)
         if tree and len(text) + 1 + len(tree) <= TEXT_MAX:
             text += "\n" + tree
-        sent = self._send(where, text, markup=markup)
-        if markup:
+        row = self._fusion_row(board, show)
+        full = {"inline_keyboard": [*(markup or {}).get("inline_keyboard", []), row]} if row else markup
+        sent = self._send(where, text, markup=full)
+        if markup:  # la copia sincronizada sigue al teclado de la decisión; la fila «Fusionar con…» es aparte
             self._mirror(show["task"]["id"], sent, markup)
+
+    def _fusion_row(self, board: str, show: dict) -> list[dict] | None:
+        """Fila «🔗 Fusionar con…» de la ficha (fusion.py); nunca rompe la ficha."""
+        fusion = getattr(self.desk, "fusion", None)
+        if not fusion:
+            return None
+        try:
+            return fusion.boton_ficha(show["task"], board, self.desk.store.issue)
+        except Exception as exc:
+            log.info("ficha: botón Fusionar con… no añadido: %s", exc)
+            return None
 
     def _find(self, tid: str) -> tuple[str, dict] | None:
         for board in dict.fromkeys(l.board for l in self.lanes.values() if l.board):

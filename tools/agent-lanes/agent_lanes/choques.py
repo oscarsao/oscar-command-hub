@@ -25,7 +25,7 @@ from pathlib import Path
 import yaml
 
 from . import proc as _proc
-from . import solapes
+from . import fusion, solapes
 from .config import ROOT
 
 log = logging.getLogger("agent_lanes")
@@ -115,6 +115,8 @@ class Unidad:
     dueno: str = ""                # autor de la rama / assignee de la tarjeta (E2 lo convertirá en mención)
     origen: str = "tarjeta"        # tarjeta | lane | pr | persona
     pr: int = 0
+    board: str = ""                # solo tarjetas: tablero y carril (para los botones del aviso)
+    lane: str = ""
 
 
 @dataclass
@@ -258,7 +260,8 @@ def unidades_repo(repo: str, remote: str, base: str, tarjetas: list[dict], git: 
                 continue
             texto = f"{t.get('title') or ''}\n{t.get('body') or ''}"
             u = Unidad(tid, _etiq(tid, t.get("title") or ""), rutas=solapes.extraer_rutas(texto, sol, repo), texto=texto,
-                       dueno=str(t.get("assignee") or ""), origen="tarjeta")
+                       dueno=str(t.get("assignee") or ""), origen="tarjeta",
+                       board=str(t.get("_board") or ""), lane=str(t.get("assignee") or ""))
             if f"lane/{tid}" in ramas:
                 con_rama(u, f"lane/{tid}")
                 u.texto = texto
@@ -305,7 +308,7 @@ def detectar(lanes: dict, hermes_for, git: Git, ajustes: Ajustes | None = None, 
                 key = solapes._norm_repo(getattr(lane, "repo", "")) if lane is not None else ""
                 if key in repos and t.get("id") and (board, t["id"]) not in vistos:
                     vistos.add((board, t["id"]))
-                    repos[key][3].append(t)
+                    repos[key][3].append({**t, "_board": board})
     out: list[Choque] = []
     for repo, remote, base, tarjetas in repos.values():
         try:
@@ -348,17 +351,31 @@ def aviso(c: Choque, ajustes: Ajustes | None = None) -> str:
         _linea(c.a), _linea(c.b),
         "Comparten: " + "; ".join(c.comparten[:ajustes.comparten_max]),
         "Propuesta: " + c.propuesta,
-        "Solo aviso: no se frena ni se encadena nada solo. Decides tú."])
+        "No se frena ni se encadena nada solo: decides tú."])
+
+
+def registro(c: Choque) -> dict | None:
+    """Registro del teclado si las dos unidades son tarjetas (los botones actúan sobre tarjetas, no sobre ramas)."""
+    return fusion.registro_tarjetas([{"tid": u.uid, "board": u.board, "lane": u.lane, "title": u.etiqueta}
+                                     for u in (c.a, c.b) if u.origen == "tarjeta" and u.board])
 
 
 class ChoquesTicker:
     """Pasada periódica en el bucle del runner. Avisa una vez por par + clase (estado en `state_path`); nunca lanza."""
 
     def __init__(self, lanes: dict, hermes_for, *, send, state_path: Path, settings_path: Path | str | None = None,
-                 git: Git | None = None, clock=time.monotonic):
+                 git: Git | None = None, clock=time.monotonic, issue=None):
         self.lanes, self.hermes_for, self.send = lanes, hermes_for, send
         self.state_path, self.settings_path, self.git, self._clock = state_path, settings_path, git or Git(), clock
+        self.issue = issue  # CallbackStore.issue: con él, el aviso entre dos tarjetas lleva botones y `send(texto, markup)`
         self._last: float | None = None
+
+    def _enviar(self, c: Choque, ajustes: Ajustes) -> None:
+        rec = registro(c) if self.issue else None
+        if rec:
+            self.send(aviso(c, ajustes), self.issue(rec, fusion.teclado_solape())[1])
+        else:
+            self.send(aviso(c, ajustes))
 
     def _seen(self) -> list[str]:
         try:
@@ -380,7 +397,7 @@ class ChoquesTicker:
             n = len(seen)
             try:
                 for c in fresh:  # si un envío falla, ese par se reintenta en la pasada siguiente
-                    self.send(aviso(c, ajustes))
+                    self._enviar(c, ajustes)
                     seen.append(clave(c))
             finally:
                 if len(seen) > n:
