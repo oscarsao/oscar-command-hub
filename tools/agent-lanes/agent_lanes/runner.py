@@ -122,8 +122,11 @@ class LaneRunner:
                  repo_guard: Callable[[Lane], str | None] | None = None,
                  kill: Callable[[int], None] = _proc.kill_tree,
                  created_at: Callable[[int], float | None] = _proc.created_at,
-                 lanes: dict | None = None, consultor: Callable | None = None, final_only=()):
+                 lanes: dict | None = None, consultor: Callable | None = None, final_only=(), prevencion=None):
         self.lane = lane
+        # prevencion.Prevencion: una ready que choca con trabajo en marcha del mismo repo no se lanza en paralelo
+        # (choques.yaml → prevenir_al_lanzar). None = sin prevención (tests, carriles sin repo).
+        self._prevencion = prevencion
         self._lanes = lanes or {}  # el clasificador distingue «otro repo» por los repos de los demás carriles
         self._consultor = consultor or _consulta.responder  # tipo «consulta»: (lane, task) -> (texto, coste)
         # Chats «solo resultado final» (lanes.yaml telegram.final_only): ahí solo salen inicio y entrega; el proceso va al DM.
@@ -266,6 +269,12 @@ class LaneRunner:
                 return []
         ready = [t for t in self.hermes.list_ready(self.lane.name) if t["id"] not in self.exclude]
         ready = [t for t in ready if not holds.held(t["id"]) and not self._dependency_hold(t["id"])]
+        prevencion = getattr(self, "_prevencion", None)  # getattr: algunos tests llaman con un self mínimo
+        if prevencion is not None and self.lane.kind == "implement" and ready:
+            try:
+                ready = prevencion.filtrar(self.lane, ready, self.hermes)
+            except Exception as exc:  # la prevención nunca para el carril
+                log.info("%s: prevención de choques falló: %s", self.lane.name, exc)
         for t in ready:  # antes del claim: el notificador de Hermes ya duplicó un aviso en la ventana claim -> baja
             self._drop_hermes_subs(t["id"])
         paths = getattr(self.lane, "serialize_paths", ()) or ()

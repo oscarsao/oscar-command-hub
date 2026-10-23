@@ -45,6 +45,7 @@ from .limpieza import LIM_CLOSE, LIM_KEEP, LIM_VIEW
 from .paradas import PA_ACTIONS
 from .reconcile import INTEGRATOR_PROFILE, REC_ARCHIVE, REC_KEEP
 from .agrupar import AGR_ACTIONS
+from .choques import CHO_ACTIONS
 from .fusion import FUS_ACTIONS
 from .solapes import SOL_ACTIONS
 from .review import CHANGES_PREFIX
@@ -438,6 +439,7 @@ class DecisionDesk:
         self.fusion = None   # fusion.Fusion: botones fus_* (fusionar, encadenar, duplicada, pausar, «Fusionar con…»)
         self.paradas = None  # paradas.ParadasRunner: botones pa_retry / pa_integrador / pa_archive
         self.solapes = None  # solapes.SolapeTicker: botones sol_fusionar / sol_distintas / sol_luego
+        self.choques = None  # choques.ChoquesTicker: botones cho_ign / cho_sil de los avisos de choque
         self.integrator = None  # carril Integrador (INTEGRATOR_ENABLED): botones int_* de fusionar/desplegar
         self.messages = messages  # MessageStore: todas las copias de cada aviso (sincronización tema <-> DM)
         self.promoter = None      # promote.Promoter: /promover y botones promo_* (producción de MigraTeam)
@@ -979,6 +981,8 @@ class DecisionDesk:
             return bool(self.limpieza) and self.limpieza.on_button(action, rec, where, self)
         if action in FUS_ACTIONS:  # avisos de solape/choque y ficha de tarjeta (fusion.py)
             return bool(self.fusion) and self.fusion.on_button(action, rec, where, self, button.get("index"))
+        if action in CHO_ACTIONS:  # avisos de choque: 🙈 Ignorar este par / 🔇 Silenciar rama (choques.py)
+            return bool(self.choques) and self.choques.on_button(action, rec, where, self, button.get("index"))
         if action in PA_ACTIONS:  # aviso diario de tarjetas paradas (paradas.py)
             return bool(self.paradas) and self.paradas.on_button(action, rec, where, self)
         if action in AGR_ACTIONS:  # /agrupar: mismo lote / una sola pregunta (agrupar.py)
