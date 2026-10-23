@@ -45,3 +45,7 @@ Escrito porque el límite semanal está casi agotado. Retomar desde aquí.
   - MigraTeam (develop): #278 API del puente, #280 correo terminado (inbmail1023a cuelga de rlsfase1; falta db-migration-checker; arregla el P1 del Reply-To en producción), #273, #271.
 - core.py de correo divergente entre repos (verify_svix_signature con los argumentos en otro orden): no copiarlo tal cual.
 - Hotfix de cabecera: basado en feat/ds-base; conecta `PageShell tabs` y quita cabeceras y marcas duplicadas; después, el 2.º PR de la barra configurable.
+- PUBLICADO: #316 (cabecera única, marca solo en el chip global, popovers opacos) y #317 (barra superior configurable, preferencia barra_superior). Vercel READY 94e5a862 y Dokploy done.
+- Pendiente menor de #315: barra de scroll vertical en NavTabs (añadir overflow-y-hidden en ds/tabs.tsx).
+- Incidente: un backend local con el .env de producción tuvo los schedulers encendidos ~1 h (check_new_leads, sweep_expired_pending_bookings). Si hubo avisos de lead duplicados, viene de ahí.
+- Hay copias de .env en C:\Users\oscar\dev\_lanes\hotfix-cabecera\ (.env, dashboard\.env.development, dashboard\.env.production.local): las tiene que borrar Oscar.
