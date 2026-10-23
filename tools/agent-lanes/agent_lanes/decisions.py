@@ -42,6 +42,7 @@ from .notices import (BOARD_BRANDS, BRANDS, DECISION_CARD_STATUSES, OPTION_LETTE
 from .tipo_peticion import A_ASK as PEDIR_ASK, KIND as PEDIR_KIND
 from .limpieza import LIM_CLOSE, LIM_KEEP, LIM_VIEW
 from .reconcile import INTEGRATOR_PROFILE, REC_ARCHIVE, REC_KEEP
+from .agrupar import AGR_ACTIONS
 from .fusion import FUS_ACTIONS
 from .solapes import SOL_ACTIONS
 from .review import CHANGES_PREFIX
@@ -962,6 +963,8 @@ class DecisionDesk:
             return bool(self.limpieza) and self.limpieza.on_button(action, rec, where, self)
         if action in FUS_ACTIONS:  # avisos de solape/choque y ficha de tarjeta (fusion.py)
             return bool(self.fusion) and self.fusion.on_button(action, rec, where, self, button.get("index"))
+        if action in AGR_ACTIONS:  # /agrupar: mismo lote / una sola pregunta (agrupar.py)
+            return bool(self.commands) and self.commands.agrupar_step(action, rec, where)
         if action in SOL_ACTIONS:  # aviso de posible solape (solapes.py)
             return bool(self.solapes) and self.solapes.on_button(action, rec, where, self)
         if action.startswith("pv_"):  # panel vivo del tema de Integración: Resolver / Ver / Aparcar
