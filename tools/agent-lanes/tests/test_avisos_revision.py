@@ -256,3 +256,39 @@ def test_ayuda_lista_todos_los_comandos_y_avisos():
     assert definidos - en_ayuda == set(), "comando sin documentar en COMMANDS (/ayuda y menú de Telegram)"
     assert "avisos" in en_ayuda and "/avisos" in CommandCenter.help_text()
     assert re.search(r"/avisos off \[1h\|3h\|mañana\|siempre\]", CommandCenter.help_text())
+
+
+class FakeMensajes:
+    """MessageStore con copias de la ficha: `_tokens` las consultaría si el rec del resumen llevase task_id."""
+
+    def all_messages(self, tid):
+        return [{"token": "tok_ficha"}]
+
+
+def test_botones_del_resumen_pasan_por_decisiondesk_sin_excepcion_y_se_consumen_una_vez(tmp_path, monkeypatch):
+    from agent_lanes.decisions import CallbackStore, DecisionDesk
+    from tests.test_decisions import LANE, OSCAR, FakeTG
+
+    reloj, enviados, tg = Reloj(), [], FakeTG()
+    desk = DecisionDesk(tg, CallbackStore(tmp_path / "cb"), lanes={LANE.name: LANE}, hermes_for=lambda b: None,
+                        spawn=lambda fn: fn(), messages=FakeMensajes(), owner_id=str(OSCAR))
+    a = AvisosRevision(lambda text, markup=None: enviados.append((text, markup)), "-100", issue=desk.store.issue,
+                       state_path=tmp_path / "avisos.json", clock=reloj)
+    monkeypatch.setattr(avisos_revision, "ACTIVO", a)
+    for n in (1, 2, 3):
+        tarjeta(a, n)
+    a.tick()
+
+    def pulsar(data):
+        desk._callback({"id": "cq", "from": {"id": OSCAR}, "data": data,
+                        "message": {"chat": {"id": -100}, "message_id": 7, "message_thread_id": 5}})
+
+    datas = [b["callback_data"] for b in botones(enviados[0][1])]  # 1 h, 3 h, mañana, y una por tarjeta
+    pulsar(datas[3])  # 🙈 No avisar de t_1
+    assert a._load()["mudas"] == ["t_1"]
+    assert desk.store.get(datas[3].partition(":")[0]) is None  # token consumido
+    pulsar(datas[3])  # repetirlo no aplica nada otra vez
+    assert a._load()["mudas"] == ["t_1"] and tg.answers[-1][1] == "Esta decisión ya no está activa"
+    nuevos = [b["callback_data"] for b in botones(tg.edits[-1]["markup"])]
+    pulsar(nuevos[0])  # el teclado reeditado sigue vivo: 🔕 1 h
+    assert a.silenciado_hasta() == T0 + H

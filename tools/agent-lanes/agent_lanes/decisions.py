@@ -908,7 +908,7 @@ class DecisionDesk:
 
     def _tokens(self, rec: dict) -> set[str]:
         """Tokens de teclado de todas las copias del aviso de una tarea (tema, DM, bandeja)."""
-        if not self.messages:
+        if not self.messages or not rec.get("task_id"):  # el resumen de avisos_revision no es de ninguna tarea
             return set()
         return {m["token"] for m in self.messages.all_messages(rec["task_id"]) if m.get("token")}
 
