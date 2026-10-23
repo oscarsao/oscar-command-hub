@@ -37,3 +37,11 @@ Escrito porque el límite semanal está casi agotado. Retomar desde aquí.
 - Errores de hermes kanban (timeouts y «read-only» transitorio) en el tablero oscarhq desde las ~17:09; si persisten, reiniciar Hermes.
 - 5 worktrees con cambios locales sin limpiar: t_c8b8ff22, t_e27b1b5e, t_23f0ea55, t_b930f3d0 y t_609ef657. Revisarlos y empujarlos; NO borrarlos.
 - next dev de navegación sigue en :3377 (PID 2212).
+
+## Añadido 23-10 tarde
+- PUBLICADO: base del DS #315 (e852cf58; cinta, PageShell y overlays en portal y opacos).
+- Workflow de chatbot y correo terminado. PRs sin fusionar:
+  - oscar-hq: #314 chatbot (migración 20261055), #312 correo entrante (sus migraciones 20261050, 53 y 54 CHOCAN con el lote 2 en producción: renumerar a 1056+), #306 spec, #305 intercambio de funciones;
+  - MigraTeam (develop): #278 API del puente, #280 correo terminado (inbmail1023a cuelga de rlsfase1; falta db-migration-checker; arregla el P1 del Reply-To en producción), #273, #271.
+- core.py de correo divergente entre repos (verify_svix_signature con los argumentos en otro orden): no copiarlo tal cual.
+- Hotfix de cabecera: basado en feat/ds-base; conecta `PageShell tabs` y quita cabeceras y marcas duplicadas; después, el 2.º PR de la barra configurable.
