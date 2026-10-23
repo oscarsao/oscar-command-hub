@@ -97,6 +97,13 @@ def _build() -> dict[str, Ajuste]:
         Ajuste("avisos.retro_hora", "Avisos", "Hora de la retro semanal del lunes", 9, "int",
                "Hora (0-23, Madrid) desde la que el lunes sale el informe de fricción de la semana.", 0, 23,
                (8, 9, 10, 12)),
+        Ajuste("equipo.horas", "Avisos", "Horas del resumen del tema 👥 Equipo", ("9", "17"), "lista",
+               "Horas (0-23, Madrid) separadas por comas. La primera lleva además las solicitudes abiertas y la "
+               "revisión de permisos."),
+        Ajuste("equipo.urgentes_hora", "Avisos", "Avisos urgentes del equipo por hora", 5, "int",
+               "Pasado el tope, el resto sale agrupado en un solo mensaje.", 1, 20, (3, 5, 10)),
+        Ajuste("equipo.fichas_hora", "Avisos", "Fichas de solicitud nuevas por hora", 10, "int",
+               "Pasado el tope, el resto sale agrupado en un solo mensaje.", 1, 30, (5, 10, 20)),
         Ajuste("atascos.escalado_guard_horas", "Atascos", "Escalado a Oscar de un bloqueo de guard", 2.0, "float",
                "Horas en la cola del integrador antes de pasar a Oscar (mínimo 1).", 1, 72, (1, 2, 4, 8)),
         Ajuste("atascos.aplazar_horas", "Atascos", "Duración de «Aplazar»", 24.0, "float",

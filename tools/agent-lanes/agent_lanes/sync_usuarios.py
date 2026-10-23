@@ -307,6 +307,11 @@ class ApiOhq:
         filas = data.get("items", data) if isinstance(data, dict) else data
         return filas if isinstance(filas, list) else []
 
+    def vigilancia(self, horas: int = 72) -> dict:
+        """GET /api/equipo/vigilancia (t_04fe996e): fallos y solicitudes del equipo + plantilla de ohq_people."""
+        data = self.http("GET", f"{self.base}/api/equipo/vigilancia?horas={int(horas)}", self.clave, None)
+        return data if isinstance(data, dict) else {}
+
     def resolver(self, fila_id: str) -> None:
         self.http("POST", f"{self.base}/api/admin/user-external-changes/{fila_id}/resolve", self.clave, {})
 
