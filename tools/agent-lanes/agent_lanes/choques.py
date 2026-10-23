@@ -12,9 +12,16 @@ personas (no `lane/*`) con commits recientes sin fusionar. La zona de cada unida
 E1 SOLO AVISA a Oscar (una vez por conjunto + clase): no frena, no encola, no menciona (E2) ni toca el ciclo de review
 (E4). Un fallo de git/`gh`/Hermes degrada a «sin información»: nunca lanza. Ajustes en `choques.yaml` (se relee en cada
 pasada; ausente o inválido = defaults de `Ajustes`). Spec: specs/choques-entre-tareas.md.
+
+Botones (23-10): TODO aviso lleva teclado. Entre dos tarjetas, los de fusion.py (fusionar/encadenar/…); siempre
+[🙈 Ignorar este par] (no vuelve a avisar de ese par, sea cual sea la clase, hasta `recordar_dias`), un
+[🔇 Silenciar <rama>] por cada rama sin tarjeta (lista editable en `.state/choques_silenciadas.json`; deja de contar en
+avisos y en la prevención al lanzar) y [Ver PR #n] (botón URL) si la unidad tiene PR. La prevención al lanzar vive en
+prevencion.py.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
@@ -31,6 +38,11 @@ from .config import ROOT
 log = logging.getLogger("agent_lanes")
 
 SETTINGS_PATH = ROOT / "choques.yaml"
+SILENCIADAS_PATH = ROOT / ".state" / "choques_silenciadas.json"  # ["angel/fix", …]: ramas que no cuentan
+IGNORADOS_PATH = ROOT / ".state" / "choques_ignorados.json"      # {par(uid_a, uid_b): epoch del «Ignorar»}
+CHO_IGNORAR, CHO_SILENCIAR = "cho_ign", "cho_sil"
+CHO_ACTIONS = (CHO_IGNORAR, CHO_SILENCIAR)
+MAX_BOTONES_RAMA = 2
 MAX_ESTADO = 5000  # tope de seguridad; el olvido normal es por edad (Ajustes.recordar_dias), no por número
 MERGE_TREE_MIN = (2, 38)  # `merge-tree --write-tree` existe desde git 2.38
 PATRONES = (
@@ -57,6 +69,13 @@ class Ajustes:
     recordar_dias: int = 30         # un par ya avisado no se repite hasta pasados N días
     avisar_compatibles: bool = False  # «misma zona, compatibles» solo se registra; avisan conflicto y revisar
     patrones: tuple = PATRONES        # ((regex A, regex B), …) de `contradiccion.patrones`
+    # Prevención al lanzar (prevencion.py). Sin YAML legible queda apagada: ante la duda, se lanza como siempre.
+    prevenir_al_lanzar: bool = False
+    prevenir_nivel: str = "archivo"   # archivo = solo si comparten fichero (modulo encolaría medio hub)
+    prevenir_estados: tuple = ("running", "review")
+    prevenir_ramas_lane: bool = True  # también ramas lane/* sin fusionar (PR no fusionado ni cerrado)
+    prevenir_max_horas: int = 24      # una tarjeta no espera más de N horas por un choque: después se lanza
+    prevenir_cache_minutos: float = 2  # caché de git/gh entre pasadas del planificador
 
 
 def _int(v) -> bool:
@@ -79,10 +98,19 @@ def load_ajustes(path: Path | str | None = None) -> Ajustes:
         out["minutos"] = float(m)
     if raw.get("nivel") in ("archivo", "modulo"):
         out["nivel"] = raw["nivel"]
-    if isinstance(raw.get("avisar_compatibles"), bool):
-        out["avisar_compatibles"] = raw["avisar_compatibles"]
+    for k in ("avisar_compatibles", "prevenir_al_lanzar", "prevenir_ramas_lane"):
+        if isinstance(raw.get(k), bool):
+            out[k] = raw[k]
+    if raw.get("prevenir_nivel") in ("archivo", "modulo"):
+        out["prevenir_nivel"] = raw["prevenir_nivel"]
+    pe = raw.get("prevenir_estados")
+    if isinstance(pe, list) and pe and all(isinstance(x, str) and x for x in pe):
+        out["prevenir_estados"] = tuple(pe)
+    pc = raw.get("prevenir_cache_minutos")
+    if isinstance(pc, (int, float)) and not isinstance(pc, bool) and pc >= 0:
+        out["prevenir_cache_minutos"] = float(pc)
     for k in ("ramas_personas_dias", "modulo_min_profundidad", "max_unidades", "max_avisos", "comparten_max",
-              "recordar_dias"):
+              "recordar_dias", "prevenir_max_horas"):
         if _int(raw.get(k)):
             out[k] = raw[k]
     f = raw.get("fuentes")
@@ -122,6 +150,7 @@ class Unidad:
     pr: int = 0
     board: str = ""                # solo tarjetas: tablero y carril (para los botones del aviso)
     lane: str = ""
+    url: str = ""                  # URL del PR (botón «Ver PR»)
 
 
 @dataclass
@@ -173,7 +202,7 @@ class Git:
         return {x.strip().replace("\\", "/").lower() for x in out.splitlines() if x.strip()} if rc == 0 else None
 
     def prs(self, repo: str) -> list[dict]:
-        rc, out = self._out(["pr", "list", "--state", "open", "--json", "number,headRefName,title,author", "--limit", "50"],
+        rc, out = self._out(["pr", "list", "--state", "open", "--json", "number,headRefName,title,author,url", "--limit", "50"],
                             repo, cmd="gh")
         try:
             data = json.loads(out) if rc == 0 else []
@@ -253,13 +282,14 @@ def _etiq(tid: str, titulo: str) -> str:
 
 
 def unidades_repo(repo: str, remote: str, base: str, tarjetas: list[dict], git: Git, ajustes: Ajustes,
-                  ahora: float) -> list[Unidad]:
-    """Unidades abiertas de un repo con su zona. `tarjetas`: dicts de Hermes ya filtrados a este repo."""
+                  ahora: float, silenciadas=frozenset()) -> list[Unidad]:
+    """Unidades abiertas de un repo con su zona. `tarjetas`: dicts de Hermes ya filtrados a este repo. Las ramas de
+    `silenciadas` (botón «Silenciar rama») no cuentan: ni como unidad propia ni como zona de su tarjeta."""
     sol = _solapes_aj(ajustes)
     ramas = {r: (ts, autor) for r, ts, autor in git.ramas_remotas(repo, remote, base)}
     prs = {p["headRefName"]: p for p in git.prs(repo)} if "pr" in ajustes.fuentes else {}
     cerradas = getattr(git, "ramas_cerradas", lambda _r: set())(repo) - set(prs)  # un PR nuevo abierto la reactiva
-    ramas = {r: v for r, v in ramas.items() if r not in cerradas}
+    ramas = {r: v for r, v in ramas.items() if r not in cerradas and r not in silenciadas}
     unidades: dict[str, Unidad] = {}
     usadas: set[str] = set()
 
@@ -270,6 +300,7 @@ def unidades_repo(repo: str, remote: str, base: str, tarjetas: list[dict], git: 
         usadas.add(rama)
         if rama in prs:
             u.pr = int(prs[rama].get("number") or 0)
+            u.url = str(prs[rama].get("url") or "")
             u.dueno = u.dueno or str((prs[rama].get("author") or {}).get("login") or "")
 
     if "tarjetas" in ajustes.fuentes:
@@ -304,14 +335,18 @@ def unidades_repo(repo: str, remote: str, base: str, tarjetas: list[dict], git: 
     return [u for u in unidades.values() if u.rutas][:ajustes.max_unidades]
 
 
-def detectar(lanes: dict, hermes_for, git: Git, ajustes: Ajustes | None = None, ahora: float | None = None) -> list[Choque]:
+def detectar(lanes: dict, hermes_for, git: Git, ajustes: Ajustes | None = None, ahora: float | None = None,
+             silenciadas=frozenset()) -> list[Choque]:
     """Choques no aditivos de todos los repos de los carriles de código. Un tablero o repo ilegible no corta el resto."""
     ajustes = ajustes or Ajustes()
     ahora = time.time() if ahora is None else ahora
     repos: dict[str, tuple] = {}
+    slugs: dict[str, str] = {}  # repo -> owner/repo de GitHub (URL del PR si `gh` no la dio)
     for l in lanes.values():
         if getattr(l, "kind", "") == "implement" and getattr(l, "repo", "") and getattr(l, "base", ""):
             repos.setdefault(solapes._norm_repo(l.repo), (l.repo, getattr(l, "remote", "origin") or "origin", l.base, []))
+            if getattr(l, "github", ""):
+                slugs.setdefault(solapes._norm_repo(l.repo), l.github)
     boards = list(dict.fromkeys(l.board for l in lanes.values()
                                 if getattr(l, "board", "") and getattr(l, "kind", "") == "implement"))
     vistos: set[tuple[str, str]] = set()
@@ -331,7 +366,11 @@ def detectar(lanes: dict, hermes_for, git: Git, ajustes: Ajustes | None = None, 
     out: list[Choque] = []
     for repo, remote, base, tarjetas in repos.values():
         try:
-            us = unidades_repo(repo, remote, base, tarjetas, git, ajustes, ahora)
+            us = unidades_repo(repo, remote, base, tarjetas, git, ajustes, ahora, silenciadas)
+            slug = slugs.get(solapes._norm_repo(repo), "")
+            for u in us:
+                if u.pr and not u.url and slug:
+                    u.url = f"https://github.com/{slug}/pull/{u.pr}"
             for i, a in enumerate(us):
                 for b in us[i + 1:]:
                     if a.rama and a.rama == b.rama:
@@ -370,7 +409,8 @@ def aviso(c: Choque, ajustes: Ajustes | None = None) -> str:
         _linea(c.a), _linea(c.b),
         "Comparten: " + "; ".join(c.comparten[:ajustes.comparten_max]),
         "Propuesta: " + c.propuesta,
-        "No se frena ni se encadena nada solo: decides tú."])
+        ("Lo que esté en ready y choque no se lanza en paralelo (espera a la otra); el resto lo decides tú."
+         if ajustes.prevenir_al_lanzar else "No se frena ni se encadena nada solo: decides tú.")])
 
 
 def registro(c: Choque) -> dict | None:
@@ -379,23 +419,119 @@ def registro(c: Choque) -> dict | None:
                                      for u in (c.a, c.b) if u.origen == "tarjeta" and u.board])
 
 
+def par_uid(c: Choque) -> str:
+    """Par sin la clase: «Ignorar» vale aunque el par pase de compatible a conflicto."""
+    return solapes.par(c.a.uid, c.b.uid)
+
+
+def teclado(c: Choque) -> tuple[dict, list[list[dict]], list[list[dict]]]:
+    """(registro, botones con callback, filas de botones URL) para CUALQUIER aviso de choque.
+
+    El registro siempre lleva `task_id` (el despachador lo usa para retirar copias): con dos tarjetas es el de fusion.py
+    (sus botones siguen igual) y, si no, una clave `choque-<hash del par>` que no es ninguna tarjeta. `board`/`lane` solo se ponen
+    si hay tarjeta: con ellos el despachador aplica los permisos por marca; un par solo de ramas lo decide Oscar."""
+    base = registro(c)
+    silenciables = [u.rama for u in (c.a, c.b) if u.rama and u.origen != "tarjeta"][:MAX_BOTONES_RAMA]
+    urls = [(u.pr, u.url) for u in (c.a, c.b) if u.pr and u.url]
+    # task_id solo con caracteres seguros: MessageStore lo usa como nombre de fichero (`:`, `|` y `/` no valen en Windows)
+    rec = dict(base) if base else {"task_id": "choque-" + hashlib.sha1(par_uid(c).encode()).hexdigest()[:10]}
+    tarjeta = next((u for u in (c.a, c.b) if u.origen == "tarjeta" and u.board), None)
+    if not base and tarjeta:
+        rec.update(board=tarjeta.board, lane=tarjeta.lane)
+    rec.update(choque=True, par=par_uid(c), clase=c.clase, repo=c.repo, silenciables=silenciables,
+               urls=[{"text": f"🔎 Ver PR #{n}", "url": u} for n, u in urls])
+    spec = fusion.teclado_solape() if base else []
+    fila = [{"text": "🙈 Ignorar este par", "action": CHO_IGNORAR}]
+    fila += [{"text": f"🔇 Silenciar {r[:24]}", "action": CHO_SILENCIAR, "index": i} for i, r in enumerate(silenciables)]
+    spec += [fila[:2]] + ([fila[2:]] if fila[2:] else [])
+    return rec, spec, [[{"text": b["text"], "url": b["url"]} for b in rec["urls"]]] if rec["urls"] else []
+
+
+def load_silenciadas(path: Path | str | None = None) -> set[str]:
+    """Ramas silenciadas (lista JSON editable a mano). Ilegible = ninguna."""
+    try:
+        data = json.loads(Path(path or SILENCIADAS_PATH).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return set()
+    return {str(x).strip() for x in data if str(x).strip()} if isinstance(data, list) else set()
+
+
+def load_ignorados(path: Path | str | None = None, *, ahora: float | None = None, dias: int | None = None) -> dict:
+    """{par: epoch} de pares ignorados; con `dias`, solo los que siguen vigentes."""
+    try:
+        data = json.loads(Path(path or IGNORADOS_PATH).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    out = {str(k): float(v) for k, v in data.items() if isinstance(v, (int, float))} if isinstance(data, dict) else {}
+    if dias is not None:
+        ahora = time.time() if ahora is None else ahora
+        out = {k: t for k, t in out.items() if ahora - t < dias * 86400}
+    return out
+
+
+def _write_json(path: Path, data) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
+
+
 class ChoquesTicker:
     """Pasada periódica en el bucle del runner. Avisa una vez por par + clase (estado en `state_path`); nunca lanza."""
 
     def __init__(self, lanes: dict, hermes_for, *, send, state_path: Path, settings_path: Path | str | None = None,
-                 git: Git | None = None, clock=time.monotonic, issue=None, wall=time.time):
+                 git: Git | None = None, clock=time.monotonic, issue=None, wall=time.time,
+                 silenciadas_path: Path | None = None, ignorados_path: Path | None = None):
         self.lanes, self.hermes_for, self.send = lanes, hermes_for, send
         self.state_path, self.settings_path, self.git, self._clock = state_path, settings_path, git or Git(), clock
         self._wall = wall  # reloj de pared para la caducidad de lo ya avisado (el de `clock` es monotónico)
-        self.issue = issue  # CallbackStore.issue: con él, el aviso entre dos tarjetas lleva botones y `send(texto, markup)`
+        self.issue = issue  # CallbackStore.issue: con él, TODO aviso lleva botones y se llama `send(texto, markup)`
+        self.silenciadas_path = Path(silenciadas_path or SILENCIADAS_PATH)
+        self.ignorados_path = Path(ignorados_path or IGNORADOS_PATH)
         self._last: float | None = None
 
     def _enviar(self, c: Choque, ajustes: Ajustes) -> None:
-        rec = registro(c) if self.issue else None
-        if rec:
-            self.send(aviso(c, ajustes), self.issue(rec, fusion.teclado_solape())[1])
-        else:
+        if not self.issue:
             self.send(aviso(c, ajustes))
+            return
+        rec, spec, urls = teclado(c)
+        markup = self.issue(rec, spec)[1]
+        markup = {**markup, "inline_keyboard": markup["inline_keyboard"] + urls}  # URL: Telegram los abre, no llegan
+        self.send(aviso(c, ajustes), markup)
+
+    # --- botones 🙈 Ignorar / 🔇 Silenciar (los despacha DecisionDesk._act con CHO_ACTIONS) --------------------------
+
+    def on_button(self, action: str, rec: dict, where: dict | None, desk, index=None) -> bool:
+        who = desk._who() if hasattr(desk, "_who") else "Oscar"
+        if action == CHO_IGNORAR:
+            par = str(rec.get("par") or "")
+            if not par:
+                return False
+            data = load_ignorados(self.ignorados_path)
+            data[par] = self._wall()
+            try:
+                _write_json(self.ignorados_path, data)
+            except OSError as exc:
+                log.warning("choques: no se pudo guardar el par ignorado: %s", exc)
+                return False
+            dias = load_ajustes(self.settings_path).recordar_dias
+            desk._edit_text(where, f"🙈 {par.replace('|', ' y ')}: ignorado ({who}); no se vuelve a avisar de este par en "
+                                   f"{dias} días ni frena lanzamientos")
+            return True
+        if action == CHO_SILENCIAR:
+            try:
+                rama = (rec.get("silenciables") or [])[int(index)]
+            except (TypeError, ValueError, IndexError):
+                desk._edit_text(where, "No reconozco la rama elegida; espera al próximo aviso")
+                return True
+            ramas = load_silenciadas(self.silenciadas_path) | {rama}
+            try:
+                _write_json(self.silenciadas_path, sorted(ramas))
+            except OSError as exc:
+                log.warning("choques: no se pudo guardar la rama silenciada: %s", exc)
+                return False
+            desk._edit_text(where, f"🔇 {rama}: silenciada ({who}). No sale en avisos de choque ni frena tarjetas. Para "
+                                   f"reactivarla, quítala de .state/{self.silenciadas_path.name}")
+            return True
+        return False
 
     def _seen(self) -> dict[str, float]:
         """{clave: momento del aviso}. Antes era una lista recortada a los últimos 500: con decenas de ramas hay
@@ -424,9 +560,12 @@ class ChoquesTicker:
             if not ajustes.activo or (self._last is not None and now - self._last < ajustes.minutos * 60):
                 return []
             self._last = now
-            choques = detectar(self.lanes, self.hermes_for, self.git, ajustes)
-            seen = self._seen()
             wall = self._wall()
+            choques = detectar(self.lanes, self.hermes_for, self.git, ajustes,
+                               silenciadas=frozenset(load_silenciadas(self.silenciadas_path)))
+            ignorados = load_ignorados(self.ignorados_path, ahora=wall, dias=ajustes.recordar_dias)
+            choques = [c for c in choques if par_uid(c) not in ignorados]
+            seen = self._seen()
             vigentes = {k: t for k, t in seen.items() if wall - t < ajustes.recordar_dias * 86400}
             changed = len(vigentes) != len(seen)
             seen = vigentes

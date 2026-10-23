@@ -1,4 +1,4 @@
-# Choques entre tareas (agent_lanes/choques.py, entrega E1: SOLO AVISA, no frena ni encola). Se relee en cada pasada: no hace
+# Choques entre tareas (agent_lanes/choques.py: avisa con botones; agent_lanes/prevencion.py: frena al lanzar). Se relee en cada pasada: no hace
 # falta reiniciar el runner. Lo que falte o no sea válido vale el default que se indica.
 activo: true                  # false = apagado (no barre ni avisa)
 minutos: 10                   # cada cuánto se barre
@@ -16,6 +16,17 @@ max_avisos: 6                 # avisos nuevos por pasada
 comparten_max: 5              # rutas compartidas que se citan
 recordar_dias: 30             # un par ya avisado no se vuelve a avisar hasta pasados N días
 avisar_compatibles: false     # true = avisar también «misma zona, compatibles»; false = solo conflicto y revisar
+# Botones de todo aviso: 🙈 Ignorar este par (hasta recordar_dias), 🔇 Silenciar <rama> (lista editable en
+# .state/choques_silenciadas.json) y 🔎 Ver PR. Entre dos tarjetas, además fusionar/encadenar/duplicada/pausar.
+# Prevención al lanzar: una tarjeta ready que choca con otra del mismo repo en prevenir_estados, o con una rama lane/*
+# sin fusionar, no se lanza en paralelo: queda en ready con un comentario CHOQUE-AL-LANZAR y se lanza sola cuando la
+# otra termina, se fusiona o se cierra (o al pasar prevenir_max_horas). Respeta «Se complementan», Ignorar y Silenciar.
+prevenir_al_lanzar: true      # false = no frena nada (solo avisos)
+prevenir_nivel: archivo       # archivo = solo si comparten fichero; modulo = también carpeta (encolaría mucho más)
+prevenir_estados: [running, review]
+prevenir_ramas_lane: true     # también ramas lane/* sin fusionar (recientes o con PR abierto)
+prevenir_max_horas: 24        # tope de espera por choque; después se lanza igualmente
+prevenir_cache_minutos: 2     # caché de git/gh entre vueltas del planificador
 # Contradicción de intención: si dos unidades de la misma zona casan un par (una dice A, la otra dice B) -> «revisar».
 # Cada par son expresiones regulares sobre título+cuerpo, en minúsculas. Nunca se resuelve solo.
 contradiccion:

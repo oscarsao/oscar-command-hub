@@ -19,6 +19,7 @@ from agent_lanes.bandeja import load as load_bandeja
 from agent_lanes.board_guard import BoardGuardTicker
 from agent_lanes.choques import ChoquesTicker
 from agent_lanes.fusion import Fusion
+from agent_lanes.prevencion import Prevencion
 from agent_lanes.solapes import SolapeTicker
 from agent_lanes.config import (ROOT, load_env, load_lanes, load_notice_limits, load_runner_settings,
                                 load_telegram_settings)
@@ -169,10 +170,12 @@ def main(argv: list[str] | None = None) -> int:
     git = GitOps()
     impl = {n: l for n, l in selected.items() if l.kind == "implement"}
     # Candado de repos: un carril de código solo reclama si el remote de su repo es el `github:` de lanes.yaml.
+    # Prevención de choques al lanzar (choques.yaml → prevenir_al_lanzar): una instancia para todos los carriles de código.
+    prevencion = Prevencion(all_lanes, hermes_for)
     runners: list = [LaneRunner(l, hermes=hermes_for(l.board), git=git, worker=ClaudeWorker(pid_dir=STATE_DIR),
                                 verifier=verify, notify=notify, exclude=set(args.exclude), messages=messages, links=links,
                                 decisions=decisions, tree=tree, repo_guard=github_slug_problem, lanes=all_lanes,
-                                final_only=tg_settings["final_only"])
+                                final_only=tg_settings["final_only"], prevencion=prevencion)
                      for l in impl.values()]
     # Carril ops: sin repo. Carpeta de trabajo por tarea + verificación por evidencias; siempre acaba en review para
     # Oscar (no está en `review.reviews`, y sweep_done no lo toca: el workspace se conserva).
@@ -270,6 +273,8 @@ def main(argv: list[str] | None = None) -> int:
                                                                               reply_markup=markup),
                                 state_path=ROOT / ".state" / "choques.json",
                                 issue=decisions.store.issue if decisions else None)
+        if decisions:
+            decisions.choques = choques  # 🙈 Ignorar este par / 🔇 Silenciar rama (los de tarjetas siguen en fusion.py)
     if not args.once:
         # El planificador va en su PROPIO hilo (fix/runner-tick, 23-10): el mantenimiento del bucle principal (sweep_done,
         # integrador, tickers) puede tardar minutos (un `git worktree remove` colgado bloqueó 5 min el tick y el runner
