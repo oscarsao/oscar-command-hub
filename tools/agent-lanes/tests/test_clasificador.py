@@ -82,8 +82,53 @@ def test_carril_ops_o_review_no_se_clasifica():
 
 def test_aviso_de_creacion():
     assert clasificador.aviso_creacion(clasificador.Veredicto()) == ""
-    txt = clasificador.aviso_creacion(clasificador.evaluar(HUB, task("variables de entorno"), lanes=LANES))
+    txt = clasificador.aviso_creacion(clasificador.evaluar(HUB, task("Cambia las variables de entorno"), lanes=LANES))
     assert "/integrador" in txt and "producción" in txt
+
+
+# --- intención frente a mención (22-10) ----------------------------------------------------------------------------
+
+MENCIONES = {  # tarjetas de solo código que solo CITAN producción/otro repo: NO se bloquean
+    "endpoint_pildora_mcp": "Añade el endpoint /api/x al hub. Es el que usará pildora-mcp.",
+    "para_cuando_se_despliegue": "Implementa el parser con tests. Para cuando se despliegue a producción, que no rompa nada.",
+    "codigo_lee_env": "Haz que el código lea las variables de entorno de Railway con un valor por defecto.",
+    "limites_negados": "Escribe el módulo y sus tests.\nLímites: no despliegues a producción, no cambies variables de entorno.",
+}
+ACCIONES = {  # instrucciones de actuar: SÍ se bloquean
+    "despliega": ("produccion_env", "Despliega a producción el nuevo runner"),
+    "migracion": ("sql_remoto", "Aplica la migración con alembic upgrade en Supabase"),
+    "variable": ("produccion_env", "Cambia la variable de entorno HERMES_X en Railway"),
+    "push_otro_repo": ("otro_repo", "Haz push a pildora-mcp con el nuevo cliente"),
+}
+
+
+def test_menciones_de_contexto_no_bloquean_y_dejan_recordatorio():
+    for nombre, body in MENCIONES.items():
+        v = clasificador.evaluar(HUB, task(body), lanes=LANES)
+        assert v.integrador == [], nombre
+        assert v.dudas, nombre
+
+
+def test_instrucciones_de_actuar_si_bloquean():
+    for nombre, (rid, body) in ACCIONES.items():
+        assert rid in ids(clasificador.evaluar(HUB, task(body), lanes=LANES)), nombre
+
+
+def test_duda_no_bloquea_y_el_recordatorio_llega_al_prompt():
+    from agent_lanes import worker
+    r, h, w, n = make("Sobre pildora-mcp: documenta el contrato del endpoint")
+    assert r.run_once() == {"t_1": "review"} and w.runs == ["run"]
+    recordatorio = CFG["intencion"]["recordatorio"]
+    prompt = worker.build_prompt({"id": "t_1", "title": "T", "body": "x", "clasificador_recordatorio": recordatorio}, HUB)
+    assert "Límites del guard" in prompt and "nota de seguimiento" in prompt
+
+
+def test_intencion_se_configura_en_yaml(tmp_path):
+    p = tmp_path / "c.yaml"
+    p.write_text("intencion:\n  verbos: ['\\bfulmina\\b']\n", encoding="utf-8")
+    cfg = clasificador.load_config(p)
+    assert ids(clasificador.evaluar(HUB, task("Fulmina las variables de entorno"), cfg=cfg)) == ["produccion_env"]
+    assert clasificador.evaluar(HUB, task("Cambia las variables de entorno"), cfg=cfg).integrador == []
 
 
 # --- runner --------------------------------------------------------------------------------------------------------
