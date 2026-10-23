@@ -352,13 +352,13 @@ def test_tareas_groups_children_under_their_parent(tmp_path):
     command(desk, "/tareas")
     lines = bot.sent[-1]["text"].split("\n")
     i = next(n for n, l in enumerate(lines) if "t_fa000001" in l)
-    assert lines[i].startswith("▶️ ")
+    assert lines[i].startswith("1. ▶️ ")  # cada línea va numerada (responder «3» abre la ficha)
     assert lines[i + 1] == "/tarea t_fa000001"
-    assert lines[i + 2].startswith("   ↳ ⏳ ") and "t_hija0001" in lines[i + 2]
-    assert lines[i + 4].startswith("      ↳ ⏳ ") and "t_niet0001" in lines[i + 4]
+    assert lines[i + 2].startswith("   ↳ 2. ⏳ ") and "t_hija0001" in lines[i + 2]
+    assert lines[i + 4].startswith("      ↳ 3. ⏳ ") and "t_niet0001" in lines[i + 4]
     assert sum("t_hija0001" in l for l in lines) == 2  # su línea y su /tarea
-    assert any(l.startswith("⏳ ") and "t_hija0002" in l for l in lines)  # su padre no está en la lista: suelta
-    assert any(l.startswith("⏳ ") and "t_suel0001" in l for l in lines)
+    assert any("⏳ " in l and l[0].isdigit() and "t_hija0002" in l for l in lines)  # su padre no está: suelta
+    assert any("⏳ " in l and l[0].isdigit() and "t_suel0001" in l for l in lines)
 
 
 def test_tareas_parent_child_cycle_does_not_hide_both(tmp_path):

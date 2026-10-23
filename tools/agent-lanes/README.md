@@ -249,6 +249,12 @@ cambia; cualquier cola, orden o escalada que se escriba aquí debe respetarla.
   que NO son decisiones de carril y, solo si Oscar pulsa [✅ Mover], las pasa al board `personal` (crea la nueva y archiva
   la original; si el board no existe no toca nada). [✋ Dejarlas] las excluye de futuras propuestas
   (`.state/personal_descartadas.json`). Ajustes en `personal.yaml`. El board `personal` hay que crearlo en Hermes (OK de Oscar).
+- **/agrupar [proyecto|todo]** (t_a0110f3d, entrega A1): propone grupos de tarjetas abiertas —duplicadas (título parecido),
+  mismo fichero/área (reutiliza `solapes`), misma decisión pendiente y lote de integración en review—, un mensaje por grupo
+  con [🔗 Fusionar] [⛓ Encadenar] [📦 Mismo lote] [✋ Dejar] (los tres primeros según el tipo; Fusionar/Encadenar/Dejar son los
+  de `fusion.py`). Épicas, retenidas, «tuyo»/«decidir» y tarjetas de personas van a una bandeja sin botones. Nada se aplica
+  sin botón; «Dejar» no vuelve a proponer la pareja. Ajustes en `agrupar.yaml`. Pendiente (A2-A4, otras tarjetas): propuesta
+  al crear, aviso en la verificación y resumen semanal.
 - /hazlo <texto> en el bot de carriles crea una tarea pequeña (prioridad alta, tope 15 min en el cuerpo, línea
   `Origen-Telegram` del sitio donde se pidió); el carril sale de palabras clave del texto o de la marca del tema, y con
   duda pregunta con botones. /estado [marca]: en curso, lo que espera a Oscar y lo pendiente de desplegar, en un mensaje.
@@ -352,3 +358,10 @@ Una vez al día (hora de `limpieza.yaml`) el runner propone por Telegram las tar
 [👁 Ver]. Nunca cierra solo. Umbrales, reglas, tableros y hora se editan en `limpieza.yaml` (se relee sin reiniciar).
 Ver las candidatas sin enviar nada: `py -3.12 -m agent_lanes.limpieza --dry-run` (desde `tools/agent-lanes`).
 Spec: `specs/kanban-limpieza-propuesta.md`.
+
+## Aviso diario de tarjetas paradas (`paradas.py`)
+A las 9:00 (Madrid) el runner publica en el tema de Integración (`integration_telegram`; sin él, en el DM de Oscar) una
+ficha por tarjeta de carril parada más de 24 h en ready sin worker, blocked, triage o review sin revisar:
+`t_xxxxxxxx · título · estado · hace N d H h` con [🔁 Reintentar] [🛠 Integrador] [🗄 Archivar]. No entran las `running`,
+las `scheduled` ni las asignadas a personas (solo se leen las de un carril). Sin paradas no manda nada. También sale una
+línea «Paradas» en /salud. Hora, umbral de horas y nº de fichas se editan con /ajustes (grupo Atascos).

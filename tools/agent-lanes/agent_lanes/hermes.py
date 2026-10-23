@@ -475,6 +475,14 @@ class HermesCLI:
         cp = self._call("request-review", task_id, "--summary", summary, "--metadata", json.dumps(metadata))
         return cp.returncode == 0, cp.stderr.strip()[:500]
 
+    def subscribe_telegram(self, task_id: str, chat: str, thread: str = "0") -> bool:
+        """Aviso de Hermes al solicitante (`notify-subscribe … --delivery-mode notify`, decisión de Oscar 23-10).
+        `drop_telegram_subs` respeta estas suscripciones (modo notify)."""
+        args = ["notify-subscribe", "--platform", "telegram", "--chat-id", str(chat)]
+        if str(thread) not in ("", "0"):
+            args += ["--thread-id", str(thread)]
+        return self._call(*args, "--delivery-mode", "notify", task_id).returncode == 0
+
     def drop_telegram_subs(self, task_id: str) -> list[str]:
         """Quita las suscripciones de Telegram que `kanban_create` puso al hilo de origen (auto_subscribe_on_create):
         los avisos de una tarea de carril los da el runner, y el notificador de Hermes los duplicaba.
@@ -485,6 +493,8 @@ class HermesCLI:
         dropped = []
         for sub in json.loads(cp.stdout or "[]"):
             if sub.get("task_id") != task_id or sub.get("platform") != "telegram":
+                continue
+            if sub.get("delivery_mode") == "notify":  # la puso `tarjeta nueva` para el solicitante: se conserva
                 continue
             chat, thread = str(sub.get("chat_id") or ""), str(sub.get("thread_id") or "")
             args = ["notify-unsubscribe", task_id, "--platform", "telegram", "--chat-id", chat]

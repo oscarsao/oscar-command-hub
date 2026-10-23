@@ -39,9 +39,12 @@ from .free_text import FREE_ACTIONS, FreeText
 from .people import People, load_people
 from .notices import (BOARD_BRANDS, BRANDS, DECISION_CARD_STATUSES, OPTION_LETTERS, card_url, normalize_questions,
                       questions_block, render, status_line, truncate, with_default_options)
+from .tareas_movil import TR_ACTIONS
 from .tipo_peticion import A_ASK as PEDIR_ASK, KIND as PEDIR_KIND
 from .limpieza import LIM_CLOSE, LIM_KEEP, LIM_VIEW
+from .paradas import PA_ACTIONS
 from .reconcile import INTEGRATOR_PROFILE, REC_ARCHIVE, REC_KEEP
+from .agrupar import AGR_ACTIONS
 from .fusion import FUS_ACTIONS
 from .solapes import SOL_ACTIONS
 from .review import CHANGES_PREFIX
@@ -100,7 +103,8 @@ CARD_VETO = "card_veto"       # ⛔ Vetar: la tarjeta reversible deja de ejecuta
 CARD_ACCEPT_ALL = "card_accept_all"  # ✅ Aceptar las recomendadas del lote de tarjetas de /decisiones
 SNOOZE_DAYS = 7
 BUTTON_OPTION_MAX = 22  # caracteres del texto de la opción en su botón ("A · Aprobar el PR")
-REPLY_ACTIONS = (CHANGES, OTHER, CARD_ASK, PEDIR_ASK, WAIT)  # piden texto a Oscar con force_reply
+REPLY_ACTIONS = (CHANGES, OTHER, CARD_ASK, PEDIR_ASK, WAIT, "eq_resp", "eq_rech")  # piden texto con force_reply
+EQUIPO_KIND = "equipo"  # botones del tema 👥 Equipo (vigilancia.py, t_04fe996e)
 EXPLAIN_BUTTON = {"text": "💬 Explícame más", "action": EXPLAIN}
 DEFAULT_OPTION_LABELS = ("✅ Sí, adelante", "❌ No")  # botones de una pregunta sin opciones (DEFAULT_OPTIONS)
 ALL_LABEL = "todas las preguntas"  # ✍️ de una escalada de review (= hermes.LEGACY_ALL_LABELS)
@@ -432,6 +436,7 @@ class DecisionDesk:
         self.reconciler = None  # reconcile.Reconciler: botones rec_archive / rec_keep
         self.limpieza = None  # limpieza.LimpiezaRunner: botones lim_close / lim_keep / lim_view
         self.fusion = None   # fusion.Fusion: botones fus_* (fusionar, encadenar, duplicada, pausar, «Fusionar con…»)
+        self.paradas = None  # paradas.ParadasRunner: botones pa_retry / pa_integrador / pa_archive
         self.solapes = None  # solapes.SolapeTicker: botones sol_fusionar / sol_distintas / sol_luego
         self.integrator = None  # carril Integrador (INTEGRATOR_ENABLED): botones int_* de fusionar/desplegar
         self.messages = messages  # MessageStore: todas las copias de cada aviso (sincronización tema <-> DM)
@@ -683,6 +688,14 @@ class DecisionDesk:
         if self._reply(msg):  # respuesta a un force_reply pendiente
             self._log_update(chat.get("id"), kind, name, "respondido")
             return
+        reply_target = getattr(self.commands, "reply_target", None)
+        if (is_owner and not is_cmd and text.strip() and msg.get("reply_to_message") and reply_target
+                and not (msg.get("from") or {}).get("is_bot")):
+            target = reply_target(msg)  # respuesta a una lista numerada /tareas, a una ficha o a un aviso de fusión
+            if target:
+                self._log_update(chat.get("id"), kind, None, "respondido")
+                self._spawn(lambda: self.commands.responder(msg, target))
+                return
         result = "ignorado"
         owner_dm = is_owner and not (msg.get("from") or {}).get("is_bot")
         if (kind == "adjunto" and owner_dm and self.commands and chat.get("type") == "private"
@@ -950,10 +963,14 @@ class DecisionDesk:
         action = button["action"]
         if action in FREE_ACTIONS:  # selector / Deshacer del texto libre
             return bool(self.free) and self.free.on_button(action, rec, button, where)
+        if rec.get("kind") == EQUIPO_KIND or action.startswith("eq_"):  # tema 👥 Equipo (vigilancia_botones.py)
+            return bool(self.commands) and self.commands.equipo_choice(action, rec, button, where)
         if rec.get("kind") == PEDIR_KIND:  # /pedir: tipo, preguntas y modo OASP (tipo_peticion.py)
             return bool(self.commands) and self.commands.pedir_step(rec, button, where)
         if rec.get("card"):  # tarjeta de decisión de Oscar (/decisiones)
             return self._card_act(rec, button, where)
+        if action in TR_ACTIONS:  # ficha y búsqueda de /tarea desde el móvil (tareas_movil.py)
+            return bool(self.commands) and self.commands.tarea_step(action, rec, button, where)
         if action.startswith("int_"):  # 🔀 Fusionar / 🚀 Desplegar: solo con el Integrador activo
             return bool(self.integrator) and self.integrator.on_button(action, rec, where, self)
         if action in (REC_ARCHIVE, REC_KEEP):  # propuesta de obsolescencia (reconcile.py)
@@ -962,6 +979,10 @@ class DecisionDesk:
             return bool(self.limpieza) and self.limpieza.on_button(action, rec, where, self)
         if action in FUS_ACTIONS:  # avisos de solape/choque y ficha de tarjeta (fusion.py)
             return bool(self.fusion) and self.fusion.on_button(action, rec, where, self, button.get("index"))
+        if action in PA_ACTIONS:  # aviso diario de tarjetas paradas (paradas.py)
+            return bool(self.paradas) and self.paradas.on_button(action, rec, where, self)
+        if action in AGR_ACTIONS:  # /agrupar: mismo lote / una sola pregunta (agrupar.py)
+            return bool(self.commands) and self.commands.agrupar_step(action, rec, where)
         if action in SOL_ACTIONS:  # aviso de posible solape (solapes.py)
             return bool(self.solapes) and self.solapes.on_button(action, rec, where, self)
         if action.startswith("pv_"):  # panel vivo del tema de Integración: Resolver / Ver / Aparcar
@@ -1580,7 +1601,9 @@ class DecisionDesk:
 
     def _ask(self, token: str, rec: dict, button: dict, where: dict) -> None:
         tid = rec["task_id"]
-        if rec.get("kind") == PEDIR_KIND:  # /pedir: la pregunta en curso, sin tarjeta que enlazar
+        if rec.get("kind") == EQUIPO_KIND:  # tema 👥 Equipo: sin tarjeta que enlazar
+            prompt = self.commands.equipo_prompt(rec, button) if self.commands else "Tu respuesta:"
+        elif rec.get("kind") == PEDIR_KIND:  # /pedir: la pregunta en curso, sin tarjeta que enlazar
             prompt = rec.get("prompt") or "Tu respuesta:"
         elif button["action"] == CHANGES:
             prompt = f"¿Qué cambio pides para {tid}?"
@@ -1592,7 +1615,7 @@ class DecisionDesk:
             n = rec.get("n_questions") or 1
             step = f" (Pregunta {(rec.get('q_index') or 0) + 1}/{n})" if n > 1 and not rec.get("other_label") else ""
             prompt = f"Tu respuesta para {tid}{step}:" + (f"\n{truncate(q, 300)}" if q else "")
-        card = None if rec.get("kind") == PEDIR_KIND else card_url(
+        card = None if rec.get("kind") in (PEDIR_KIND, EQUIPO_KIND) else card_url(
             getattr(self.links, "kanban_base_url", None), rec.get("board") or "", tid)
         if card:  # texto plano: Telegram enlaza la URL sola
             prompt += f"\nTarjeta: {card}"
@@ -1611,6 +1634,8 @@ class DecisionDesk:
                                  {"token": token, "rec": rec, "button": button, "where": where})
 
     def _apply_reply(self, rec: dict, button: dict, where: dict, text: str) -> bool:
+        if rec.get("kind") == EQUIPO_KIND:  # borrador de respuesta / motivo de rechazo (vigilancia_botones.py)
+            return bool(self.commands) and self.commands.equipo_reply(rec, button, where, text)
         if rec.get("kind") == PEDIR_KIND:
             return bool(self.commands) and self.commands.pedir_step(rec, button, where, text)
         if rec.get("card"):

@@ -460,6 +460,12 @@ def next_step(state: str, block_kind: str | None = None, *, ops: bool = False, b
     return f"{step[0]} · Lo da: {step[1]}" if step else None
 
 
+def pidio_de(body: str | None) -> str | None:
+    """Nombre de la línea `Pidió: X` que pone `lanes.py tarjeta nueva` (quién pidió la tarjeta)."""
+    found = re.search(r"^\s*Pidió:\s*(.+?)\s*$", body or "", re.M | re.I)
+    return found.group(1) if found else None
+
+
 def render(state: str, task_id: str, title: str | None, lane: str, status: str,
            links: list[tuple[str, str]] | None = None, bullets: list[str] | None = None, *,
            body: str | None = None, for_oscar: str | None = None, tree: list[str] | None = None,
@@ -476,7 +482,8 @@ def render(state: str, task_id: str, title: str | None, lane: str, status: str,
     e = html.escape
     req = vinculo_de(body)  # petición a la que pertenece la tarjeta (`req: req_<n>`): se ve en el aviso (t_211c9902)
     head = [f"{EMOJI.get(state, '•')} {e(task_id)} · {e(truncate(title, TITLE_MAX))}",
-            e(context_line(lane, body)) + (f" · {req}" if req else "")]
+            e(context_line(lane, body)) + (f" · {req}" if req else "")
+            + (f" · Pidió: {e(truncate(pidio, 40))}" if (pidio := pidio_de(body)) else "")]
     plain = truncate(for_oscar, FOR_OSCAR_MAX) if for_oscar else ""
     if plain and len(" ".join(str(for_oscar).split())) > FOR_OSCAR_MAX:  # resumido: el resto, tras «Explícame más»
         plain += " (resto: 💬 Explícame más)"

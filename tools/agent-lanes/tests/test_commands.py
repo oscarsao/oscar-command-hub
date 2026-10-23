@@ -170,7 +170,7 @@ def test_register_commands_in_three_scopes_with_spanish_descriptions():
     assert set(bot.commands) == {"default", "all_private_chats", "all_group_chats"}
     names = [c for c, _ in bot.commands["all_group_chats"]]
     assert names == ["ajustes", "hoy", "integrador", "encolar", "decisiones", "atencion", "aprobar", "tareas", "cola", "prioridad", "tarea", "preparar", "hazlo", "pedir", "estado", "falta", "desplegar", "promover",
-                     "lote", "al_dia", "aldia", "salud", "ram", "silenciar", "sesion", "flujo", "pendiente", "personal", "workflow", "pendientes", "epicas", "retenidas", "backlog"]
+                     "lote", "al_dia", "aldia", "salud", "ram", "silenciar", "sesion", "flujo", "pendiente", "personal", "agrupar", "workflow", "pendientes", "epicas", "retenidas", "backlog"]
     assert all(d and len(d) <= 256 for _, d in bot.commands["default"])
 
 
@@ -438,7 +438,7 @@ def test_tarea_validates_id_and_shows_card_with_state_buttons(tmp_path):
     shows = {"t_aaaaaaa1": needs("t_aaaaaaa1", Q_REC)}
     cc, desk, bot, h, messages = center(tmp_path, shows)
     command(desk, "/tarea --board x")
-    assert bot.sent[-1]["text"] == "Uso: /tarea t_xxxxxxxx"
+    assert bot.sent[-1]["text"].startswith("Uso: /tarea t_xxxxxxxx")
     command(desk, "/tarea t_00000000", uid=2)
     assert bot.sent[-1]["text"].startswith("No encuentro t_00000000")
     command(desk, "/tarea t_aaaaaaa1", uid=3)
