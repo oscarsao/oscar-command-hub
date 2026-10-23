@@ -15,8 +15,12 @@ integrador debe aplicar). Falla cerrado: una fila rara o sin persona identificab
 Forma esperada de cada fila (la API de Oscar HQ puede traer más campos; se ignoran):
   {id, action: link|suspend|reactivate|unlink|delete, destination: people_yaml|carriles_env|hermes,
    person_key|name, telegram_user_id, role?, brands?, status}
-API (URL y clave por entorno, nada hardcodeado): GET {OHQ_API_URL}/api/admin/user-external-changes?status=pending
-y POST {OHQ_API_URL}/api/admin/user-external-changes/{id}/resolve, con cabecera X-API-Key = ${OHQ_API_KEY}.
+API (URL y clave por entorno, nada hardcodeado), la real de Oscar HQ (src/api/routes/user_admin.py):
+  GET  {OHQ_API_URL}/api/admin/users/cambios-externos            → {"cambios": [filas pendientes]}
+  POST {OHQ_API_URL}/api/admin/users/cambios-externos/{id}       cuerpo {"estado": "aplicado"}
+con cabecera X-API-Key = ${OHQ_API_KEY} (clave de servicio de la bóveda con alcance sobre esas dos rutas).
+Las filas reales vienen como {id, user_id, accion: suspender|reactivar|desvincular_tg|eliminar, destinos[],
+detalle: {telegram_id, nombre, rol}, estado}; `normalizar` las traduce a la forma de arriba (una por destino).
 """
 from __future__ import annotations
 
@@ -229,6 +233,27 @@ def listar_hermes(filas: list[dict]) -> list[str]:
             f"({f.get('name') or f.get('person_key') or '?'})" for f in filas]
 
 
+# Oscar HQ (ohq_user_external_changes.accion) → acción de este módulo. Oscar HQ no anota altas («link»):
+# solo cambios de acceso de personas que ya tienen Telegram.
+ACCION_OHQ = {"suspender": "suspend", "reactivar": "reactivate", "desvincular_tg": "unlink", "eliminar": "delete"}
+
+
+def normalizar(filas: list) -> list:
+    """Filas de la API real de Oscar HQ → forma interna (una por destino). Las que ya traen `action` pasan tal
+    cual; una fila sin traducción posible sale sin `action` y `planificar` la manda a revisión manual."""
+    out: list = []
+    for f in filas:
+        if not isinstance(f, dict) or "action" in f or "accion" not in f:
+            out.append(f)
+            continue
+        det = f.get("detalle") if isinstance(f.get("detalle"), dict) else {}
+        base = {"id": f.get("id"), "action": ACCION_OHQ.get(str(f.get("accion"))), "name": det.get("nombre"),
+                "telegram_user_id": det.get("telegram_id"), "role": det.get("rol")}
+        destinos = f.get("destinos") if isinstance(f.get("destinos"), list) and f.get("destinos") else [None]
+        out += [{**base, "destination": d} for d in destinos]
+    return out
+
+
 def planificar(filas: list, people_text: str, env_text: str = "") -> Plan:
     plan = Plan()
     buenas = []
@@ -303,9 +328,9 @@ class ApiOhq:
         return cls(base, clave, http)
 
     def pendientes(self) -> list:
-        data = self.http("GET", f"{self.base}/api/admin/user-external-changes?status=pending", self.clave, None)
-        filas = data.get("items", data) if isinstance(data, dict) else data
-        return filas if isinstance(filas, list) else []
+        data = self.http("GET", f"{self.base}/api/admin/users/cambios-externos", self.clave, None)
+        filas = data.get("cambios", data.get("items", data)) if isinstance(data, dict) else data
+        return normalizar(filas) if isinstance(filas, list) else []
 
     def vigilancia(self, horas: int = 72) -> dict:
         """GET /api/equipo/vigilancia (t_04fe996e): fallos y solicitudes del equipo + plantilla de ohq_people."""
@@ -313,7 +338,7 @@ class ApiOhq:
         return data if isinstance(data, dict) else {}
 
     def resolver(self, fila_id: str) -> None:
-        self.http("POST", f"{self.base}/api/admin/user-external-changes/{fila_id}/resolve", self.clave, {})
+        self.http("POST", f"{self.base}/api/admin/users/cambios-externos/{fila_id}", self.clave, {"estado": "aplicado"})
 
 
 def resolver_filas(api: ApiOhq, ids: list[str]) -> tuple[list[str], list[str]]:

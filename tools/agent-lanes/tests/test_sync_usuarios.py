@@ -146,13 +146,14 @@ def test_planificar_separa_destinos_y_rechaza_filas_raras():
 
 class FakeHttp:
     def __init__(self, filas, falla=()):
-        self.filas, self.falla, self.llamadas = filas, set(falla), []
+        self.filas, self.falla, self.llamadas, self.cuerpos = filas, set(falla), [], []
 
     def __call__(self, metodo, url, clave, cuerpo):
         self.llamadas.append((metodo, url, clave))
-        if metodo == "POST" and any(url.split("/")[-2] == i for i in self.falla):
+        self.cuerpos.append(cuerpo)
+        if metodo == "POST" and any(url.split("/")[-1] == i for i in self.falla):
             raise OSError("red")
-        return {"items": self.filas} if metodo == "GET" else {}
+        return {"cambios": self.filas} if metodo == "GET" else {}
 
 
 def test_main_plan_escribe_solo_people_y_resolver_marca_filas(tmp_path):
@@ -163,11 +164,12 @@ def test_main_plan_escribe_solo_people_y_resolver_marca_filas(tmp_path):
     out = io.StringIO()
     assert su.main(["plan", "--escribir"], api, p, out) == 0
     assert 'user_id: "222"' in p.read_text(encoding="utf-8") and "AÑADIR" in out.getvalue()
-    assert http.llamadas[0][:2] == ("GET", "https://ohq.example/api/admin/user-external-changes?status=pending")
+    assert http.llamadas[0][:2] == ("GET", "https://ohq.example/api/admin/users/cambios-externos")
     out = io.StringIO()
     assert su.main(["resolver", "r1", "r2"], api, p, out) == 1
     assert "resueltas: r1" in out.getvalue() and "fallidas: r2" in out.getvalue()
-    assert http.llamadas[1] == ("POST", "https://ohq.example/api/admin/user-external-changes/r1/resolve", "k")
+    assert http.llamadas[1] == ("POST", "https://ohq.example/api/admin/users/cambios-externos/r1", "k")
+    assert http.cuerpos[1] == {"estado": "aplicado"}
 
 
 def test_plan_desde_fichero_sin_escribir_no_toca_people(tmp_path):
@@ -186,3 +188,23 @@ def test_api_sin_entorno_falla_claro():
         assert "OHQ_API_URL" in str(e)
     else:
         raise AssertionError("debía fallar")
+
+
+def test_normaliza_filas_reales_de_oscar_hq():
+    real = {"id": "u1", "user_id": "x", "accion": "suspender", "destinos": ["hermes", "people_yaml", "carriles_env"],
+            "detalle": {"telegram_id": 222, "nombre": "Mauredy", "rol": "dev"}, "estado": "pendiente"}
+    rara = {"id": "u2", "accion": "teletransportar", "destinos": ["hermes"], "detalle": {"telegram_id": 5}}
+    filas = su.normalizar([real, rara, fila("c1", "link")])
+    assert [(f["id"], f["destination"], f["action"]) for f in filas] == [
+        ("u1", "hermes", "suspend"), ("u1", "people_yaml", "suspend"), ("u1", "carriles_env", "suspend"),
+        ("u2", "hermes", None), ("c1", "people_yaml", "link")]
+    assert filas[0]["telegram_user_id"] == 222 and filas[0]["name"] == "Mauredy"
+    plan = su.planificar(filas, YAML, f"{su.ENV_VAR}=1,222\n")
+    assert plan.env_line == f"{su.ENV_VAR}=1" and "QUITAR" in plan.hermes[0] and "u2" in plan.ids_manual
+
+
+def test_api_real_devuelve_filas_normalizadas():
+    real = {"id": "u1", "accion": "reactivar", "destinos": ["carriles_env"], "detalle": {"telegram_id": 9}}
+    api = su.ApiOhq("https://ohq.example", "k", FakeHttp([real]))
+    assert api.pendientes() == [{"id": "u1", "action": "reactivate", "name": None, "telegram_user_id": 9,
+                                 "role": None, "destination": "carriles_env"}]
