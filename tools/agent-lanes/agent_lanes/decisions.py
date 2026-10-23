@@ -39,6 +39,7 @@ from .free_text import FREE_ACTIONS, FreeText
 from .people import People, load_people
 from .notices import (BOARD_BRANDS, BRANDS, DECISION_CARD_STATUSES, OPTION_LETTERS, card_url, normalize_questions,
                       questions_block, render, status_line, truncate, with_default_options)
+from .tareas_movil import TR_ACTIONS
 from .tipo_peticion import A_ASK as PEDIR_ASK, KIND as PEDIR_KIND
 from .limpieza import LIM_CLOSE, LIM_KEEP, LIM_VIEW
 from .paradas import PA_ACTIONS
@@ -687,6 +688,14 @@ class DecisionDesk:
         if self._reply(msg):  # respuesta a un force_reply pendiente
             self._log_update(chat.get("id"), kind, name, "respondido")
             return
+        reply_target = getattr(self.commands, "reply_target", None)
+        if (is_owner and not is_cmd and text.strip() and msg.get("reply_to_message") and reply_target
+                and not (msg.get("from") or {}).get("is_bot")):
+            target = reply_target(msg)  # respuesta a una lista numerada /tareas, a una ficha o a un aviso de fusión
+            if target:
+                self._log_update(chat.get("id"), kind, None, "respondido")
+                self._spawn(lambda: self.commands.responder(msg, target))
+                return
         result = "ignorado"
         owner_dm = is_owner and not (msg.get("from") or {}).get("is_bot")
         if (kind == "adjunto" and owner_dm and self.commands and chat.get("type") == "private"
@@ -960,6 +969,8 @@ class DecisionDesk:
             return bool(self.commands) and self.commands.pedir_step(rec, button, where)
         if rec.get("card"):  # tarjeta de decisión de Oscar (/decisiones)
             return self._card_act(rec, button, where)
+        if action in TR_ACTIONS:  # ficha y búsqueda de /tarea desde el móvil (tareas_movil.py)
+            return bool(self.commands) and self.commands.tarea_step(action, rec, button, where)
         if action.startswith("int_"):  # 🔀 Fusionar / 🚀 Desplegar: solo con el Integrador activo
             return bool(self.integrator) and self.integrator.on_button(action, rec, where, self)
         if action in (REC_ARCHIVE, REC_KEEP):  # propuesta de obsolescencia (reconcile.py)

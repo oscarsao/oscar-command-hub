@@ -70,10 +70,13 @@ from . import bandeja as _bandeja
 from . import clasificador, solapes
 from . import lo_tuyo as _lo_tuyo
 from . import personal as _personal
+from . import tareas_movil as _tm
 from . import tipo_peticion, titulos, triaje, workflows
 from .aviso import UrgentBlockWatcher, mention
 from .card_options import PREPARED_AUTHOR, PREPARED_PREFIX, CardSpec, card_message, parse_card
-from .decisions import DEPLOY_ASK, DEPLOY_NO, FALTA, FLUJO, HAZLO, OWNER_TELEGRAM_ID, TRIAJE, WORKFLOW
+from .decisions import (APPROVE, CHANGES, DEPLOY_ASK, DEPLOY_NO, FALTA, FLUJO, HAZLO, OWNER_TELEGRAM_ID, PARK, TRIAJE,
+                        UNTRIAGE, WORKFLOW)
+from .hermes import OSCAR_AUTHOR
 from .deps import (ShowCache, child_bucket, dependency_order, family, pending_parents, tree_lines,
                    waiting_line)
 from .notices import (BOARD_BRANDS, BRANDS, DECISION_CARD_STATUSES, OSCAR_ASSIGNEE, TEXT_MAX, card_url,
@@ -152,7 +155,8 @@ LANE_HINTS = {
 PREPARE_MAX = 10  # /preparar todas: tope de tarjetas por orden (0,5 $ como máximo cada una)
 COLA_PER_LANE = 5  # siguientes tareas por carril en /cola
 PRIORITY_MAX = 99
-PRIORITY_STEP = 1  # lo que suben o bajan «sube»/«baja» de /prioridad
+BUSCA_ESTADOS = ("running", "ready", "review", "blocked", "triage", "todo", "done")  # /tarea 3d4 mira estos estados
+PRIORITY_STEP = 1# lo que suben o bajan «sube»/«baja» de /prioridad
 
 _CMD_RE = re.compile(r"^/([A-Za-z0-9_]+)(?:@([A-Za-z0-9_]+))?(?:\s+(.*))?$", re.S)
 
@@ -2618,14 +2622,24 @@ class CommandCenter:
         threading.Thread(target=fn, name="lote", daemon=True).start()
 
     def cmd_tareas(self, where, args: str, brand: str | None) -> None:
+        suffix = (args.split() or [""])[0].lower()
+        if args and _tm.SUFFIX_RE.match(suffix):  # /tareas 3d4: búsqueda por el final del id
+            self._buscar_y_enviar(where, suffix)
+            return
         if args:
             brand = BRAND_ARGS.get(args.split()[0].lower())
             if not brand:
                 self._send(where, "Marca desconocida: usa /tareas migrateam, /tareas pildora o /tareas nextjobs",
                            html=False)
                 return
-        for page in self.tasks_pages(brand):
-            self._send(where, page)
+        numbers: dict[str, str] = {}
+        for page in self.tasks_pages(brand, numbers):
+            self._registra_lista(where, self._send(where, page), numbers)
+
+    def _registra_lista(self, where, sent, numbers: dict[str, str]) -> None:
+        """Responder a este mensaje con «3» envía la ficha de la tarea nº 3 (24 h)."""
+        if sent and numbers:
+            self.mapa.put(where[0], sent.get("message_id"), _tm.KIND_LISTA, {"n": dict(numbers)}, self._now())
 
     def cmd_cola(self, where, args: str, brand: str | None) -> None:
         if args:
@@ -2633,11 +2647,18 @@ class CommandCenter:
             if not brand:
                 self._send(where, "Marca desconocida: usa /cola migrateam, /cola pildora o /cola nextjobs", html=False)
                 return
-        self._send(where, self.queue_text(brand))
+        numbers: dict[str, str] = {}
+        self._registra_lista(where, self._send(where, self.queue_text(brand, numbers)), numbers)
 
-    def queue_text(self, brand: str | None) -> str:
-        """Por carril: la tarea en curso (desde cuándo) y las siguientes en cola por prioridad actual."""
+    def queue_text(self, brand: str | None, numbers: dict[str, str] | None = None) -> str:
+        """Por carril: la tarea en curso (desde cuándo) y las siguientes en cola por prioridad actual. Cada línea
+        lleva su número (global); `numbers` recoge {número: id} para responder con él."""
         e = html.escape
+        numbers = {} if numbers is None else numbers
+
+        def num(tid: str) -> str:
+            numbers[str(len(numbers) + 1)] = tid
+            return f"{len(numbers)}. "
         out = ["📋 <b>Cola por carril</b>" + (f" · {e(brand)}" if brand else "")]
         for name, lane in self.lanes.items():
             if lane.kind not in ("implement", "ops") or (brand and BRANDS.get(name) != brand):
@@ -2649,11 +2670,11 @@ class CommandCenter:
             for t in running:
                 since = t.get("started_at")
                 when = f" · desde hace {_elapsed(self._now() - float(since))}" if since else ""
-                out.append(f"▶️ <code>{e(t['id'])}</code> · {e(truncate(t.get('title'), 50))}{when}")
+                out.append(f"{num(t['id'])}▶️ <code>{e(t['id'])}</code> · {e(truncate(t.get('title'), 50))}{when}")
             if not running:
                 out.append("▶️ libre")
-            for i, t in enumerate(ready[:COLA_PER_LANE], 1):
-                out.append(f"{i}. <code>{e(t['id'])}</code> · {e(truncate(t.get('title'), 50))} · "
+            for t in ready[:COLA_PER_LANE]:
+                out.append(f"{num(t['id'])}<code>{e(t['id'])}</code> · {e(truncate(t.get('title'), 50))} · "
                            f"prioridad {_prio(t) or 0}")
             if len(ready) > COLA_PER_LANE:
                 out.append(f"  +{len(ready) - COLA_PER_LANE} más en cola")
@@ -2691,10 +2712,12 @@ class CommandCenter:
     def tasks_text(self, brand: str | None) -> str:
         return "\n".join(self.tasks_pages(brand))
 
-    def tasks_pages(self, brand: str | None) -> list[str]:
-        """/tareas: «En marcha» (carril y tablero) y «En cola» entera; cada tarea con su `/tarea t_xxx` tocable.
-        Si no cabe en un mensaje se reparte en varios por líneas enteras: nunca se recorta nada."""
+    def tasks_pages(self, brand: str | None, numbers: dict[str, str] | None = None) -> list[str]:
+        """/tareas: «En marcha» (carril y tablero) y «En cola» entera; cada tarea numerada y con su `/tarea t_xxx`
+        tocable (`numbers` recoge {número: id}). Si no cabe en un mensaje se reparte en varios por líneas enteras:
+        nunca se recorta nada."""
         e = html.escape
+        numbers = {} if numbers is None else numbers
         sections = []
         for name, lane in self.lanes.items():
             if lane.kind not in ("implement", "ops") or (brand and BRANDS.get(name) != brand):
@@ -2713,7 +2736,8 @@ class CommandCenter:
         def emit(out: list[str], it, depth: int = 0) -> None:
             emoji, _, t = it
             pad = "   " * depth
-            out.append(pad + ("↳ " if depth else "") + f"{emoji} {e(truncate(t.get('title'), 60))} · "
+            numbers[str(len(numbers) + 1)] = t["id"]
+            out.append(pad + ("↳ " if depth else "") + f"{len(numbers)}. {emoji} {e(truncate(t.get('title'), 60))} · "
                        f"<code>{e(t['id'])}</code>")
             out.append(pad + f"/tarea {e(t['id'])}")
             for kid in kids.get(t["id"], ()):  # _shown_parents deja un bosque (sin ciclos): termina
@@ -2790,8 +2814,11 @@ class CommandCenter:
 
     def cmd_tarea(self, where, args: str, brand: str | None) -> None:
         tid = (args.split() or [""])[0].lower()
+        if _tm.SUFFIX_RE.match(tid):  # /tarea 3d4: el final del id (o cualquier parte si no hay coincidencia)
+            self._buscar_y_enviar(where, tid)
+            return
         if not TASK_ID_RE.match(tid):  # nunca pasar a la CLI algo que no sea un id (p. ej. "--board x")
-            self._send(where, "Uso: /tarea t_xxxxxxxx", html=False)
+            self._send(where, "Uso: /tarea t_xxxxxxxx (o los últimos 3-8 caracteres del id)", html=False)
             return
         found = self._find(tid)
         if not found:
@@ -2800,7 +2827,8 @@ class CommandCenter:
         self._send_ficha(where, *found)
 
     def _send_ficha(self, where, board: str, show: dict) -> None:
-        """Ficha de una tarea con los botones de su estado (/tarea y las líneas de /pendiente)."""
+        """Ficha de una tarea con los botones de su estado (/tarea y las líneas de /pendiente). Responderle con texto
+        libre actúa sobre esa tarea (anotar, preguntar, fusionar)."""
         text, markup = self.task_card(board, show)
         tree = self.tree_text(board, show)
         if tree and len(text) + 1 + len(tree) <= TEXT_MAX:
@@ -2810,6 +2838,282 @@ class CommandCenter:
         sent = self._send(where, text, markup=full)
         if markup:  # la copia sincronizada sigue al teclado de la decisión; la fila «Fusionar con…» es aparte
             self._mirror(show["task"]["id"], sent, markup)
+        if sent:
+            task = show["task"]
+            self.mapa.put(where[0], sent.get("message_id"), _tm.KIND_FICHA, {"tid": task["id"], "board": board},
+                          self._now())
+
+    # --- /tareas desde el móvil: número, final del id y respuestas a la ficha -----------------------------
+
+    @property
+    def mapa(self) -> _tm.MapaMensajes:
+        if getattr(self, "_mapa", None) is None:
+            path = self._state_file("_mapa_path", "tareas_mensajes.json")
+            self._mapa = _tm.MapaMensajes(path)
+        return self._mapa
+
+    @staticmethod
+    def _marca_tarea(board: str, task: dict) -> str | None:
+        return BRANDS.get(task.get("assignee")) or BOARD_BRANDS.get(board)
+
+    def _permitida(self, board: str, task: dict) -> bool:
+        """El operador (hilo en curso) puede actuar en la marca de esta tarea (Oscar y "*": todas)."""
+        actor = getattr(self._ctx, "actor", None)
+        restringido = getattr(self.desk, "restringido", None)
+        if actor is None or not restringido or not restringido(actor):
+            return True
+        return bool(self.desk.puede_en(actor, self._marca_tarea(board, task)))
+
+    def _rechazo(self, board: str, task: dict) -> str:
+        return self.desk.aviso_marca(getattr(self._ctx, "actor", None), self._marca_tarea(board, task))
+
+    def _buscar(self, texto: str) -> list[tuple[str, str, dict]]:
+        """[(id, tablero, tarea)] de las tarjetas cuyo id casa con `texto` (solo hex, validado antes) y que el
+        operador puede ver. Lee listas por estado de cada tablero; un fallo de Hermes solo recorta la búsqueda."""
+        cands: dict[str, tuple[str, dict]] = {}
+        for board in dict.fromkeys(l.board for l in self.lanes.values() if l.board):
+            h = self.hermes_for(board)
+            for status in BUSCA_ESTADOS:
+                try:
+                    rows = h.list_status_all(status)
+                except Exception:
+                    continue
+                for t in rows or ():
+                    if isinstance(t, dict) and TASK_ID_RE.match(str(t.get("id"))) and self._permitida(board, t):
+                        cands.setdefault(t["id"], (board, t))
+        return [(i, *cands[i]) for i in _tm.coincidencias(list(cands), texto)]
+
+    def _buscar_y_enviar(self, where, texto: str) -> None:
+        """Una coincidencia: su ficha. Varias: botones «t_xxxx · título» (máx. 8). Ninguna: lo dice."""
+        found = self._buscar(texto)
+        if not found:
+            self._send(where, f"No encuentro ninguna tarea con «{texto}» en el id", html=False)
+            return
+        if len(found) == 1:
+            hit = self._find(found[0][0])
+            if hit:
+                self._send_ficha(where, *hit)
+            else:
+                self._send(where, f"No encuentro {found[0][0]} en los tableros de los carriles", html=False)
+            return
+        shown = found[:_tm.MAX_OPCIONES]
+        rec = {"task_id": "buscar", "board": "", "lane": "", "tids": [i for i, _, _ in shown],
+               "candidates": [{"task_id": i, "board": b, "lane": t.get("assignee") or ""} for i, b, t in shown]}
+        spec = [[{"text": f"{i} · {truncate(t.get('title'), 30)}", "action": _tm.TR_PICK, "index": n}]
+                for n, (i, _, t) in enumerate(shown)]
+        extra = f" (hay {len(found)}; se muestran {len(shown)}: afina con más caracteres)" if len(found) > len(shown) else ""
+        self._send(where, f"Varias tareas casan con «{texto}»{extra}:", html=False,
+                   markup=self.desk.store.issue(rec, spec)[1])
+
+    def ficha_markup(self, board: str, task: dict) -> dict | None:
+        """Botones de la ficha por estado (los de blocked/done los pone `task_card`)."""
+        status = task.get("status")
+        if status in ("ready", "running"):
+            spec = [[{"text": "⬆️ Prioridad", "action": _tm.TR_PRIO}, {"text": "⏸ Pausar", "action": PARK}],
+                    [{"text": "🔗 Fusionar con…", "action": _tm.TR_FUSION}]]
+        elif status == "review":
+            spec = [[{"text": "✅ Aprobar", "action": APPROVE}, {"text": "🔁 Pedir cambios", "action": CHANGES}]]
+        elif status == "triage":
+            spec = [[{"text": "▶️ Sacar de triage", "action": UNTRIAGE}, {"text": "🗂 Archivar", "action": _tm.TR_ARCHIVAR}]]
+        else:
+            return None
+        rec = {"task_id": task["id"], "board": board, "lane": task.get("assignee") or "",
+               "title": task.get("title") or "", "body": (task.get("body") or "")[:1500]}
+        markup = self.desk.store.issue(rec, spec)[1]
+        url = card_url(self.base_url, board, task["id"])
+        if url:
+            markup["inline_keyboard"].append([{"text": "🗂 Tarjeta", "url": url}])
+        return markup
+
+    def reply_target(self, msg: dict) -> dict | None:
+        """Qué es el mensaje al que responde `msg` (lista, ficha o fusión), si lo guardamos y no ha caducado."""
+        replied = (msg.get("reply_to_message") or {}).get("message_id")
+        chat = (msg.get("chat") or {}).get("id")
+        return self.mapa.get(chat, replied, self._now()) if replied is not None else None
+
+    def responder(self, msg: dict, target: dict) -> None:
+        """Texto libre del operador sobre una lista numerada, una ficha o un aviso de fusión (hilo aparte)."""
+        where = self._where(msg)
+        actor = (msg.get("from") or {}).get("id")
+        text = (msg.get("text") or "").strip()
+        actuando = getattr(self.desk, "actuando", None)
+        self._ctx.actor = actor
+        try:
+            with actuando(actor) if actuando else contextlib.nullcontext():
+                kind, data = target["kind"], target["data"]
+                if kind == _tm.KIND_LISTA:
+                    self._resp_lista(where, data, text)
+                elif kind == _tm.KIND_FICHA:
+                    self._resp_ficha(where, data, text)
+                elif kind == _tm.KIND_FUSION:
+                    self._resp_fusion(where, data, text)
+        except Exception as exc:
+            log.warning("respuesta a %s falló: %s", target.get("kind"), exc)
+            self._send(where, "No pude completar eso; detalle en el log", html=False)
+
+    def _resp_lista(self, where, data: dict, text: str) -> None:
+        m = _tm.NUMERO_RE.match(text)
+        if m:
+            tid = (data.get("n") or {}).get(m.group(1))
+            if not tid:
+                self._send(where, f"No hay línea {m.group(1)} en esa lista (van de 1 a {len(data.get('n') or {})})",
+                           html=False)
+                return
+            found = self._find(tid)
+            if not found:
+                self._send(where, f"No encuentro {tid} en los tableros de los carriles", html=False)
+            elif not self._permitida(found[0], found[1]["task"]):
+                self._send(where, self._rechazo(found[0], found[1]["task"]), html=False)
+            else:
+                self._send_ficha(where, *found)
+        elif _tm.SUFFIX_RE.match(text.lower()):
+            self._buscar_y_enviar(where, text.lower())
+        else:
+            self._send(where, "Responde con el número de la línea (p. ej. «3») o con el final del id", html=False)
+
+    def _resp_ficha(self, where, data: dict, text: str) -> None:
+        found = self._find(data.get("tid") or "")
+        if not found:
+            self._send(where, "Ya no encuentro esa tarea en los tableros", html=False)
+            return
+        board, show = found
+        task = show["task"]
+        if not self._permitida(board, task):
+            self._send(where, self._rechazo(board, task), html=False)
+            return
+        if _tm.es_pregunta(text):
+            self._send(where, self.estado_tarea(board, show))
+            return
+        h, tid = self.hermes_for(board), task["id"]
+        who = self.desk._who() if hasattr(self.desk, "_who") else "Oscar"
+        if not h.comment(tid, f"Nota de {who} desde Telegram: {text[:1500]}", author=OSCAR_AUTHOR):
+            self._send(where, f"No pude anotarlo en {tid}; detalle en el log", html=False)
+            return
+        rec = {"task_id": tid, "board": board, "lane": task.get("assignee") or "", "title": task.get("title") or "",
+               "nota": text[:1500]}
+        spec = [[{"text": "🔁 Relanzar con esto", "action": _tm.TR_RELANZAR},
+                 {"text": "📝 Solo anotar", "action": _tm.TR_ANOTAR}]]
+        self._send(where, f"📝 Anotado en {tid} como comentario de {who}. ¿Relanzo la tarea con esto?", html=False,
+                   markup=self.desk.store.issue(rec, spec)[1])
+
+    def _resp_fusion(self, where, data: dict, text: str) -> None:
+        tid = data.get("tid")
+        word = text.split()[0].lower() if text.split() else ""
+        if TASK_ID_RE.match(word):
+            other = self._find(word)
+            found = [(word, *other)] if other else []
+        else:
+            found = [(i, b, {"task": t}) for i, b, t in self._buscar(word)] if _tm.SUFFIX_RE.match(word) else []
+        if len(found) != 1:
+            self._send(where, "Dime una sola tarea: su id completo o el final del id que no sea ambiguo"
+                       if found else f"No encuentro ninguna tarea con «{word}»", html=False)
+            return
+        oid, oboard, oshow = found[0][0], found[0][1], found[0][2]
+        mine = self._find(tid or "")
+        if not mine or oid == tid:
+            self._send(where, "Necesito dos tareas distintas", html=False)
+            return
+        if not (self._permitida(mine[0], mine[1]["task"]) and self._permitida(oboard, oshow["task"])):
+            self._send(where, self._rechazo(oboard, oshow["task"]), html=False)
+            return
+        who = self.desk._who() if hasattr(self.desk, "_who") else "Oscar"
+        for a_board, a, b in ((mine[0], tid, oid), (oboard, oid, tid)):  # como el aviso de solape: solo deja constancia
+            self.hermes_for(a_board).comment(
+                a, f"{who} marcó como duplicada con {b} (Fusionar desde la ficha). Pendiente de fusionar: decide "
+                   "Oscar/Hermes; no se ha movido ni cerrado nada.", author=OSCAR_AUTHOR)
+        self._send(where, f"🔀 {tid} y {oid}: anotado como duplicadas en las dos tarjetas; no se fusiona nada solo",
+                   html=False)
+
+    def estado_tarea(self, board: str, show: dict) -> str:
+        """Respuesta (HTML) a «¿qué falta?» sobre una ficha: estado real de la tarjeta, sin consultar a ningún modelo."""
+        e = html.escape
+        task = show["task"]
+        label = STATUS_TEXT.get(task.get("status"), (None, task.get("status") or "?"))[1]
+        out = [f"💬 <b>{e(truncate(task.get('title'), 70))}</b> · <code>{e(task['id'])}</code>",
+               f"Estado: {e(label)} · carril {e(str(task.get('assignee') or board))} · prioridad {_prio(task) or 0}"]
+        reasons = [(ev.get("payload") or {}).get("reason") for ev in show.get("events") or ()
+                   if ev.get("kind") == "blocked"]
+        if task.get("status") in ("blocked", "triage") and reasons and reasons[-1]:
+            out.append("Motivo: " + e(truncate(str(reasons[-1]), 300)))
+        runs = [r.get("summary") for r in show.get("runs") or () if r.get("summary")]
+        if runs:
+            out.append("Última ejecución: " + e(truncate(str(runs[-1]), 300)))
+        comments = [c for c in show.get("comments") or () if c.get("body")]
+        if comments:
+            out.append(f"Último comentario ({e(str(comments[-1].get('author') or '?'))}): "
+                       + e(truncate(str(comments[-1]['body']), 300)))
+        return "\n".join(out)[:TEXT_MAX]
+
+    def tarea_step(self, action: str, rec: dict, button: dict, where: dict) -> bool:
+        """Botones de la ficha y de la búsqueda (tareas_movil.TR_*). True = hecho; False = vuelven los botones."""
+        say = lambda text: self.notifier.edit(where["chat_id"], where["message_id"], text, html=False)
+        tid, board = rec.get("task_id"), rec.get("board") or ""
+        if action == _tm.TR_PICK:
+            cands = rec.get("candidates") or []
+            idx = button.get("index")
+            if not isinstance(idx, int) or not 0 <= idx < len(cands):
+                return False
+            found = self._find(cands[idx]["task_id"])
+            if not found:
+                say("Ya no encuentro esa tarea en los tableros")
+                return True
+            self._send_ficha((where["chat_id"], where["thread_id"]), *found)
+            return True
+        h = self.hermes_for(board)
+        if action == _tm.TR_PRIO:
+            found = self._find(tid)
+            cur = _prio(found[1]["task"]) or 0 if found else 0
+            new = min(PRIORITY_MAX, cur + _tm.PRIO_PASO)
+            if not h.set_priority(tid, new):
+                return False
+            if found:  # el botón es de un solo uso: se repone para poder subir más
+                markup = self.ficha_markup(found[0], {**found[1]["task"], "status": found[1]["task"].get("status")})
+                if markup:
+                    self.notifier.edit_markup(where["chat_id"], where["message_id"], markup)
+            self._send((where["chat_id"], where["thread_id"]), f"✅ {tid} · prioridad {cur} → {new}", html=False)
+            return True
+        if action == _tm.TR_ARCHIVAR:
+            if not h.archive(tid):
+                return False
+            h.comment(tid, f"Archivada por {self.desk._who()} desde la ficha de Telegram", author=OSCAR_AUTHOR)
+            say(f"🗂 {tid} archivada")
+            return True
+        if action == _tm.TR_FUSION:
+            sent = self._send((where["chat_id"], where["thread_id"]),
+                              f"🔗 ¿Con qué tarea se fusiona {tid}? Responde a este mensaje con su id completo o con "
+                              "el final del id.", html=False)
+            if sent:
+                self.mapa.put(where["chat_id"], sent.get("message_id"), _tm.KIND_FUSION, {"tid": tid}, self._now())
+            return True
+        if action == _tm.TR_ANOTAR:
+            say(f"📝 Solo anotado en {tid}; no he tocado la tarea")
+            return True
+        if action == _tm.TR_RELANZAR:
+            return self._relanzar(h, tid, say)
+        return False
+
+    def _relanzar(self, h, tid: str, say) -> bool:
+        try:
+            status = (h.show(tid).get("task") or {}).get("status")
+        except Exception:
+            status = None
+        if status == "blocked":
+            ok = h.unblock(tid)
+        elif status == "triage":
+            ok = bool(h.requeue_triage(tid))
+        elif status in ("review", "done"):
+            ok = h.reopen_review(tid)
+        elif status in ("ready", "running", "todo"):
+            say(f"📝 Anotado. {tid} ya está {'en marcha' if status == 'running' else 'en cola'}: el worker verá la nota")
+            return True
+        else:
+            say(f"📝 Anotado en {tid}; en estado «{status or '?'}» no se puede relanzar desde aquí")
+            return True
+        if not ok:
+            say(f"⚠️ Anotado, pero no pude relanzar {tid}; detalle en el log. Puedes volver a pulsar")
+            return False
+        say(f"🔁 {tid} relanzada con tu nota")
+        return True
 
     def _fusion_row(self, board: str, show: dict) -> list[dict] | None:
         """Fila «🔗 Fusionar con…» de la ficha (fusion.py); nunca rompe la ficha."""
@@ -2892,4 +3196,5 @@ class CommandCenter:
         lane_name = lane.name if lane else (task.get("assignee") or board)
         links = self._links_for(lane, tid) if lane else (
             [("🗂 Tarjeta", url)] if (url := card_url(self.base_url, board, tid)) else [])
-        return render(state, tid, task.get("title"), lane_name, label, links, body=task.get("body")), None
+        return (render(state, tid, task.get("title"), lane_name, label, links, body=task.get("body")),
+                self.ficha_markup(board, task))
