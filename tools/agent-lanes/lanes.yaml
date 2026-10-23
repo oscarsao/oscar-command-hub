@@ -339,7 +339,7 @@ monitor_alerts:
     token_env: VERCEL_TOKEN
     team_id: ""
     projects: [recursos, website]
-  skip_health: [claude-migrateam]   # staging en Railway, pausado desde el incidente del 22-10; quitar al volver
+  skip_health: []   # carriles cuyo staging se excluye del monitor de salud (claude-migrateam retirado el 23-10: staging sano)
 
 # Carriles sin entrada aquí (nextjobs) no se integran; para añadirlos basta `deploy: none`.
 integrator:
