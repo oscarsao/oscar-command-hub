@@ -19,6 +19,8 @@ también como /cmd@<bot>. Un /cmd@otro_bot (p. ej. el de Hermes) se ignora.
                          ficha (lo_tuyo.py; `lanes.py pendiente` es la misma lista para Hermes)
     /personal            propone mover tus tarjetas personales (no son decisiones de carril) al board `personal`;
                          no mueve nada hasta pulsar [✅ Mover] (personal.py, personal.yaml)
+    /agrupar [proyecto|todo]  propone grupos de tarjetas abiertas (duplicadas, mismo fichero, misma decisión, lote) con
+                         [🔗 Fusionar] [⛓ Encadenar] [📦 Mismo lote] [✋ Dejar]; nada se aplica sin botón (agrupar.py)
     /estado [marca]      en un solo mensaje: en curso, lo que espera a Oscar y lo pendiente de desplegar
     /falta [marca]       checklist de lo que frena una salida (lote, ramas fuera, SQL, variables, deploy), con el
                          siguiente paso arriba y botones donde ya existe la acción (falta.py)
@@ -63,8 +65,9 @@ from pathlib import Path
 from typing import Callable
 from urllib.parse import urlsplit
 
+from . import agrupar as _agrupar
 from . import bandeja as _bandeja
-from . import clasificador
+from . import clasificador, solapes
 from . import lo_tuyo as _lo_tuyo
 from . import personal as _personal
 from . import tipo_peticion, titulos, triaje, workflows
@@ -109,6 +112,7 @@ COMMANDS = (
     ("flujo", "Una petición -> cadena de hasta 8 tarjetas (se crean al pulsar): /flujo <texto>"),
     ("pendiente", "Lo tuyo en UN mensaje: preguntas, PR por aprobar, cola del integrador y tarjetas, con botones"),
     ("personal", "Propone sacar tu backlog personal del kanban de carriles (confirmas con botones)"),
+    ("agrupar", "Propone fusionar, encadenar o juntar tarjetas abiertas: /agrupar [proyecto|todo]"),
     ("workflow", "Trabajo largo: plan y coste, nada se crea hasta aprobar: /workflow <texto>"),
     ("pendientes", "Tus pendientes (pasos «tuyo» y «decidir») con botones"),
     ("epicas", "Vista de épicas (fuera de la cola de decisiones)"),
@@ -121,7 +125,7 @@ NOT_OWNER = ("Este comando es solo para operadores. Pide a Oscar o a María que 
              "texto libre y se la paso")
 # Comandos sin marca clara o con efecto directo en repos/sesiones de Oscar: un operador acotado por marca no los usa.
 SOLO_TODAS_LAS_MARCAS = ("integrador", "encolar", "preparar", "pedir", "sesion", "flujo", "workflow", "ajustes",
-                         "pendiente", "personal")
+                         "pendiente", "personal", "agrupar")
 BRAND_ARGS = {"migrateam": "MigraTeam", "pildora": "Píldora", "píldora": "Píldora", "nextjobs": "NextJobs"}
 TASK_ID_RE = re.compile(r"^t_[0-9a-f]{8}$")
 STATUS_TEXT = {"running": ("running", "en curso"), "ready": ("ready", "en cola"), "review": ("review", "en review"),
@@ -1117,6 +1121,67 @@ class CommandCenter:
                          "OK); luego repite /personal.")
         self._send(dest, "\n".join(lines), html=False)
         return bool(moved) or not failed
+
+    # --- /agrupar: propone grupos de tarjetas abiertas (agrupar.py); nada se aplica sin botón -----------------------
+
+    def _agrupar_enlazadas(self):
+        cache: dict = {}
+
+        def enlazadas(a, b) -> bool:
+            return solapes._enlazadas(solapes.Card(a.tid, a.board, a.lane, a.status, a.title),
+                                      solapes.Card(b.tid, b.board, b.lane, b.status, b.title), self.hermes_for, cache)
+        return enlazadas
+
+    def cmd_agrupar(self, where, args: str, brand: str | None) -> None:
+        """/agrupar [proyecto|todo]: un mensaje por grupo con sus botones y, al final, la bandeja de Oscar sin botones."""
+        aj = _agrupar.load_ajustes(getattr(self, "agrupar_settings", None))
+        if not aj.activo:
+            self._send(where, "/agrupar está apagado (agrupar.yaml: activo: false)", html=False)
+            return
+        arg = args.strip().lower()
+        repo = None
+        if arg and arg not in ("todo", "todos"):
+            lane = self.lanes.get(f"claude-{arg}")
+            if lane is None:
+                self._send(where, "Proyecto desconocido: usa /agrupar, /agrupar todo o /agrupar <proyecto> "
+                                  "(migrateam, oscarhq, hub…)", html=False)
+                return
+            repo = solapes._norm_repo(getattr(lane, "repo", ""))
+        items = self.board_tasks(brand if not arg else None)
+        if repo is not None:
+            items = [i for i in items if solapes._norm_repo(
+                getattr(self.lanes.get(i["task"].get("assignee")), "repo", "")) == repo]
+        cards, bandeja = _agrupar.preparar(items, self.lanes, aj)
+        descartes_path = getattr(getattr(self.desk, "fusion", None), "descartes_path", None) \
+            or getattr(self, "descartes_path", None)
+        preguntas = {}
+        try:
+            for p in self.pending_decisions(brand):
+                qs = normalize_questions(p.questions)
+                if qs:
+                    preguntas[p.tid] = qs[0].get("question") or ""
+        except Exception as exc:
+            log.warning("/agrupar: preguntas pendientes no leídas: %s", exc)
+        grupos = _agrupar.proponer(cards, aj, solapes.load_descartes(descartes_path),
+                                   enlazadas=self._agrupar_enlazadas(), preguntas=preguntas)
+        if not grupos and not bandeja:
+            self._send(where, "Agrupar: no hay nada que agrupar 🎉", html=False)
+            return
+        mostrados = grupos[:aj.max_grupos]
+        self._send(where, f"🧩 Agrupar · {len(grupos)} grupos propuestos"
+                   + (f" (muestro {len(mostrados)})" if len(grupos) > len(mostrados) else "")
+                   + (f" · {len(bandeja)} tarjetas en la bandeja de Oscar" if bandeja else "")
+                   + ". Nada se aplica sin botón.", html=False)
+        for n, g in enumerate(mostrados, 1):
+            rec = _agrupar.registro(g)
+            markup = self.desk.store.issue(rec, _agrupar.teclado(g))[1] if rec else None
+            self._send(where, _agrupar.texto_grupo(g, n, len(grupos), aj)[:TEXT_MAX], html=False, markup=markup)
+        if bandeja:
+            self._send(where, _agrupar.texto_bandeja(bandeja, aj)[:TEXT_MAX], html=False)
+
+    def agrupar_step(self, action: str, rec: dict, where: dict) -> bool:
+        """[📦 Mismo lote] / [📌 Una sola pregunta] de /agrupar (Fusionar, Encadenar y Dejar son los de fusion.py)."""
+        return _agrupar.on_button(action, rec, where, self.desk, self.hermes_for)
 
     def _top_decisions(self, where, pendings: list, stuck: list, cards: list[dict], now: float, brand: str | None,
                        total: int) -> None:

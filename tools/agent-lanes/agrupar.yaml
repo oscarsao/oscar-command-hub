@@ -1,0 +1,7 @@
+# /agrupar (agent_lanes/agrupar.py): propone agrupar tarjetas abiertas. Se relee en cada uso; ausente o inválido = defaults.
+activo: true
+duplicadas_umbral: 0.8        # parecido de título (0-1) para proponer «duplicadas»
+estados: [ready, todo, running, blocked, review]
+palabras_bandeja: [épica, epica, retenida, tuyo, decidir]   # en el título = no es de carril, va a la bandeja de Oscar
+max_grupos: 8                 # grupos que se envían por /agrupar
+max_tarjetas: 8               # tarjetas listadas por grupo
