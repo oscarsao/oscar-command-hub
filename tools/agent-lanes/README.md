@@ -4,6 +4,13 @@ Runner que consume las tarjetas `ready` del kanban de Hermes asignadas a un carr
 lanza un `claude -p` acotado por hooks y deja el resultado en `review` para que lo valide Oscar.
 Contrato y arquitectura: `decisions/2026-09-27-arquitectura-carriles.md`. Configuración: `lanes.yaml`.
 
+Sincronizar usuarios de Oscar HQ (integrador): `python -m agent_lanes.sync_usuarios plan [--desde-fichero f.json]
+[--env-file .env] [--escribir]` lee las filas pendientes de `ohq_user_external_changes` (API de Oscar HQ: `OHQ_API_URL`,
+`OHQ_API_KEY`), propone el cambio exacto de `tools/telegram/people.yaml` (`--escribir` lo aplica en el checkout para el
+PR), la línea de `TELEGRAM_ALLOWED_CHATS` y la lista de Hermes. Nunca toca `.env` ni `~/.hermes`. Tras aplicar y con OK
+de Oscar: `python -m agent_lanes.sync_usuarios resolver <id>...` marca las filas como resueltas. `suspendido: true` en
+una entrada de people.yaml la deja sin acceso.
+
 ## Qué va a cada carril
 
 | Assignee | Para qué | Resultado |

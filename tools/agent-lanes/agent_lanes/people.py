@@ -140,6 +140,8 @@ def load_people(owner_id: str, path: Path | str | None = None) -> People:
         role = str(cfg.get("role") or "").strip().lower()
         if uid is None:
             continue  # TODO sin rellenar: la entrada no existe todavía
+        if cfg.get("suspendido") is True:
+            continue  # suspendida desde Oscar HQ (sync_usuarios): sin acceso hasta que se reactive
         if role not in BASE_CAPS or role == "owner":
             log.warning("people.yaml: rol no válido para %s; ignorada", _clean(key))
             continue
