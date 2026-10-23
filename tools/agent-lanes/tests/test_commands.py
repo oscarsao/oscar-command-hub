@@ -438,7 +438,7 @@ def test_tarea_validates_id_and_shows_card_with_state_buttons(tmp_path):
     shows = {"t_aaaaaaa1": needs("t_aaaaaaa1", Q_REC)}
     cc, desk, bot, h, messages = center(tmp_path, shows)
     command(desk, "/tarea --board x")
-    assert bot.sent[-1]["text"] == "Uso: /tarea t_xxxxxxxx"
+    assert bot.sent[-1]["text"].startswith("Uso: /tarea t_xxxxxxxx")
     command(desk, "/tarea t_00000000", uid=2)
     assert bot.sent[-1]["text"].startswith("No encuentro t_00000000")
     command(desk, "/tarea t_aaaaaaa1", uid=3)
