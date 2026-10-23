@@ -8,6 +8,11 @@
     py -3.12 lanes.py tarjeta <comentar|archivar|reasignar|resuelta> <task_id> --autor <quien> [--a perfil] [texto]
                                                    # el integrador registra en la tarjeta lo decidido en otro canal
                                                    # (comentario REGISTRO por <autor> + .state/reconcile-audit.jsonl)
+    py -3.12 lanes.py tarjeta nueva "<título>" "<texto>" --solicitante <clave|id> [--chat C --thread T --mensaje M]
+                                                   # [--carril X | --proyecto P] [--repo alias] [--dry-run]
+                                                   # VÍA ÚNICA para crear tarjetas (agent_lanes/nueva_tarjeta.py)
+    py -3.12 lanes.py tarjeta reparar-origen [--board b]
+                                                   # lista (en seco) las tarjetas con el Origen-Telegram mal escrito
     py -3.12 lanes.py doctor-boards [--apply]     # tarjetas abiertas en un tablero que su carril no lee (dry-run
                                                    # por defecto; --apply las recoloca en el tablero correcto)
     py -3.12 lanes.py pendiente [--json]           # todo lo que espera a Oscar en una lista (solo lectura; herramienta
@@ -124,6 +129,12 @@ def main(argv: list[str]) -> int:
     if argv[:1] == ["renotify"]:
         from agent_lanes import renotify
         return renotify.main(argv[1:])
+    if argv[:2] == ["tarjeta", "nueva"]:  # vía única para crear tarjetas de carril
+        from agent_lanes import nueva_tarjeta
+        return nueva_tarjeta.main(argv[2:])
+    if argv[:2] == ["tarjeta", "reparar-origen"]:  # en seco: lista y propone, no aplica
+        from agent_lanes import nueva_tarjeta
+        return nueva_tarjeta.reparar_main(argv[2:])
     if argv[:1] == ["tarjeta"]:
         from agent_lanes import reconcile
         return reconcile.main(argv[1:])
