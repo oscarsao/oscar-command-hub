@@ -23,6 +23,30 @@ def _when(ts) -> str:
         return "?"
 
 
+def slots_text(slots: dict | None) -> str:
+    """«huecos: normales 2/4 · grandes 1/2 · reservados 0/1» desde el bloque `slots` de busy.json (Service.tick).
+    Vacío si el runner no lo escribió (pasada con barrera o sin workers)."""
+    if not slots or "max_workers" not in slots:
+        return ""
+    # Los grandes cuentan contra max_workers (RAM): «normales» muestra el uso total del tope, grandes el hueco propio.
+    used = int(slots.get("normal", 0)) + int(slots.get("big", 0))
+    parts = [f"normales {used}/{slots['max_workers']}"]
+    if slots.get("max_big"):
+        parts.append(f"grandes {int(slots.get('big', 0))}/{slots['max_big']}")
+    if slots.get("max_reserved"):
+        parts.append(f"reservados {int(slots.get('reserved', 0))}/{slots['max_reserved']}")
+    return "huecos: " + " · ".join(parts)
+
+
+def busy_slots(busy: Path | None, pid: int | None = None) -> dict | None:
+    """Bloque `slots` de .state/busy.json (None si no existe, es de otro runner o no se puede leer)."""
+    try:
+        b = json.loads(Path(busy).read_text(encoding="utf-8")) if busy else {}
+    except (OSError, ValueError):
+        return None
+    return b.get("slots") if isinstance(b, dict) and (pid is None or b.get("pid") == pid) else None
+
+
 def runner_line(lock: Path, pid_alive: Callable[[int], bool], drain: dict | None = None,
                 busy: Path | None = None) -> str:
     """Estado del runner-servicio desde .state/runner.lock (+ workers de la pasada en curso, incluido el carril
@@ -38,7 +62,10 @@ def runner_line(lock: Path, pid_alive: Callable[[int], bool], drain: dict | None
     except (OSError, ValueError):
         b = {}
     if alive and b.get("pid") == pid and b.get("jobs"):
-        line += " · en marcha: " + ", ".join(f"{j.get('task')} ({j.get('lane')})" for j in b["jobs"][:4])
+        line += " · en marcha: " + ", ".join(
+            f"{j.get('task')} ({j.get('lane')}{', grande' if j.get('kind') == 'big' else ''})" for j in b["jobs"][:4])
+        if txt := slots_text(b.get("slots")):
+            line += " · " + txt
     if drain:
         line += f" · drenando desde {_when(drain.get('since'))} (no reclama)"
     return line

@@ -10,9 +10,9 @@ import threading
 import time
 import uuid
 from pathlib import Path
-from typing import Callable
+from typing import Callable, NamedTuple
 
-from . import bloqueos, clasificador, telegram_lane
+from . import bloqueos, clasificador, grandes, holds, telegram_lane
 from . import consulta as _consulta
 from . import deps
 from . import proc as _proc
@@ -103,6 +103,14 @@ def dm_mirror(decisions, target, alert: bool, state: str | None = None) -> str |
     if state == "needs_input" or (target and str(target[0]) == owner):
         return owner
     return None
+
+
+class Cand(NamedTuple):
+    """Tarjeta lista para arrancar: id, callable, ¿grande?, ¿serializada (migraciones)?"""
+    tid: str
+    job: Callable[[], str]
+    big: bool = False
+    serial: bool = False
 
 
 class LaneRunner:
@@ -245,8 +253,10 @@ class LaneRunner:
             orphans.append(tid)
         return orphans
 
-    def jobs(self) -> list[tuple[str, Callable[[], str]]]:
-        """Work for one pass: up to max_parallel ready tasks, as (task_id, callable) for the Service."""
+    def candidates(self) -> list["Cand"]:
+        """Todas las tarjetas ready reclamables (prioridad de Hermes), SIN tope: el Service decide cuántas arrancar según
+        los huecos (normal / grande / reservado). `big` = tarjeta grande (grandes.py); `serial` = cita rutas de
+        `serialize_paths` (migraciones): dos así en este carril no corren a la vez, ni con una ya en curso."""
         if self._repo_guard and self.lane.kind == "implement":
             problem = self._repo_guard(self.lane)
             if problem:
@@ -255,10 +265,24 @@ class LaneRunner:
                     self._repo_warned = True
                 return []
         ready = [t for t in self.hermes.list_ready(self.lane.name) if t["id"] not in self.exclude]
-        ready = [t for t in ready if not self._dependency_hold(t["id"])]
+        ready = [t for t in ready if not holds.held(t["id"]) and not self._dependency_hold(t["id"])]
         for t in ready:  # antes del claim: el notificador de Hermes ya duplicó un aviso en la ventana claim -> baja
             self._drop_hermes_subs(t["id"])
-        return [(t["id"], lambda t=t: self.process(t)) for t in ready[: self.lane.max_parallel]]
+        paths = getattr(self.lane, "serialize_paths", ()) or ()
+        serial = {t["id"]: grandes.touches(t, paths) for t in ready} if paths else {}
+        if any(serial.values()):  # una tarjeta de migraciones ya en curso (de este runner o de una consola) frena a las demás
+            try:
+                if any(grandes.touches(r, paths) for r in self.hermes.list_status(self.lane.name, "running")):
+                    ready = [t for t in ready if not serial[t["id"]]]
+            except Exception as exc:
+                log.info("%s: running no leídas para serializar migraciones: %s", self.lane.name, exc)
+        minutes = getattr(self.lane, "big_minutes", grandes.DEFAULT_BIG_MINUTES)
+        return [Cand(t["id"], lambda t=t: self.process(t), grandes.is_big(t, minutes), serial.get(t["id"], False))
+                for t in ready]
+
+    def jobs(self) -> list[tuple[str, Callable[[], str]]]:
+        """Work for one pass: up to max_parallel ready tasks, as (task_id, callable) for the Service (modo --once)."""
+        return [(c.tid, c.job) for c in self.candidates()[: self.lane.max_parallel]]
 
     def _dependency_hold(self, tid: str) -> bool:
         """«Esperar a…» de Oscar (deps.WAIT_PREFIX): la tarjeta no se reclama mientras la dependencia siga pendiente.

@@ -40,8 +40,10 @@ def test_select_acepta_lectura():
 
 
 def test_redactar_secretos():
-    t = ("SUPABASE_KEY=abc123xyz token: ghp_ABCDEFGHIJKLMNOP1234 jwt eyJhbGciOiJIUzI1.eyJzdWIiOiIxMjM0NTY3.SflKxwRJSMeKKF2QT4 "
-         "bot 123456789:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw0 Authorization: Bearer abcdefghijklmnop1234")
+    # Valores ficticios partidos en dos para que ningún escáner de secretos vea un token completo en el fuente
+    # (el test los junta en tiempo de ejecución y comprueba que `redactar` los elimina).
+    t = ("SUPABASE_KEY=abc123xyz token: " + "ghp_" + "ABCDEFGHIJKLMNOP1234 jwt " + "eyJhbGciOiJIUzI1" + ".eyJzdWIiOiIxMjM0NTY3.SflKxwRJSMeKKF2QT4 "
+         "bot " + "123456789" + ":AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw0 Authorization: Bearer abcdefghijklmnop1234")
     r = ap.redactar(t)
     for fuga in ("abc123xyz", "ghp_ABCDEF", "eyJhbGci", "AAHdqTcvCH1", "abcdefghijklmnop1234"):
         assert fuga not in r

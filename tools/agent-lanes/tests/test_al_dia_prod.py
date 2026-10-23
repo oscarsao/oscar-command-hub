@@ -118,7 +118,7 @@ def test_resolver_creates_one_high_priority_card_with_log_per_failure_and_sha(tm
     press(desk, ficha, n)
     [(titulo, cuerpo, carril, kw, _)] = integ.hermes.created
     assert carril == "claude-oscarhq" and kw["priority"] == 10 and "tests — https://ci/1" in cuerpo
-    assert f"Rama-origen: lane/{tid(3)}" in cuerpo and "arreglar" in titulo
+    assert f"Rama-origen: lane/{tid(3)}" in cuerpo and titulo.endswith("· implementar")
     st = ad.diagnose("oscarhq")
     assert "Ya existe la tarjeta" in ad.resolver_ci(st, st.prs[0])       # mismo fallo y SHA: no duplica
     assert len(integ.hermes.created) == 1

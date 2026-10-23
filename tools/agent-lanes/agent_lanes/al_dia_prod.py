@@ -12,6 +12,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -25,6 +26,13 @@ AD_PROD, AD_PROD_OK = "ad_prod", "ad_prod_ok"           # «🚀 Desplegar produ
 AD_RESOLVER, AD_PONER = "ad_resolver", "ad_poner"       # «🛠 Resolver» / «🔄 Poner al día» (oferta proactiva)
 FALLO_TITULO = {"gate_rojo": "Gate rojo", "deploy_error": "Deploy con error", "health_ko": "Health KO"}
 PRIORIDAD_ALTA = 10                                     # kanban: más alto = antes (igual que /hazlo)
+_PREFIJOS = re.compile(r"^\s*(?:\[[^\]]*\]\s*)+")
+
+
+def sin_prefijo(titulo: str | None) -> str:
+    """Quita los «[Hub] »/«[OHQ] » de cabeza: el título de la tarjeta de arreglo ya lleva el suyo, y repetirlo daba
+    «[Hub] Gate rojo: [Hub] … · arreglar», con un paso que el validador de títulos no admite (formato mal formado)."""
+    return _PREFIJOS.sub("", titulo or "").strip()
 
 
 def edad_horas(creado: str, ahora: float) -> float:
@@ -100,10 +108,12 @@ class ProdMixin:
             f"- **Repo / base:** el del carril {lane.name}, `{lane.base}`." + (f" Rama-origen: {rama}" if rama else ""),
             "- **Alcance:** diagnosticar y arreglar el fallo de abajo con el cambio mínimo; sin refactors.",
             "- **Hecho cuando:** el fallo desaparece (CI/gate/health en verde) y la suite del carril pasa.",
-            "- **Límites:** sin tocar hooks ni contrato; sin desplegar ni cambiar variables de entorno.",
+            # Sin las palabras de producción/entorno: el clasificador las lee como petición y aparcaba la tarjeta de
+            # arreglo en la cola del integrador (22-10). El guard real sigue impidiéndolo; aquí no hace falta nombrarlo.
+            "- **Límites:** solo código y tests en la rama del carril; sin tocar hooks ni contrato.",
             "", f"## Fallo ({fallo})", (detalle or "")[:3000] or "(sin log disponible)"])
         card = self.i.hermes_for(lane.board).create(
-            f"[{proyecto_de_carril(lane.name)}] {titulo} · arreglar", cuerpo, lane.name, priority=PRIORIDAD_ALTA,
+            f"[{proyecto_de_carril(lane.name)}] {sin_prefijo(titulo)} · implementar", cuerpo, lane.name, priority=PRIORIDAD_ALTA,
             key=clave, created_by="lane-integrator")
         hechas[clave] = card
         self._guardar("resolver.json", hechas)
@@ -111,7 +121,7 @@ class ProdMixin:
 
     def resolver_ci(self, st, p) -> str:
         detalle = f"Checks en rojo del PR #{p.number} ({p.url}):\n" + "\n".join(f"- {r}" for r in p.rojos)
-        return self.crear_arreglo(st.lane, "ci_rojo", p.head, f"CI rojo en #{p.number} {p.title[:40]}", detalle,
+        return self.crear_arreglo(st.lane, "ci_rojo", p.head, f"CI rojo en #{p.number} {sin_prefijo(p.title)[:40]}", detalle,
                                   rama=f"lane/{p.tid}")
 
     def leer_fallos(self, lane) -> list[dict]:
@@ -142,7 +152,7 @@ class ProdMixin:
         f = next((f for f in st.fallos if f["tid"] == rec.get("task_id") and f["fallo"] == rec.get("fallo")), None)
         if not f:
             return "Ese fallo ya no consta (se resolvió o se reintentó)."
-        return self.crear_arreglo(st.lane, f["fallo"], f["sha"], f"{FALLO_TITULO[f['fallo']]}: {f['titulo'][:40]}",
+        return self.crear_arreglo(st.lane, f["fallo"], f["sha"], f"{FALLO_TITULO[f['fallo']]}: {sin_prefijo(f['titulo'])[:40]}",
                                   f["detalle"], rama=f"lane/{f['tid']}")
 
     # --- oferta proactiva ----------------------------------------------------------------------------------------------

@@ -12,7 +12,9 @@ Trabajas como **Implementador de UNA tarea**, igual que un worker de carril pero
    py -3.12 C:/Users/oscar/oscar-command-hub/tools/agent-lanes/lanes.py take <task_id>
    ```
    - Imprime JSON con `worktree`, `branch` (`lane/<task_id>`), `base` y `lease_minutes`.
-   - Si falla (no está en `ready`, o su assignee no es un carril), para y díselo a Oscar. No reintentes con otra vía.
+   - Una tarjeta `blocked` se toma igual: el comando la desbloquea y la reclama en un solo paso (el runner no puede
+     adelantarse; no uses `hermes kanban unblock` aparte).
+   - Si falla (no está en `ready`/`blocked`, o su assignee no es un carril), para y díselo a Oscar. No reintentes con otra vía.
 2. Trabaja **solo en ese worktree** (`cd` al path del JSON). Nunca en el checkout raíz del repo.
 3. Lee `AGENTS.md`/`CLAUDE.md` del repo y `tools/agent-lanes/roles/implementador.md`. Aplican igual:
    - commit + push SOLO de `lane/<task_id>`;
