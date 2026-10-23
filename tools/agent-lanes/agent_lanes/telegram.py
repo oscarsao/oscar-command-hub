@@ -225,6 +225,18 @@ class TelegramNotifier:
             return False
         return True
 
+    def create_topic(self, chat_id, name: str) -> int | None:
+        """createForumTopic: id del tema nuevo, o None si el bot no puede (sin permiso de gestionar temas, no es foro…)."""
+        if not self._token or not chat_id:
+            return None
+        try:
+            result = self._api("createForumTopic", {"chat_id": chat_id, "name": name[:128]})
+        except TelegramAPIError as exc:
+            del exc  # el motivo lo cuenta quien llama (cae al tema por defecto)
+            return None
+        tid = (result or {}).get("message_thread_id")
+        return int(tid) if tid else None
+
     def delete(self, chat_id: str, message_id) -> bool:
         if not self._token or not message_id:
             return False

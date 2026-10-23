@@ -145,3 +145,6 @@ Oscar** (login, no API key) y el control debe correr en una sola máquina a la v
   (`docs/auditoria-aprobaciones-telegram-2026-10-15.md`).
 - **Instaladores `.ps1`/`.vbs` fuera del alcance de los carriles** (el integrador bloquea ejecutables): se cambian solo en sesión
   con Oscar.
+- **Vigilante del equipo (t_04fe996e)** en Gestión › 👥 Equipo (`agent_lanes/vigilancia.py`): fichas de solicitudes del
+  equipo (registro `req_<n>`) y fallos de los bots que calcula OHQ (`GET /api/equipo/vigilancia`). Necesita
+  `OHQ_API_URL`/`OHQ_API_KEY` con alcance a esa ruta; sin ellas solo vigila el kanban de Hermes.

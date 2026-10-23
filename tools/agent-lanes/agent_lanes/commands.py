@@ -571,6 +571,79 @@ class CommandCenter:
             self.peticion_items, lambda t: bool(self.notifier.send_to(chat, thread, t, html=False)), path,
             now=lambda: datetime.fromtimestamp(self._now(), rc.MADRID)).tick()
 
+    # --- vigilante del equipo (t_04fe996e): tema «👥 Equipo» de Gestión ----------------------------------------------
+
+    def vigilancia(self):
+        """Vigilancia del tema 👥 Equipo (None sin `.state`, p. ej. en tests que no la inyectan)."""
+        v = getattr(self, "_vigilancia", None)
+        if v is not None:
+            return v
+        path, store = self._state_file("vigilancia_state", "vigilancia.json"), self.registro_peticiones()
+        if path is None or store is None:
+            return None
+        import os
+
+        from . import vigilancia as vg
+        from .config import load_env
+        from .sync_usuarios import ApiOhq
+        cfg = vg.load_config()
+        env = {**load_env(), **os.environ}
+        api = ApiOhq(env["OHQ_API_URL"], env["OHQ_API_KEY"]) if env.get("OHQ_API_URL") and env.get("OHQ_API_KEY") \
+            else None
+        if api is None:
+            log.info("vigilancia: sin OHQ_API_URL/OHQ_API_KEY; solo vigilo el kanban de Hermes")
+
+        def hermes_tasks() -> list:
+            out = []
+            for board in dict.fromkeys([l.board for l in self.lanes.values() if l.board] + list(EXTRA_BOARDS)):
+                h = self.hermes_for(board)
+                for st in vg.ESTADOS_ABIERTOS_HERMES:
+                    try:
+                        out += [dict(t, board=board) for t in h.list_status_all(st)]
+                    except Exception as exc:
+                        log.info("vigilancia: %s/%s no leído: %s", board, st, exc)
+            return out
+
+        botones = lambda: self._equipo_botones()  # noqa: E731 (se crea con la vigilancia ya montada)
+
+        def send(text, spec, thread):
+            markup = botones().markup(spec)
+            return self.notifier.send_to(cfg.chat, thread, text, html=False,
+                                         **({"reply_markup": markup} if markup else {}))
+
+        def edit(chat, message_id, text, spec):
+            return botones()._edit(chat, message_id, text, spec)
+
+        self._vigilancia = vg.Vigilancia(
+            estado=vg.Estado(path), registro=store, people=self.desk._people(),
+            fetch_ohq=(lambda: api.vigilancia()) if api else (lambda: None), hermes_tasks=hermes_tasks,
+            show_card=self._show_card, send=send, edit=edit, create_topic=getattr(self.notifier, "create_topic", None),
+            cfg=cfg, now=self._now)
+        return self._vigilancia
+
+    def _equipo_botones(self):
+        from .vigilancia_botones import EquipoBotones
+        return EquipoBotones(self, self.vigilancia())
+
+    def vigilancia_tick(self):
+        """Una pasada del vigilante cada INTERVALO_S como mucho (lee OHQ y el kanban)."""
+        from .vigilancia import INTERVALO_S
+        now = self._now()
+        if now - getattr(self, "_vigilancia_at", 0) < INTERVALO_S:
+            return None
+        self._vigilancia_at = now
+        v = self.vigilancia()
+        return v.tick() if v else None
+
+    def equipo_choice(self, action: str, rec: dict, button: dict, where: dict) -> bool:
+        return self.vigilancia() is not None and self._equipo_botones().on_button(action, rec, button, where)
+
+    def equipo_reply(self, rec: dict, button: dict, where: dict, text: str) -> bool:
+        return self.vigilancia() is not None and self._equipo_botones().on_reply(rec, button, where, text)
+
+    def equipo_prompt(self, rec: dict, button: dict) -> str:
+        return self._equipo_botones().prompt(rec, button) if self.vigilancia() else "Escribe tu respuesta:"
+
     def cmd_integrador(self, where, args: str, brand: str | None) -> None:
         from .decisions import ESTADO_MAS
         from .guard_route import queue_view
@@ -1147,7 +1220,8 @@ class CommandCenter:
             self.urgent_tick()
         except Exception as exc:
             log.warning("avisos urgentes: %s", exc)
-        for tick in (self.guard_tick, self.daily_tick, self.peticiones_tick, self.al_dia_tick):  # cola, partes de las 9:00, /al_dia
+        for tick in (self.guard_tick, self.daily_tick, self.peticiones_tick, self.al_dia_tick,
+                     self.vigilancia_tick):  # cola, partes de las 9:00, /al_dia, tema 👥 Equipo
             try:
                 tick()
             except Exception as exc:
