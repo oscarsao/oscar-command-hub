@@ -42,6 +42,7 @@ from .notices import (BOARD_BRANDS, BRANDS, DECISION_CARD_STATUSES, OPTION_LETTE
 from .tipo_peticion import A_ASK as PEDIR_ASK, KIND as PEDIR_KIND
 from .limpieza import LIM_CLOSE, LIM_KEEP, LIM_VIEW
 from .reconcile import INTEGRATOR_PROFILE, REC_ARCHIVE, REC_KEEP
+from .fusion import FUS_ACTIONS
 from .solapes import SOL_ACTIONS
 from .review import CHANGES_PREFIX
 
@@ -426,6 +427,7 @@ class DecisionDesk:
         self._now = now
         self.reconciler = None  # reconcile.Reconciler: botones rec_archive / rec_keep
         self.limpieza = None  # limpieza.LimpiezaRunner: botones lim_close / lim_keep / lim_view
+        self.fusion = None   # fusion.Fusion: botones fus_* (fusionar, encadenar, duplicada, pausar, «Fusionar con…»)
         self.solapes = None  # solapes.SolapeTicker: botones sol_fusionar / sol_distintas / sol_luego
         self.integrator = None  # carril Integrador (INTEGRATOR_ENABLED): botones int_* de fusionar/desplegar
         self.messages = messages  # MessageStore: todas las copias de cada aviso (sincronización tema <-> DM)
@@ -954,6 +956,8 @@ class DecisionDesk:
             return bool(self.reconciler) and self.reconciler.on_button(action, rec, where, self)
         if action in (LIM_CLOSE, LIM_KEEP, LIM_VIEW):  # propuesta de limpieza (limpieza.py)
             return bool(self.limpieza) and self.limpieza.on_button(action, rec, where, self)
+        if action in FUS_ACTIONS:  # avisos de solape/choque y ficha de tarjeta (fusion.py)
+            return bool(self.fusion) and self.fusion.on_button(action, rec, where, self, button.get("index"))
         if action in SOL_ACTIONS:  # aviso de posible solape (solapes.py)
             return bool(self.solapes) and self.solapes.on_button(action, rec, where, self)
         if action.startswith("pv_"):  # panel vivo del tema de Integración: Resolver / Ver / Aparcar
