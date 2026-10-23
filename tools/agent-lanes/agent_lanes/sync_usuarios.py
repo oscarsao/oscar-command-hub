@@ -161,12 +161,21 @@ def aplicar_people(texto: str, filas: list[dict]) -> tuple[str, list[str], list[
                 manual.append(f"{fid}: {accion} de «{nombre or slug or uid}» sin entrada en people.yaml ni rol válido; "
                               "darla de alta a mano (skill alta-persona-equipo)")
             else:
-                aplicados.append(fid)  # nada que quitar: la persona ya no figura, la fila se puede resolver
+                # Quitar acceso a alguien que no figura NO se da por aplicado: puede ser un nombre mal escrito y
+                # dejar el acceso vivo. Se revisa a mano (por Telegram ID) y se resuelve la fila a mano.
+                manual.append(f"{fid}: {accion} de «{nombre or slug or uid}» pero no figura en people.yaml; "
+                              "comprobar por Telegram ID que no tiene acceso con otra clave y resolver la fila a mano")
             continue
         ini, fin = bloques[clave]
         if accion == "link":
             if not uid:
                 manual.append(f"{fid}: link de {clave} sin telegram_user_id")
+                continue
+            actual = _uid_de(lineas, ini, fin)
+            if actual and actual != uid:
+                # La persona ya tiene otro Telegram: sobrescribirlo la cambiaría de dueño sin que nadie lo vea.
+                manual.append(f"{fid}: link de {clave} con el Telegram {uid}, pero ya tiene {actual} en people.yaml; "
+                              "no se sobrescribe. Confirmar con la persona cuál es el suyo")
                 continue
             fin += _fijar_linea(lineas, ini, fin, "user_id", f'"{uid}"', nota)
             _quitar_linea(lineas, ini, fin, "suspendido")
@@ -178,7 +187,10 @@ def aplicar_people(texto: str, filas: list[dict]) -> tuple[str, list[str], list[
             fin += _fijar_linea(lineas, ini, fin, "user_id", "null", nota)
             _quitar_linea(lineas, ini, fin, "suspendido")
         elif accion == "delete":
-            del lineas[ini:fin]
+            # No se borra el bloque en silencio: pierde el acceso (user_id null se ignora) pero se conservan
+            # operador, marcas y rol para que quien revise vea qué tenía. Quitarlo del todo es decisión de una persona.
+            fin += _fijar_linea(lineas, ini, fin, "user_id", "null", f"{nota}: eliminado en Oscar HQ; bloque conservado, quitar a mano si ya no hace falta")
+            _quitar_linea(lineas, ini, fin, "suspendido")
         aplicados.append(fid)
     return "".join(lineas).replace("\n", eol), aplicados, manual
 

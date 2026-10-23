@@ -54,14 +54,58 @@ def test_suspender_quita_acceso_y_reactivar_lo_devuelve(tmp_path):
     assert "suspendido" not in rea and load_people(OWNER, f).lookup("111").name == "María"
 
 
-def test_desvincular_pone_null_y_eliminar_borra_el_bloque(tmp_path):
+def test_desvincular_pone_null_y_eliminar_conserva_el_bloque(tmp_path):
     f = tmp_path / "p.yaml"
     unl, _, _ = aplicar([fila("c4", "unlink", person_key="maria", telegram_user_id="111")])
     assert "user_id: null   # Oscar HQ c4" in unl
     f.write_text(unl, encoding="utf-8")
     assert load_people(OWNER, f).lookup("111") is None
-    borrado, _, _ = aplicar([fila("c5", "delete", person_key="maria", telegram_user_id="111")])
-    assert "maria:" not in borrado and "mauredy:" in borrado and "# cabecera" in borrado
+    borrado, ok, _ = aplicar([fila("c5", "delete", person_key="maria", telegram_user_id="111")])
+    assert ok == ["c5"] and "mauredy:" in borrado and "# cabecera" in borrado
+    # No se borra en silencio: el bloque sigue (con su rol y marcas) pero sin acceso y con la nota.
+    assert "maria:" in borrado and "role: coo" in borrado and "brands: [Píldora]" in borrado
+    assert "user_id: null   # Oscar HQ c5: eliminado en Oscar HQ" in borrado
+    f.write_text(borrado, encoding="utf-8")
+    assert load_people(OWNER, f).lookup("111") is None
+
+
+def test_eliminar_conserva_el_operador(tmp_path):
+    texto = YAML.replace("    can: []\n\n  mauredy", "    can: []\n    operador: true\n\n  mauredy")
+    assert "operador: true" in texto
+    borrado, ok, _ = aplicar([fila("c6", "delete", person_key="maria", telegram_user_id="111")], texto)
+    assert ok == ["c6"] and "operador: true" in borrado
+    f = tmp_path / "p.yaml"
+    f.write_text(borrado, encoding="utf-8")
+    assert load_people(OWNER, f).lookup("111") is None  # operador conservado pero sin user_id no entra
+
+
+def test_link_con_otro_user_id_va_a_revision_manual_y_no_sobrescribe():
+    # maria ya tiene "111"; una fila con su person_key y otro Telegram no la cambia de dueño.
+    nuevo, ok, man = aplicar([fila("c7", "link", person_key="maria", telegram_user_id="999")])
+    assert ok == [] and nuevo == YAML
+    assert len(man) == 1 and "c7" in man[0] and "111" in man[0] and "999" in man[0] and "no se sobrescribe" in man[0]
+
+
+def test_link_con_el_mismo_user_id_o_sin_user_id_previo_si_se_aplica():
+    _, ok, man = aplicar([fila("c8", "link", person_key="maria", telegram_user_id="111")])
+    assert ok == ["c8"] and not man
+    _, ok2, man2 = aplicar([fila("c9", "link")])  # mauredy tiene user_id: null
+    assert ok2 == ["c9"] and not man2
+
+
+def test_quitar_acceso_a_quien_no_esta_en_el_yaml_no_se_da_por_aplicado():
+    for accion in ("suspend", "unlink", "delete"):
+        nuevo, ok, man = aplicar([fila(f"x-{accion}", accion, person_key="fantasma", telegram_user_id="555")])
+        assert ok == [] and nuevo == YAML
+        assert len(man) == 1 and f"x-{accion}" in man[0] and "no figura en people.yaml" in man[0]
+        assert "fantasma" in man[0] and "Telegram ID" in man[0]
+
+
+def test_planificar_deja_las_no_aplicadas_fuera_de_las_filas_resolubles():
+    plan = su.planificar([fila("c10", "suspend", person_key="fantasma", telegram_user_id="555"),
+                          fila("c11", "suspend", person_key="maria", telegram_user_id="111")], YAML)
+    assert plan.filas["people_yaml"] == ["c11"]
+    assert any("c10" in m for m in plan.manual)
 
 
 def test_link_de_persona_nueva_exige_rol_y_si_no_va_a_manual(tmp_path):
