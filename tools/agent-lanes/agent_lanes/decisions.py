@@ -42,10 +42,15 @@ from .notices import (BOARD_BRANDS, BRANDS, DECISION_CARD_STATUSES, OPTION_LETTE
 from .tipo_peticion import A_ASK as PEDIR_ASK, KIND as PEDIR_KIND
 from .limpieza import LIM_CLOSE, LIM_KEEP, LIM_VIEW
 from .reconcile import INTEGRATOR_PROFILE, REC_ARCHIVE, REC_KEEP
+from .fusion import FUS_ACTIONS
 from .solapes import SOL_ACTIONS
 from .review import CHANGES_PREFIX
 
 log = logging.getLogger("agent_lanes")
+
+
+class _SinCommits(Exception):
+    """`gh pr create` rechazó la rama porque no tiene commits sobre la base."""
 
 # Un JSON por teclado enviado (callback_data corto -> tarea/acción). Lo escriben el runner y `lanes.py renotify`;
 # lo lee la escucha del runner-servicio.
@@ -426,6 +431,7 @@ class DecisionDesk:
         self._now = now
         self.reconciler = None  # reconcile.Reconciler: botones rec_archive / rec_keep
         self.limpieza = None  # limpieza.LimpiezaRunner: botones lim_close / lim_keep / lim_view
+        self.fusion = None   # fusion.Fusion: botones fus_* (fusionar, encadenar, duplicada, pausar, «Fusionar con…»)
         self.solapes = None  # solapes.SolapeTicker: botones sol_fusionar / sol_distintas / sol_luego
         self.integrator = None  # carril Integrador (INTEGRATOR_ENABLED): botones int_* de fusionar/desplegar
         self.messages = messages  # MessageStore: todas las copias de cada aviso (sincronización tema <-> DM)
@@ -954,6 +960,8 @@ class DecisionDesk:
             return bool(self.reconciler) and self.reconciler.on_button(action, rec, where, self)
         if action in (LIM_CLOSE, LIM_KEEP, LIM_VIEW):  # propuesta de limpieza (limpieza.py)
             return bool(self.limpieza) and self.limpieza.on_button(action, rec, where, self)
+        if action in FUS_ACTIONS:  # avisos de solape/choque y ficha de tarjeta (fusion.py)
+            return bool(self.fusion) and self.fusion.on_button(action, rec, where, self, button.get("index"))
         if action in SOL_ACTIONS:  # aviso de posible solape (solapes.py)
             return bool(self.solapes) and self.solapes.on_button(action, rec, where, self)
         if action.startswith("pv_"):  # panel vivo del tema de Integración: Resolver / Ver / Aparcar
@@ -1325,7 +1333,10 @@ class DecisionDesk:
         if not slug:
             self._edit(rec, where, "blocked", "no se pudo abrir el PR: el repo del carril no está en GitHub")
             return False
-        pr = self._find_pr(slug, tid) or self._create_pr(slug, lane, rec)
+        try:
+            pr = self._find_pr(slug, tid) or self._create_pr(slug, lane, rec)
+        except _SinCommits:  # la rama no aporta nada sobre la base: no hay PR que abrir; se cierra la tarjeta
+            return self._sin_cambios(rec, where)
         if not pr:
             self._edit(rec, where, "blocked", "no se pudo abrir el PR; detalle en el log")
             return False
@@ -1383,10 +1394,24 @@ class DecisionDesk:
         cp = self._gh("pr", "create", "--repo", slug, "--head", f"lane/{tid}", "--base", lane.base,
                       "--title", rec.get("title") or tid, "--body", body)
         if cp.returncode != 0:
+            if "no commits between" in (cp.stderr or "").lower():
+                log.info("%s: la rama no tiene commits sobre %s; no se abre PR", tid, lane.base)
+                raise _SinCommits()
             log.warning("%s: gh pr create falló: %s", tid, (cp.stderr or "").strip()[:300])
             return None
         m = re.search(r"https://github\.com/\S+/pull/(\d+)", cp.stdout or "")
         return (int(m.group(1)), m.group(0)) if m else None
+
+    def _sin_cambios(self, rec: dict, where: dict) -> bool:
+        """Aprobar una tarjeta cuya rama no tiene commits sobre la base: comenta «sin cambios» y la archiva."""
+        tid, h = rec["task_id"], self._hermes(rec)
+        h.comment(tid, f"Sin cambios respecto a la base: no hay PR que abrir; tarjeta archivada{self._by()}",
+                  author=OSCAR_AUTHOR)
+        if not h.archive(tid):
+            self._edit(rec, where, "blocked", "sin cambios respecto a la base, pero no se pudo archivar la tarjeta")
+            return False
+        self._edit(rec, where, "parked", "🗄 sin cambios respecto a la base: sin PR, tarjeta archivada")
+        return True
 
     def _park(self, rec: dict, where: dict) -> bool:
         tid, h = rec["task_id"], self._hermes(rec)

@@ -205,7 +205,8 @@ def test_aviso_con_botones_si_hay_issue(tmp_path):
     t.tick()
     assert len(sent) == 1
     rows = sent[0][1]["inline_keyboard"]
-    assert [b["text"] for r in rows for b in r] == ["🔀 Son duplicadas", "✅ No son duplicadas", "⏸ Luego"]
+    assert [b["text"] for r in rows for b in r] == ["🔗 Fusionar en una", "⛓ Encadenar", "✅ Se complementan, seguir",
+                                                   "🗂 Duplicada", "⏸ Pausar una", "⏸ Luego"]
     assert [c["tid"] for c in store.rec["cards"]] == ["t_1", "t_2"] and store.rec["task_id"] == "t_1"
 
 

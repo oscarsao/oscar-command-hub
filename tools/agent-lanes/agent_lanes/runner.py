@@ -414,6 +414,8 @@ class LaneRunner:
                         return self._to_integrador(tid, task, veredicto)
                     if veredicto.avisos:
                         task = {**task, "clasificador_avisos": [m for _, m in veredicto.avisos]}
+                    if veredicto.dudas:  # menciona producción/otro repo sin pedir actuar: se trabaja, con recordatorio
+                        task = {**task, "clasificador_recordatorio": clasificador.load_config()["intencion"]["recordatorio"]}
                 # Aviso previo (antes de gastar la pasada): lo que pide la tarjeta y los límites del carril no
                 # permiten. Solo informa, una vez por tarea y arranque; no bloquea ni toca la config.
                 warns = [] if tid in self._preflighted else self._preflight(lane, tid, task)

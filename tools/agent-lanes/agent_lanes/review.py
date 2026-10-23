@@ -29,6 +29,7 @@ log = logging.getLogger("agent_lanes")
 
 REVIEW_SCHEMA_PATH = ROOT / "contract" / "review.schema.json"
 REVIEW_SETTINGS = ROOT / "contract" / "reviewer-settings.json"
+CERRADAS = ("done", "archived")  # tarjetas que el carril de revisión no debe tocar
 CHANGES_PREFIX = "CAMBIOS"
 READ_ONLY_TOOLS = ("Read", "Grep", "Glob", "Bash(git diff:*)", "Bash(git log:*)", "Bash(git show:*)",
                    "Bash(git status:*)")
@@ -194,6 +195,10 @@ class ReviewRunner:
     def _block(self, h, task: dict, kind: str, reason: str, *, public: str,
                questions: list[str] | None = None) -> str:
         """`reason` (detalle técnico) va a la tarjeta y al log; a Telegram solo `public` (+ preguntas si needs_input)."""
+        closed = self._cerrada(h, task["id"])  # la revisión es larga: puede haberse cerrado mientras tanto
+        if closed:
+            log.info("%s ya está %s: no se bloquea (%s): %s", task["id"], closed, kind, reason)
+            return f"skip:{closed}"
         log.warning("%s bloqueada en review (%s): %s", task["id"], kind, reason)
         blocked = h.block(task["id"], kind, fit_reason(reason))
         if not blocked:  # block solo mueve running/ready: una tarea en review puede no quedar bloqueada
@@ -211,6 +216,15 @@ class ReviewRunner:
             self.notify("blocked", task, status_line("bloqueada en review", public, "detalle en la tarjeta"),
                         alert=True, buttons=bool(blocked), block_kind=kind)
         return f"blocked:{kind}"
+
+    @staticmethod
+    def _cerrada(h, tid: str) -> str | None:
+        """Estado `done`/`archived` si la tarjeta ya está cerrada (se relee del kanban); None si no, o si no se lee."""
+        try:
+            status = (h.show(tid).get("task") or {}).get("status")
+        except Exception:
+            return None
+        return status if status in CERRADAS else None
 
     def _unblockable_path(self, tid: str) -> Path | None:
         return self._state_dir / f"{tid}.json" if self._state_dir else None
@@ -241,6 +255,8 @@ class ReviewRunner:
         try:
             show = h.show(tid)
             task = {**show.get("task", {}), **task}
+            if task.get("status") in CERRADAS:  # el integrador la cerró entre el listado y ahora: no se toca
+                return f"skip:{task['status']}"
             meta = implementation_metadata(show)
             self._heads[tid] = str(meta.get("head_sha") or "")
             if self._already_escalated(tid, self._heads[tid]):

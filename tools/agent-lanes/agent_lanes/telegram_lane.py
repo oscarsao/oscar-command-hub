@@ -22,6 +22,7 @@ from .config import ROOT, Lane
 
 log = logging.getLogger("agent_lanes")
 
+_AVISADAS: set[str] = set()  # tarjetas de otro tablero ya avisadas en el log (en memoria del proceso)
 LANE = "claude-telegram"
 ORIGENES = ("claude-hub", "claude-oscarhq")  # carriles de los que se le quitan tarjetas de Telegram
 REPO_LINE = re.compile(r"^\s*Repo:\s*(\S+)\s*$", re.M | re.I)
@@ -142,8 +143,10 @@ def reasignar_abiertas(hermes_for, lanes: dict, cfg: dict | None = None) -> list
             if not es_telegram(t.get("title"), t.get("body"), cfg):
                 continue
             if src.board != dest.board:
-                log.info("%s: tarjeta de Telegram en el tablero %s; claude-telegram trabaja en %s: no se mueve", t["id"],
-                         src.board, dest.board)
+                if t["id"] not in _AVISADAS:  # una vez por tarjeta, no en cada pasada
+                    _AVISADAS.add(t["id"])
+                    log.info("%s: tarjeta de Telegram en el tablero %s; claude-telegram trabaja en %s: no se mueve",
+                             t["id"], src.board, dest.board)
                 continue
             if hermes.reassign(t["id"], LANE, f"enrutado automático: tarjeta de Telegram (antes en {origen})"):
                 moved.append(t["id"])
