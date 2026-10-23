@@ -186,12 +186,13 @@ def main(argv: list[str] | None = None) -> int:
             if configs:
                 decisions.promoter = Promoter(configs, notifier=notify, desk=decisions)
                 log.info("promoción a producción activa: %s", list(configs))
-    service = Service(runners, max_workers=effective_max_workers(args.max_workers, settings), busy_path=drain.BUSY_FILE)
+    service = Service(runners, max_workers=effective_max_workers(args.max_workers, settings), busy_path=drain.BUSY_FILE,
+                      max_big_total=int(settings.get("max_big_total", 0) or 0))
     interval = args.interval or settings["interval_seconds"]
     log.info("runner: carriles=%s max_workers=%s interval=%ss", list(selected), service.max_workers, interval)
 
-    if not args.once:  # plaza reservada: hilo propio, para que arranque aunque la pasada general espere a sus workers
-        service.start_reserved_ticker(interval, paused=drain.active)
+    # Sin barrera (23-10): en modo servicio cada vuelta llama a service.tick(), que lanza lo que cabe sin esperar a nadie
+    # (huecos normal / grande / reservado) y se despierta en cuanto un worker termina. --once conserva la pasada con barrera.
     started = time.monotonic()
     drain.discard_stale()  # un drain.json de más de 2 h (restart muerto a medias) no deja los carriles parados
     for r in runners:
@@ -248,7 +249,7 @@ def main(argv: list[str] | None = None) -> int:
         # Reinicio ordenado (lanes.py restart --drain): entre pasadas, sin reclamar nada; el acuse dice si queda
         # algo en marcha fuera del pool (deploy/gates lanzados por un botón de Oscar).
         if drain.active():
-            busy = integrator.busy() if integrator else []
+            busy = service.busy_tasks() + (integrator.busy() if integrator else [])
             drain.write_ack(busy=busy)
             if not draining_logged:
                 log.info("drenando: no se reclaman tareas; esperando el reinicio%s",
@@ -256,6 +257,8 @@ def main(argv: list[str] | None = None) -> int:
                 draining_logged = True
             if args.once:
                 return 0
+            if results := service.pop_results():
+                log.info("pasada: %s", results)
             time.sleep(min(interval, 5))
             continue
         draining_logged = False
@@ -286,20 +289,25 @@ def main(argv: list[str] | None = None) -> int:
                 log.info("claude-telegram: tarjetas reasignadas: %s", moved)
         except Exception as exc:
             log.warning("reasignación a claude-telegram falló: %s", exc)
-        results = service.run_pass()
-        if args.once:  # sin hilo de fondo: la plaza reservada también se atiende y se espera
+        if args.once:  # una pasada con barrera: la plaza reservada también se atiende y se espera
+            results = service.run_pass()
             service.reserved_pass()
             results.update(service.wait_reserved())
+        else:
+            service.wake.clear()  # antes de lanzar: un worker que termine después despierta la espera de abajo
+            if launched := service.tick():
+                log.info("lanzadas: %s · huecos: %s", launched, service.slots_summary())
+            results = service.pop_results()
         if watch:
             watch.observe(service.list_errors)
         if results:
             log.info("pasada: %s", results)
         if args.once or (args.until_one and results):
             return 0
-        if args.max_minutes and time.monotonic() - started > args.max_minutes * 60:
+        if args.max_minutes and time.monotonic() - started > args.max_minutes * 60 and not service.busy_tasks():
             log.info("max-minutes alcanzado sin más trabajo")
             return 0
-        time.sleep(interval)
+        service.wake.wait(interval)  # un worker que termina despierta el bucle: su hueco se reutiliza al momento
 
 
 if __name__ == "__main__":

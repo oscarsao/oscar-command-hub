@@ -11,7 +11,7 @@ import tempfile
 import time
 
 from . import proc as _proc
-from . import telegram_lane, titulos
+from . import grandes, telegram_lane, titulos
 from pathlib import Path
 
 log = logging.getLogger("agent_lanes")
@@ -359,6 +359,7 @@ class HermesCLI:
         routed = telegram_lane.ruta(assignee, title, body)
         if routed != assignee and self.board == telegram_lane.board_destino():
             body, assignee = telegram_lane.con_repo(body, assignee), routed
+        body = grandes.marcar(title, body)  # tarea grande -> «Tamaño: GRANDE» en el cuerpo (hueco grande del runner)
         fd, tmp = tempfile.mkstemp(prefix="tarjeta-", suffix=".md")
         try:
             with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as fh:
