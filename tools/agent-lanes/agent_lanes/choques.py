@@ -31,7 +31,7 @@ from .config import ROOT
 log = logging.getLogger("agent_lanes")
 
 SETTINGS_PATH = ROOT / "choques.yaml"
-MAX_ESTADO = 500
+MAX_ESTADO = 5000  # tope de seguridad; el olvido normal es por edad (Ajustes.recordar_dias), no por número
 MERGE_TREE_MIN = (2, 38)  # `merge-tree --write-tree` existe desde git 2.38
 PATRONES = (
     (r"a[ñn]ad|agreg|crea|activ|habilit|introduc", r"quita|elimin|borra|desactiv|deshabilit|retira"),
@@ -54,6 +54,8 @@ class Ajustes:
     max_unidades: int = 40
     max_avisos: int = 6
     comparten_max: int = 5
+    recordar_dias: int = 30         # un par ya avisado no se repite hasta pasados N días
+    avisar_compatibles: bool = False  # «misma zona, compatibles» solo se registra; avisan conflicto y revisar
     patrones: tuple = PATRONES        # ((regex A, regex B), …) de `contradiccion.patrones`
 
 
@@ -77,7 +79,10 @@ def load_ajustes(path: Path | str | None = None) -> Ajustes:
         out["minutos"] = float(m)
     if raw.get("nivel") in ("archivo", "modulo"):
         out["nivel"] = raw["nivel"]
-    for k in ("ramas_personas_dias", "modulo_min_profundidad", "max_unidades", "max_avisos", "comparten_max"):
+    if isinstance(raw.get("avisar_compatibles"), bool):
+        out["avisar_compatibles"] = raw["avisar_compatibles"]
+    for k in ("ramas_personas_dias", "modulo_min_profundidad", "max_unidades", "max_avisos", "comparten_max",
+              "recordar_dias"):
         if _int(raw.get(k)):
             out[k] = raw[k]
     f = raw.get("fuentes")
@@ -176,6 +181,18 @@ class Git:
             return []
         return [p for p in data if isinstance(p, dict) and p.get("headRefName")]
 
+    def ramas_cerradas(self, repo: str) -> set[str]:
+        """Ramas cuyo PR ya está fusionado o cerrado. Con squash o con commits después del merge, git las sigue viendo
+        «sin fusionar» y, como la rama remota no se borra, chocaban para siempre con todo lo nuevo de la misma zona
+        (23-10: 13 de las 15 ramas que más avisos daban tenían el PR en MERGED). Si gh falla, conjunto vacío."""
+        rc, out = self._out(["pr", "list", "--state", "closed", "--json", "headRefName,state", "--limit", "300"],
+                            repo, cmd="gh")
+        try:
+            data = json.loads(out) if rc == 0 else []
+        except ValueError:
+            return set()
+        return {str(p["headRefName"]) for p in data if isinstance(p, dict) and p.get("headRefName")}
+
     def merge_tree_disponible(self, repo: str) -> bool:
         if self._merge_tree_ok is None:
             rc, out = self._out(["--version"], repo)
@@ -241,6 +258,8 @@ def unidades_repo(repo: str, remote: str, base: str, tarjetas: list[dict], git: 
     sol = _solapes_aj(ajustes)
     ramas = {r: (ts, autor) for r, ts, autor in git.ramas_remotas(repo, remote, base)}
     prs = {p["headRefName"]: p for p in git.prs(repo)} if "pr" in ajustes.fuentes else {}
+    cerradas = getattr(git, "ramas_cerradas", lambda _r: set())(repo) - set(prs)  # un PR nuevo abierto la reactiva
+    ramas = {r: v for r, v in ramas.items() if r not in cerradas}
     unidades: dict[str, Unidad] = {}
     usadas: set[str] = set()
 
@@ -364,9 +383,10 @@ class ChoquesTicker:
     """Pasada periódica en el bucle del runner. Avisa una vez por par + clase (estado en `state_path`); nunca lanza."""
 
     def __init__(self, lanes: dict, hermes_for, *, send, state_path: Path, settings_path: Path | str | None = None,
-                 git: Git | None = None, clock=time.monotonic, issue=None):
+                 git: Git | None = None, clock=time.monotonic, issue=None, wall=time.time):
         self.lanes, self.hermes_for, self.send = lanes, hermes_for, send
         self.state_path, self.settings_path, self.git, self._clock = state_path, settings_path, git or Git(), clock
+        self._wall = wall  # reloj de pared para la caducidad de lo ya avisado (el de `clock` es monotónico)
         self.issue = issue  # CallbackStore.issue: con él, el aviso entre dos tarjetas lleva botones y `send(texto, markup)`
         self._last: float | None = None
 
@@ -377,12 +397,25 @@ class ChoquesTicker:
         else:
             self.send(aviso(c, ajustes))
 
-    def _seen(self) -> list[str]:
+    def _seen(self) -> dict[str, float]:
+        """{clave: momento del aviso}. Antes era una lista recortada a los últimos 500: con decenas de ramas hay
+        miles de pares, los más viejos salían de la lista y en la pasada siguiente volvían a avisarse (bucle de avisos
+        del 23-10). Una lista antigua se migra con la hora actual."""
         try:
             data = json.loads(self.state_path.read_text(encoding="utf-8"))
-            return [str(k) for k in data] if isinstance(data, list) else []
         except (OSError, ValueError):
-            return []
+            return {}
+        if isinstance(data, list):
+            now = self._wall()
+            return {str(k): now for k in data}
+        if isinstance(data, dict):
+            return {str(k): float(v) for k, v in data.items() if isinstance(v, (int, float))}
+        return {}
+
+    def _save(self, seen: dict[str, float]) -> None:
+        keep = sorted(seen.items(), key=lambda kv: kv[1])[-MAX_ESTADO:]
+        self.state_path.parent.mkdir(parents=True, exist_ok=True)
+        self.state_path.write_text(json.dumps(dict(keep)), encoding="utf-8")
 
     def tick(self) -> list[Choque]:
         try:
@@ -393,16 +426,25 @@ class ChoquesTicker:
             self._last = now
             choques = detectar(self.lanes, self.hermes_for, self.git, ajustes)
             seen = self._seen()
-            fresh = [c for c in choques if clave(c) not in seen][:ajustes.max_avisos]
-            n = len(seen)
+            wall = self._wall()
+            vigentes = {k: t for k, t in seen.items() if wall - t < ajustes.recordar_dias * 86400}
+            changed = len(vigentes) != len(seen)
+            seen = vigentes
+            nuevos = [c for c in choques if clave(c) not in seen]
+            silenciosos = [c for c in nuevos if c.clase == "compatible" and not ajustes.avisar_compatibles]
+            for c in silenciosos:  # se registran sin mensaje: misma zona pero compatibles, no hace falta decidir nada
+                log.info("choques: %s y %s, misma zona y compatibles (no se avisa)", c.a.uid, c.b.uid)
+                seen[clave(c)] = wall
+                changed = True
+            fresh = [c for c in nuevos if c not in silenciosos][:ajustes.max_avisos]
             try:
                 for c in fresh:  # si un envío falla, ese par se reintenta en la pasada siguiente
                     self._enviar(c, ajustes)
-                    seen.append(clave(c))
+                    seen[clave(c)] = wall
+                    changed = True
             finally:
-                if len(seen) > n:
-                    self.state_path.parent.mkdir(parents=True, exist_ok=True)
-                    self.state_path.write_text(json.dumps(seen[-MAX_ESTADO:]), encoding="utf-8")
+                if changed:
+                    self._save(seen)
             return choques
         except Exception as exc:
             log.warning("choques falló: %s", exc)
