@@ -402,3 +402,38 @@ def test_decisions_enruta_los_botones_y_las_respuestas_del_tema_equipo(tmp_path)
     assert ask["text"].startswith("Tu respuesta para Andrea:") and "Tarjeta:" not in ask["text"]
     ft._say(desk, "Ya lo miro mañana", mid=950, reply_to_message={"message_id": tg._next})
     assert calls[-1] == ("reply", vg.RESPONDER, "Ya lo miro mañana")
+
+
+def test_idea_esperando_a_oscar_conserva_los_botones_de_decision(tmp_path):
+    m = arrancado(tmp_path)
+    m.shows["t_1234abcd"] = {"task": {"status": "ready", "assignee": "oscar"}, "comments": []}
+    m.tasks = [{"id": "t_1234abcd", "title": "[IDEA de Andrea] Banner nuevo en la home", "board": "oscarhq",
+                "body": f"Origen-Telegram: chat={ANDREA} thread=0\n\n> Banner nuevo en la home\n",
+                "created_by": "tg-dm-andrea"}]
+    m.tick(ts(11, 5))
+    assert len(m.acciones()) == 6 and m.edits == []
+    assert m.v.ficha("req_1")["estado"] == "nueva"
+    m.shows["t_1234abcd"] = {"task": {"status": "archived", "assignee": "oscar"}, "comments": []}
+    m.tick(ts(11, 10))
+    assert "🗄 archivada" in m.edits[-1]["text"]
+
+
+def test_operador_acotado_por_marca_no_puede_con_los_botones_mezclados(tmp_path):
+    from tests import test_free_text as ft
+    desk, tg, _h, _messages = ft._setup(tmp_path)
+    angel = "8770041085"
+    desk.people = People(OSCAR, [Person("angel", "Angel", angel, "dev", ("Píldora",), operador=True)])
+    calls = []
+    desk.commands = SimpleNamespace(equipo_choice=lambda *a: calls.append(a) or True)
+    m = Mundo(tmp_path / "m", ts(11))
+    cc = SimpleNamespace(desk=desk, notifier=tg, hermes_for=None, lanes={}, owner_id=OSCAR, _now=lambda: m.now)
+    b = EquipoBotones(cc, m.v)
+    spec = [[{"text": "✅ Resuelto 1", "action": vg.RESUELTO, "index": "hecho:m1"}]]
+    for markup, esperado in ((b.markup(spec), 0),
+                             (b.markup(m.v._spec({"req": "req_1", "proyecto": "Pildora"}, spec)), 1),
+                             (b.markup(m.v._spec({"req": "req_1", "proyecto": "MigraTeam"}, spec)), 1)):
+        data = markup["inline_keyboard"][0][0]["callback_data"]
+        desk.handle_update({"update_id": 4, "callback_query": {
+            "id": "cq", "from": {"id": int(angel)}, "data": data,
+            "message": {"message_id": 1, "chat": {"id": ft.GROUP}, "message_thread_id": ft.TOPIC}}})
+        assert len(calls) == esperado

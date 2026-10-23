@@ -54,7 +54,7 @@ IGNORAR_DIAS = 7
 VENTANA_H = 72                # solicitudes y deduplicación: solo lo de las últimas N horas
 INTERVALO_S = 600             # una pasada completa (OHQ + kanban) cada 10 min como mucho
 BOTONES_POR_MENSAJE = 8
-FINALES = ("entregada", "rechazada")
+FINALES = ("entregada", "rechazada", "archivada")
 ESTADOS_ABIERTOS_HERMES = ("todo", "ready", "running", "blocked", "triage", "review")
 PROYECTO_DE_MARCA = {"migrateam": "MigraTeam", "pildora": "Pildora", "pildora_digital_inbound": "Pildora",
                      "píldora": "Pildora", "oscarhq": "OHQ", "signal": "Signal", "nextjobs": "NextJobs",
@@ -62,7 +62,7 @@ PROYECTO_DE_MARCA = {"migrateam": "MigraTeam", "pildora": "Pildora", "pildora_di
 CARRIL_DE_PROYECTO = {"MigraTeam": "claude-migrateam", "OHQ": "claude-oscarhq", "Hub": "claude-hub",
                       "Signal": "claude-scraper", "Scraper": "claude-scraper", "NextJobs": "claude-nextjobs"}
 ICONO = {"nueva": "🆕", "aprobada": "✅", "en curso": "🔧", "hecha": "🏁", "entregada": "📦", "rechazada": "❌",
-         "atascada": "⛔", "luego": "⏸", "asignada": "🙋"}
+         "atascada": "⛔", "luego": "⏸", "asignada": "🙋", "archivada": "🗄"}
 TITULO_TIPO = {"hecho_sin_hacer": "🚨 Dijo hecho sin hacerlo", "respuesta_cortada": "🚨 Respuesta cortada o con error",
                "negativa_sin_aviso": "🙅 Dijo «no puedo» sin avisarte", "promesa_sin_suscripcion": "⏰ Prometió avisar",
                "sin_marca": "🏷 Petición sin marca", "sin_carril": "🛤 Petición sin carril",
@@ -523,7 +523,8 @@ class Vigilancia:
     def _spec(obj: dict, rows: list) -> list:
         """Botones con su referencia (`index`): el req de la ficha o el id del elemento."""
         ref = obj.get("req") or obj.get("id")
-        return [[dict(b, index=b.get("index") or ref) for b in row] for row in rows]
+        extra = {"proyecto": obj["proyecto"]} if obj.get("req") and obj.get("proyecto") else {}
+        return [[dict(b, index=b.get("index") or ref, **extra) for b in row] for row in rows]
 
     def estado_derivado(self, f: dict, ohq_ok: bool) -> str:
         if f.get("decision") == "rechazada":
@@ -533,11 +534,17 @@ class Vigilancia:
                 show = self.show_card(f["tid"]) or {}
             except Exception:
                 show = {}
-            st = (show.get("task") or {}).get("status")
+            task = show.get("task") or {}
+            st = task.get("status")
+            decidiendo = f.get("decision") in (None, "nueva", "luego", "asignada")
+            if st and decidiendo and task.get("assignee") == "oscar" and st in ("todo", "ready", "blocked"):
+                return f.get("decision") or "nueva"   # [IDEA] esperando a Oscar: aún no está aprobada
             if st:
                 from .peticiones import integrada
                 if st in ("done", "review", "archived") and integrada(show):
                     return "entregada"
+                if st == "archived":
+                    return "archivada"
                 if st in ("done", "review"):
                     return "hecha"
                 if st == "running":

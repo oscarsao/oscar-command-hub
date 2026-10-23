@@ -16,6 +16,7 @@ from .notices import truncate
 
 log = logging.getLogger("agent_lanes")
 
+SIN_MARCA = "equipo-sin-marca"  # ninguna persona la tiene: solo pasan Oscar y los operadores con «*»
 BORRADOR_DETALLE = "Hola {nombre}: sobre «{titulo}», ¿me cuentas un poco más? Qué necesitas exactamente, para cuándo y " \
                    "dónde lo verías."
 BORRADOR_CIERRE = "Hola {nombre}: «{titulo}» ya está {estado}. Gracias por pedirlo."
@@ -35,9 +36,15 @@ class EquipoBotones:
         return self._people().lookup(tg) if tg else None
 
     def markup(self, spec: list, extra: dict | None = None) -> dict | None:
+        """Teclado del tema. Siempre lleva `brand` (falla cerrado en `puede_con`): la de la ficha, o una marca que no
+        existe cuando el mensaje mezcla varias (resúmenes, elementos): ahí solo actúan Oscar y quien tenga «*»."""
         if not spec:
             return None
-        rec = {"kind": vg.KIND, "task_id": "equipo", "board": "", "lane": "", "spec": spec, **(extra or {})}
+        proyectos = {b.get("proyecto") for row in spec for b in row}  # vigilancia._spec lo pone en las fichas
+        brand = self._marca({"proyecto": proyectos.pop()}) if len(proyectos) == 1 and None not in proyectos \
+            else SIN_MARCA
+        rec = {"kind": vg.KIND, "task_id": "equipo", "board": "", "lane": "", "spec": spec, "brand": brand,
+               **(extra or {})}
         return self.cc.desk.store.issue(rec, spec)[1]
 
     def _say(self, where: dict, text: str, spec: list | None = None, extra: dict | None = None):
@@ -76,8 +83,10 @@ class EquipoBotones:
             return True
         spec = [[{"text": f"📤 Enviar a {p.name}", "action": vg.ENVIAR, "index": ref},
                  {"text": "✖️ Cancelar", "action": vg.CANCELAR, "index": ref}]]
+        f = self.v.ficha(ref)
         self._say(where, f"✉️ Borrador para {p.name} (aún NO se ha enviado):\n\n{texto}", spec,
-                  {"draft": texto, "to": p.user_id, "to_name": p.name, "cierre": cierre})
+                  {"draft": texto, "to": p.user_id, "to_name": p.name, "cierre": cierre,
+                   "brand": self._marca(f) if f else SIN_MARCA})
         return True
 
     # entrada -------------------------------------------------------------------------------------------------------
@@ -137,7 +146,8 @@ class EquipoBotones:
             gente = [p for p in getattr(self._people(), "_by_id", {}).values()]
             spec = [[{"text": p.name, "action": vg.ASIGNAR_A, "index": f"{f['req']}|{p.user_id}"}] for p in gente[:8]]
             spec.append([{"text": "Oscar", "action": vg.ASIGNAR_A, "index": f"{f['req']}|{self.cc.owner_id}"}])
-            self._say(where, f"¿A quién asigno {f['req']} · {truncate(f.get('titulo'), 60)}? (no se le avisa)", spec)
+            self._say(where, f"¿A quién asigno {f['req']} · {truncate(f.get('titulo'), 60)}? (no se le avisa)", spec,
+                      {"brand": self._marca(f)})
             return True
         if action == vg.ASIGNAR_A:
             uid = ref.split("|", 1)[1] if "|" in ref else ""
