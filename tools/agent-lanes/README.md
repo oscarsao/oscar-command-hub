@@ -345,3 +345,10 @@ Una vez al día (hora de `limpieza.yaml`) el runner propone por Telegram las tar
 [👁 Ver]. Nunca cierra solo. Umbrales, reglas, tableros y hora se editan en `limpieza.yaml` (se relee sin reiniciar).
 Ver las candidatas sin enviar nada: `py -3.12 -m agent_lanes.limpieza --dry-run` (desde `tools/agent-lanes`).
 Spec: `specs/kanban-limpieza-propuesta.md`.
+
+## Aviso diario de tarjetas paradas (`paradas.py`)
+A las 9:00 (Madrid) el runner publica en el tema de Integración (`integration_telegram`; sin él, en el DM de Oscar) una
+ficha por tarjeta de carril parada más de 24 h en ready sin worker, blocked, triage o review sin revisar:
+`t_xxxxxxxx · título · estado · hace N d H h` con [🔁 Reintentar] [🛠 Integrador] [🗄 Archivar]. No entran las `running`,
+las `scheduled` ni las asignadas a personas (solo se leen las de un carril). Sin paradas no manda nada. También sale una
+línea «Paradas» en /salud. Hora, umbral de horas y nº de fichas se editan con /ajustes (grupo Atascos).

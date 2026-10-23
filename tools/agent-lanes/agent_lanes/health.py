@@ -186,7 +186,7 @@ def lane_line(row: dict) -> str:
 def build(*, runner: Callable[[], str], rows: Callable[[], list[dict]], gateway: Callable[[], str],
           monitor: Callable[[], tuple[str, list[str]]], drift: Callable[[], str], machine: Callable[[], str],
           pending: Callable[[], tuple[int, int, int]], now: float | None = None,
-          blind: Callable[[], str] | None = None) -> str:
+          blind: Callable[[], str] | None = None, paradas: Callable[[], str] | None = None) -> str:
     """Mensaje HTML de /salud. Cada argumento es una sección perezosa; si lanza, esa sección dice "no disponible"."""
     e = html.escape
 
@@ -219,4 +219,6 @@ def build(*, runner: Callable[[], str], rows: Callable[[], list[dict]], gateway:
         total = questions + stuck + cards
         out.append(f"<b>Decisiones</b> · {questions} preguntas · {stuck} atascadas · {cards} tarjetas"
                    + (" · /decisiones" if total else " · nada pendiente"))
+    if paradas:  # tarjetas de carril paradas > 24 h (paradas.py); si falla, "no disponible"
+        out.append(f"<b>Paradas</b> · {e(safe(paradas, NA))}")
     return "\n".join(out)[:TEXT_MAX]  # cada línea está acotada: en la práctica no pasa de ~2 KB
