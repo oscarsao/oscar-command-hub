@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
+import threading
 import time
 from logging.handlers import RotatingFileHandler
 
@@ -56,6 +57,21 @@ COLLAB_STATE = ROOT / ".state" / "collab_reject.json"  # DM de desconocidos ya r
 def effective_max_workers(arg: int, settings: dict) -> int:
     """`--max-workers N` (>0) pisa a lanes.yaml `runner.max_workers`; 0 = lo que diga lanes.yaml."""
     return arg or settings["max_workers"]
+
+
+def run_scheduler(service, paused, interval: float, stop=None) -> None:
+    """Hilo del planificador: tick() al arrancar, en cuanto un worker termina (`wake`) y cada `interval` s. Un error en un
+    tick se registra y no mata el hilo. `paused()` (reinicio ordenado) detiene los lanzamientos. `stop`: Event (tests)."""
+    log = logging.getLogger("agent_lanes")
+    while not (stop is not None and stop.is_set()):
+        service.wake.clear()  # antes de lanzar: un worker que termine después despierta la espera de abajo
+        try:
+            if not paused():
+                if launched := service.tick():
+                    log.info("lanzadas: %s · huecos: %s", launched, service.slots_summary())
+        except Exception as exc:  # noqa: BLE001 - el planificador no puede morir en silencio
+            log.error("planificador: %s", exc)
+        service.wake.wait(interval)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -244,6 +260,12 @@ def main(argv: list[str] | None = None) -> int:
                                                                               reply_markup=markup),
                                 state_path=ROOT / ".state" / "choques.json",
                                 issue=decisions.store.issue if decisions else None)
+    if not args.once:
+        # El planificador va en su PROPIO hilo (fix/runner-tick, 23-10): el mantenimiento del bucle principal (sweep_done,
+        # integrador, tickers) puede tardar minutos (un `git worktree remove` colgado bloqueó 5 min el tick y el runner
+        # no reclamó nada tras el reinicio de las 12:23). Un hueco libre o un worker que termina se atienden al momento.
+        threading.Thread(target=run_scheduler, args=(service, drain.active, interval), name="lane-scheduler",
+                         daemon=True).start()
     while True:
         shows.clear()
         # Reinicio ordenado (lanes.py restart --drain): entre pasadas, sin reclamar nada; el acuse dice si queda
@@ -293,10 +315,7 @@ def main(argv: list[str] | None = None) -> int:
             results = service.run_pass()
             service.reserved_pass()
             results.update(service.wait_reserved())
-        else:
-            service.wake.clear()  # antes de lanzar: un worker que termine después despierta la espera de abajo
-            if launched := service.tick():
-                log.info("lanzadas: %s · huecos: %s", launched, service.slots_summary())
+        else:  # el hilo del planificador lanza; aquí solo se recogen los resultados
             results = service.pop_results()
         if watch:
             watch.observe(service.list_errors)
@@ -307,7 +326,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.max_minutes and time.monotonic() - started > args.max_minutes * 60 and not service.busy_tasks():
             log.info("max-minutes alcanzado sin más trabajo")
             return 0
-        service.wake.wait(interval)  # un worker que termina despierta el bucle: su hueco se reutiliza al momento
+        time.sleep(interval)
 
 
 if __name__ == "__main__":
