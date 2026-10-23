@@ -13,5 +13,11 @@
 # Repos que ningún carril puede tocar (además de los repos de los demás carriles, que salen de lanes.yaml).
 # otros_repos: [pildora-handbook, pildora-mcp, pildora-website, pildora-recursos, pildora-cmo-workspace]
 
+# Intención frente a mención: una regla `integrador` (y «otro repo») solo bloquea si EN LA MISMA FRASE hay un verbo de
+# acción sin negar (`verbos`: «despliega», «aplica», «cambia», «haz push»…) y ningún marcador de mención (`mencion`:
+# «el código hará», «para cuando se despliegue», «que usará»…). Un «no despliegues» (`negacion`) no cuenta como verbo.
+# Mención o duda: NO se bloquea y el prompt del worker lleva `recordatorio` (el guard real le impide actuar).
+# intencion: {verbos: [...], mencion: [...], negacion: [...], recordatorio: "..."}  # valores por defecto en clasificador.py
+
 # Tope de la respuesta de una consulta y de su coste (USD) y tiempo (s).
 # consulta: {max_usd: 0.8, timeout_seconds: 300}
