@@ -50,7 +50,15 @@ D. `Afecta:` y choques entre proyectos.
   integrador con smoke test.
 - Mezclar `oscar-hq` (master) con webs (main) y repos con `base` distinta exige que `base` sea siempre por repo.
 
-## Preguntas para Oscar
+## Estado (23-10)
+- **A, parte hecha** (esta rama): `aliases:` por carril + `LaneMap`/`resolve_lane` (acepta alias, no los emite) y
+  «Hub y Telegram» unificado en `claude-hub` (repos hub|oscar-hq, `reserved_slots: 1`, alias `claude-telegram`; las
+  tarjetas ready con el nombre antiguo se reasignan solas). NO hecho de A: renombrar a `hub-telegram`/`pildora`…
+  (cientos de usos del nombre; se hace en su propia tarjeta) ni política de integrador por repo (los PR de oscar-hq
+  hechos por este carril usan hoy la política `claude-hub`: es B).
+- Decisión de Oscar: Signal incluye Scraper + portal/Multiverse. Pendiente: B, C, D.
+
+## Preguntas para Oscar (respondidas)
 - ¿Signal incluye `Scraper` (icp-prospect-engine) y el portal de cliente/Multiverse, o van aparte?
 - ¿Entrego A–D como cuatro tarjetas (recomendado) o todo en una?
 - Confirmar el resto de repos por proyecto (el texto de la tarjeta llegó cortado).

@@ -46,6 +46,9 @@ class Lane:
     # Lista blanca de repos por tarjeta (`Repo: <alias>` en el cuerpo): alias -> {repo, github, base, test_cmd, ...}.
     # Ver telegram_lane.py. El primero es el de por defecto.
     repos: dict = field(default_factory=dict, hash=False, compare=False)
+    # Nombres antiguos del carril (23-10, carriles por proyecto): se aceptan en entrada (tarjetas abiertas, .env,
+    # hilos de Telegram) y resuelven al carril canónico; nunca se emiten.
+    aliases: tuple[str, ...] = ()
 
     @property
     def claim_ttl_seconds(self) -> int:
@@ -62,11 +65,37 @@ class Lane:
         return f"{self.remote}/{self.base}"
 
 
-TUPLE_FIELDS = ("allowed_tools", "forbidden_paths", "reviews", "dest_roots")
+TUPLE_FIELDS = ("allowed_tools", "forbidden_paths", "reviews", "dest_roots", "aliases")
 
 
 def _load(path: Path | None) -> dict:
     return yaml.safe_load((path or ROOT / "lanes.yaml").read_text(encoding="utf-8"))
+
+
+class LaneMap(dict):
+    """dict nombre -> Lane que además acepta los alias del carril en `[]`, `.get` e `in`. Iterar (keys/items/values)
+    solo da los nombres canónicos: un alias nunca se emite ni cuenta como carril aparte."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.aliases = {a: n for n, lane in self.items() for a in getattr(lane, "aliases", ())}
+
+    def resolve(self, name):
+        return name if dict.__contains__(self, name) else self.aliases.get(name, name)
+
+    def __getitem__(self, name):
+        return super().__getitem__(self.resolve(name))
+
+    def __contains__(self, name):
+        return super().__contains__(self.resolve(name))
+
+    def get(self, name, default=None):
+        return super().get(self.resolve(name), default)
+
+
+def resolve_lane(lanes, name):
+    """Nombre canónico de un carril (acepta alias); un nombre desconocido se devuelve tal cual."""
+    return lanes.resolve(name) if isinstance(lanes, LaneMap) else name
 
 
 def load_lanes(path: Path | None = None) -> dict[str, Lane]:
@@ -82,7 +111,7 @@ def load_lanes(path: Path | None = None) -> dict[str, Lane]:
             merged[f] = tuple(merged.get(f) or ())
         merged["telegram"] = _chat_thread(merged.get("telegram"))
         lanes[name] = Lane(name=name, **merged)
-    return lanes
+    return LaneMap(lanes)
 
 
 def _chat_thread(cfg: dict | None, any_thread: str = "0") -> tuple[str, str] | None:
