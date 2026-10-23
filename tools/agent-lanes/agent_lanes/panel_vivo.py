@@ -55,11 +55,13 @@ def _task(t: dict) -> str:
     return f"<code>{html.escape(str(t.get('id') or '?'))}</code> · {html.escape(truncate(t.get('title'), TITLE_MAX))}"
 
 
-def render_sections(*, running, queue, done, conflicts, now: float, cfg: PanelSettings) -> str:
+def render_sections(*, running, queue, done, conflicts, now: float, cfg: PanelSettings, slots: str = "") -> str:
     """running: [{lane,id,title,status,since}] · queue: [{id,title,priority}] · done: [{id,title}] ·
     conflicts: [{tid,pr,title,text,url?}]. Cada sección vacía lo dice en una línea (no desaparece)."""
     e = html.escape
     out = ["<b>🔧 EN MARCHA</b>"]
+    if slots:  # huecos normales/grandes/reservados ocupados (23-10): se ve de un vistazo si hay plaza libre
+        out.append(e(slots))
     out += [f"{e(str(t.get('lane') or '?'))}: {_task(t)} · {PHASES.get(t.get('status'), t.get('status') or '?')}"
             f" · {_minutes(t.get('since'), now)}" for t in running] or ["nada en marcha"]
     out.append("\n<b>⏳ SIGUIENTES</b>")
@@ -146,7 +148,9 @@ class LivePanel:
                 return 0
         queue.sort(key=lambda t: -prio(t))
         done.sort(key=lambda t: -t["at"])
-        return {"running": running, "queue": queue, "done": done}
+        from . import drain
+        from .status import busy_slots, slots_text
+        return {"running": running, "queue": queue, "done": done, "slots": slots_text(busy_slots(drain.BUSY_FILE))}
 
     def conflict_entries(self) -> list[dict]:
         """Conflictos/bloqueos VIGENTES: gates fallidos y problemas de PR del integrador + PR en conflicto vistos

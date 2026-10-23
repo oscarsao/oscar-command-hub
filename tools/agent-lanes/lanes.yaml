@@ -10,6 +10,10 @@ runner:
   # sirve para pruebas puntuales y PISA este valor. Ojo con la RAM: hubo un OOM el 27-09 con varias sesiones abiertas
   # y el PC va justo (~0,9 GB libres el 21-oct). Si vuelve a haber OOM, bajar a 2 (o 1) aquí y reiniciar el runner.
   max_workers: 4
+  # Huecos «grandes» (23-10, t_c5cafff2): tarjetas grandes (Tamaño L/XL, [GRANDE]/[WORKFLOW] o runtime estimado > big_minutes,
+  # agent_lanes/grandes.py) corren en un hueco propio por carril (max_big, abajo) para no tapar lo pequeño del proyecto.
+  # Este es el tope TOTAL de grandes a la vez; cuentan también contra max_workers (RAM). 0 = sin hueco grande.
+  max_big_total: 2
   interval_seconds: 60
   # Vigilante de «runner ciego» (agent_lanes/ciego.py): si no se pueden listar tareas (p. ej. WinError 4551 de App
   # Control) durante estos minutos seguidos, aviso ALTA al DM de Oscar y un `restart --drain` automático (máx. 1/hora).
@@ -87,6 +91,9 @@ defaults:
   # pisarse (worktrees, migraciones, pushes). Con max_workers 2 el paralelismo sale de carriles DISTINTOS (repos
   # distintos) o de un carril + review. No subirlo sin mirar el riesgo de ese repo.
   max_parallel: 1
+  # Hueco grande por carril (máx. grandes a la vez en un proyecto; fuera de max_parallel) y umbral de runtime estimado.
+  max_big: 1
+  big_minutes: 45
   role: roles/implementador.md
   # En -p, acceptEdits solo aprueba ediciones; el resto de Bash se deniega salvo lo listado aquí.
   # Los pushes siguen pasando por contract/guard.py (solo lane/*).
@@ -119,6 +126,10 @@ lanes:
     # Candado (28-09): el runner solo reclama si `git remote get-url origin` del repo es este owner/repo de GitHub.
     github: oscarsao/oscar-hq
     base: master
+    # 23-10 (Oscar): 2 plazas para Oscar HQ, cada una en su worktree lane/<id>. Dos tarjetas que citan supabase/migrations
+    # no corren a la vez (serialize_paths); el resto sí. La tarjeta grande va aparte (max_big), sin gastar estas dos.
+    max_parallel: 2
+    serialize_paths: [supabase/migrations]
     # pytest de oscar-hq no es usable como gate hoy (test_api_health falla en master por entorno; tarjeta aparte).
     test_cmd: py -3.12 "{AGENT_LANES_DIR}/agent_lanes/checks.py" {BASE}
 

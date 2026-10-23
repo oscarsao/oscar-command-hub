@@ -43,6 +43,13 @@ class Lane:
     github: str = ""
     # Plaza reservada (22-10): workers de ESTE carril que corren aunque max_workers esté lleno; no cuentan para él.
     reserved_slots: int = 0
+    # Hueco «grande» (23-10): tarjetas grandes (agent_lanes/grandes.py) de ESTE carril que corren a la vez, fuera de
+    # max_parallel (el carril normal sigue con lo pequeño). 0 = sin hueco grande (todo va por el carril normal).
+    # `big_minutes`: runtime estimado a partir del cual una tarjeta es grande. El tope global es runner.max_big_total.
+    max_big: int = 1
+    big_minutes: int = 45
+    # Rutas que, citadas en dos tarjetas del mismo carril, impiden que corran a la vez (p. ej. supabase/migrations).
+    serialize_paths: tuple[str, ...] = ()
     # Lista blanca de repos por tarjeta (`Repo: <alias>` en el cuerpo): alias -> {repo, github, base, test_cmd, ...}.
     # Ver telegram_lane.py. El primero es el de por defecto.
     repos: dict = field(default_factory=dict, hash=False, compare=False)
@@ -81,6 +88,7 @@ def load_lanes(path: Path | None = None) -> dict[str, Lane]:
         for f in TUPLE_FIELDS:
             merged[f] = tuple(merged.get(f) or ())
         merged["telegram"] = _chat_thread(merged.get("telegram"))
+        merged["serialize_paths"] = tuple(merged.get("serialize_paths") or ())
         lanes[name] = Lane(name=name, **merged)
     return lanes
 
@@ -116,7 +124,7 @@ def load_telegram_settings(path: Path | None = None) -> dict:
 def load_runner_settings(path: Path | None = None) -> dict:
     """Top-level `runner:` block (global worker cap, poll interval)."""
     from .ajustes_hub import aplicar_runner  # lo editado con /ajustes manda sobre lanes.yaml (rige al arrancar el runner)
-    return aplicar_runner({"max_workers": 1, "interval_seconds": 60, "ciego_minutes": 5,
+    return aplicar_runner({"max_workers": 1, "interval_seconds": 60, "ciego_minutes": 5, "max_big_total": 2,
                            **(_load(path).get("runner") or {})})
 
 

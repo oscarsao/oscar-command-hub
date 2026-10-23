@@ -28,7 +28,7 @@ import json
 import subprocess
 import sys
 
-from agent_lanes import drain
+from agent_lanes import drain, holds
 from agent_lanes.config import ROOT, load_lanes
 from agent_lanes.git_ops import GitOps, github_slug_problem
 from agent_lanes.hermes import HermesCLI
@@ -57,11 +57,22 @@ def find_task(task_id: str):
 
 def take(task_id: str) -> int:
     lane, h, task = find_task(task_id)
-    if task["status"] != "ready":
-        raise SystemExit(f"{task_id} está en '{task['status']}', no en ready")
+    if task["status"] not in ("ready", "blocked"):
+        raise SystemExit(f"{task_id} está en '{task['status']}', ni en ready ni en blocked")
     if problem := github_slug_problem(lane):  # candado de repos: el mismo que aplica el runner
         raise SystemExit(f"no se toma {task_id}: {problem}")
-    if not h.claim(task_id, lane.claim_ttl_seconds):
+    if task["status"] == "blocked":
+        # Toma atómica (23-10, choque t_c3450ab0): `unblock` la deja en ready y el runner la reclamaba al instante. La
+        # retención se pone ANTES del unblock y se quita DESPUÉS del claim: el runner no la ve en ese intervalo.
+        holds.hold(task_id)
+        try:
+            if not h.unblock(task_id):
+                raise SystemExit(f"unblock de {task_id} rechazado")
+            if not h.claim(task_id, lane.claim_ttl_seconds):
+                raise SystemExit(f"claim de {task_id} rechazado tras desbloquearla: queda en ready (revísala)")
+        finally:
+            holds.release(task_id)
+    elif not h.claim(task_id, lane.claim_ttl_seconds):
         raise SystemExit(f"claim de {task_id} rechazado (¿otro runner la cogió?)")
     path = GitOps().prepare_worktree(lane, task_id)
     h.comment(task_id, f"LANE claim INTERACTIVO (consola de Oscar) · carril {lane.name} · rama lane/{task_id}")
