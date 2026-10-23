@@ -23,9 +23,11 @@ CRITERIO (sin IA; lo que se compara y nada más):
 Un conjunto de tarjetas se avisa una sola vez (clave = ids ordenados). Los ajustes viven en `solapes.yaml` (se relee en
 cada pasada; ausente o inválido = defaults de `Ajustes`).
 
-BOTONES (t_e31e4d9c): el aviso lleva [🔀 Son duplicadas] [✅ No son duplicadas] [⏸ Luego]. «No son duplicadas» guarda la
-pareja en `.state/solapes_descartados.json` y `detectar` no vuelve a juntarla; «Son duplicadas» NO fusiona nada: comenta
-en las tarjetas para que Oscar/Hermes decidan; «Luego» no hace nada (la clave ya está en `seen`, no se repite).
+BOTONES (t_ee6ad56c): el aviso lleva [🔗 Fusionar en una] [⛓ Encadenar] [✅ Se complementan, seguir] [🗂 Duplicada]
+[⏸ Pausar una] [⏸ Luego]; los cinco primeros viven en `fusion.py` (fusionan, encadenan, archivan o pausan de verdad, con
+confirmación si hay una tarjeta en curso). «Se complementan» guarda la pareja en `.state/solapes_descartados.json` y
+`detectar` no vuelve a juntarla. «Luego» no hace nada (la clave ya está en `seen`, no se repite). Los botones antiguos
+(t_e31e4d9c: sol_fusionar / sol_distintas) siguen atendidos aquí por si queda un aviso viejo en el chat.
 """
 from __future__ import annotations
 
@@ -38,6 +40,7 @@ from pathlib import Path
 
 import yaml
 
+from . import fusion
 from .config import ROOT
 
 log = logging.getLogger("agent_lanes")
@@ -274,15 +277,14 @@ def aviso(g: Grupo, ajustes: Ajustes | None = None) -> str:
 
 
 def teclado(g: Grupo) -> list[list[dict]]:
-    return [[{"text": "🔀 Son duplicadas", "action": SOL_FUSIONAR}, {"text": "✅ No son duplicadas", "action": SOL_DISTINTAS}],
-            [{"text": "⏸ Luego", "action": SOL_LUEGO}]]
+    return fusion.teclado_solape() + [[{"text": "⏸ Luego", "action": SOL_LUEGO}]]
 
 
 def registro(g: Grupo) -> dict:
     """Registro del teclado (CallbackStore.issue): la primera tarjeta da task_id/board/lane; `cards` las lista todas."""
     first = g.cards[0]
     return {"task_id": first.tid, "board": first.board, "lane": first.lane, "title": first.title, "solape": True,
-            "cards": [{"tid": c.tid, "board": c.board} for c in g.cards]}
+            "cards": [{"tid": c.tid, "board": c.board, "lane": c.lane, "title": c.title} for c in g.cards]}
 
 
 class SolapeTicker:

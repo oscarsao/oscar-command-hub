@@ -78,8 +78,13 @@ def build_prompt(task: dict, lane: Lane) -> str:
         + _feedback_section(task.get("review_feedback"))
         + _conflict_section(task.get("merge_conflict"), lane)
         + _clasificador_section(task.get("clasificador_avisos"))
+        + _recordatorio_section(task.get("clasificador_recordatorio"))
         + preferencias.section_for("workers")
     )
+
+
+def _recordatorio_section(texto: str | None) -> str:
+    return f"\n## Límites del guard (recordatorio del clasificador)\n{texto}\n" if texto else ""
 
 
 def _clasificador_section(avisos: list[str] | None) -> str:

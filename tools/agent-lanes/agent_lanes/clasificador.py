@@ -62,6 +62,27 @@ DEFAULTS: dict = {
     # por su slug owner/repo de lanes.yaml). Nombres tal cual aparecen en GitHub.
     "otros_repos": ["pildora-handbook", "pildora-mcp", "pildora-website", "pildora-recursos", "pildora-cmo-workspace"],
     "consulta": {"max_usd": 0.8, "timeout_seconds": 300},
+    # INTENCIÓN frente a MENCIÓN (22-10: 4 falsos positivos). Una regla `integrador` solo bloquea si, en la MISMA frase,
+    # hay un verbo de acción sin negar (`verbos`) y ningún marcador de mención (`mencion`). Solo tema, o verbo + marcador
+    # de mención, es duda: no se bloquea y se recuerda al worker que el guard real le impide actuar. Mención sola, ni eso.
+    "intencion": {
+        "verbos": [r"\b(?:desplieg\w+|deploy\w*|despleg\w+|aplic\w+|ejecut\w+|cambi\w+|modific\w+|edit\w+|corrig\w+|"
+                   r"actualiz\w+|instal\w+|descarg\w+|configur\w+|cre[ao]\w*|escrib\w+|sub[ea]\w*|borr\w+|elimin\w+|"
+                   r"a[ñn]ad\w+|arregl\w+|haz|hac\w+|pide|pedir|toca|tocar|migra\w*|lanza\w*|pon|poner|push\w*|"
+                   r"abre|abrir|sincroniz\w+|copia|copiar|mueve|mover|reinici\w+|registr\w+)\b"],
+        "mencion": [r"\bel c[oó]digo (?:har[aá]|leer[aá]|usar[aá]|soportar[aá])", r"\bpara cuando\b",
+                    r"\bcuando se (?:despliegue|aplique|ejecute|publique)", r"\bque (?:usar[aá]|consumir[aá]|leer[aá]|"
+                    r"llamar[aá]|lee|usa|consume)\b", r"\bse (?:desplegar[aá]|aplicar[aá]|ejecutar[aá]|despliega)\b",
+                    r"\b(?:desplegad[oa]|aplicad[oa])\b", r"\bpara que\b", r"\bcomo contexto\b", r"\bcontexto\b",
+                    r"\b(?:lea|leer|lee|use|usar|usa|consuma|consulte|admita|soporte|respete|valide|resuelva)\b",
+                    r"\b(?:despu[eé]s|luego|m[aá]s tarde|tras)\b.{0,40}\b(?:integrador|Oscar)\b",
+                    r"\b(?:el integrador|Oscar) (?:lo |la )?(?:aplicar[aá]|desplegar[aá]|har[aá])"],
+        "negacion": [r"\b(?:no|nunca|jam[aá]s|sin|evita|prohib\w+)\s+(?:\w+\s+){0,2}$"],
+        "recordatorio": "La tarjeta menciona producción, variables de entorno, SQL remoto u otro repo, pero no parece "
+                        "pedirte actuar sobre ellos. Haz solo el código/documento/tests en tu worktree: el guard no te "
+                        "deja desplegar, cambiar variables ni escribir en otro repo ni fuera del worktree; lo que "
+                        "falte déjalo como nota de seguimiento para el integrador, no lo intentes.",
+    },
     "motivo_otro_repo":"pide cambios en otro repo ({repo}) distinto del del carril: un carril trabaja solo el suyo",
 }
 
@@ -70,6 +91,8 @@ DEFAULTS: dict = {
 class Veredicto:
     integrador: list[tuple[str, str]] = field(default_factory=list)  # (id de regla, motivo): no lo hace un carril
     avisos: list[tuple[str, str]] = field(default_factory=list)      # (id, aviso): se lo decimos al worker
+
+    dudas: list[tuple[str, str]] = field(default_factory=list)       # (id, motivo): menciona el tema sin pedir actuar
 
     @property
     def va_al_integrador(self) -> bool:
@@ -117,6 +140,31 @@ def _otros_repos(lane: Lane | None, lanes: dict | None, cfg: dict) -> list[str]:
     return out
 
 
+def _intencion(text: str, patrones, cfg: dict) -> str:
+    """'accion' (instrucción de actuar), 'duda' (tema sin verbo claro, o verbo + marcador de
+    mención), 'mencion' (solo contexto) o '' (el tema no aparece).
+    Se mira frase a frase: el tema y el verbo tienen que estar en la misma frase."""
+    ic = cfg.get("intencion") or {}
+    verbos, mencion, negacion = ic.get("verbos") or (), ic.get("mencion") or (), ic.get("negacion") or ()
+    resultado = ""
+    for frase in re.split(r"(?<=[.;!?:])\s+|\n+", text):
+        if not any(re.search(p, frase, re.I | re.S) for p in patrones):
+            continue
+        es_mencion = any(re.search(p, frase, re.I) for p in mencion)
+        hay_verbo = False
+        for p in verbos:
+            for m in re.finditer(p, frase, re.I):
+                if not any(re.search(n, frase[:m.start()], re.I) for n in negacion):
+                    hay_verbo = True
+        if hay_verbo and not es_mencion:
+            return "accion"
+        if hay_verbo or not es_mencion:
+            resultado = "duda"
+        elif not resultado:
+            resultado = "mencion"
+    return resultado
+
+
 def evaluar(lane: Lane | None, task: dict | None, *, lanes: dict | None = None, cfg: dict | None = None) -> Veredicto:
     """Veredicto para una tarjeta de código en `lane`. Nunca lanza: ante un fallo, veredicto vacío (se trabaja como siempre)."""
     veredicto = Veredicto()
@@ -137,12 +185,25 @@ def evaluar(lane: Lane | None, task: dict | None, *, lanes: dict | None = None, 
                     veredicto.avisos.append((rid, motivo.format(ramas=", ".join(ramas),
                                                                 base=getattr(lane, "base_ref", "la base"))))
                 continue
-            if any(re.search(p, text, re.I | re.S) for p in regla.get("patrones") or ()):
-                (veredicto.integrador if accion == "integrador" else veredicto.avisos).append((rid, motivo))
+            patrones = regla.get("patrones") or ()
+            if accion != "integrador":
+                if any(re.search(p, text, re.I | re.S) for p in patrones):
+                    veredicto.avisos.append((rid, motivo))
+                continue
+            estado = _intencion(text, patrones, cfg)
+            if estado == "accion":
+                veredicto.integrador.append((rid, motivo))
+            elif estado:
+                veredicto.dudas.append((rid, motivo))
         for repo in _otros_repos(lane, lanes, cfg):
-            if re.search(rf"(?<![\w-]){re.escape(repo)}(?![\w-])", text, re.I):
+            estado = _intencion(text, [rf"(?<![\w-]){re.escape(repo)}(?![\w-])"], cfg)
+            if estado == "accion":
                 veredicto.integrador.append(("otro_repo", str(cfg["motivo_otro_repo"]).format(repo=repo)))
                 break
+            if estado:
+                veredicto.dudas.append(("otro_repo", str(cfg["motivo_otro_repo"]).format(repo=repo)))
+        if veredicto.integrador:
+            veredicto.dudas = []
     except Exception as exc:  # el clasificador nunca impide trabajar
         log.warning("clasificador: fallo ignorado: %s", exc)
         return Veredicto()

@@ -17,6 +17,7 @@ from agent_lanes import ciego, drain, notices
 from agent_lanes.bandeja import load as load_bandeja
 from agent_lanes.board_guard import BoardGuardTicker
 from agent_lanes.choques import ChoquesTicker
+from agent_lanes.fusion import Fusion
 from agent_lanes.solapes import SolapeTicker
 from agent_lanes.config import (ROOT, load_env, load_lanes, load_notice_limits, load_runner_settings,
                                 load_telegram_settings)
@@ -235,9 +236,13 @@ def main(argv: list[str] | None = None) -> int:
                                issue=decisions.store.issue if decisions else None)
         if decisions:
             decisions.solapes = solapes  # los botones del aviso los atiende el despachador de decisiones
+            decisions.fusion = Fusion(all_lanes, hermes_for)  # fusionar / encadenar / duplicada / pausar (fusion.py)
         # Choques reales en git (ramas lane/*, PR, ramas de personas): solo avisa a Oscar con propuesta (choques.yaml).
-        choques = ChoquesTicker(all_lanes, hermes_for, send=lambda text: notify.send_to(owner_dm, None, text, html=False),
-                                state_path=ROOT / ".state" / "choques.json")
+        choques = ChoquesTicker(all_lanes, hermes_for,
+                                send=lambda text, markup=None: notify.send_to(owner_dm, None, text, html=False,
+                                                                              reply_markup=markup),
+                                state_path=ROOT / ".state" / "choques.json",
+                                issue=decisions.store.issue if decisions else None)
     while True:
         shows.clear()
         # Reinicio ordenado (lanes.py restart --drain): entre pasadas, sin reclamar nada; el acuse dice si queda
