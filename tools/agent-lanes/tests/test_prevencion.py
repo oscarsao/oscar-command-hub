@@ -45,12 +45,21 @@ def card(tid, ruta, status="ready", title=None):
             "body": f"Tocar {ruta}"}
 
 
-def prev(tmp_path, board, git=None, yaml=YAML, w=None):
+def _reloj_que_avanza():
+    t = [0.0]
+
+    def clock():
+        t[0] += 1000  # cada lectura caduca las cachés (Hermes y git): los tests ven el tablero al momento
+        return t[0]
+    return clock
+
+
+def prev(tmp_path, board, git=None, yaml=YAML, w=None, clock=None):
     (tmp_path / "c.yaml").write_text(yaml, encoding="utf-8")
     return Prevencion(LANES, lambda b: board, git=git or FakeGit(), settings_path=tmp_path / "c.yaml",
                       silenciadas_path=tmp_path / "sil.json", ignorados_path=tmp_path / "ign.json",
                       descartes_path=tmp_path / "desc.json", state_path=tmp_path / "prev.json",
-                      wall=w or (lambda: NOW))
+                      wall=w or (lambda: NOW), clock=clock or _reloj_que_avanza())
 
 
 def ids(ts):
@@ -90,6 +99,17 @@ def test_mismo_modulo_distinto_fichero_no_frena(tmp_path):
 def test_dos_ready_de_la_misma_zona_en_la_misma_pasada_sale_solo_la_primera(tmp_path):
     b = Board([card("t_00000001", CMD), card("t_00000002", CMD), card("t_00000003", DEC)])
     assert ids(prev(tmp_path, b).filtrar(LANE, ready(b), b)) == ["t_00000001", "t_00000003"]
+    assert "t_00000001" in b.notas("t_00000002", MARCA)[0]
+    assert "también lista, va primero" in b.notas("t_00000002", MARCA)[0]
+
+
+def test_recien_lanzada_frena_aunque_hermes_aun_no_la_vea_en_running(tmp_path):
+    b = Board([card("t_00000001", CMD)])
+    p = prev(tmp_path, b, clock=lambda: 5.0)  # reloj quieto: la lista running de Hermes queda en caché (vacía)
+    assert ids(p.filtrar(LANE, ready(b), b)) == ["t_00000001"]
+    b.cards[0]["status"] = "running"            # el planificador la lanzó
+    b.cards.append(card("t_00000002", CMD))
+    assert p.filtrar(LANE, ready(b), b) == []
     assert "t_00000001" in b.notas("t_00000002", MARCA)[0]
 
 

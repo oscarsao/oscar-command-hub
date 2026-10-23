@@ -1,10 +1,12 @@
 """Botones de TODO aviso de choque (23-10): 🙈 Ignorar par, 🔇 Silenciar rama, 🔎 Ver PR; sin git/gh/Telegram reales."""
 import json
+import re
 from types import SimpleNamespace
 
 from agent_lanes import choques, fusion
 from agent_lanes.choques import CHO_IGNORAR, CHO_SILENCIAR, ChoquesTicker
 from agent_lanes.decisions import CallbackStore, DecisionDesk
+from agent_lanes.notices import MessageStore
 
 from .test_choques import CMD, LANES, NOW, FakeGit, card, hermes
 
@@ -42,7 +44,7 @@ def test_choque_entre_ramas_sin_tarjeta_lleva_botones(tmp_path):
     url = [b for b in _botones(markup) if "url" in b]
     assert url == [{"text": "🔎 Ver PR #12", "url": "https://github.com/oscarsao/oscar-command-hub/pull/12"}]
     rec = store.get(markup["inline_keyboard"][0][0]["callback_data"].split(":")[0])
-    assert rec["task_id"].startswith("choque:") and rec["par"] == "angel/fix|lane/t_00000002"
+    assert re.fullmatch(r"choque-[0-9a-f]{10}", rec["task_id"]) and rec["par"] == "angel/fix|lane/t_00000002"
     assert "board" not in rec and "lane" not in rec  # par solo de ramas: lo decide Oscar (sin marca)
 
 
@@ -155,3 +157,40 @@ def test_ajustes_de_prevencion_desde_yaml(tmp_path):
             a.prevenir_cache_minutos, a.prevenir_ramas_lane) == (True, "modulo", ("running",), 3, 0.0, False)
     assert choques.Ajustes().prevenir_al_lanzar is False  # sin YAML: apagada (ante la duda, se lanza)
     assert choques.load_ajustes(choques.SETTINGS_PATH).prevenir_al_lanzar is True
+
+
+class _TgNotifier(_Notifier):
+    def __init__(self):
+        super().__init__()
+        self.answers = []
+
+    def answer_callback(self, cid, text, alert=False):
+        self.answers.append(text)
+
+    def edit_markup(self, *a, **k):
+        pass
+
+
+def test_pulsar_ignorar_por_telegram_de_verdad_con_message_store(tmp_path):
+    """Camino completo de producción: _callback -> consume -> _safe (MessageStore en disco) -> _act -> on_button."""
+    store = CallbackStore(tmp_path / "cb")
+    sent = []
+    tk = ChoquesTicker(LANES, hermes([]), send=lambda text, markup=None: sent.append(markup),
+                       state_path=tmp_path / "ch.json", settings_path=tmp_path / "no.yaml", git=_ramas_en_conflicto(),
+                       clock=lambda: 0.0, wall=lambda: NOW, issue=store.issue,
+                       silenciadas_path=tmp_path / "sil.json", ignorados_path=tmp_path / "ign.json")
+    tk.tick()
+    notifier = _TgNotifier()
+    desk = DecisionDesk(notifier, store, lanes={}, hermes_for=lambda b: None, owner_id="1",
+                        spawn=lambda fn: fn(), messages=MessageStore(tmp_path / "msgs"))
+    desk.choques = tk
+    data = sent[0]["inline_keyboard"][0][0]["callback_data"]
+    desk._callback({"id": "q", "from": {"id": 1}, "data": data,
+                    "message": {"chat": {"id": 1}, "message_id": 9}})
+    assert "angel/fix|lane/t_00000002" in json.loads((tmp_path / "ign.json").read_text(encoding="utf-8"))
+    assert "ignorado" in notifier.edits[-1]
+
+
+def test_aviso_dice_que_se_frena_con_prevencion():
+    [c] = choques.detectar(LANES, hermes([]), _ramas_en_conflicto(), choques.Ajustes(), ahora=NOW)
+    assert "no se lanza en paralelo" in choques.aviso(c, choques.Ajustes(prevenir_al_lanzar=True))

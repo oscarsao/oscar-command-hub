@@ -40,6 +40,7 @@ MARCA = "CHOQUE-AL-LANZAR"
 LIBERADA = "CHOQUE-LIBERADA"
 AUTHOR = "agent-lanes"
 STATE_PATH = ROOT / ".state" / "choques_prevencion.json"  # {tid: {"con": uid, "desde": epoch, "caducada": bool}}
+HERMES_TTL = 30.0  # s: listas running/review compartidas entre carriles (el planificador despierta a menudo)
 
 
 class _GitCache:
@@ -90,8 +91,12 @@ class Prevencion:
         self.silenciadas_path, self.ignorados_path = silenciadas_path, ignorados_path
         self.descartes_path = descartes_path
         self.state_path = Path(state_path or STATE_PATH)
-        self._wall = wall
+        self._wall, self._clock = wall, clock
         self._lock = threading.Lock()
+        self._hcache: dict[tuple, tuple[float, list]] = {}  # (tablero, estado) -> (cuándo, tarjetas)
+        # Admitidas hace poco: Hermes tarda en verlas en running (y su lista va en caché), así que cuentan como en
+        # marcha durante HERMES_TTL para que otra ready de la misma zona no salga en la vuelta siguiente.
+        self._recientes: dict[str, dict[str, tuple[float, object]]] = {}
         self._comentadas: set[tuple[str, str]] = set()  # (tid, marca+uid) ya comentadas en este proceso
 
     # --- estado persistente (cuánto lleva esperando cada tarjeta) ------------------------------------------------
@@ -121,11 +126,16 @@ class Prevencion:
                                     if getattr(l, "board", "") and getattr(l, "kind", "") == "implement"))
         for board in boards:
             for status in aj.prevenir_estados:
-                try:
-                    tasks = self.hermes_for(board).list_status_all(status)
-                except Exception as exc:
-                    log.info("prevención: %s/%s no leído: %s", board, status, exc)
-                    continue
+                hit = self._hcache.get((board, status))
+                if hit and self._clock() - hit[0] < HERMES_TTL:
+                    tasks = hit[1]
+                else:
+                    try:
+                        tasks = self.hermes_for(board).list_status_all(status)
+                    except Exception as exc:
+                        log.info("prevención: %s/%s no leído: %s", board, status, exc)
+                        continue
+                    self._hcache[(board, status)] = (self._clock(), tasks)
                 for t in tasks:
                     tid = t.get("id")
                     lane = telegram_lane.lane_de_tarjeta(self.lanes, t) if tid else None
@@ -228,7 +238,9 @@ class Prevencion:
                     if key not in cache:
                         cache[key] = self._ocupadas(eff, aj, ready_ids, ahora)
                     ocupadas, vivas = cache[key]
-                    hit, propia = self._choca(t, eff, aj, ocupadas, vivas, admitidas.get(key, []), ahora)
+                    recientes = [u for k, (cuando, u) in self._recientes.get(key, {}).items()
+                                 if k not in ready_ids and self._clock() - cuando < HERMES_TTL]
+                    hit, propia = self._choca(t, eff, aj, ocupadas + recientes, vivas, admitidas.get(key, []), ahora)
                 except Exception as exc:
                     log.info("prevención: %s sin comprobar (%s); se lanza", tid, exc)
                     out.append(t)
@@ -242,6 +254,7 @@ class Prevencion:
                                        f"{LIBERADA} {previo.get('con')}: ya no choca con lo que está en marcha; "
                                        "vuelve a la cola y se lanza cuando haya hueco")
                     admitidas.setdefault(key, []).append(propia)
+                    self._recientes.setdefault(key, {})[tid] = (self._clock(), propia)
                     out.append(t)
                     continue
                 u, comun = hit
@@ -259,16 +272,19 @@ class Prevencion:
                                        f"{LIBERADA} (tope): lleva más de {aj.prevenir_max_horas} h esperando a "
                                        f"{u.uid}; se lanza igualmente (choques.yaml → prevenir_max_horas)")
                     admitidas.setdefault(key, []).append(propia)
+                    self._recientes.setdefault(key, {})[tid] = (self._clock(), propia)
                     out.append(t)
                     continue
                 log.info("%s: no se lanza en paralelo, choca con %s (%s)", tid, u.uid, "; ".join(comun[:3]))
-                estado_otra = f"PR #{u.pr}" if u.pr else ("rama sin fusionar" if u.origen == "lane" else "en curso")
+                misma_pasada = any(u is x for x in admitidas.get(key, []))
+                estado_otra = ("también lista, va primero" if misma_pasada else f"PR #{u.pr}" if u.pr
+                               else "rama sin fusionar" if u.origen == "lane" else "en curso")
                 self._comentar(hermes, tid, f"{MARCA} {u.uid}",
                                f"{MARCA} {u.uid}: no se lanza en paralelo porque choca con {u.etiqueta} ({estado_otra}) "
                                f"en {'; '.join(comun[:aj.comparten_max])}. Queda encadenada detrás: se lanza sola cuando "
                                f"{u.uid} termine, se fusione o se cierre (como mucho {aj.prevenir_max_horas} h). Para "
-                               "lanzarla ya: 🙈 Ignorar el par en el aviso de choque, o prevenir_al_lanzar: false en "
-                               "choques.yaml.")
+                               "lanzarla ya: «✅ Se complementan» o «🙈 Ignorar este par» si llega un aviso de solape o "
+                               "de choque de este par, o prevenir_al_lanzar: false en choques.yaml.")
             # Ya no está en ready (lanzada a mano, archivada…). Solo las de ESTE carril: el estado es compartido.
             for tid in [k for k, v in estado.items() if v.get("lane") == lane.name and k not in ready_ids]:
                 estado.pop(tid)

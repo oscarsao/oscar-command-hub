@@ -21,6 +21,7 @@ prevencion.py.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
@@ -408,7 +409,8 @@ def aviso(c: Choque, ajustes: Ajustes | None = None) -> str:
         _linea(c.a), _linea(c.b),
         "Comparten: " + "; ".join(c.comparten[:ajustes.comparten_max]),
         "Propuesta: " + c.propuesta,
-        "No se frena ni se encadena nada solo: decides tú."])
+        ("Lo que esté en ready y choque no se lanza en paralelo (espera a la otra); el resto lo decides tú."
+         if ajustes.prevenir_al_lanzar else "No se frena ni se encadena nada solo: decides tú.")])
 
 
 def registro(c: Choque) -> dict | None:
@@ -426,12 +428,13 @@ def teclado(c: Choque) -> tuple[dict, list[list[dict]], list[list[dict]]]:
     """(registro, botones con callback, filas de botones URL) para CUALQUIER aviso de choque.
 
     El registro siempre lleva `task_id` (el despachador lo usa para retirar copias): con dos tarjetas es el de fusion.py
-    (sus botones siguen igual) y, si no, una clave `choque:<par>` que no es ninguna tarjeta. `board`/`lane` solo se ponen
+    (sus botones siguen igual) y, si no, una clave `choque-<hash del par>` que no es ninguna tarjeta. `board`/`lane` solo se ponen
     si hay tarjeta: con ellos el despachador aplica los permisos por marca; un par solo de ramas lo decide Oscar."""
     base = registro(c)
     silenciables = [u.rama for u in (c.a, c.b) if u.rama and u.origen != "tarjeta"][:MAX_BOTONES_RAMA]
     urls = [(u.pr, u.url) for u in (c.a, c.b) if u.pr and u.url]
-    rec = dict(base) if base else {"task_id": f"choque:{par_uid(c)}"}
+    # task_id solo con caracteres seguros: MessageStore lo usa como nombre de fichero (`:`, `|` y `/` no valen en Windows)
+    rec = dict(base) if base else {"task_id": "choque-" + hashlib.sha1(par_uid(c).encode()).hexdigest()[:10]}
     tarjeta = next((u for u in (c.a, c.b) if u.origen == "tarjeta" and u.board), None)
     if not base and tarjeta:
         rec.update(board=tarjeta.board, lane=tarjeta.lane)
