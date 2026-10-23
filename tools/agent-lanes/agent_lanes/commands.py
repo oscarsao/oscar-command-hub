@@ -110,6 +110,7 @@ COMMANDS = (
     ("aldia", "Alias de /al_dia"),
     ("salud", "Estado de runner, Hermes, servicios, MigraTeam y equipo"),
     ("ram", "Consumo de RAM ahora y qué procesos más gastan"),
+    ("avisos", "Apaga o enciende los avisos de «listo para revisar»: /avisos off [1h|3h|mañana|siempre] · /avisos on"),
     ("silenciar", "Calla una alerta del monitor un tiempo: /silenciar <clave> <horas>"),
     ("sesion", "Correcciones agrupadas: /sesion [nombre] abre; fin | cancelar | estado"),
     ("flujo", "Una petición -> cadena de hasta 8 tarjetas (se crean al pulsar): /flujo <texto>"),
@@ -2255,6 +2256,11 @@ class CommandCenter:
         """RAM bajo demanda; el monitor manda el mismo informe al DM cada 4 h (ya no hay aviso continuo)."""
         from . import health
         self._send(where, health.ram_report(), html=False)
+
+    def cmd_avisos(self, where, args: str, brand: str | None) -> None:
+        """/avisos [off [1h|3h|mañana|siempre]|on]: mismo estado que los botones del resumen de tarjetas listas."""
+        from . import avisos_revision
+        self._send(where, avisos_revision.comando(args), html=False)
 
     def cmd_silenciar(self, where, args: str, brand: str | None) -> None:
         """/silenciar <clave> <horas>: el monitor deja de avisar de esa clave (y las que empiezan por ella)."""

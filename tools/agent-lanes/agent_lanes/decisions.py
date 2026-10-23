@@ -42,6 +42,8 @@ from .notices import (BOARD_BRANDS, BRANDS, DECISION_CARD_STATUSES, OPTION_LETTE
 from .tareas_movil import TR_ACTIONS
 from .tipo_peticion import A_ASK as PEDIR_ASK, KIND as PEDIR_KIND
 from .limpieza import LIM_CLOSE, LIM_KEEP, LIM_VIEW
+from . import avisos_revision
+from .avisos_revision import AV_ACTIONS
 from .paradas import PA_ACTIONS
 from .reconcile import INTEGRATOR_PROFILE, REC_ARCHIVE, REC_KEEP
 from .agrupar import AGR_ACTIONS
@@ -979,6 +981,9 @@ class DecisionDesk:
             return bool(self.limpieza) and self.limpieza.on_button(action, rec, where, self)
         if action in FUS_ACTIONS:  # avisos de solape/choque y ficha de tarjeta (fusion.py)
             return bool(self.fusion) and self.fusion.on_button(action, rec, where, self, button.get("index"))
+        if action in AV_ACTIONS:  # resumen de tarjetas listas para revisar: silencio y tarjetas mudas (avisos_revision.py)
+            return bool(avisos_revision.ACTIVO) and avisos_revision.ACTIVO.on_button(
+                action, rec, where, self, button.get("index"))
         if action in PA_ACTIONS:  # aviso diario de tarjetas paradas (paradas.py)
             return bool(self.paradas) and self.paradas.on_button(action, rec, where, self)
         if action in AGR_ACTIONS:  # /agrupar: mismo lote / una sola pregunta (agrupar.py)
