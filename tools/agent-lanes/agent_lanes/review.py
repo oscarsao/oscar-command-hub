@@ -9,6 +9,7 @@ import json
 import logging
 import subprocess
 
+from . import avisos_revision
 from . import proc as _proc
 import time
 import uuid
@@ -133,6 +134,7 @@ class ReviewRunner:
                for_oscar: str | None = None, yes_no: bool = True, test_exit=None, deps=None) -> None:
         """Edita el mensaje único de la tarea (o envía uno nuevo si `alert`). `status` es texto público."""
         target = telegram_target(task.get("body"))
+        alert = avisos_revision.interceptar(state, task, status, alert, summary=summary, for_oscar=for_oscar)
         mirror = dm_mirror(self._decisions, target, alert, state)
         for attempt in (1, 2):  # un aviso que falla se reintenta UNA vez
             try:
