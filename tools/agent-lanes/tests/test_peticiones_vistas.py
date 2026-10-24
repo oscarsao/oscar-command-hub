@@ -154,7 +154,8 @@ def test_render_resume_el_texto_largo_y_apunta_a_explicame_mas():
 def test_aviso_stuck_y_su_recordatorio_usan_el_formato_nuevo():
     from agent_lanes.renotify import Renotifier
     enviados = []
-    desk = SimpleNamespace(owner_id=1, markup=lambda *a, **k: {"inline_keyboard": []})
+    desk = SimpleNamespace(owner_id=1, markup=lambda *a, **k: {"inline_keyboard": []},
+                           difundir=lambda text, markup=None, **kw: enviados.append(text) or True)
     notifier = SimpleNamespace(send_to=lambda chat, thread, text, **kw: enviados.append(text) or True)
     yo = SimpleNamespace(desk=desk, notifier=notifier)
     p = SimpleNamespace(tid="t_5", task={"title": "Atascada"}, lane=SimpleNamespace(name="claude-hub"),

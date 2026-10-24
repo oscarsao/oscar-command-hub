@@ -154,7 +154,7 @@ def test_mirror_copies_follow_the_sequence_and_old_or_current_keyboards_are_reti
     token = e_dm["markup"]["inline_keyboard"][0][0]["callback_data"].split(":")[0]
     assert {m.get("token") for m in messages.all_messages("t_aaaaaaa1")} == {token}
     press(desk, dm, 0, cid="viejo")  # el teclado de la 1ª ya no vale
-    assert bot.answers[-1] == "Esta decisión ya no está activa"
+    assert bot.answers[-1].startswith("Ya lo decidió Oscar a las ")
     assert len([c for c in h.calls if c[0] == "comment"]) == 1
     # Oscar termina por la tarjeta del kanban: la autocuración retira también el teclado vigente
     show = h.shows["t_aaaaaaa1"]
