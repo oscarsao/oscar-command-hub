@@ -67,3 +67,21 @@ def test_missing_keys_are_appended(tmp_path, monkeypatch):
     assert sp.main(args + ["--apply"]) == 0
     assert _read(tmp_path / ".env").splitlines()[1:] == [f"TELEGRAM_ALLOWED_USERS={sp.DEFAULT_OWNER},111,222,333",
                                                            f"TELEGRAM_GROUP_ALLOWED_USERS={sp.DEFAULT_OWNER},111,222,333"]
+
+
+def test_duplicate_and_export_keys_are_all_updated(tmp_path, monkeypatch):
+    monkeypatch.delenv("OWNER_TELEGRAM_ID", raising=False)
+    env = "TELEGRAM_ALLOWED_USERS=1\nexport TELEGRAM_GROUP_ALLOWED_USERS = 2\nTELEGRAM_ALLOWED_USERS=3\n"
+    args = _home(tmp_path, env=env)
+    assert sp.main(args + ["--apply"]) == 0
+    ids = f"{sp.DEFAULT_OWNER},111,222,333"
+    assert _read(tmp_path / ".env") == (f"TELEGRAM_ALLOWED_USERS={ids}\nTELEGRAM_GROUP_ALLOWED_USERS={ids}\n"
+                                        f"TELEGRAM_ALLOWED_USERS={ids}\n")
+
+
+def test_broken_markers_abort_without_writing(tmp_path, monkeypatch):
+    monkeypatch.delenv("OWNER_TELEGRAM_ID", raising=False)
+    soul = SOUL + sp.MARK_END + "\r\n"
+    args = _home(tmp_path, soul=soul)
+    assert sp.main(args + ["--apply"]) == 2
+    assert _read(tmp_path / "SOUL.md") == soul and _read(tmp_path / ".env") == ENV

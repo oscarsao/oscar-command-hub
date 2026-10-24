@@ -59,6 +59,11 @@ def ids_permitidos(lista: list[Person]) -> str:
     return ",".join(p.user_id for p in lista)
 
 
+def _celda(value) -> str:
+    """Texto seguro para una celda Markdown: sin `|` ni saltos de línea."""
+    return " ".join(str(value or "").replace("|", "/").split())
+
+
 def _marcas(p: Person) -> str:
     if p.is_owner or TODAS_LAS_MARCAS in p.brands:
         return "todas"
@@ -98,7 +103,8 @@ def tabla(lista: list[Person], pendientes: list[str]) -> str:
         "|---|---|---|---|---|---|---|",
     ]
     for p in lista:
-        lines.append(f"| {p.name} | {p.user_id} | {p.role} | {_marcas(p)} | {_puede(p)} | {_aprueba(p)} | {_privado(p)} |")
+        celdas = (p.name, p.user_id, p.role, _marcas(p), _puede(p), _aprueba(p), _privado(p))
+        lines.append("| " + " | ".join(_celda(c) for c in celdas) + " |")
     if pendientes:
         lines += ["", "Sin alta (user_id vacío, Hermes NO les contesta): " + ", ".join(pendientes) + "."]
     lines.append(MARK_END)
@@ -113,13 +119,14 @@ def nuevo_env(text: str, valor: str) -> tuple[str, list[str]]:
     """Sustituye solo las claves ENV_KEYS (las añade al final si faltan). Devuelve (texto, claves cambiadas)."""
     eol, cambiadas = _eol(text), []
     for key in ENV_KEYS:
-        pat = re.compile(rf"^{key}=.*$", re.M)
-        m = pat.search(text)
+        # Todas las apariciones (dotenv se queda con la última), con o sin `export` y espacios alrededor del `=`.
+        pat = re.compile(rf"^[ \t]*(?:export[ \t]+)?{key}[ \t]*=.*$", re.MULTILINE)
         linea = f"{key}={valor}"
-        if m:
-            if m.group(0).rstrip("\r") != linea:
-                cr = "\r" if m.group(0).endswith("\r") else ""  # con ^...$ el \r de CRLF queda dentro del match
-                text = text[:m.start()] + linea + cr + text[m.end():]
+        if pat.search(text):
+            # con ^...$ el \r de CRLF queda dentro del match: se conserva
+            nuevo = pat.sub(lambda m: linea + ("\r" if m.group(0).endswith("\r") else ""), text)
+            if nuevo != text:
+                text = nuevo
                 cambiadas.append(key)
         else:
             text = text + ("" if text.endswith(("\n", "\r\n")) or not text else eol) + linea + eol
@@ -130,7 +137,10 @@ def nuevo_env(text: str, valor: str) -> tuple[str, list[str]]:
 def nuevo_soul(text: str, bloque: str) -> str:
     eol = _eol(text)
     bloque = bloque.replace("\n", eol)
-    if MARK_START in text and MARK_END in text:
+    hay_inicio, hay_fin = text.count(MARK_START), text.count(MARK_END)
+    if hay_inicio or hay_fin:
+        if hay_inicio != 1 or hay_fin != 1 or text.index(MARK_END) < text.index(MARK_START):
+            raise ValueError("marcadores EQUIPO-PERMISOS rotos en SOUL.md (faltan, se repiten o están al revés)")
         a = text.index(MARK_START)
         b = text.index(MARK_END) + len(MARK_END)
         return text[:a] + bloque + text[b:]
@@ -146,9 +156,16 @@ def _leer(path: Path) -> str:
 
 
 def _escribir(path: Path, text: str, stamp: str) -> None:
-    shutil.copy2(path, path.with_name(f"{path.name}.bak-sync-{stamp}"))
-    with open(path, "w", encoding="utf-8", newline="") as fh:
+    """Copia .bak-sync-<stamp> (sin pisar una anterior) y escritura atómica (tmp + os.replace): el .env lleva secretos."""
+    bak = path.with_name(f"{path.name}.bak-sync-{stamp}")
+    n = 1
+    while bak.exists():
+        bak, n = path.with_name(f"{path.name}.bak-sync-{stamp}-{n}"), n + 1
+    shutil.copy2(path, bak)
+    tmp = path.with_name(f"{path.name}.tmp-sync")
+    with open(tmp, "w", encoding="utf-8", newline="") as fh:
         fh.write(text)
+    os.replace(tmp, path)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -175,7 +192,11 @@ def main(argv: list[str] | None = None) -> int:
             return 2
     env_old, soul_old = _leer(env_path), _leer(soul_path)
     env_new, claves = nuevo_env(env_old, ids_permitidos(lista))
-    soul_new = nuevo_soul(soul_old, tabla(lista, pendientes))
+    try:
+        soul_new = nuevo_soul(soul_old, tabla(lista, pendientes))
+    except ValueError as exc:
+        print(f"ERROR: {exc}")
+        return 2
     print("Con acceso a Hermes: " + ", ".join(p.name for p in lista))
     if pendientes:
         print("Sin alta (no se les contesta): " + ", ".join(pendientes))
@@ -186,7 +207,7 @@ def main(argv: list[str] | None = None) -> int:
     if not a.apply:
         print("MODO SECO. Repite con --apply para escribir.")
         return 1
-    stamp = time.strftime("%Y%m%d%H%M")
+    stamp = time.strftime("%Y%m%d%H%M%S")
     if env_new != env_old:
         _escribir(env_path, env_new, stamp)
     if soul_new != soul_old:

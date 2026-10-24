@@ -105,7 +105,7 @@ class FreeText:
         # message con forum_topic_created y message_id == message_thread_id). Si el tema lo creó este bot (todos desde
         # el 28-09), eso NO es una respuesta: es texto suelto.
         if reply.get("forum_topic_created") or (
-                msg.get("message_thread_id") is not None
+                msg.get("is_topic_message") and msg.get("message_thread_id") is not None
                 and str(reply.get("message_id")) == str(msg.get("message_thread_id"))):
             return False
         replied = (reply.get("from") or {}).get("id")

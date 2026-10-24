@@ -75,12 +75,14 @@ def _save(done: dict) -> None:
 def crear_asistente(done: dict, apply: bool) -> int:
     """Crea «🤖 Asistente» en cada grupo si no consta en el estado; imprime chat:thread para free_response_topics."""
     tok = _token() if apply else None
+    fallos = 0
     for chat in ASISTENTE_CHATS:
         key = f"{chat}:asistente"
         if key not in done and apply:
             r = _call(tok, "createForumTopic", chat_id=chat, name=ASISTENTE)
             if not r.get("ok"):
                 print(key, "crear:", _ok(r))
+                fallos += 1
                 continue
             done[key] = r["result"]["message_thread_id"]
             _save(done)
@@ -89,7 +91,7 @@ def crear_asistente(done: dict, apply: bool) -> int:
     print("free_response_topics:", ",".join(pares) or "-")
     if not apply:
         print("DRY-RUN. Repite con --apply.")
-    return 0
+    return 1 if fallos else 0
 
 
 if __name__ == "__main__":

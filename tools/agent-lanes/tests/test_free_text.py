@@ -296,3 +296,12 @@ def test_loose_text_in_a_topic_created_by_the_bot_is_not_a_reply(tmp_path):
     _say(desk, "la B", reply_to_message=creation)
     _say(desk, "la B", mid=901, reply_to_message={"message_id": TOPIC, "from": BOT_MSG["from"]})
     assert h.calls == [] and tg.sent == []
+
+
+def test_reply_to_a_thread_root_notice_in_a_non_forum_group_still_counts(tmp_path):
+    # Supergrupo sin foro: message_thread_id = id del mensaje raíz respondido, sin is_topic_message.
+    desk, tg, h, messages = _setup(tmp_path)
+    _notice(desk, messages, mid=77, thread=0)
+    _say(desk, "la B", thread=0, message_thread_id=77,
+         reply_to_message={"message_id": 77, "from": BOT_MSG["from"]})
+    assert [c[0] for c in h.calls] == ["comment", "unblock"]
