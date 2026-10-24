@@ -6,6 +6,11 @@ require_mention y contesta a todo. `ignored_threads` no sirve: es global y los I
 ambos grupos. Un tema creado por otro bot no dispara esa regla.
 
 Uso:  py -3.12 recrear_temas.py [--apply]
+      py -3.12 recrear_temas.py --asistente [--apply]   -> crea (una vez) el tema «🤖 Asistente» en los 3 grupos
+
+«🤖 Asistente» (24-10, Oscar): el ÚNICO tema de cada grupo donde Hermes responde sin mención (free_response_topics de
+Hermes = estos chat:thread). Lo crea el bot de Trabajos, nunca Hermes (ver arriba). Idempotente: los ids quedan en
+.state/temas_nuevos.json con clave "<chat>:asistente" y no se vuelve a crear.
 Los viejos se renombran "🗄 Archivado · <nombre>" y se cierran (reversible con reopenForumTopic);
 no se borra ningún mensaje. Los IDs nuevos se guardan en .state/temas_nuevos.json.
 """
@@ -17,6 +22,9 @@ from pathlib import Path
 from organizar_temas import GESTION, MARKETING, STATE, _call, _ok, _token
 
 NEW_STATE = STATE.with_name("temas_nuevos.json")
+DESARROLLO = -1003731090094
+ASISTENTE = "🤖 Asistente"
+ASISTENTE_CHATS = (GESTION, MARKETING, DESARROLLO)
 
 # (chat, thread viejo, nombre)
 RECREATE = [
@@ -31,8 +39,11 @@ RECREATE = [
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--apply", action="store_true")
+    ap.add_argument("--asistente", action="store_true", help="solo crear el tema «🤖 Asistente» de cada grupo")
     a = ap.parse_args()
     done = json.loads(NEW_STATE.read_text(encoding="utf-8")) if NEW_STATE.exists() else {}
+    if a.asistente:
+        return crear_asistente(done, a.apply)
     if not a.apply:
         for chat, old, name in RECREATE:
             print(f"{chat} t{old} -> nuevo '{name}' (ya hecho: {done.get(f'{chat}:{old}')})")
@@ -53,6 +64,31 @@ def main() -> int:
         r2 = _call(tok, "closeForumTopic", chat_id=chat, message_thread_id=old)
         print(f"{key} -> nuevo t{done[key]} · viejo renombrado {_ok(r1, ('TOPIC_NOT_MODIFIED',))} · "
               f"cerrado {_ok(r2, ('TOPIC_NOT_MODIFIED', 'TOPIC_CLOSED'))}")
+    return 0
+
+
+def _save(done: dict) -> None:
+    NEW_STATE.parent.mkdir(exist_ok=True)
+    NEW_STATE.write_text(json.dumps(done, indent=1), encoding="utf-8")
+
+
+def crear_asistente(done: dict, apply: bool) -> int:
+    """Crea «🤖 Asistente» en cada grupo si no consta en el estado; imprime chat:thread para free_response_topics."""
+    tok = _token() if apply else None
+    for chat in ASISTENTE_CHATS:
+        key = f"{chat}:asistente"
+        if key not in done and apply:
+            r = _call(tok, "createForumTopic", chat_id=chat, name=ASISTENTE)
+            if not r.get("ok"):
+                print(key, "crear:", _ok(r))
+                continue
+            done[key] = r["result"]["message_thread_id"]
+            _save(done)
+        print(f"{key} -> {done.get(key, '(sin crear)')}")
+    pares = [f"{c}:{done[f'{c}:asistente']}" for c in ASISTENTE_CHATS if f"{c}:asistente" in done]
+    print("free_response_topics:", ",".join(pares) or "-")
+    if not apply:
+        print("DRY-RUN. Repite con --apply.")
     return 0
 
 

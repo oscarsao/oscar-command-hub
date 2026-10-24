@@ -194,7 +194,7 @@ def _libre(tmp_path, *, forum, extra_notice=False, reply_to=None):
     ft._notice(desk, messages, "t_1", mid=77, thread=thread, chat=chat)
     if extra_notice:
         ft._notice(desk, messages, "t_2", mid=78, thread=thread, chat=chat)
-    extra = {"reply_to_message": {"message_id": reply_to}} if reply_to else {}
+    extra = {"reply_to_message": {"message_id": reply_to, "from": ft.BOT_MSG["from"]}} if reply_to else {}
     ft._say(desk, "la B, pero con tests", chat=chat, thread=thread, private=not forum, **extra)
     return h.calls, tg.sent
 
