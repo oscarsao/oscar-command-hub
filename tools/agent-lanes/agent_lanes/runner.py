@@ -12,7 +12,7 @@ import uuid
 from pathlib import Path
 from typing import Callable, NamedTuple
 
-from . import bloqueos, clasificador, grandes, holds, telegram_lane
+from . import avisos_revision, bloqueos, clasificador, grandes, holds, telegram_lane
 from . import consulta as _consulta
 from . import deps
 from . import proc as _proc
@@ -164,6 +164,7 @@ class LaneRunner:
         `buttons`: añade los botones de decisión del estado (si hay bot de carriles). `for_oscar`: explicación llana
         del worker, sustituye al "Qué:" técnico; `summary`: último resumen del worker (lo usa 💬 Explícame más)."""
         task = {"id": tid, **(task or {})}
+        alert = avisos_revision.interceptar(state, task, status, alert, summary=summary, for_oscar=for_oscar)
         # Origen-Telegram routes the notice back to that topic (contract with W3b); lane.telegram is the fallback.
         target = target_override or telegram_target(task.get("body"))  # override = tema Atención (config de confianza)
         lane_target, keep = self.lane.telegram, False
