@@ -339,7 +339,7 @@ def test_double_tap_runs_the_action_once(tmp_path):
     _press(desk, markup, 0, cid="cq2")
     _press(desk, markup, 2, cid="cq3")  # otro botón del mismo mensaje tampoco
     assert [c[2] for c in gh.calls].count("create") == 1 and h.kinds() == ["comment"]
-    assert tg.answers[1][1] == "Esta decisión ya no está activa"
+    assert tg.answers[1][1].startswith("Ya lo decidió Oscar a las ")
 
 
 def test_park_assigns_to_oscar_and_comments(tmp_path):

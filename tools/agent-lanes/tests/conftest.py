@@ -13,6 +13,16 @@ def _ajustes_aislados(tmp_path):
 
 
 @pytest.fixture(autouse=True)
+def _sin_operadores_reales(request, monkeypatch, tmp_path):
+    """Los avisos de decisión van también al DM de los operadores de people.yaml: los tests no dependen del real
+    (solo Oscar), salvo test_people.py, que lee el fichero. Quien necesite operadores fija `desk.people`."""
+    if request.module.__name__.endswith("test_people"):
+        return
+    from agent_lanes import people
+    monkeypatch.setattr(people, "PEOPLE_FILE", tmp_path / "_sin_people.yaml")
+
+
+@pytest.fixture(autouse=True)
 def _sin_automatismos(monkeypatch):
     """Back-merge y retro semanal del integrador se prueban en test_alertas_backmerge_retro.py; en el resto de tests
     (con relojes y tableros falsos) no deben colarse mensajes ni tarjetas."""
