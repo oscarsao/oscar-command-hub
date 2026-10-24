@@ -23,8 +23,8 @@ from .config import ROOT, Lane
 log = logging.getLogger("agent_lanes")
 
 _AVISADAS: set[str] = set()  # tarjetas de otro tablero ya avisadas en el log (en memoria del proceso)
-LANE = "claude-telegram"
-ORIGENES = ("claude-hub", "claude-oscarhq")  # carriles de los que se le quitan tarjetas de Telegram
+LANE = "claude-hub"  # desde 23-10 «Hub y Telegram» es un solo carril; `claude-telegram` es su alias
+ORIGENES = ("claude-oscarhq", "claude-telegram")  # de dónde se pasan tarjetas (oscarhq: solo Telegram; alias: todas)
 REPO_LINE = re.compile(r"^\s*Repo:\s*(\S+)\s*$", re.M | re.I)
 SETTINGS_PATH = ROOT / "clasificador.yaml"
 # Claves de la entrada `repos.<alias>` que sustituyen a las del carril.
@@ -140,14 +140,15 @@ def reasignar_abiertas(hermes_for, lanes: dict, cfg: dict | None = None) -> list
             continue
         hermes = hermes_for(src.board)
         for t in hermes.list_ready(origen):
-            if not es_telegram(t.get("title"), t.get("body"), cfg):
+            alias = origen in dest.aliases  # tarjetas abiertas con el nombre antiguo del carril: se pasan todas
+            if not alias and not es_telegram(t.get("title"), t.get("body"), cfg):
                 continue
             if src.board != dest.board:
                 if t["id"] not in _AVISADAS:  # una vez por tarjeta, no en cada pasada
                     _AVISADAS.add(t["id"])
-                    log.info("%s: tarjeta de Telegram en el tablero %s; claude-telegram trabaja en %s: no se mueve",
-                             t["id"], src.board, dest.board)
+                    log.info("%s: tarjeta de Telegram en el tablero %s; %s trabaja en %s: no se mueve", t["id"],
+                             src.board, LANE, dest.board)
                 continue
-            if hermes.reassign(t["id"], LANE, f"enrutado automático: tarjeta de Telegram (antes en {origen})"):
+            if hermes.reassign(t["id"], LANE, f"enrutado automático: {'alias del carril' if alias else 'tarjeta de Telegram'} (antes en {origen})"):
                 moved.append(t["id"])
     return moved
