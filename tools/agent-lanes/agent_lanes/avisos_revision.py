@@ -22,6 +22,7 @@ import json
 import logging
 import os
 import re
+import threading
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -94,6 +95,9 @@ class AvisosRevision:
                  state_path: Path | str = STATE_PATH, clock: Callable[[], float] = time.time):
         self.send, self.chat, self.issue, self.clock = send, str(chat), issue, clock
         self.state_path = Path(state_path)
+        # Leer-modificar-guardar desde varios hilos (jobs de carril y review, bucle principal, lane-decision):
+        # sin lock, un registrar concurrente con tick duplicaba o perdía avisos. Nunca se retiene durante send.
+        self._lock = threading.RLock()
 
     # --- estado --------------------------------------------------------------------------------------
 
@@ -121,21 +125,24 @@ class AvisosRevision:
         return None
 
     def silenciar(self, hasta: float | str) -> None:
-        data = self._load()
-        data["silencio"][self.chat] = hasta
-        self._save(data)
+        with self._lock:
+            data = self._load()
+            data["silencio"][self.chat] = hasta
+            self._save(data)
 
     def reactivar(self) -> None:
-        data = self._load()
-        data["silencio"].pop(self.chat, None)
-        self._save(data)
+        with self._lock:
+            data = self._load()
+            data["silencio"].pop(self.chat, None)
+            self._save(data)
 
     def mutear(self, tid: str) -> None:
-        data = self._load()
-        if tid not in data["mudas"]:
-            data["mudas"].append(tid)
-        data["pendientes"] = [p for p in data["pendientes"] if p["tid"] != tid]
-        self._save(data)
+        with self._lock:
+            data = self._load()
+            if tid not in data["mudas"]:
+                data["mudas"].append(tid)
+            data["pendientes"] = [p for p in data["pendientes"] if p["tid"] != tid]
+            self._save(data)
 
     def estado_texto(self) -> str:
         data = self._load()
@@ -155,41 +162,47 @@ class AvisosRevision:
 
     def registrar(self, task: dict, resumen: str) -> None:
         tid = task.get("id")
-        data = self._load()
-        if not tid or tid in data["mudas"]:
-            return
-        ret = bool(self.silenciado_hasta(data))
-        rec = {"tid": tid, "titulo": _limpio(task.get("title")), "resumen": _limpio(resumen), "desde": self.clock(),
-               "ret": ret}
-        for p in data["pendientes"]:
-            if p["tid"] == tid:  # misma tarjeta otra vez (renotify): se actualiza, conserva su antigüedad
-                p.update(titulo=rec["titulo"], resumen=rec["resumen"], ret=p.get("ret") or ret)
-                break
-        else:
-            data["pendientes"].append(rec)
-        self._save(data)
+        with self._lock:
+            data = self._load()
+            if not tid or tid in data["mudas"]:
+                return
+            ret = bool(self.silenciado_hasta(data))
+            rec = {"tid": tid, "titulo": _limpio(task.get("title")), "resumen": _limpio(resumen),
+                   "desde": self.clock(), "ret": ret}
+            for p in data["pendientes"]:
+                if p["tid"] == tid:  # misma tarjeta otra vez (renotify): se actualiza, conserva su antigüedad
+                    p.update(titulo=rec["titulo"], resumen=rec["resumen"], ret=p.get("ret") or ret)
+                    break
+            else:
+                data["pendientes"].append(rec)
+            self._save(data)
 
     def tick(self) -> list[str]:
-        data = self._load()
-        pend = data["pendientes"]
-        if not pend or self.silenciado_hasta(data):
-            return []
-        now = self.clock()
-        lote, ventana = int(valor("avisos.revision_lote")), float(valor("avisos.revision_ventana_horas"))
-        vencido = min(float(p.get("desde") or now) for p in pend) + ventana * 3600 <= now
-        if not (len(pend) >= max(1, lote) or vencido or any(p.get("ret") for p in pend)):
-            return []
-        data["pendientes"] = []  # antes de enviar: sin bucles si Telegram falla
-        self._save(data)
+        with self._lock:
+            data = self._load()
+            pend = data["pendientes"]
+            if not pend or self.silenciado_hasta(data):
+                return []
+            now = self.clock()
+            lote, ventana = int(valor("avisos.revision_lote")), float(valor("avisos.revision_ventana_horas"))
+            vencido = min(float(p.get("desde") or now) for p in pend) + ventana * 3600 <= now
+            if not (len(pend) >= max(1, lote) or vencido or any(p.get("ret") for p in pend)):
+                return []
+            data["pendientes"] = []  # antes de enviar: sin bucles si Telegram falla
+            self._save(data)
         tids = [p["tid"] for p in pend]
         texto = self._texto(pend)
         try:
-            self.send(texto, self._teclado({"tids": tids, "texto": texto}))
+            # send_to devuelve None sin lanzar si falta token o chat: también es «no enviado» (no perder el aviso)
+            if self.send(texto, self._teclado({"tids": tids, "texto": texto})) is None:
+                raise RuntimeError("send devolvió None")
         except Exception as exc:
             log.warning("avisos_revision: resumen no enviado, vuelve a pendientes: %s", exc)
-            actual = self._load()
-            actual["pendientes"] = pend + actual["pendientes"]
-            self._save(actual)
+            with self._lock:
+                actual = self._load()
+                vistos = {p["tid"] for p in pend}
+                actual["pendientes"] = pend + [p for p in actual["pendientes"] if p["tid"] not in vistos]
+                self._save(actual)
             return []
         return tids
 

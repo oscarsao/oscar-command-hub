@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import json
 import logging
-import subprocess
 
 from . import avisos_revision
 from . import proc as _proc

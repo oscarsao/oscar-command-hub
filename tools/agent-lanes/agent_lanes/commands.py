@@ -569,7 +569,6 @@ class CommandCenter:
     def peticiones_tick(self) -> str | None:
         """Segundo parte de las 9:00: por petición, junto al de carriles (no lo repite ni sale sin novedad)."""
         from . import resumen_carriles as rc
-        from .formato_aviso import paginas
         from .resumen_peticiones import DailyRequestSummary
         path = self._state_file("peticiones_daily_state", "resumen_peticiones.json")
         if path is None or rc.due_date(datetime.fromtimestamp(self._now(), rc.MADRID), set()) is None:

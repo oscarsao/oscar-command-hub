@@ -43,7 +43,7 @@ def issue(rec, spec):
 @pytest.fixture
 def av(tmp_path):
     reloj, enviados = Reloj(), []
-    a = AvisosRevision(lambda text, markup=None: enviados.append((text, markup)), "-100", issue=issue,
+    a = AvisosRevision(lambda text, markup=None: enviados.append((text, markup)) or {"message_id": 1}, "-100", issue=issue,
                        state_path=tmp_path / "avisos.json", clock=reloj)
     a.reloj, a.enviados = reloj, enviados
     return a
@@ -203,6 +203,27 @@ def test_si_el_envio_falla_las_tarjetas_vuelven_a_pendientes(tmp_path):
     assert [p["tid"] for p in a._load()["pendientes"]] == ["t_1", "t_2", "t_3"]
 
 
+def test_si_el_envio_devuelve_none_tampoco_se_pierden(tmp_path):
+    # Notifier.send_to devuelve None sin lanzar si falta token o chat: el aviso no puede darse por enviado
+    a = AvisosRevision(lambda text, markup=None: None, "-100", state_path=tmp_path / "a.json", clock=Reloj())
+    for n in (1, 2, 3):
+        tarjeta(a, n)
+    assert a.tick() == []
+    assert [p["tid"] for p in a._load()["pendientes"]] == ["t_1", "t_2", "t_3"]
+
+
+def test_registrar_en_paralelo_no_pierde_ninguna(tmp_path):
+    import threading
+    a = AvisosRevision(lambda text, markup=None: {"message_id": 1}, "-100", state_path=tmp_path / "a.json",
+                       clock=Reloj())
+    hilos = [threading.Thread(target=tarjeta, args=(a, n)) for n in range(1, 21)]
+    for h in hilos:
+        h.start()
+    for h in hilos:
+        h.join()
+    assert len(a._load()["pendientes"]) == 20
+
+
 def test_ticker_respeta_su_intervalo(av):
     reloj = Reloj()
     t = AvisosRevisionTicker(av, minutes=5, clock=reloj)
@@ -272,7 +293,7 @@ def test_botones_del_resumen_pasan_por_decisiondesk_sin_excepcion_y_se_consumen_
     reloj, enviados, tg = Reloj(), [], FakeTG()
     desk = DecisionDesk(tg, CallbackStore(tmp_path / "cb"), lanes={LANE.name: LANE}, hermes_for=lambda b: None,
                         spawn=lambda fn: fn(), messages=FakeMensajes(), owner_id=str(OSCAR))
-    a = AvisosRevision(lambda text, markup=None: enviados.append((text, markup)), "-100", issue=desk.store.issue,
+    a = AvisosRevision(lambda text, markup=None: enviados.append((text, markup)) or {"message_id": 1}, "-100", issue=desk.store.issue,
                        state_path=tmp_path / "avisos.json", clock=reloj)
     monkeypatch.setattr(avisos_revision, "ACTIVO", a)
     for n in (1, 2, 3):
