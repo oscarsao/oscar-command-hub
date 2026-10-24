@@ -93,7 +93,7 @@ def test_child_waits_for_parent_and_no_merge_button(tmp_path):
     parent["task"]["status"] = "done"
     parent["comments"].append(INTEGRATED)
     assert integ.run_pass(force=True) == {"t_1": "offered"}
-    assert "🔀 Fusionar" in buttons(tg.sent[-1]["markup"])
+    assert "🔀 Integrar" in buttons(tg.sent[-1]["markup"])
 
 
 def test_merge_rechecks_parents_at_press_time(tmp_path):

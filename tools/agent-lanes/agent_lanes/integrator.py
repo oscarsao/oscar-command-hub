@@ -51,6 +51,7 @@ if __package__ in (None, ""):  # `py agent_lanes/integrator.py`
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     __package__ = "agent_lanes"
 
+from . import consola  # noqa: E402
 from . import drain  # noqa: E402
 from . import proc as _proc  # noqa: E402
 from .atascos import DEFAULT_APPEND_ONLY, AutoResolver, pr_branch_card_body  # noqa: E402
@@ -1167,8 +1168,8 @@ class Integrator:
     def _spec(self, policy: Policy, migration: str | None) -> list[list[dict]] | None:
         if policy.deploy == DEPLOY_ON_MERGE:
             # MigraTeam: el merge ES el deploy. Siempre botón explícito; con migración pendiente, ninguno.
-            return None if migration else [[{"text": policy.merge_label, "action": INT_MERGE_DEPLOY}]]
-        return [[{"text": "🔀 Fusionar", "action": INT_MERGE}]]
+            return None if migration else [[consola.boton(consola.CS_INTEGRAR, policy.merge_label)]]
+        return [[consola.boton(consola.CS_INTEGRAR)]]  # dos toques (consola.py): el ✅ ejecuta INT_MERGE
 
     @staticmethod
     def _risk_lines(result: GateResult) -> list[str]:
@@ -1241,6 +1242,13 @@ class Integrator:
     def _on_button(self, action: str, rec: dict, where: dict, desk) -> bool:
         if not self.settings.enabled or rec.get("kind") != "integrate":
             return False
+        if action in consola.INT_PRODUCCION:  # defensa en el sumidero (H3): toda vía que llegue aquí
+            actor = (where or {}).get("user_id")
+            check = getattr(desk, "puede_aprobar_produccion", None)
+            if check is None or not check(actor):
+                log.warning("%s: %s rechazado en el integrador: %s sin aprobar_produccion", rec.get("task_id"),
+                            action, actor)
+                return False
         policy = self.settings.policies.get(rec.get("lane"))
         lane = self.lanes.get(rec.get("lane"))
         if not policy or not lane:
@@ -1304,7 +1312,7 @@ class Integrator:
                     desk.store.consume(msg["token"])  # el ✅ de las demás copias ya no vale
             markup = None
             if policy and policy.deploy in DEPLOY_BUTTON and sha:
-                markup = desk.store.issue(rec, [[{"text": "🚀 Desplegar", "action": INT_DEPLOY}]])[1]
+                markup = desk.store.issue(rec, [[consola.boton(consola.CS_DESPLEGAR)]])[1]
             self._edit(desk, lane, rec, where, "done", status_line(
                 f"✅ fusionado · {sha[:7] or '?'}", "migración aplicada", "sin desplegar" if markup else None),
                 markup=markup)
@@ -1446,7 +1454,7 @@ class Integrator:
         if policy.deploy in DEPLOY_BUTTON:
             if rec.get("migration"):
                 # Oscar aplica la migración a mano y lo dice con [✅ Migración aplicada]: desbloquea el 🚀.
-                markup = (desk.store.issue(rec, [[dict(MIGRATION_BUTTON)]])[1]
+                markup = (desk.store.issue(rec, consola.fila_migracion())[1]
                           if rec["migration"] in MIGRATION_KINDS else None)
                 names = self._migration_files(lane, policy, sha) if rec["migration"] == "supabase" else []
                 if names:
@@ -1456,7 +1464,7 @@ class Integrator:
                     ("migraciones: " + ", ".join(names[:8]) + (f" (+{len(names) - 8})" if len(names) > 8 else ""))
                     if names else None), markup=markup)
                 return True
-            markup = desk.store.issue(rec, [[{"text": "🚀 Desplegar", "action": INT_DEPLOY}]])[1]
+            markup = desk.store.issue(rec, [[consola.boton(consola.CS_DESPLEGAR)]])[1]
             self._edit(desk, lane, rec, where, "done", status_line(f"✅ fusionado · {short}", "sin desplegar"),
                        markup=markup)
             return True

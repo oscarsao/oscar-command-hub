@@ -307,7 +307,9 @@ def test_approve_opens_pr_comments_and_edits_without_buttons(tmp_path):
     assert h.calls == [("comment", "t_1", "APROBADO-OSCAR 2026-09-28 10:30 · PR https://github.com/oscarsao/oscar-hq/pull/12",
                         OSCAR_AUTHOR)]
     edit = tg.edits[-1]
-    assert edit["mid"] == 77 and edit["markup"] is None
+    # Sin integrador (o sin política para el carril): [🔀 Integrar] (dos toques) para pedir la integración al
+    # integrador desde Telegram; nunca fusiona aquí (consola.py, H3).
+    assert edit["mid"] == 77 and [b["text"] for r in edit["markup"]["inline_keyboard"] for b in r] == ["🔀 Integrar"]
     assert "✅ aprobada · PR #12" in edit["text"] and 'href="https://github.com/oscarsao/oscar-hq/pull/12"' in edit["text"]
 
 

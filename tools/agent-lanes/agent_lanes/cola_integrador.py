@@ -19,7 +19,9 @@ PIDE_OK = {"aplicar_migracion": "Aplicar la migración (Alembic)",
            "fusionar_main": "Fusionar a main",
            "desplegar_prod": "Desplegar a producción",
            "borrar": "Borrar ramas o archivos",
-           "tocar_hooks": "Tocar hooks o el contrato de seguridad"}
+           "tocar_hooks": "Tocar hooks o el contrato de seguridad",
+           "marcar_migracion": "Marcar una migración como aplicada",
+           "reintentar_decision": "Reintentar una decisión que falló"}
 
 
 def es_automatica(accion: str) -> bool:
@@ -61,3 +63,32 @@ def procesar(cola: list[dict], ejecutores: dict[str, Callable[[dict], object]]) 
             log.warning("cola integrador: %s falló: %s", accion, exc)
             out["fallidas"].append({"accion": accion, "motivo": str(exc)[:200]})
     return out
+
+
+def ejecutar_aprobada(item: dict, ejecutores: dict[str, Callable[[dict], object]], *,
+                      crear_tarjeta: Callable[[dict], object] | None = None) -> dict:
+    """Una acción de PIDE_OK que un operador YA aprobó con doble toque en Telegram (consola.py, H3). Quien llama
+    garantiza el permiso y la auditoría; aquí solo se reparte, como en `procesar`:
+    - con ejecutor: lo ejecuta (el mismo código del integrador) -> {ok, resultado: hecha|fallida};
+    - sin ejecutor: crea una tarjeta para el integrador -> {ok, resultado: tarjeta, detalle: id};
+    - fuera de PIDE_OK (o de AUTOMATICAS): no se ejecuta -> {ok: False, resultado: desconocida}.
+    Nunca lanza: un fallo del ejecutor es `fallida` con su motivo."""
+    accion = item.get("accion", "")
+    if accion not in PIDE_OK and not es_automatica(accion):
+        return {"ok": False, "resultado": "desconocida", "detalle": accion}
+    fn = ejecutores.get(accion)
+    if fn is None:
+        if crear_tarjeta is None:
+            return {"ok": False, "resultado": "sin_ejecutor", "detalle": accion}
+        try:
+            new = crear_tarjeta(item)
+        except Exception as exc:
+            log.warning("cola integrador: tarjeta para %s falló: %s", accion, exc)
+            new = None
+        return {"ok": bool(new), "resultado": "tarjeta" if new else "fallida", "detalle": new}
+    try:
+        ok = fn(item)
+    except Exception as exc:
+        log.warning("cola integrador: %s (aprobada) falló: %s", accion, exc)
+        return {"ok": False, "resultado": "fallida", "detalle": str(exc)[:200]}
+    return {"ok": bool(ok), "resultado": "hecha" if ok else "fallida"}

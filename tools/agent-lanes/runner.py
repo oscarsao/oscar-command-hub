@@ -14,7 +14,7 @@ import threading
 import time
 from logging.handlers import RotatingFileHandler
 
-from agent_lanes import ciego, drain, notices
+from agent_lanes import ciego, consola, drain, notices
 from agent_lanes.bandeja import load as load_bandeja
 from agent_lanes.board_guard import BoardGuardTicker
 from agent_lanes.choques import ChoquesTicker
@@ -206,6 +206,11 @@ def main(argv: list[str] | None = None) -> int:
             if configs:
                 decisions.promoter = Promoter(configs, notifier=notify, desk=decisions)
                 log.info("promoción a producción activa: %s", list(configs))
+    # Mensaje fijado de carriles y workflows en «Hub y carriles» (consola.py, H3): se edita en su sitio.
+    hub_panel = (consola.PanelHub.from_cfg(consola.load_hub_panel_cfg(), notify, all_lanes, hermes_for,
+                                           ROOT / ".state", busy_path=drain.BUSY_FILE,
+                                           run_async=True)
+                 if decisions and not args.once else None)  # solo con el bot de carriles
     service = Service(runners, max_workers=effective_max_workers(args.max_workers, settings), busy_path=drain.BUSY_FILE,
                       max_big_total=int(settings.get("max_big_total", 0) or 0))
     interval = args.interval or settings["interval_seconds"]
@@ -334,6 +339,8 @@ def main(argv: list[str] | None = None) -> int:
                     log.info("decisiones en cola reintentadas: %d", retried)
             except Exception as exc:
                 log.warning("reintento de decisiones en cola falló: %s", exc)
+        if hub_panel:
+            hub_panel.tick()  # nunca lanza; lee el kanban como mucho cada min_seconds y solo edita si cambia
         if args.once:  # una pasada con barrera: la plaza reservada también se atiende y se espera
             results = service.run_pass()
             service.reserved_pass()

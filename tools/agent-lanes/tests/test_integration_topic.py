@@ -7,6 +7,7 @@ import json
 
 import pytest
 
+from agent_lanes import consola
 from agent_lanes.config import Lane, load_telegram_settings
 from agent_lanes.decisions import CallbackStore, DecisionDesk
 from agent_lanes.integration import (SUMMARY_EMPTY, IntegrationRoute, PinnedSummary, age_label, header, link_line,
@@ -106,11 +107,22 @@ def build(tmp_path, *, name="claude-oscarhq", policy=None, world=None, tg=None, 
     return integ, w, h, tg, desk, messages
 
 
-def press(desk, msg, n=0):
+def press(desk, msg, n=0, confirm=True):
+    """Pulsa el botón n; si es de la consola (dos toques) pulsa también el ✅ Sí que lo sustituye."""
     data = [b["callback_data"] for row in msg["markup"]["inline_keyboard"] for b in row][n]
-    desk.handle_update({"callback_query": {"id": "cq", "from": {"id": int(OSCAR)}, "data": data, "message": {
-        "chat": {"id": int(msg["chat_id"])}, "message_id": msg["message_id"],
-        "message_thread_id": int(msg["thread_id"])}}})
+    token, _, idx = data.partition(":")
+    buttons = (desk.store.get(token) or {}).get("buttons") or []
+    action = buttons[int(idx)].get("action") if int(idx) < len(buttons) else None
+
+    def tap(d):
+        desk.handle_update({"callback_query": {"id": "cq", "from": {"id": int(OSCAR)}, "data": d, "message": {
+            "chat": {"id": int(msg["chat_id"])}, "message_id": msg["message_id"],
+            "message_thread_id": int(msg["thread_id"])}}})
+    markups = getattr(desk.notifier, "markups", None)
+    before = len(markups) if markups is not None else 0
+    tap(data)
+    if confirm and action in consola.CS_PEDIR and markups is not None and len(markups) > before:
+        tap(markups[-1]["inline_keyboard"][0][0]["callback_data"])
 
 
 def fichas(tg):
@@ -337,7 +349,7 @@ def test_summary_created_and_pinned_then_edited_only_when_it_changes(tmp_path):
     assert tg.pins == [(GESTION, pinned[0]["message_id"])]
     assert pinned[0]["text"] == ("<b>🚦 PENDIENTE DE INTEGRAR (1)</b>\n"
                                  '🟠 PR <a href="https://github.com/oscarsao/oscar-hq/pull/7">repo#7</a> · Arreglar login · '
-                                 "🚦 listo, pulsa Fusionar · &lt;1 h")
+                                 "🚦 listo, pulsa Integrar · &lt;1 h")
     st = json.loads((tmp_path / "state" / "pinned.json").read_text(encoding="utf-8"))
     assert st["message_id"] == pinned[0]["message_id"] and st["thread_id"] == "398"
     n_edits = len(tg.edits)
@@ -404,11 +416,11 @@ def test_pinned_summary_recreated_if_topic_changes(tmp_path):
 
 def test_summary_text_and_states():
     rows = [{"emoji": "🟢", "pr": 9, "title": "B" * 80, "state": "⛔ gates fallidos", "since": NOW - 3 * 86400},
-            {"emoji": "🟠", "pr": 7, "title": "A", "state": "🚦 listo, pulsa Fusionar", "since": NOW - 3600}]
+            {"emoji": "🟠", "pr": 7, "title": "A", "state": "🚦 listo, pulsa Integrar", "since": NOW - 3600}]
     text = summary_text(rows, NOW).split("\n")
     assert text[0] == "<b>🚦 PENDIENTE DE INTEGRAR (2)</b>"
     assert text[1].startswith("🟢 PR #9 · " + "B" * 39 + "…") and text[1].endswith("· 3 d")  # la más antigua primero
-    assert text[2] == "🟠 PR #7 · A · 🚦 listo, pulsa Fusionar · 1 h"
+    assert text[2] == "🟠 PR #7 · A · 🚦 listo, pulsa Integrar · 1 h"
     assert summary_text([], NOW) == SUMMARY_EMPTY
 
 

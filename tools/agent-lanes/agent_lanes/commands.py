@@ -2150,7 +2150,7 @@ class CommandCenter:
                 st = integ._state(path.stem)
                 if st.get("lane") == name and st.get("status") == "offered" and not st.get("batch"):
                     loose.append(f"🔀 PR #{st.get('pr', '?')} ({e(path.stem)}){e(who)} abierto, esperando tu "
-                                 "[🔀 Fusionar] en su ficha" + (" · PR del hub" if name == "claude-hub" else ""))
+                                 "[🔀 Integrar] en su ficha" + (" · PR del hub" if name == "claude-hub" else ""))
         for tid, (lane, label) in env_tids.items():
             try:
                 body = ((self._shows.show(self.hermes_for(lane.board), tid) or {}).get("task") or {}).get("body")
@@ -2833,8 +2833,12 @@ class CommandCenter:
         tree = self.tree_text(board, show)
         if tree and len(text) + 1 + len(tree) <= TEXT_MAX:
             text += "\n" + tree
+        extra, cs_rows = self._consola_ficha(board, show)  # 📍 zona · ⏳ esperando + botones de consola (H3)
+        if extra and len(text) + 1 + len(extra) <= TEXT_MAX:
+            text += "\n" + extra
         row = self._fusion_row(board, show)
-        full = {"inline_keyboard": [*(markup or {}).get("inline_keyboard", []), row]} if row else markup
+        rows = [*(markup or {}).get("inline_keyboard", []), *cs_rows, *([row] if row else [])]
+        full = {"inline_keyboard": rows} if rows else markup
         sent = self._send(where, text, markup=full)
         if markup:  # la copia sincronizada sigue al teclado de la decisión; la fila «Fusionar con…» es aparte
             self._mirror(show["task"]["id"], sent, markup)
@@ -3114,6 +3118,16 @@ class CommandCenter:
             return False
         say(f"🔁 {tid} relanzada con tu nota")
         return True
+
+    def _consola_ficha(self, board: str, show: dict) -> tuple[str, list]:
+        """Zona, espera y botones de consola de la ficha (consola.ficha); nunca rompe la ficha."""
+        try:
+            from . import choques, consola
+            lane = self.lanes.get((show.get("task") or {}).get("assignee"))
+            return consola.ficha(self.desk, board, show, lane, choques.Git() if lane is not None else None)
+        except Exception as exc:
+            log.info("ficha: sin datos de consola (%s)", exc)
+            return "", []
 
     def _fusion_row(self, board: str, show: dict) -> list[dict] | None:
         """Fila «🔗 Fusionar con…» de la ficha (fusion.py); nunca rompe la ficha."""

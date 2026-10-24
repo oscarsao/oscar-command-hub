@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Callable
 
 from . import bloqueos
+from . import consola
 from . import deps
 from . import proc as _proc
 from .bandeja import VetoBook
@@ -454,6 +455,15 @@ class PendingDecisions:
         with self._lock:
             return self._load()
 
+    def take(self, token: str) -> dict | None:
+        """Saca UNA decisión de la cola (🔁 Reintentar decisión). Bajo el candado: o la coge esto o `take_due`."""
+        with self._lock:
+            data = self._load()
+            entry = data.pop(token, None)
+            if entry is not None:
+                self._save(data)
+        return entry
+
     def take_due(self) -> list[tuple[str, dict]]:
         """Saca de la cola las que toca reintentar (el reintento las vuelve a meter si sigue el fallo transitorio)."""
         now = self._clock()
@@ -525,6 +535,15 @@ class DecisionDesk:
         if str(user_id) == self.owner_id:
             return True
         return self._people().es_operador(user_id)
+
+    def puede_aprobar_produccion(self, user_id) -> bool:
+        """Fusionar, desplegar o migrar desde un botón: Oscar o quien tenga `permisos: [aprobar_produccion]` (y
+        `operador: true`) en people.yaml. No depende de `brands` (decisión de Oscar 22-10)."""
+        if user_id is None:
+            return False
+        if str(user_id) == self.owner_id:
+            return True
+        return self._people().puede_aprobar_produccion(user_id)
 
     def restringido(self, user_id) -> bool:
         """Operador acotado por marca (ni Oscar ni `brands: ["*"]`)."""
@@ -863,11 +882,25 @@ class DecisionDesk:
             answer(cq.get("id"), "Esta decisión ya no está activa")
             self._log_update(chat, "callback", None, "ignorado")
             return
-        if not self.puede_con(actor, rec):  # operador acotado por marca: solo actúa en las suyas
+        button = buttons[int(n)]
+        prod = consola.requiere_produccion(rec, button)
+        if prod and not self.puede_aprobar_produccion(actor):  # fusionar/desplegar/migrar: solo aprobar_produccion
+            answer(cq.get("id"), consola.NOT_PROD, alert=True)
+            consola.auditar(self, "rechazado", actor, rec, consola.accion_real(rec, button), motivo="sin aprobar_produccion")
+            self._log_update(chat, "callback", None, "rechazado")
+            return
+        # Operador acotado por marca: solo actúa en las suyas. Excepción (decisión de Oscar 22-10): lo de producción
+        # con `aprobar_produccion` vale en todas las marcas.
+        if not self.puede_con(actor, rec) and not prod:
             answer(cq.get("id"), self._rechazo_marca(actor, rec), alert=True)
             self._log_update(chat, "callback", None, "rechazado")
             return
-        button = buttons[int(n)]
+        if button["action"] in (consola.CS_SI, consola.CS_NO) \
+                and str(actor) != str((rec.get("consola") or {}).get("pedido_por")):
+            answer(cq.get("id"), consola.NOT_SAME, alert=True)  # el 2.º toque es de quien dio el 1.º
+            consola.auditar(self, "rechazado", actor, rec, consola.accion_real(rec, button), motivo="no es quien lo pidió")
+            self._log_update(chat, "callback", None, "rechazado")
+            return
         where = self._where(cq.get("message") or {})
         where["user_id"] = actor  # quién pulsó (producción de /al_dia exige Oscar o "*")
         self._log_update(chat, "callback", button.get("action"), "respondido")
@@ -892,6 +925,10 @@ class DecisionDesk:
             return
         if not self.store.consume(token):
             answer(cq.get("id"), "Ya está en marcha")
+            return
+        if button["action"] in consola.CS_PEDIR:  # 1.er toque de la consola: solo cambia el teclado por [✅ Sí] [✖ No]
+            answer(cq.get("id"), consola.ASK_ANSWER)
+            self._spawn(self._en_nombre_de(actor, lambda: consola.pedir(self, token, rec, button, where)))
             return
         answer(cq.get("id"), "Hecho, lo aplico")
         self._spawn(self._en_nombre_de(actor, lambda: self._safe(token, rec, where,
@@ -943,6 +980,7 @@ class DecisionDesk:
         # (p. ej. [🚀 Desplegar] tras fusionar) y esos deben seguir vivos. Grupo y "aceptar todo" retiran por
         # miembro dentro de la acción, solo en los que salieron bien.
         before = set() if (rec.get("group") or rec.get("accept_all") or self._free(rec)) else self._tokens(rec)
+        before.discard((rec.get("consola") or {}).get("volver"))  # ✖ No / caducado lo devuelven: no se gasta
         attempts = int((replay or {}).get("attempts") or 0)  # reintentos automáticos hechos (este incluido)
         _proc.take_transient()  # solo cuenta lo que falle durante ESTA acción
         error = None
@@ -967,7 +1005,10 @@ class DecisionDesk:
                 log.info("%s: decisión aplicada en el reintento %d", rec.get("task_id"), attempts)
             for tok in before - {token}:
                 self.store.consume(tok)
-        if not ok:
+        back = (rec.get("consola") or {}).get("volver") if not ok else None
+        if back:  # ✅ de la consola que falló: vuelve el teclado del aviso (1.er toque), no la confirmación
+            consola._devolver(self, back, rec, where)
+        elif not ok:
             self.store.restore(token)
             try:
                 self._edit(rec, where, None, None, markup=self.store.markup(token, rec), keep_text=True)
@@ -996,8 +1037,44 @@ class DecisionDesk:
                                  "first_at": first_at, "reason": transient})
         log.warning("%s: la decisión de Oscar falló por algo transitorio (%s); en cola para reintentar (%d hechos)",
                     rec.get("task_id"), transient, attempts)
-        self._edit_safe(rec, where, "blocked", "⏳ no se pudo aplicar ahora (Hermes o GitHub no responden); "
-                        "lo reintento solo en las próximas pasadas" + (f" · reintentos: {attempts}" if attempts else ""))
+        status = ("⏳ no se pudo aplicar ahora (Hermes o GitHub no responden); lo reintento solo en las próximas pasadas"
+                  + (f" · reintentos: {attempts}" if attempts else ""))
+        try:  # 🔁 Reintentar decisión (consola, dos toques): no esperar a la próxima pasada
+            retry_rec = {k: rec.get(k) for k in ("task_id", "board", "lane", "title", "pr_number")}
+            retry_rec.update({"kind": "consola_retry", "pending_token": token,
+                              "pending": {"rec": rec, "button": replay.get("button") or {}}})
+            markup = self.store.issue(retry_rec, [[consola.boton(consola.CS_REINTENTAR)]])[1]
+            self._edit(rec, where, "blocked", status, markup=markup)
+        except Exception as exc:
+            log.warning("%s: no se pudo editar el aviso: %s", rec.get("task_id"), exc)
+        return True
+
+    def retry_now(self, token: str, where: dict) -> bool:
+        """🔁 Reintentar decisión confirmado: la decisión en cola se aplica YA (como un botón del actor original).
+        Si el runner ya la cogió (o se abandonó) no hace nada. Lo de producción exige `aprobar_produccion` a
+        quien pulsa, además del permiso que tenía quien la tomó."""
+        entry = self.pending.take(token)
+        if entry is None:
+            consola._say(self, where, "🔁 Esa decisión ya no está en cola: se aplicó o se abandonó (mira el aviso).")
+            return True
+        rec, button = entry.get("rec") or {}, entry.get("button") or {}
+        if consola.requiere_produccion(rec, button) and not self.puede_aprobar_produccion((where or {}).get("user_id")):
+            self.pending.put(token, entry)
+            return False
+        if not consola.auditar(self, "reintentado", (where or {}).get("user_id"), rec,
+                               consola.accion_real(rec, button), actor_original=entry.get("actor")):
+            self.pending.put(token, entry)
+            return False
+        replay = {"kind": entry.get("kind"), "button": button, "text": entry.get("text"), "actor": entry.get("actor"),
+                  "attempts": int(entry.get("attempts") or 0) + 1, "first_at": entry.get("first_at")}
+        w = {**(entry.get("where") or {}), "replay": True}
+        if entry.get("kind") == "reply":
+            def fn():
+                return self._apply_reply(rec, button, w, entry.get("text") or "")
+        else:
+            def fn():
+                return self._act(rec, button, w)
+        self._en_nombre_de(entry.get("actor"), lambda: self._safe(token, rec, w, fn, replay=replay))()
         return True
 
     def retry_pending(self) -> int:
@@ -1014,7 +1091,7 @@ class DecisionDesk:
                     return self._apply_reply(rec, button, where, text or "")
             elif e.get("kind") == "act":
                 def fn(rec=rec, button=button, where=where):
-                    return self._act(rec, button, where)
+                    return self._act(rec, button, {**where, "replay": True})
             else:
                 continue
             replay = {"kind": e.get("kind"), "button": button, "text": text, "actor": e.get("actor"),
@@ -1087,6 +1164,22 @@ class DecisionDesk:
 
     def _act(self, rec: dict, button: dict, where: dict) -> bool:
         action = button["action"]
+        if consola.requiere_produccion(rec, button):
+            # Defensa central (también para reintentos en cola y teclados viejos): fusionar, desplegar o migrar solo con
+            # `aprobar_produccion`, y cada ejecución queda en la auditoría (sin registro no se ejecuta).
+            actor = (where or {}).get("user_id")
+            if not self.puede_aprobar_produccion(actor):
+                log.warning("%s: %s rechazado: %s no tiene aprobar_produccion", rec.get("task_id"), action, actor)
+                consola.auditar(self, "rechazado", actor, rec, consola.accion_real(rec, button),
+                                motivo="sin aprobar_produccion")
+                return False
+            if action not in consola.CS_ACTIONS and not consola.auditar(self, "ejecutar", actor, rec,
+                                                                       consola.accion_real(rec, button)):
+                return False
+        if action == consola.CS_SI:
+            return consola.confirmar(self, rec, where)
+        if action == consola.CS_NO:
+            return consola.cancelar(self, rec, where)
         if action in FREE_ACTIONS:  # selector / Deshacer del texto libre
             return bool(self.free) and self.free.on_button(action, rec, button, where)
         if rec.get("kind") == EQUIPO_KIND or action.startswith("eq_"):  # tema 👥 Equipo (vigilancia_botones.py)
@@ -1498,8 +1591,16 @@ class DecisionDesk:
                 self.integrator.record_approval(lane, tid, number)
             except Exception as exc:
                 log.warning("%s: no se pudo registrar la aprobación para el integrador: %s", tid, exc)
-        # Nunca se fusiona aquí: el merge es del carril Integrador.
-        self._edit(rec, where, "approved", f"✅ aprobada · PR #{number}", extra_links=[(f"PR #{number}", url)])
+        # Nunca se fusiona aquí: el merge es del carril Integrador. Si el carril no tiene política en el integrador
+        # automático, [🔀 Integrar] (dos toques) crea la tarjeta para el integrador en vez de esperar a la consola.
+        markup = None
+        policies = getattr(getattr(self.integrator, "settings", None), "policies", None) or {}
+        if lane is not None and lane.name not in policies:
+            markup = self.store.issue({**{k: v for k, v in rec.items() if k not in ("buttons", "rows", "created")},
+                                       "kind": "approved_pr", "pr_number": number, "pr_url": url},
+                                      [[consola.boton(consola.CS_INTEGRAR)]])[1]
+        self._edit(rec, where, "approved", f"✅ aprobada · PR #{number}", extra_links=[(f"PR #{number}", url)],
+                   markup=markup)
         return True
 
     def _validate_ops(self, rec: dict, where: dict) -> bool:
