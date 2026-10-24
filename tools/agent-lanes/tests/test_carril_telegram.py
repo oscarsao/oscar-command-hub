@@ -217,6 +217,7 @@ def test_es_telegram_por_titulo_y_por_bots():
 def test_ruta_solo_reencamina_desde_oscarhq_y_el_alias():
     assert telegram_lane.ruta("claude-hub", "[Telegram] x") == TG
     assert telegram_lane.ruta(ALIAS, "[Telegram] x") == TG
+    assert telegram_lane.ruta(ALIAS, "[Hub] otra cosa") == TG  # el alias siempre va al carril canónico
     assert telegram_lane.ruta("claude-oscarhq", "[Telegram] x") == TG
     assert telegram_lane.ruta("claude-hub", "[Hub] otra cosa") == "claude-hub"
     assert telegram_lane.ruta("claude-migrateam", "[Telegram] x") == "claude-migrateam"

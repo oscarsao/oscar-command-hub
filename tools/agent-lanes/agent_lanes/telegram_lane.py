@@ -24,6 +24,7 @@ log = logging.getLogger("agent_lanes")
 
 _AVISADAS: set[str] = set()  # tarjetas de otro tablero ya avisadas en el log (en memoria del proceso)
 LANE = "claude-hub"  # desde 23-10 «Hub y Telegram» es un solo carril; `claude-telegram` es su alias
+ALIASES = ("claude-telegram",)  # nombres antiguos de LANE (lanes.yaml `aliases:`)
 ORIGENES = ("claude-oscarhq", "claude-telegram")  # de dónde se pasan tarjetas (oscarhq: solo Telegram; alias: todas)
 REPO_LINE = re.compile(r"^\s*Repo:\s*(\S+)\s*$", re.M | re.I)
 SETTINGS_PATH = ROOT / "clasificador.yaml"
@@ -68,7 +69,10 @@ def es_telegram(title, body="", cfg: dict | None = None) -> bool:
 
 
 def ruta(assignee: str, title, body="", cfg: dict | None = None) -> str:
-    """Carril al que va una tarjeta nueva: claude-telegram si es de Telegram y venía de hub/oscarhq; si no, el mismo."""
+    """Carril al que va una tarjeta nueva: claude-hub si es de Telegram y venía de oscarhq, o si se creó con el nombre
+    antiguo `claude-telegram` (alias: así no espera a que reasignar_abiertas la mueva); si no, el mismo."""
+    if assignee in ALIASES:
+        return LANE
     return LANE if assignee in ORIGENES and es_telegram(title, body, cfg) else assignee
 
 
