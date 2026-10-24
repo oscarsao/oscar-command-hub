@@ -220,3 +220,49 @@ def test_carril_que_no_es_de_implementacion_no_se_filtra(tmp_path):
     b = Board([card("t_00000001", CMD, "running"), card("t_00000002", CMD)])
     ops = dataclasses.replace(LANE, kind="ops")
     assert ids(prev(tmp_path, b).filtrar(ops, ready(b), b)) == ["t_00000002"]
+
+
+# --- 24-10: solo frenan las ramas lane/* de tarjetas activas o con PR abierto --------------------------------------
+
+def test_rama_de_tarjeta_done_o_archived_sin_pr_no_frena(tmp_path):
+    # t_98928c3a/lane/t_e7d17dba (done, integrada por otro PR) y t_0383722d/lane/t_89163bdb (archived)
+    g = FakeGit({"lane/t_0000000a": (NOW, "x", [CMD]), "lane/t_0000000b": (NOW, "x", [CMD])})
+    b = Board([card("t_0000000a", "otra cosa", "done"), card("t_0000000b", "otra cosa", "archived"),
+               card("t_00000002", CMD)])
+    assert ids(prev(tmp_path, b, g).filtrar(LANE, ready(b), b)) == ["t_00000002"]
+    assert not b.notas("t_00000002", MARCA)
+
+
+def test_rama_de_tarjeta_done_con_pr_abierto_frena_mientras_siga_abierto(tmp_path):
+    # t_88fc167f/lane/t_05c99181: tarjeta done con su PR #116 aún abierto
+    g = FakeGit({"lane/t_0000000a": (NOW, "x", [CMD])},
+                prs=[{"number": 116, "headRefName": "lane/t_0000000a", "title": "x"}])
+    b = Board([card("t_0000000a", "otra cosa", "done"), card("t_00000002", CMD)])
+    p = prev(tmp_path, b, g)
+    assert p.filtrar(LANE, ready(b), b) == []
+    assert "PR #116" in b.notas("t_00000002", MARCA)[0]
+    g._prs = []                                                                       # el PR se fusiona o se cierra
+    assert ids(p.filtrar(LANE, ready(b), b)) == ["t_00000002"]
+
+
+def test_rama_de_tarjeta_blocked_sin_pr_frena(tmp_path):
+    g = FakeGit({"lane/t_0000000a": (NOW, "x", [CMD])})
+    b = Board([card("t_0000000a", "otra cosa", "blocked"), card("t_00000002", CMD)])
+    assert prev(tmp_path, b, g).filtrar(LANE, ready(b), b) == []
+
+
+def test_rama_sin_tarjeta_conocida_ni_pr_no_frena(tmp_path):
+    g = FakeGit({"lane/t_0000000a": (NOW, "x", [CMD])})
+    b = Board([card("t_00000002", CMD)])
+    assert ids(prev(tmp_path, b, g).filtrar(LANE, ready(b), b)) == ["t_00000002"]
+
+
+def test_si_hermes_no_lee_los_activos_vuelve_a_la_regla_de_antiguedad(tmp_path):
+    class Media(Board):
+        def list_status_all(self, status):
+            if status == "blocked":
+                raise RuntimeError("hermes caído")
+            return super().list_status_all(status)
+    g = FakeGit({"lane/t_0000000a": (NOW, "x", [CMD])})
+    b = Media([card("t_0000000a", "otra cosa", "done"), card("t_00000002", CMD)])
+    assert prev(tmp_path, b, g).filtrar(LANE, ready(b), b) == []                     # rama reciente: frena como antes

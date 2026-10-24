@@ -4,7 +4,10 @@ Antes de que el planificador lance una tarjeta `ready` de un carril de IMPLEMENT
 si su zona choca con trabajo que ya está en marcha en el mismo repo:
 
 - tarjetas en `prevenir_estados` (running, review) del mismo repo, con la zona de su rama `lane/<id>` o de su texto;
-- ramas `lane/*` sin fusionar (su PR ni fusionado ni cerrado, `Git.ramas_cerradas`), recientes o con PR abierto;
+- ramas `lane/*` sin fusionar (su PR ni fusionado ni cerrado, `Git.ramas_cerradas`) que sean de una tarjeta ACTIVA
+  (`ACTIVOS`: running, ready, blocked, review) o que tengan un PR abierto. La rama de una tarjeta done/archived sin PR
+  abierto no frena (24-10: la cola se atascaba con ramas de tarjetas ya integradas por otro PR o archivadas); una
+  done con PR abierto frena solo mientras ese PR siga abierto. Si Hermes no se puede leer, regla antigua (antigüedad);
 - tarjetas que se acaban de admitir en esta misma pasada (dos `ready` que tocan lo mismo no salen a la vez).
 
 La zona de la tarjeta sale de `solapes.extraer_rutas(título + cuerpo)` (y de su rama si ya existe de un intento
@@ -40,6 +43,7 @@ MARCA = "CHOQUE-AL-LANZAR"
 LIBERADA = "CHOQUE-LIBERADA"
 AUTHOR = "agent-lanes"
 STATE_PATH = ROOT / ".state" / "choques_prevencion.json"  # {tid: {"con": uid, "desde": epoch, "caducada": bool}}
+ACTIVOS = ("running", "ready", "blocked", "review")  # estados cuya rama lane/<id> sigue contando
 HERMES_TTL = 30.0  # s: listas running/review compartidas entre carriles (el planificador despierta a menudo)
 
 
@@ -122,10 +126,12 @@ class Prevencion:
         key = solapes._norm_repo(eff.repo)
         remote = getattr(eff, "remote", "origin") or "origin"
         tarjetas, vistos = [], set()
+        activas: set[str] | None = set()  # ids en ACTIVOS de cualquier tablero; None = algún estado no se pudo leer
         boards = list(dict.fromkeys(getattr(l, "board", "") for l in self.lanes.values()
                                     if getattr(l, "board", "") and getattr(l, "kind", "") == "implement"))
+        estados = tuple(dict.fromkeys(tuple(aj.prevenir_estados) + ACTIVOS))
         for board in boards:
-            for status in aj.prevenir_estados:
+            for status in estados:
                 hit = self._hcache.get((board, status))
                 if hit and self._clock() - hit[0] < HERMES_TTL:
                     tasks = hit[1]
@@ -134,8 +140,14 @@ class Prevencion:
                         tasks = self.hermes_for(board).list_status_all(status)
                     except Exception as exc:
                         log.info("prevención: %s/%s no leído: %s", board, status, exc)
+                        if status in ACTIVOS:
+                            activas = None
                         continue
                     self._hcache[(board, status)] = (self._clock(), tasks)
+                if status in ACTIVOS and activas is not None:
+                    activas.update(str(t.get("id")) for t in tasks if t.get("id"))
+                if status not in aj.prevenir_estados:
+                    continue
                 for t in tasks:
                     tid = t.get("id")
                     lane = telegram_lane.lane_de_tarjeta(self.lanes, t) if tid else None
@@ -156,9 +168,12 @@ class Prevencion:
             if u.origen == "lane":
                 if u.rama[len("lane/"):] in ready_ids:  # rama de un intento anterior de otra ready: la ordena la pasada
                     continue
-                viejo = ahora - (ramas.get(u.rama) or 0) > aj.ramas_personas_dias * 86400
-                if viejo and u.rama not in prs:  # rama abandonada sin PR: no frena a nadie
-                    continue
+                if u.rama not in prs:  # con PR abierto siempre cuenta (también la de una tarjeta done, caso #116)
+                    if activas is not None:
+                        if u.rama[len("lane/"):] not in activas:  # tarjeta done/archived (o ajena): no frena
+                            continue
+                    elif ahora - (ramas.get(u.rama) or 0) > aj.ramas_personas_dias * 86400:
+                        continue  # sin Hermes: regla antigua, rama abandonada sin PR no frena
             out.append(u)
         return out, set(ramas) - silenciadas
 
