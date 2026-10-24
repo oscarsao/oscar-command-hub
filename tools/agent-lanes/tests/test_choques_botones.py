@@ -194,3 +194,24 @@ def test_pulsar_ignorar_por_telegram_de_verdad_con_message_store(tmp_path):
 def test_aviso_dice_que_se_frena_con_prevencion():
     [c] = choques.detectar(LANES, hermes([]), _ramas_en_conflicto(), choques.Ajustes(), ahora=NOW)
     assert "no se lanza en paralelo" in choques.aviso(c, choques.Ajustes(prevenir_al_lanzar=True))
+
+
+def test_temprano_lleva_boton_confirmar_orden_y_lo_anota(tmp_path):
+    from agent_lanes.choques import CHO_ORDEN
+    pr = {"number": 280, "headRefName": "feat/uno", "title": "uno", "author": {"login": "oscarsao"}}
+    g = FakeGit({"feat/uno": (NOW, "Oscar", [CMD]), "feat/dos": (NOW, "Oscar", [CMD])}, prs=[pr],
+                reales={frozenset(("feat/uno", "feat/dos")): False})
+    tk, sent, store = _ticker(tmp_path, g, lanes=HUB_GH)
+    tk.orden_path = tmp_path / "ord.json"
+    tk.tick()
+    [(texto, markup)] = sent
+    assert "aún sin conflicto" in texto
+    assert _botones(markup)[0]["text"] == "✅ Confirmar: PR #280 primero, la otra espera"
+    rec, boton = _rec_y_boton(store, markup, CHO_ORDEN)
+    assert rec["primero"] == "feat/uno" and rec["despues"] == "feat/dos"
+    desk, notifier = _desk(tmp_path, tk)
+    assert desk._act(rec, boton, {"chat_id": "1", "message_id": 9}) is True
+    assert "feat/uno va primero" in notifier.edits[-1]
+    guardado = json.loads((tmp_path / "ord.json").read_text(encoding="utf-8"))
+    assert guardado["feat/dos|feat/uno"]["primero"] == "feat/uno"
+    assert tk.on_button(CHO_ORDEN, {}, {"chat_id": "1", "message_id": 1}, desk) is False

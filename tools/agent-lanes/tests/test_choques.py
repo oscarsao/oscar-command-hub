@@ -264,3 +264,68 @@ def test_load_ajustes_recordar_y_compatibles(tmp_path):
     p.write_text("recordar_dias: 7\navisar_compatibles: true\n", encoding="utf-8")
     a = load_ajustes(p)
     assert a.recordar_dias == 7 and a.avisar_compatibles is True
+
+
+# --- aviso temprano (24-10): mismos ficheros, merge limpio, alguna rama con PR -----------------------------------------
+
+def _pr(n, rama):
+    return {"number": n, "headRefName": rama, "title": "t", "author": {"login": "oscarsao"}}
+
+
+def _temprano_git(prs, ficheros_b=(CMD,)):
+    return FakeGit({"feat/uno": (NOW, "Oscar", [CMD, "a/otro.py"]), "feat/dos": (NOW, "Oscar", list(ficheros_b))},
+                   prs=prs, reales={frozenset(("feat/uno", "feat/dos")): False})
+
+
+def test_temprano_avisa_antes_del_conflicto_y_va_primero_la_del_pr():
+    [c] = run(_temprano_git([_pr(280, "feat/uno")]))
+    assert c.clase == "temprano" and c.comparten == [CMD]
+    assert "feat/uno va primero (ya tiene PR)" in c.propuesta
+    assert "aún sin conflicto" in aviso(c)
+
+
+def test_temprano_sin_pr_no_avisa_y_ficheros_distintos_tampoco():
+    assert run(_temprano_git([])) == []
+    assert run(_temprano_git([_pr(1, "feat/uno")], ficheros_b=("z/otro_modulo.py",))) == []
+
+
+def test_temprano_con_dos_pr_va_primero_el_mas_antiguo():
+    [c] = run(_temprano_git([_pr(281, "feat/uno"), _pr(280, "feat/dos")]))
+    assert "feat/dos va primero" in c.propuesta
+
+
+def test_temprano_se_apaga_e_ignora_ficheros_por_yaml(tmp_path):
+    g = _temprano_git([_pr(1, "feat/uno")])
+    assert run(g, aj=Ajustes(temprano=False)) == []
+    assert run(g, aj=Ajustes(temprano_ignorar=("*/commands.py",))) == []
+    y = tmp_path / "c.yaml"
+    y.write_text("temprano: false\nfetch: false\ntemprano_ignorar: ['A/B.md']\n", encoding="utf-8")
+    aj = load_ajustes(y)
+    assert aj.temprano is False and aj.fetch is False and aj.temprano_ignorar == ("a/b.md",)
+
+
+def test_detectar_hace_fetch_por_repo_y_se_puede_apagar():
+    g = _temprano_git([])
+    llamadas = []
+    g.fetch = lambda repo, remote: llamadas.append((repo, remote)) or True
+    run(g)
+    assert llamadas == [(HUB, "origin")]
+    run(g, aj=Ajustes(fetch=False))
+    assert len(llamadas) == 1
+
+
+def test_git_fetch_real_con_runner_falso():
+    cmds = []
+
+    def runner(cmd, **kw):
+        cmds.append(cmd)
+        return SimpleNamespace(returncode=0, stdout="")
+
+    assert Git(runner=runner).fetch("/r", "origin") is True
+    assert cmds == [["git", "-C", "/r", "fetch", "--prune", "--quiet", "origin"]]
+    assert Git(runner=lambda *a, **k: 1 / 0).fetch("/r", "origin") is False
+
+
+def test_choques_yaml_trae_los_ajustes_tempranos():
+    aj = load_ajustes()
+    assert aj.temprano and aj.fetch
