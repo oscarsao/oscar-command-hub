@@ -16,6 +16,11 @@ max_avisos: 6                 # avisos nuevos por pasada
 comparten_max: 5              # rutas compartidas que se citan
 recordar_dias: 30             # un par ya avisado no se vuelve a avisar hasta pasados N días
 avisar_compatibles: false     # true = avisar también «misma zona, compatibles»; false = solo conflicto y revisar
+# Aviso temprano: dos ramas (de carril o de persona) que ya tocan los MISMOS ficheros aunque git aún las fusione limpio,
+# con alguna con PR abierto. Va primero la que tiene PR; el aviso pide [✅ Confirmar: PR #n primero, la otra espera].
+temprano: true                # false = solo se avisa del conflicto ya hecho
+temprano_ignorar: []          # ficheros que no cuentan (fnmatch, minúsculas), p. ej. ["*/changelog.md", "*.d.ts"]
+fetch: true                   # git fetch --prune del remote antes de cada barrido (ve ramas nuevas sin esperar)
 # Botones de todo aviso: 🙈 Ignorar este par (hasta recordar_dias), 🔇 Silenciar <rama> (lista editable en
 # .state/choques_silenciadas.json) y 🔎 Ver PR. Entre dos tarjetas, además fusionar/encadenar/duplicada/pausar.
 # Prevención al lanzar: una tarjeta ready que choca con otra del mismo repo en prevenir_estados, o con una rama lane/*
