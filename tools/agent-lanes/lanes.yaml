@@ -50,7 +50,8 @@ telegram:
   #   enabled: false
   #   chats: [-100XXXXXXXXXX]   # id del grupo de Marketing (lo decide Oscar)
   #   text: Esto lo lleva el asistente del equipo: escríbele a él.
-  # Texto libre de Oscar = respuesta a la decisión pendiente de ESE tema (auditoría t_dddcc232, P1). Con una sola
+  # Texto libre de Oscar = respuesta a la decisión pendiente de ESE tema (auditoría t_dddcc232, P1), SOLO si el mensaje
+  # es una respuesta (reply_to) a un mensaje de este bot (24-10: Trabajos = motor silencioso; la conversación es de Hermes). Con una sola
   # pendiente la toma como respuesta (eco + Deshacer); con varias pregunta cuál. Nunca promueve/fusiona/despliega.
   # window_hours: solo cuentan avisos enviados en las últimas N horas. max_choices: botones del selector.
   # Quitar el bloque apaga la función.

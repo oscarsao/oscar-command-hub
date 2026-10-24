@@ -63,7 +63,14 @@ def _notice(desk, messages, tid="t_1", *, mid=77, thread=TOPIC, chat=GROUP):
     return markup
 
 
-def _say(desk, text, *, user=OSCAR, chat=GROUP, thread=TOPIC, mid=900, private=False, **extra):
+BOT_MSG = {"message_id": 1, "from": {"id": int(FakeTG.bot_id), "is_bot": True}}  # un mensaje cualquiera de Trabajos
+
+
+def _say(desk, text, *, user=OSCAR, chat=GROUP, thread=TOPIC, mid=900, private=False, bot_reply=True, **extra):
+    """Por defecto, `text` va como respuesta (reply_to) a un mensaje del bot: desde el 24-10 es la única forma de que el
+    texto libre cuente como respuesta a una decisión (Trabajos = motor silencioso). bot_reply=False = texto suelto."""
+    if bot_reply and "reply_to_message" not in extra:
+        extra["reply_to_message"] = BOT_MSG
     msg = {"message_id": mid, "from": {"id": user}, "chat": {"id": chat, "type": "private" if private else "supergroup"},
            "text": text, **extra}
     if thread:
@@ -246,3 +253,55 @@ def test_decision_card_takes_the_free_text_and_closes_without_undo(tmp_path):
 def test_lanes_yaml_declares_the_window_and_choices():
     cfg = load_telegram_settings()["free_text"]
     assert cfg and cfg["window_hours"] > 0 and cfg["max_choices"] >= 2
+
+
+# --- Trabajos = motor silencioso (24-10, Oscar): Hermes conversa; Trabajos solo lee respuestas a sus mensajes ---------
+
+def test_loose_text_in_a_topic_with_a_pending_decision_is_ignored(tmp_path):
+    desk, tg, h, messages = _setup(tmp_path)
+    _notice(desk, messages)
+    _say(desk, "la B", bot_reply=False)
+    assert h.calls == [] and tg.sent == []
+
+
+def test_reply_to_someone_elses_message_is_ignored(tmp_path):
+    desk, tg, h, messages = _setup(tmp_path)
+    _notice(desk, messages)
+    _say(desk, "la B", reply_to_message={"message_id": 55, "from": {"id": 123456, "is_bot": True}})  # p. ej. Hermes
+    _say(desk, "la B", mid=901, reply_to_message={"message_id": 56, "from": {"id": 111222333}})
+    assert h.calls == [] and tg.sent == []
+
+
+def test_reply_to_the_notice_itself_is_its_answer_without_asking(tmp_path):
+    desk, tg, h, messages = _setup(tmp_path)
+    _notice(desk, messages, mid=77)
+    _say(desk, "la B", reply_to_message={"message_id": 77, "from": {"id": int(FakeTG.bot_id), "is_bot": True}})
+    assert h.calls == [("comment", "t_1", "Respuesta de Oscar: ¿A o B? → la B", OSCAR_AUTHOR), ("unblock", "t_1")]
+    assert tg.sent[-1]["text"] == "Entendido: «la B» para t_1"
+
+
+def test_without_a_known_bot_id_free_text_never_counts(tmp_path):
+    desk, tg, h, messages = _setup(tmp_path)
+    tg.bot_id = None
+    _notice(desk, messages)
+    _say(desk, "la B")
+    assert h.calls == [] and tg.sent == []
+
+
+def test_loose_text_in_a_topic_created_by_the_bot_is_not_a_reply(tmp_path):
+    # Telegram pone como reply_to_message el aviso de creación del tema (lo creó Trabajos): no es una respuesta.
+    desk, tg, h, messages = _setup(tmp_path)
+    _notice(desk, messages)
+    creation = {"message_id": TOPIC, "from": BOT_MSG["from"], "forum_topic_created": {"name": "🤖 Asistente"}}
+    _say(desk, "la B", reply_to_message=creation)
+    _say(desk, "la B", mid=901, reply_to_message={"message_id": TOPIC, "from": BOT_MSG["from"]})
+    assert h.calls == [] and tg.sent == []
+
+
+def test_reply_to_a_thread_root_notice_in_a_non_forum_group_still_counts(tmp_path):
+    # Supergrupo sin foro: message_thread_id = id del mensaje raíz respondido, sin is_topic_message.
+    desk, tg, h, messages = _setup(tmp_path)
+    _notice(desk, messages, mid=77, thread=0)
+    _say(desk, "la B", thread=0, message_thread_id=77,
+         reply_to_message={"message_id": 77, "from": BOT_MSG["from"]})
+    assert [c[0] for c in h.calls] == ["comment", "unblock"]
