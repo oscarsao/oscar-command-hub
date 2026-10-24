@@ -7,12 +7,13 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 from agent_lanes import resumen_carriles, telegram_lane
-from agent_lanes.config import Lane, load_lanes, load_runner_settings
+from agent_lanes.config import Lane, LaneMap, load_lanes, load_runner_settings, resolve_lane
 from agent_lanes.hermes import HermesCLI
 from agent_lanes.runner import LaneRunner
 from agent_lanes.service import Service
 
-TG = "claude-telegram"
+TG = "claude-hub"  # «Hub y Telegram»: un solo carril (23-10); claude-telegram es su alias
+ALIAS = "claude-telegram"
 REPOS = {"hub": {"repo": "C:/hub", "github": "o/hub", "base": "main", "test_cmd": "T-HUB",
                  "forbidden_paths": [".github/workflows/"]},
          "oscar-hq": {"repo": "C:/ohq", "github": "o/ohq", "base": "master", "test_cmd": "T-OHQ", "role": "roles/implementador.md"}}
@@ -28,7 +29,7 @@ def task(title="[Telegram] arreglo", body="", tid="t_00000001", assignee=TG):
 def test_lanes_yaml_real_define_el_carril_con_plaza_y_dos_repos():
     lanes = load_lanes()
     lane = lanes[TG]
-    assert lane.kind == "implement" and lane.reserved_slots == 1 and lane.max_parallel == 1
+    assert lane.kind == "implement" and lane.reserved_slots == 1 and lane.max_parallel == 2
     assert lane.board == "default" and list(lane.repos) == ["hub", "oscar-hq"]
     assert lane.repos["oscar-hq"]["github"] == "oscarsao/oscar-hq" and lane.repos["oscar-hq"]["base"] == "master"
     assert TG in lanes["review"].reviews
@@ -36,11 +37,21 @@ def test_lanes_yaml_real_define_el_carril_con_plaza_y_dos_repos():
     assert ".github/workflows/" in lane.forbidden_paths and "tools/agent-lanes/.env" in lane.forbidden_paths
     assert lane.allowed_tools == lanes["claude-hub"].allowed_tools
     assert lane.role_path.is_file()
+    # el nombre antiguo se acepta en entrada pero no se emite como carril aparte
+    assert lanes[ALIAS] is lane and ALIAS in lanes and ALIAS not in list(lanes) and lane.aliases == (ALIAS,)
+    assert ALIAS not in lanes["review"].reviews
+
+
+def test_resolve_lane_acepta_alias_y_deja_pasar_lo_desconocido():
+    lanes = load_lanes()
+    assert resolve_lane(lanes, ALIAS) == TG and resolve_lane(lanes, TG) == TG
+    assert resolve_lane(lanes, "no-existe") == "no-existe" and lanes.get("no-existe") is None
+    assert resolve_lane({}, ALIAS) == ALIAS
 
 
 def test_el_resto_de_carriles_sigue_sin_plaza_ni_repos():
     for name, lane in load_lanes().items():
-        if name != TG:
+        if name != TG:  # el alias no es un carril aparte: no aparece al iterar
             assert lane.reserved_slots == 0 and not lane.repos
 
 
@@ -203,8 +214,10 @@ def test_es_telegram_por_titulo_y_por_bots():
     assert not telegram_lane.es_telegram("[Hub] Algo", "nada que ver con mensajería")
 
 
-def test_ruta_solo_reencamina_desde_hub_y_oscarhq():
+def test_ruta_solo_reencamina_desde_oscarhq_y_el_alias():
     assert telegram_lane.ruta("claude-hub", "[Telegram] x") == TG
+    assert telegram_lane.ruta(ALIAS, "[Telegram] x") == TG
+    assert telegram_lane.ruta(ALIAS, "[Hub] otra cosa") == TG  # el alias siempre va al carril canónico
     assert telegram_lane.ruta("claude-oscarhq", "[Telegram] x") == TG
     assert telegram_lane.ruta("claude-hub", "[Hub] otra cosa") == "claude-hub"
     assert telegram_lane.ruta("claude-migrateam", "[Telegram] x") == "claude-migrateam"
@@ -224,6 +237,8 @@ def test_hermes_create_enruta_una_tarjeta_de_telegram():
     HermesCLI("default", exe="hermes", runner=run).create("[Hub] Otra", "b", "claude-hub")
     assert cmds[0][cmds[0].index("--assignee") + 1] == TG
     assert cmds[1][cmds[1].index("--assignee") + 1] == "claude-hub"
+    HermesCLI("default", exe="hermes", runner=run).create("[Telegram] Bot", "b", "claude-oscarhq")
+    assert cmds[2][cmds[2].index("--assignee") + 1] == TG  # desde oscarhq pasa al carril unificado
 
 
 def test_hermes_create_no_enruta_a_otro_tablero():
@@ -237,19 +252,26 @@ def test_hermes_create_no_enruta_a_otro_tablero():
     assert cmds[0][cmds[0].index("--assignee") + 1] == "claude-oscarhq"  # Hermes no mueve tarjetas entre tableros
 
 
-def test_reasignar_abiertas_solo_ready_de_telegram_del_mismo_tablero():
-    lanes = {TG: LANE, "claude-hub": Lane(name="claude-hub", board="default"),
-             "claude-oscarhq": Lane(name="claude-oscarhq", board="oscarhq")}
+def test_reasignar_abiertas_pasa_las_de_telegram_de_oscarhq_y_todas_las_del_alias():
+    lanes = LaneMap({TG: Lane(name=TG, board="default", aliases=(ALIAS,)),
+                     "claude-oscarhq": Lane(name="claude-oscarhq", board="default")})
+    h = MagicMock()
+    h.list_ready.side_effect = lambda a: {
+        ALIAS: [task("[Hub] vieja", tid="t_00000001", assignee=ALIAS)],
+        "claude-oscarhq": [task("[Telegram] c", tid="t_00000002", assignee=a), task("[OHQ] d", tid="t_00000003", assignee=a)],
+    }.get(a, [])
+    h.reassign.return_value = True
+    assert sorted(telegram_lane.reasignar_abiertas(lambda b: h, lanes)) == ["t_00000001", "t_00000002"]
+    assert all(c.args[1] == TG for c in h.reassign.call_args_list)
+    h.list_status.assert_not_called()  # solo ready: las running ni se miran
+
+
+def test_reasignar_no_mueve_de_otro_tablero():
+    lanes = {TG: Lane(name=TG, board="default"), "claude-oscarhq": Lane(name="claude-oscarhq", board="oscarhq")}
     boards = {"default": MagicMock(), "oscarhq": MagicMock()}
-    boards["default"].list_ready.side_effect = lambda a: [task("[Telegram] a", tid="t_00000001", assignee=a),
-                                                          task("[Hub] b", tid="t_00000002", assignee=a)] if a == "claude-hub" else []
     boards["oscarhq"].list_ready.return_value = [task("[Telegram] c", tid="t_00000003", assignee="claude-oscarhq")]
-    boards["default"].reassign.return_value = True
-    assert telegram_lane.reasignar_abiertas(boards.__getitem__, lanes) == ["t_00000001"]
-    boards["default"].reassign.assert_called_once()
-    assert boards["default"].reassign.call_args.args[:2] == ("t_00000001", TG)
-    boards["oscarhq"].reassign.assert_not_called()  # otro tablero: no se mueve
-    boards["default"].list_status.assert_not_called()  # solo ready: las running ni se miran
+    assert telegram_lane.reasignar_abiertas(boards.__getitem__, lanes) == []
+    boards["oscarhq"].reassign.assert_not_called()
 
 
 def test_reasignar_sin_el_carril_configurado_no_hace_nada():
