@@ -1,4 +1,8 @@
 # Personas del equipo que pueden escribir por DM al bot de carriles (@pildora_carriles_bot).
+# UNA SOLA FUENTE de permisos (24-10, Oscar): tambien manda en Hermes (@oscarsaoBot). Tras editar este fichero:
+#   py -3.12 tools/telegram/sincronizar_permisos.py --apply   (allowed users del .env y tabla de SOUL.md de Hermes)
+#   hermes gateway restart
+# Hermes solo contesta a Oscar y a quien tenga user_id aqui; sin user_id (null) no se le contesta.
 # Lo lee agent_lanes/people.py. Decision de Oscar 11-10: Ingerber (CMO Pildora), Andrea (marketing) y Maria (socia/estrategia).
 #
 # Reglas (las aplica el codigo, no este fichero):

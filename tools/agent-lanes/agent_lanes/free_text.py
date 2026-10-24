@@ -1,6 +1,10 @@
 """Texto libre de Oscar como respuesta a la decisión pendiente del tema (auditoría t_dddcc232, P1, opción A).
 
-Si Oscar escribe en un chat/tema sin hacer "reply" a un force_reply, y ahí hay alguna decisión pendiente suya (una
+Motor silencioso (24-10, Oscar: «Hermes conversa en todo; Trabajos solo avisos, botones y comandos»): el texto libre
+SOLO cuenta si es una RESPUESTA (reply_to) a un mensaje de este mismo bot. El texto suelto de un tema es conversación y
+lo contesta Hermes; Trabajos calla.
+
+Si Oscar responde a un mensaje del bot sin que sea un force_reply, y ahí hay alguna decisión pendiente suya (una
 pregunta needs_input o una tarjeta de /decisiones), NO se asume que el texto sea la respuesta (t_61a4baa6): el bot
 pregunta con botones «¿es tu respuesta a t_xxx o un mensaje nuevo?» (con varias, a cuál). Al elegir tarea, mismo
 camino que la respuesta por reply (`DecisionDesk._apply_reply`), con eco "Entendido: «…» para t_xxx" y [↩️ Deshacer]
@@ -92,9 +96,26 @@ class FreeText:
 
     # --- entrada --------------------------------------------------------------------------------------
 
+    def replies_to_bot(self, msg: dict) -> bool:
+        """True si `msg` es una respuesta (reply_to) a un mensaje de este mismo bot. Sin id de bot conocido, False: el
+        texto suelto del tema es conversación (la lleva Hermes), no una respuesta a una decisión."""
+        bot_id = getattr(self.desk.notifier, "bot_id", None)
+        reply = msg.get("reply_to_message") or {}
+        # En un tema de foro, un mensaje SIN reply llega con reply_to_message = el aviso de creación del tema (service
+        # message con forum_topic_created y message_id == message_thread_id). Si el tema lo creó este bot (todos desde
+        # el 28-09), eso NO es una respuesta: es texto suelto.
+        if reply.get("forum_topic_created") or (
+                msg.get("is_topic_message") and msg.get("message_thread_id") is not None
+                and str(reply.get("message_id")) == str(msg.get("message_thread_id"))):
+            return False
+        replied = (reply.get("from") or {}).get("id")
+        return bool(bot_id) and replied is not None and str(replied) == str(bot_id)
+
     def handle(self, msg: dict) -> bool:
         """True si hay al menos una decisión pendiente aquí y el texto se tratará como su respuesta (en un hilo
         aparte: consulta el kanban). False = nada pendiente, que siga el flujo de siempre."""
+        if not self.replies_to_bot(msg):  # motor silencioso (24-10): solo una respuesta a un mensaje de ESTE bot
+            return False
         chat_id, thread_id = scope_of(msg)
         sender = (msg.get("from") or {}).get("id")  # operador que no es Oscar: sus respuestas se firman con su nombre
         puede = getattr(self.desk, "puede_con", None)  # operador acotado por marca: solo decisiones de las suyas
