@@ -106,7 +106,7 @@ def hub(tmp_path, *, probe=True):
 def test_offer_says_merge_does_not_deploy(tmp_path):
     integ, w, h, tg, d, launched = hub(tmp_path)
     assert integ.run_pass() == {"t_1": "offered"}
-    assert buttons(tg.sent[-1]["markup"]) == ["🔀 Fusionar"]
+    assert buttons(tg.sent[-1]["markup"]) == ["🔀 Integrar"]
     assert "🔁 Aplicar hace el reinicio ordenado" in tg.sent[-1]["text"]
     assert launched == []
 

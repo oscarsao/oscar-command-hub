@@ -294,7 +294,7 @@ def summary_state(status: str, *, deploy: str = "none", migration: str | None = 
     if status == "merged" and apply:  # claude-hub: fusionado en main, falta el reinicio ordenado
         return "🔁 fusionado, falta aplicar"
     if status == "offered":
-        return "⏸ migración pendiente" if migration and deploy == "on_merge" else "🚦 listo, pulsa Fusionar"
+        return "⏸ migración pendiente" if migration and deploy == "on_merge" else "🚦 listo, pulsa Integrar"
     if status == "failed":
         return "⛔ gates fallidos"
     if status == "waiting_deps":

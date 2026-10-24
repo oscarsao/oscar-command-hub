@@ -37,7 +37,9 @@ def test_act_promo_review_and_confirm_go_to_on_button(tmp_path):
     cc, desk, *_ = center(tmp_path, {})
     desk.promoter = FakePromoter()
     assert desk._act({}, {"action": "promo_review"}, WHERE) is True
-    assert desk._act({}, {"action": "promo_confirm"}, WHERE) is True
+    # promo_confirm es producción: sin quién pulsa (o sin aprobar_produccion) no llega al promotor (consola.py)
+    assert desk._act({}, {"action": "promo_confirm"}, WHERE) is False
+    assert desk._act({}, {"action": "promo_confirm"}, {**WHERE, "user_id": desk.owner_id}) is True
     assert desk.promoter.buttons == ["promo_review", "promo_confirm"] and not desk.promoter.started
 
 

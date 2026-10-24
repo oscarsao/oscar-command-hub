@@ -76,6 +76,11 @@ equipo_telegram: {chat: -1003530490339, thread: 5, crear_tema: true, nombre: "�
 # enabled: false (o quitar el bloque) = el fijado queda solo con «pendiente de integrar», como antes.
 live_panel: {enabled: true, queue: 3, done: 5, done_hours: 24, conflicts: 6}
 
+# Panel de carriles y workflows (H3 «Telegram como consola del integrador», 24-10): UN mensaje fijado en
+# Desarrollo Píldora › Hub y carriles que se edita en su sitio (estado en .state/hub_panel.json). Lee el kanban como
+# mucho cada `min_seconds`. Fijarlo necesita que el bot sea admin del grupo con «fijar mensajes».
+hub_panel: {enabled: true, chat: -1003731090094, thread: 38, min_seconds: 180}
+
 # Topes de los avisos de Telegram (los de fábrica están en notices.LIMITS). Nada se recorta en silencio: lo que no cabe
 # se marca ("➕ +2 preguntas más", "[…recortado]") y el resto va en un segundo mensaje o en la tarjeta.
 notices:

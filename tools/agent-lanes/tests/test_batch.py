@@ -181,7 +181,7 @@ def test_without_batch_policy_pr_by_pr_as_before(tmp_path):
     e.branch("t_a", {"src/a.py": "a = 2\n"})
     assert e.queue() == {"t_a": "offered"}  # ficha 🚦 individual de siempre
     assert "Listo para integrar PR #11" in e.tg.all_text
-    assert buttons(e.tg.sent[0]["markup"]) == ["🔀 Fusionar"]
+    assert buttons(e.tg.sent[0]["markup"]) == ["🔀 Integrar"]
     assert e.integ.batches.all() == []
     assert e.gh.named("create") == []
 

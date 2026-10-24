@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+from agent_lanes import consola
 from agent_lanes.config import Lane
 from agent_lanes.decisions import NOT_OWNER, CallbackStore, DecisionDesk
 from agent_lanes.hermes import OSCAR_AUTHOR
@@ -269,12 +270,24 @@ def make(tmp_path, *, name="claude-oscarhq", comments=None, desk=True, enabled=T
     return integ, w, h, tg, d, clock
 
 
-def press(desk, tg, *, n=0, user=OSCAR, markup=None):
-    markup = markup or next(m["markup"] for m in reversed(tg.sent + tg.edits) if m.get("markup"))
-    data = markup["inline_keyboard"][0][n]["callback_data"]
+def tap(desk, data, user=OSCAR):
     desk.handle_update({"callback_query": {"id": "cq", "from": {"id": user}, "data": data,
                                            "message": {"chat": {"id": -100}, "message_id": 555,
                                                        "message_thread_id": 231}}})
+
+
+def press(desk, tg, *, n=0, user=OSCAR, markup=None, confirm=True):
+    """Pulsa el botón n de la primera fila. Si es de la consola (dos toques, consola.py) pulsa también el ✅ Sí que
+    aparece en su lugar (`confirm=False` deja la confirmación pendiente)."""
+    markup = markup or next(m["markup"] for m in reversed(tg.sent + tg.edits) if m.get("markup"))
+    data = markup["inline_keyboard"][0][n]["callback_data"]
+    token, _, idx = data.partition(":")
+    rec = desk.store.get(token) or {}
+    action = ((rec.get("buttons") or [])[int(idx)] if int(idx) < len(rec.get("buttons") or []) else {}).get("action")
+    before = len(tg.markups)
+    tap(desk, data, user)
+    if confirm and action in consola.CS_PEDIR and len(tg.markups) > before:
+        tap(desk, tg.markups[-1]["inline_keyboard"][0][0]["callback_data"], user)
 
 
 def buttons(markup):
@@ -345,7 +358,7 @@ def test_oscarhq_all_gates_pass_offers_merge_button_only(tmp_path):
     assert integ.run_pass() == {"t_1": "offered"}
     msg = tg.sent[-1]
     assert "🚦 Listo para integrar PR #7" in msg["text"]
-    assert buttons(msg["markup"]) == ["🔀 Fusionar"]
+    assert buttons(msg["markup"]) == ["🔀 Integrar"]
     assert "✔ sin conflictos con master" in msg["text"] and "✔ tests OK" in msg["text"]
     assert "✔ sin secretos" in msg["text"] and "fusionar NO despliega" in msg["text"]
     assert "PR #7" in msg["text"] and msg["lane_target"] == ("-100", "231")
@@ -521,11 +534,12 @@ def test_supabase_migration_allows_merge_but_never_deploy(tmp_path):
     w.changed = ["supabase/migrations/20260928_x.sql"]
     integ, w, h, tg, d, _ = make(tmp_path, world=w)
     integ.run_pass()
-    assert buttons(tg.sent[-1]["markup"]) == ["🔀 Fusionar"]
+    assert buttons(tg.sent[-1]["markup"]) == ["🔀 Integrar"]
     assert "requiere migración manual" in tg.sent[-1]["text"]
     press(d, tg)
     assert "✅ fusionado · ddddddd" in tg.edits[-1]["text"] and NEEDS_MIGRATION in tg.edits[-1]["text"]
-    assert buttons(tg.edits[-1]["markup"]) == ["✅ Migración aplicada"]  # sin 🚀 Desplegar hasta confirmarla
+    # sin 🚀 Desplegar hasta confirmarla; 🗄 Aplicar migración aprobada pide la tarjeta del integrador (consola.py)
+    assert buttons(tg.edits[-1]["markup"]) == ["✅ Migración aplicada", "🗄 Aplicar migración aprobada"]
 
 
 def merged_with_migration(tmp_path):
@@ -679,7 +693,7 @@ def test_github_merge_failure_restores_button(tmp_path):
     integ.run_pass()
     press(d, tg)
     assert not any(t.startswith("INTEGRADO ") for _, t, _ in h.comments)
-    assert buttons(tg.markups[-1]) == ["🔀 Fusionar"]
+    assert buttons(tg.markups[-1]) == ["🔀 Integrar"]
 
 
 def test_gh_forbidden_flags_and_git_push_raise(tmp_path):
@@ -907,7 +921,7 @@ def test_dry_run_writes_nothing(tmp_path):
     assert integ.run_pass() == {"t_1": "dry-run:ok"}
     assert h.comments == [] and tg.sent == [] and not (tmp_path / "state" / "t_1.json").exists()
     assert not [a for a in w.argv(GH) if a[1:3] == ["pr", "merge"]]
-    assert any("GATES OK" in l for l in lines) and any("🔀 Fusionar" in l for l in lines)
+    assert any("GATES OK" in l for l in lines) and any("🔀 Integrar" in l for l in lines)
 
 
 def test_desk_without_integrator_ignores_int_buttons(tmp_path):
