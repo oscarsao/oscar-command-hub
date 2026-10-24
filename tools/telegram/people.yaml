@@ -39,12 +39,14 @@ people:
   ingerber:
     name: Ingerber
     user_id: "8847860660"   # Ingerber (CMO Pildora); confirmado por nombre en los registros 13-10
+    hermes: false   # 24-10 (Oscar): sin Hermes hasta tener un Hermes de equipo sin terminal ni ficheros
     role: cmo
     brands: [Píldora]
     can: []
   andrea:
     name: Andrea
     user_id: "8313932936"   # Andrea (marketing, a prueba); dado por Oscar 13-10
+    hermes: false   # 24-10 (Oscar): sin Hermes hasta tener un Hermes de equipo sin terminal ni ficheros
     role: marketing
     brands: [Píldora]
     can: []

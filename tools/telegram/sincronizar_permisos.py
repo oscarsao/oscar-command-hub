@@ -181,9 +181,13 @@ def main(argv: list[str] | None = None) -> int:
     entries = raw.get("people") or {}
     owner = os.environ.get("OWNER_TELEGRAM_ID") or DEFAULT_OWNER
     people = load_people(owner, a.people)
-    lista = personas(people, list(entries))
+    # `hermes: false` en people.yaml = la persona sigue en el equipo (avisos, panel, bot de Trabajos) pero Hermes no le
+    # contesta (Oscar 24-10: Hermes tiene terminal y ficheros en Telegram y no se puede limitar por persona).
+    sin_hermes = {k for k, v in entries.items() if (v or {}).get("hermes") is False}
+    lista = [p for p in personas(people, list(entries)) if p.key not in sin_hermes]
     alta = {p.key for p in lista}
-    pendientes = [str((v or {}).get("name") or k) for k, v in entries.items() if k not in alta and (v or {}).get("role") != "owner"]
+    pendientes = [str((v or {}).get("name") or k) + (" (sin Hermes)" if k in sin_hermes else "")
+                  for k, v in entries.items() if k not in alta and (v or {}).get("role") != "owner"]
     home = hermes_home(a.hermes_home)
     env_path, soul_path = home / ".env", home / "SOUL.md"
     for path in (env_path, soul_path):
