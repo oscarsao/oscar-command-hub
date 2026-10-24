@@ -63,6 +63,8 @@ CONTRACT = {
 REVIEW_AUTHOR = "lane-review"  # author of the review lane's change requests (read back by the implementer)
 OSCAR_AUTHOR = "oscar-telegram"  # Oscar's decisions from Telegram buttons (answers are read back by the implementer)
 ANSWER_PREFIX = "Respuesta de Oscar:"
+# Aprobación de un PR: Oscar (botón) o María (Hermes registra APROBADO-MARIA); el runner las trata igual.
+APPROVED_PREFIXES = ("APROBADO-OSCAR", "APROBADO-MARIA")
 
 # Respuesta de Oscar llegada por Hermes (clarify en su DM, 28-09): Hermes la apunta en la tarjeta con SU perfil
 # (`default`) y este prefijo EXACTO. Nada más cuenta como respuesta: ni "Oscar decide (28-09): …" ni "Respuesta de

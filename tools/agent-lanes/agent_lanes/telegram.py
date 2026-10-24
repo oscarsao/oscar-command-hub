@@ -63,7 +63,9 @@ def _protect_collaborator_dms(notifier: "TelegramNotifier", env: dict) -> None:
     from .people import load_people
     owner = env.get("OWNER_TELEGRAM_ID") or OWNER_TELEGRAM_ID
     notifier.owner_id = str(owner)
-    notifier.collab_chats = load_people(owner).collaborator_ids()
+    people = load_people(owner)
+    notifier.collab_chats = people.collaborator_ids()
+    notifier.operator_chats = set(people.operator_ids())  # operadores: mismo trato que Oscar (con botones)
     notifier.collab_view = collab_view
 
 
@@ -89,6 +91,7 @@ class TelegramNotifier:
         # DM de colaboradores: nada sale hacia ellos sin pasar por collab_view (ver notifier_from_env).
         self.collab_chats: set[str] = set()
         self.collab_view = None
+        self.operator_chats: set[str] = set()  # DM de operadores (people.yaml `operador: true`): no son colaboradores
         self.owner_id: str | None = None
 
     def _is_collab_chat(self, chat_id) -> bool:
@@ -98,6 +101,8 @@ class TelegramNotifier:
         if not self.collab_view:
             return False
         cid = str(chat_id)
+        if cid in self.operator_chats:
+            return False
         if cid in self.collab_chats:
             return True
         return cid.isdigit() and cid != str(self.owner_id) and cid != str(self.chat_id)

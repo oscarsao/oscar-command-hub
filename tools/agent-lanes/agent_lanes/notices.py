@@ -622,11 +622,11 @@ class TaskNotices:
         self.tema_de = tema_de
 
     def publish(self, tid: str, text: str, target=None, lane_target=None, *, alert: bool = False,
-                reply_markup: dict | None = None, mirror_to: str | None = None, channel: str | None = None,
+                reply_markup: dict | None = None, mirror_to: str | list[str] | None = None, channel: str | None = None,
                 leave_behind: Callable[[dict], str] | None = None, followup: list[str] | None = None,
                 keep_previous: bool = False) -> None:
-        """`mirror_to`: chat (DM de Oscar) que recibe además una copia del aviso, con los mismos botones. Si el aviso
-        principal ya cayó en ese chat, no se duplica.
+        """`mirror_to`: chat (DM de Oscar) o lista de chats (DM de Oscar y de sus operadores) que reciben además una
+        copia del aviso, con los mismos botones. Si el aviso principal ya cayó en un chat, a ese no se le duplica.
 
         `followup`: líneas (texto plano) con lo que no cupo en el aviso (questions_block(...).overflow). Con `alert`
         salen en mensajes aparte, partidos por el límite de Telegram, tras el aviso (y tras su copia al DM).
@@ -702,25 +702,27 @@ class TaskNotices:
                 log.info("%s: no se pudo dejar la línea de enlace: %s", tid, exc)
         self.store.put(tid, {**sent, "sig": sig, "sig_at": time.time(), **({"mirrors": mirrors} if mirrors else {}),
                              **({"channel": channel} if channel else {}), **({"trail": trail} if trail else {})})
-        dm = None
-        if alert and mirror_to and hasattr(self.notifier, "send_to") and str(sent.get("chat_id")) != str(mirror_to):
+        dms: list[str] = []
+        for chat in ([mirror_to] if isinstance(mirror_to, str) else list(mirror_to or ())):
+            if not (alert and chat and hasattr(self.notifier, "send_to")) or str(sent.get("chat_id")) == str(chat):
+                continue
             try:
-                copy = self.notifier.send_to(str(mirror_to), None, text, **extra)
+                copy = self.notifier.send_to(str(chat), None, text, **extra)
                 self.store.add_mirror(tid, copy, token=token, bot=bot)
-                dm = str(mirror_to)
+                dms.append(str(chat))
             except Exception as exc:  # DM sin /start ("chat not found", 403): no rompe el aviso del tema
                 log.info("%s: no se pudo enviar la copia al DM: %s", tid, exc)
         if alert and followup:
-            self._send_followup(tid, followup, target, lane_target, dm)
+            self._send_followup(tid, followup, target, lane_target, dms)
 
-    def _send_followup(self, tid: str, lines: list[str], target, lane_target, dm: str | None) -> None:
+    def _send_followup(self, tid: str, lines: list[str], target, lane_target, dms: list[str]) -> None:
         """El resto de las preguntas en mensajes aparte (sin notificación), al tema y, si hubo copia, al DM."""
         for chunk in split_text([html.escape(line) for line in lines]):
             try:
                 self.notifier.send(chunk, target, lane_target, silent=True)
             except Exception as exc:
                 log.info("%s: no se pudo enviar el resto de las preguntas: %s", tid, exc)
-            if dm:
+            for dm in dms:
                 try:
                     self.notifier.send_to(dm, None, chunk)
                 except Exception as exc:

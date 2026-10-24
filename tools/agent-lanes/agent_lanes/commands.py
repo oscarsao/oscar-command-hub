@@ -962,19 +962,25 @@ class CommandCenter:
         self._step_view(where, brand, titulos.BACKLOG_BOT, "🗃 Backlog del bot del equipo")
 
     def cmd_pendientes(self, where, args: str, brand: str | None) -> None:
-        """«Pendientes de Oscar»: assignee oscar con paso tuyo o decidir, una tarjeta por mensaje con sus botones. Las de
-        Oscar sin paso reconocible salen aparte como «sin clasificar» con aviso (nunca se ocultan)."""
+        """«Pendientes» de quien lo pide (Oscar o un operador como María): lo que espera su decisión. Tarjetas con
+        assignee oscar y paso tuyo o decidir, una por mensaje con sus botones; las sin paso reconocible salen aparte
+        como «sin clasificar» con aviso (nunca se ocultan). Después, preguntas de agentes, atascadas y tarjetas de
+        decisión (como /decisiones). El operador solo ve las marcas que puede decidir."""
         now = self._now()
+        quien = self._quien()
         mine = [c for c in self.board_tasks(brand) if c["task"].get("assignee") == OSCAR_ASSIGNEE]
         snoozed = self._snoozed()
-        pend = [c for c in mine if titulos.step_of(c["task"]) in titulos.OSCAR_STEPS and c["task"]["id"] not in snoozed]
+        en_decisiones = {c["task"]["id"] for c in self.oscar_cards(brand)[0]}  # ya salen con /decisiones: sin repetir
+        pend = [c for c in mine if titulos.step_of(c["task"]) in titulos.OSCAR_STEPS and c["task"]["id"] not in snoozed
+                and c["task"]["id"] not in en_decisiones]
         loose = [c for c in mine if titulos.step_of(c["task"]) is None and c["task"]["id"] not in snoozed]
         scope = f" · {brand}" if brand else ""
-        if not pend and not loose:
+        hay_decisiones = bool(self.pending_decisions(brand) or self.stuck_tasks(brand) or en_decisiones)
+        if not pend and not loose and not hay_decisiones:
             self._send(where, f"Nada pendiente de ti{scope} 🎉", html=False)
             return
         if pend:
-            self._send(where, f"🙋 Pendientes de Oscar ({len(pend)}){scope}", html=False)
+            self._send(where, f"🙋 Pendientes de {quien} ({len(pend)}){scope}", html=False)
             for c in pend[:MAX_CARDS]:
                 self._send_card(where, c, now)
             if len(pend) > MAX_CARDS:
@@ -986,6 +992,8 @@ class CommandCenter:
             lines += [f"• <code>{c['task']['id']}</code> · {e(truncate(c['task'].get('title'), CARD_TITLE_MAX))}"
                       for c in loose[:MAX_CARDS]]
             self._send(where, "\n".join(lines))
+        if hay_decisiones:
+            self.cmd_decisiones(where, args, brand)
 
     # --- /pendiente: bandeja única «Lo tuyo» (lo_tuyo.py) ----------------------------------------------------------
 

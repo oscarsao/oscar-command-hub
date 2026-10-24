@@ -45,7 +45,7 @@ from agent_lanes.promote import Promoter, load_promote_configs
 from agent_lanes.review import ClaudeReviewer, ReviewRunner, sweep_done
 from agent_lanes.notices import LinkBuilder, MessageStore
 from agent_lanes.ops import OpsWorkspace, verify_ops
-from agent_lanes.runner import MESSAGES_DIR, STATE_DIR, LaneRunner
+from agent_lanes.runner import MESSAGES_DIR, STATE_DIR, LaneRunner, a_operadores as _a_operadores
 from agent_lanes.service import Service, acquire_single_instance
 from agent_lanes.telegram import notifier_from_env
 from agent_lanes.verify import verify
@@ -274,8 +274,7 @@ def main(argv: list[str] | None = None) -> int:
                                  minutes=float(env.get("BOARD_GUARD_MINUTES") or 10))
         # Solape de alcance entre tarjetas activas del mismo repo: avisa a Oscar, no fusiona nada (solapes.yaml).
         solapes = SolapeTicker(all_lanes, hermes_for,
-                               send=lambda text, markup=None: notify.send_to(owner_dm, None, text, html=False,
-                                                                             reply_markup=markup),
+                               send=lambda text, markup=None: _a_operadores(decisions, notify, owner_dm, text, markup),
                                state_path=ROOT / ".state" / "solapes.json",
                                issue=decisions.store.issue if decisions else None)
         if decisions:
@@ -283,8 +282,7 @@ def main(argv: list[str] | None = None) -> int:
             decisions.fusion = Fusion(all_lanes, hermes_for)  # fusionar / encadenar / duplicada / pausar (fusion.py)
         # Choques reales en git (ramas lane/*, PR, ramas de personas): solo avisa a Oscar con propuesta (choques.yaml).
         choques = ChoquesTicker(all_lanes, hermes_for,
-                                send=lambda text, markup=None: notify.send_to(owner_dm, None, text, html=False,
-                                                                              reply_markup=markup),
+                                send=lambda text, markup=None: _a_operadores(decisions, notify, owner_dm, text, markup),
                                 state_path=ROOT / ".state" / "choques.json",
                                 issue=decisions.store.issue if decisions else None)
         if decisions:

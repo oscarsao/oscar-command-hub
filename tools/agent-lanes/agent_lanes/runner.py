@@ -18,7 +18,7 @@ from . import deps
 from . import proc as _proc
 from .config import ROOT, Lane
 from .hermes import GUARD_LIMIT_MARK, looks_like_guard_limit
-from .notices import (MessageStore, TaskNotices, files_label, fit_reason, money, next_step, normalize_questions,
+from .notices import (BRANDS, MessageStore,TaskNotices, files_label, fit_reason, money, next_step, normalize_questions,
                       question_text, questions_block, render, status_line, test_label)
 from .preflight import preflight_warnings
 from .telegram import in_scope, telegram_target
@@ -89,20 +89,36 @@ QUIET_STATES = ("needs_input", "blocked", "stuck", "changes")  # vueltas de proc
 FOR_OSCAR_PREFIX = "Para Oscar:"  # línea del motivo del bloqueo con el `for_oscar` del worker (la lee renotify)
 
 
-def dm_mirror(decisions, target, alert: bool, state: str | None = None) -> str | None:
+def dm_mirror(decisions, target, alert: bool, state: str | None = None, marca=None) -> list[str] | None:
     """Chat del DM de Oscar que recibe una copia del aviso (bandeja única de decisiones), con el bot de carriles:
 
     - toda decisión (❓ needs_input), venga del tema que venga;
     - cualquier alerta (❓ ✅ ⛔) de una tarea pedida desde su DM (Origen-Telegram chat=<owner>).
 
     Lo que no es decisión (inicio, fin, técnico) de una tarea pedida desde un tema sigue solo en el tema.
-    TaskNotices no manda la copia si el aviso principal ya cayó en el DM (sin duplicados)."""
+    TaskNotices no manda la copia si el aviso principal ya cayó en el DM (sin duplicados). La copia va al DM de Oscar
+    y al de cada operador con acceso a la marca (people.yaml `operador: true`; María: todas)."""
     owner = str(getattr(decisions, "owner_id", "") or "")
     if not (alert and owner):
         return None
     if state == "needs_input" or (target and str(target[0]) == owner):
-        return owner
+        return chats_decision(decisions, marca)
     return None
+
+
+def a_operadores(decisions, notify, owner_dm, text, markup=None):
+    """Aviso de decisión al DM de Oscar y al de sus operadores (mismo teclado: decide uno solo). Sin bot de carriles
+    (sin DecisionDesk) solo al de Oscar, como siempre."""
+    if decisions is not None:
+        return decisions.difundir(text, markup)
+    return notify.send_to(owner_dm, None, text, html=False, **({"reply_markup": markup} if markup else {}))
+
+
+def chats_decision(decisions, marca=None) -> list[str]:
+    """DM que reciben una decisión (Oscar primero). Sin `chats_decision` en el desk (dobles de test): solo Oscar."""
+    owner = str(getattr(decisions, "owner_id", "") or "")
+    fn = getattr(decisions, "chats_decision", None)
+    return fn(marca) if callable(fn) else ([owner] if owner else [])
 
 
 class Cand(NamedTuple):
@@ -172,7 +188,10 @@ class LaneRunner:
         if state in QUIET_STATES and owner and in_scope(target, self._final_only):
             # Ruido de proceso: no sale en el grupo; llega a Oscar (con sus botones) y el aviso del grupo se conserva.
             target, lane_target, keep = None, (owner, "0"), True
-        mirror = dm_mirror(self._decisions, target, alert, state)
+        marca = BRANDS.get(self.lane.name)
+        mirror = dm_mirror(self._decisions, target, alert, state, marca)
+        if keep and alert and not mirror:  # «solo resultado final» redirigido al DM de Oscar: también al de sus operadores
+            mirror = chats_decision(self._decisions, marca)
         for attempt in (1, 2):  # un aviso que falla (red, Telegram) se reintenta UNA vez
             try:
                 links = self._links(self.lane, tid, branch=branch_link, changed_files=changed_files) if self._links else []

@@ -57,11 +57,12 @@ from . import proc as _proc  # noqa: E402
 from .atascos import DEFAULT_APPEND_ONLY, AutoResolver, pr_branch_card_body  # noqa: E402
 from .config import ROOT, _chat_thread, _load  # noqa: E402
 from .deps import is_integration_comment, pending_parents, waiting_line  # noqa: E402
-from .hermes import OSCAR_AUTHOR, REVIEW_AUTHOR  # noqa: E402
+from .hermes import APPROVED_PREFIXES, OSCAR_AUTHOR, REVIEW_AUTHOR  # noqa: E402
 from .integration import (CHANNEL, FAILED, WAITING, PinnedSummary, link_line, phase_for, render_ficha,  # noqa: E402
                           repo_name, risk_of, summary_state, summary_text)
 from .titulos import rebase_title  # noqa: E402
-from .notices import MessageStore, TaskNotices, card_url, markup_token, render, status_line, truncate  # noqa: E402
+from .notices import BRANDS, MessageStore, TaskNotices, card_url, markup_token, render, status_line, truncate  # noqa: E402
+from .runner import chats_decision  # noqa: E402
 from .telegram import telegram_target  # noqa: E402
 from .verify import render_test_cmd  # noqa: E402
 
@@ -693,7 +694,7 @@ class Integrator:
         slug = self.links.repo_slug(lane) if self.links else None
         for c in reversed(comments):
             body = c.get("body") or ""
-            if c.get("author") != OSCAR_AUTHOR or not body.startswith(APPROVED_PREFIX):
+            if c.get("author") != OSCAR_AUTHOR or not body.startswith(APPROVED_PREFIXES):
                 continue
             m = PR_URL_RE.search(body)
             if not m:
@@ -1132,7 +1133,7 @@ class Integrator:
         target = self.settings.integration_telegram
         try:
             if target:
-                owner = str(getattr(self.desk, "owner_id", "") or "") if self.desk else ""
+                owner = chats_decision(self.desk, BRANDS.get(lane.name)) if self.desk else []
                 prefix = link or f"🚦 {task['id']} · {truncate(task.get('title'), 40)}"
                 self._notices.publish(task["id"], text, None, target, alert=True, reply_markup=markup,
                                       channel=CHANNEL, leave_behind=lambda sent: link_line(prefix, sent),
@@ -1357,10 +1358,8 @@ class Integrator:
         card = card_url(getattr(self.links, "kanban_base_url", None), rec.get("board") or "", tid)
         if card:
             text += f"\nTarjeta: {card}"
-        owner = str(getattr(desk, "owner_id", "") or "")
         dests = [(main.get("chat_id"), main.get("thread_id"))]
-        if owner and owner != str(main.get("chat_id")):
-            dests.append((owner, None))
+        dests += [(chat, None) for chat in chats_decision(desk, BRANDS.get(rec.get("lane"))) if chat != str(main.get("chat_id"))]
         for chat_id, thread_id in dests:
             try:
                 sent = desk.notifier.send_to(str(chat_id), thread_id, text, html=False, reply_markup=markup)
@@ -1612,9 +1611,8 @@ class Integrator:
         markup = self.desk.store.issue(rec, [[{"text": APPLY_LABEL, "action": INT_APPLY}]])[1]
         text = (f"🚨 ALTA · el runner ejecuta código viejo: el checkout vivo va {behind} commit(s) por detrás de "
                 f"{ref} desde hace {int((now - since) // 60)} min. Pulsa {APPLY_LABEL} para ponerlo al día.")
-        owner = str(getattr(self.desk, "owner_id", "") or "")
-        if owner:
-            self.notifier.send_to(owner, None, text, html=False, reply_markup=markup)
+        if getattr(self.desk, "owner_id", None):
+            self.desk.difundir(text, markup, marca=BRANDS.get(name))
 
     def _remote_sha(self, lane, branch: str) -> str | None:
         cp = self._git(lane.repo, "ls-remote", lane.remote, f"refs/heads/{branch}", timeout=120)

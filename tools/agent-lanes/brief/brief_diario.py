@@ -122,7 +122,7 @@ def classify(items: list[dict], now: float) -> dict:
             if ls:
                 ls["blocked"] += 1
         if status in ("done", "review") and not _comments_start(d, "INTEGRADO"):
-            if _comments_start(d, "APROBADO-OSCAR"):
+            if _comments_start(d, "APROBADO-OSCAR") or _comments_start(d, "APROBADO-MARIA"):
                 integrate.append({**it, "why": "pr"})
             elif review_approved(d):
                 integrate.append({**it, "why": "review"})

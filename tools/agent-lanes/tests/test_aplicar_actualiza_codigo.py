@@ -8,6 +8,7 @@ import subprocess
 import time
 
 from agent_lanes import drain
+from agent_lanes.people import People
 from agent_lanes.integrator import APPLY_LABEL, APPLY_WAIT, LAG_AFTER, LAG_REPEAT
 
 from .test_hub_lane import hub
@@ -206,6 +207,7 @@ def test_apply_pressed_while_applying_does_not_launch_again(tmp_path):
 
 def lagging(tmp_path):
     integ, w, h, tg, d, launched = hub(tmp_path)
+    d.people = People(d.owner_id)  # sin operadores: el aviso solo va al DM de Oscar (no depende de people.yaml real)
     dm = []
 
     def send_to(chat_id, thread_id, text, **kw):

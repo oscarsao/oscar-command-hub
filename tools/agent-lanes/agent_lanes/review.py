@@ -17,11 +17,11 @@ from typing import Callable
 
 from . import telegram_lane
 from .config import ROOT, Lane
-from .hermes import OSCAR_AUTHOR, REVIEW_AUTHOR
+from .hermes import APPROVED_PREFIXES, OSCAR_AUTHOR, REVIEW_AUTHOR
 from .integration import CHANNEL, link_line, render_ficha, repo_name, risk_of, risks_from_files
-from .notices import (MessageStore, TaskNotices, files_label, fit_reason, money, questions_block, render, status_line,
+from .notices import (BRANDS, MessageStore,TaskNotices, files_label, fit_reason, money, questions_block, render, status_line,
                       test_label, truncate)
-from .runner import dm_mirror
+from .runner import chats_decision, dm_mirror
 from .telegram import telegram_target
 from .worker import WorkerOutcome, render_settings, run_claude
 
@@ -44,7 +44,7 @@ def aprobada_por_oscar(show: dict) -> bool:
     escalada y el PR ya está abierto. Si el implementador vuelve a pedir review después, la aprobación ya no cuenta."""
     events = (show or {}).get("events") or []
     last_request = max((e.get("created_at") or 0 for e in events if e.get("kind") == "review_requested"), default=0)
-    return any(c.get("author") == OSCAR_AUTHOR and (c.get("body") or "").startswith(APPROVED_PREFIX)
+    return any(c.get("author") == OSCAR_AUTHOR and (c.get("body") or "").startswith(APPROVED_PREFIXES)
                and (c.get("created_at") or 0) >= last_request for c in (show or {}).get("comments") or [])
 
 
@@ -134,7 +134,9 @@ class ReviewRunner:
         """Edita el mensaje único de la tarea (o envía uno nuevo si `alert`). `status` es texto público."""
         target = telegram_target(task.get("body"))
         alert = avisos_revision.interceptar(state, task, status, alert, summary=summary, for_oscar=for_oscar)
-        mirror = dm_mirror(self._decisions, target, alert, state)
+        reviewed_lane = telegram_lane.lane_de_tarjeta(self.lanes, task)
+        marca = BRANDS.get(reviewed_lane.name) if reviewed_lane else None
+        mirror = dm_mirror(self._decisions, target, alert, state, marca)
         for attempt in (1, 2):  # un aviso que falla se reintenta UNA vez
             try:
                 # Reviewed lane's destination (brand topic), else the review lane's own, else the .env default.
@@ -157,7 +159,7 @@ class ReviewRunner:
                                                     questions=questions, summary=summary, changed_files=changed_files,
                                                     for_oscar=for_oscar, yes_no=yes_no)
                 if integ:  # tema de Integración (nunca el origen) + copia espejo en el DM de Oscar
-                    owner = str(getattr(self._decisions, "owner_id", "") or "") if alert else ""
+                    owner = chats_decision(self._decisions, marca) if alert else []
                     prefix = f"✅ {task['id']} · {truncate(task.get('title'), 40)} · lista para aprobar"
                     self._notices.publish(task["id"], text, None, integ.target, alert=alert, reply_markup=markup,
                                           channel=CHANNEL, leave_behind=lambda sent: link_line(prefix, sent),

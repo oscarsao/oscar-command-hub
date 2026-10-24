@@ -114,6 +114,10 @@ class People:
     def collaborator_ids(self) -> set[str]:
         return set(self._by_id)
 
+    def operator_ids(self) -> list[str]:
+        """user_id de las personas con `operador: true` (sin Oscar), en el orden del YAML: reciben las decisiones."""
+        return [p.user_id for p in self._by_id.values() if p.operador]
+
     def __len__(self) -> int:
         return len(self._by_id)
 

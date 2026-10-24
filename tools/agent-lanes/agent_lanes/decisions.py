@@ -56,6 +56,11 @@ from .review import CHANGES_PREFIX
 log = logging.getLogger("agent_lanes")
 
 
+def _decidido_linea(quien: str, hora: str, html: bool = False) -> str:
+    """Línea que queda en las demás copias de una decisión ya tomada («Decidido por María 10:32»)."""
+    return f"✅ Decidido por {_esc(quien) if html else quien} {hora}"
+
+
 class _SinCommits(Exception):
     """`gh pr create` rechazó la rama porque no tiene commits sobre la base."""
 
@@ -365,7 +370,7 @@ class CallbackStore:
         cutoff = time.time() - max_age_days * 86400
         for p in self.root.glob("*.*"):
             try:
-                if p.suffix in (".json", ".used") and p.stat().st_mtime < cutoff:
+                if p.suffix in (".json", ".used", ".copies", ".decided") and p.stat().st_mtime < cutoff:
                     p.unlink()
             except OSError:
                 pass
@@ -382,6 +387,31 @@ class CallbackStore:
             return True
         except OSError:
             return False
+
+    # Copias de un mismo teclado en varios DM (Oscar + operadores): comparten token, así que solo uno decide.
+
+    def add_copy(self, token: str, sent: dict | None, text: str, html: bool) -> None:
+        if not token or not sent or not sent.get("message_id"):
+            return
+        path = self.root / f"{token}.copies"
+        try:
+            copies = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            copies = []
+        copies.append({"chat_id": str(sent["chat_id"]), "message_id": sent["message_id"], "text": text, "html": html})
+        self._write(path, copies[-10:])
+
+    def copies(self, token: str) -> list[dict]:
+        data = self._read(self.root / f"{token}.copies")
+        return data if isinstance(data, list) else []
+
+    def mark_decided(self, token: str, who: str, hora: str) -> None:
+        self._write(self.root / f"{token}.decided", {"who": who, "hora": hora})
+
+    def decided(self, token: str) -> dict | None:
+        if not re.fullmatch(r"[\w-]{6,32}", token or ""):
+            return None
+        return self._read(self.root / f"{token}.decided")
 
     def restore(self, token: str) -> None:
         try:
@@ -537,6 +567,48 @@ class DecisionDesk:
         if str(user_id) == self.owner_id:
             return True
         return self._people().es_operador(user_id)
+
+    def chats_decision(self, marca=None) -> list[str]:
+        """DM que reciben una decisión: el de Oscar (siempre el primero) y el de cada operador de people.yaml que puede
+        actuar en `marca` (María, con "*": todas). Un operador acotado por marca no recibe lo de otras marcas."""
+        out = [self.owner_id]
+        try:
+            for uid in self._people().operator_ids():
+                if uid not in out and self._people().puede_en(uid, marca):
+                    out.append(uid)
+        except Exception as exc:  # people.yaml roto: solo Oscar, como siempre
+            log.info("chats_decision: operadores no leídos (%s)", type(exc).__name__)
+        return out
+
+    def difundir(self, text: str, markup: dict | None = None, *, html: bool = False, marca=None) -> bool:
+        """Envía una decisión al DM de Oscar y al de cada operador con el MISMO teclado (mismo token: decide uno solo).
+        Cada copia se registra para tacharla cuando alguien decide. True si llegó al DM de Oscar."""
+        from .notices import markup_token
+        token, delivered = markup_token(markup), False
+        for n, chat in enumerate(self.chats_decision(marca)):
+            try:
+                sent = self.notifier.send_to(chat, None, text, html=html, **({"reply_markup": markup} if markup else {}))
+            except Exception as exc:  # un DM sin /start no impide los demás
+                log.info("decisión no enviada a %s: %s", self._mask(chat), exc)
+                continue
+            if token and sent:
+                self.store.add_copy(token, sent, text, html)
+            if n == 0:
+                delivered = bool(sent)
+        return delivered
+
+    def _decidido(self, token: str, where: dict, actor) -> None:
+        """Alguien decidió: se guarda quién y cuándo (un 2.º toque lo ve) y las demás copias del teclado quedan tachadas."""
+        quien, hora = self.operador_nombre(actor) or "Oscar", self._now().strftime("%H:%M")
+        self.store.mark_decided(token, quien, hora)
+        for c in self.store.copies(token):
+            if (c["chat_id"], str(c["message_id"])) == (str(where.get("chat_id")), str(where.get("message_id"))):
+                continue
+            try:
+                self.notifier.edit(c["chat_id"], c["message_id"], c["text"] + f"\n\n{_decidido_linea(quien, hora, c['html'])}",
+                                   html=c["html"])
+            except Exception as exc:
+                log.info("no se pudo tachar la copia %s: %s", c.get("message_id"), exc)
 
     def puede_aprobar_produccion(self, user_id) -> bool:
         """Fusionar, desplegar o migrar desde un botón: Oscar o quien tenga `permisos: [aprobar_produccion]` (y
@@ -881,7 +953,9 @@ class DecisionDesk:
         rec = self.store.get(token)
         buttons = (rec or {}).get("buttons") or []
         if not rec or not n.isdigit() or int(n) >= len(buttons):
-            answer(cq.get("id"), "Esta decisión ya no está activa")
+            hecho = None if rec else self.store.decided(token)
+            answer(cq.get("id"), f"Ya lo decidió {hecho['who']} a las {hecho['hora']}" if hecho
+                   else "Esta decisión ya no está activa", alert=bool(hecho))
             self._log_update(chat, "callback", None, "ignorado")
             return
         button = buttons[int(n)]
@@ -926,8 +1000,10 @@ class DecisionDesk:
             self._spawn(lambda: self._ask(token, rec, button, where))
             return
         if not self.store.consume(token):
-            answer(cq.get("id"), "Ya está en marcha")
+            hecho = self.store.decided(token)
+            answer(cq.get("id"), f"Ya lo decidió {hecho['who']} a las {hecho['hora']}" if hecho else "Ya está en marcha")
             return
+        self._decidido(token, where, actor)
         if button["action"] in consola.CS_PEDIR:  # 1.er toque de la consola: solo cambia el teclado por [✅ Sí] [✖ No]
             answer(cq.get("id"), consola.ASK_ANSWER)
             self._spawn(self._en_nombre_de(actor, lambda: consola.pedir(self, token, rec, button, where)))
@@ -1920,6 +1996,7 @@ class DecisionDesk:
             text = render(state, rec["task_id"], rec.get("title"), rec["lane"], status, [*links, *extra_links], bullets,
                           body=rec.get("body"), for_oscar=rec.get("for_oscar"), tree=tree)
         extra = {"reply_markup": markup} if markup else {}
+        foot = f"\n\n{_decidido_linea(self._who(), self._now().strftime('%H:%M'), True)}" if where else ""
         seen = set()
         if where:
             self.notifier.edit(where["chat_id"], where["message_id"], text, **extra)
@@ -1930,7 +2007,7 @@ class DecisionDesk:
                 continue
             seen.add(key)
             try:
-                self.notifier.edit(msg["chat_id"], msg["message_id"], text, **extra)
+                self.notifier.edit(msg["chat_id"], msg["message_id"], text + foot, **extra)
             except Exception as exc:
                 log.info("%s: no se pudo sincronizar la copia %s: %s", rec["task_id"], msg["message_id"], exc)
 

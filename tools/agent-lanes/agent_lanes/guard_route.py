@@ -192,7 +192,7 @@ class GuardNotifier:
         sent = False
         if self.owner_id:
             markup = self.desk.markup("blocked", task=p.task, lane=p.lane, block_kind="console_escalated")
-            sent = bool(self.notifier.send_to(self.owner_id, None, text, html=False, reply_markup=markup))
+            sent = bool(self.desk.difundir(text, markup))
         if self.attention:
             markup = self.desk.markup("blocked", task=p.task, lane=p.lane, block_kind="console_escalated")
             sent = bool(self.notifier.send_to(str(self.attention["chat"]), str(self.attention.get("thread") or "0"),

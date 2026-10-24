@@ -26,9 +26,10 @@ from . import proc as _proc
 from .aviso import AvisoAccionable, actions_of, mention, stuck_history
 from .config import Lane
 from .decisions import keyboard_spec
-from .hermes import (ANSWER_PREFIX, GUARD_LIMIT_MARK, OSCAR_AUTHOR, answer_progress, is_guard_limit,
+from .hermes import (ANSWER_PREFIX, APPROVED_PREFIXES, GUARD_LIMIT_MARK, OSCAR_AUTHOR, answer_progress, is_guard_limit,
                      pending_hermes_answer)
 from .notices import (
+    BRANDS,
     MessageStore,
     decision_since,
     files_label,
@@ -219,7 +220,7 @@ def listo_para_aprobar(lane: Lane, show: dict, branch_state=_git_branch_state, o
     if (meta.get("review") or {}).get("status") != "approve":
         return None
     comments = show.get("comments") or []
-    if any((c.get("body") or "").startswith(APPROVED_PREFIX) and c.get("author") == OSCAR_AUTHOR for c in comments):
+    if any((c.get("body") or "").startswith(APPROVED_PREFIXES) and c.get("author") == OSCAR_AUTHOR for c in comments):
         return None
     if any((c.get("body") or "").startswith(INTEGRATED_PREFIX + " ") for c in comments):  # no "INTEGRADOR:"
         return None
@@ -431,7 +432,7 @@ class Renotifier:
         text = (f"⏰ Sigue sin respuesta tras {int(hours)} h (recordatorio: no se ha hecho nada por ti)\n"
                 + render("stuck", p.tid, p.task.get("title"), p.lane.name, p.status.split("  @")[0], None, p.bullets,
                           next_step=next_step("stuck", p.block_kind)))
-        return bool(owner and self.notifier.send_to(owner, None, text, reply_markup=markup))
+        return bool(owner and self.desk.difundir(text, markup, html=True, marca=BRANDS.get(p.lane.name)))
 
     def alert_urgent(self, p: Pending) -> bool:
         """Aviso inmediato de un bloqueo de prioridad alta: al DM de Oscar (con los botones de la tarjeta) y al tema
@@ -455,7 +456,7 @@ class Renotifier:
         markup = self.desk.markup(p.state, task=p.task, lane=p.lane, block_kind=p.block_kind,
                                   questions=p.questions, yes_no=p.yes_no, q_index=p.q_index)
         owner = getattr(self.desk, "owner_id", None)
-        ok = bool(owner and self.notifier.send_to(owner, None, text, html=False, reply_markup=markup))
+        ok = bool(owner and self.desk.difundir(text, markup, marca=BRANDS.get(p.lane.name)))
         target = self.attention_target()
         if target:  # integrador (oscar-e2) y resto del equipo: el mismo aviso, con @mención, sin botones
             who = mention((self.attention or {}).get("mention"))
