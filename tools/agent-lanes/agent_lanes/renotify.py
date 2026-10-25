@@ -26,8 +26,8 @@ from . import proc as _proc
 from .aviso import AvisoAccionable, actions_of, mention, stuck_history
 from .config import Lane
 from .decisions import keyboard_spec
-from .hermes import (ANSWER_PREFIX, GUARD_LIMIT_MARK, OSCAR_AUTHOR, answer_progress, is_guard_limit,
-                     pending_hermes_answer)
+from .hermes import (ANSWER_PREFIX, GUARD_LIMIT_MARK, OSCAR_AUTHOR, answer_progress, is_approval,
+                     is_guard_limit, pending_hermes_answer)
 from .notices import (
     MessageStore,
     decision_since,
@@ -219,7 +219,7 @@ def listo_para_aprobar(lane: Lane, show: dict, branch_state=_git_branch_state, o
     if (meta.get("review") or {}).get("status") != "approve":
         return None
     comments = show.get("comments") or []
-    if any((c.get("body") or "").startswith(APPROVED_PREFIX) and c.get("author") == OSCAR_AUTHOR for c in comments):
+    if any(is_approval(c) for c in comments):
         return None
     if any((c.get("body") or "").startswith(INTEGRATED_PREFIX + " ") for c in comments):  # no "INTEGRADOR:"
         return None

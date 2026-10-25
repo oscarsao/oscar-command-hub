@@ -411,8 +411,10 @@ class CommandCenter:
         return chat, thread
 
     def _send(self, where: tuple[str, str], text: str, *, html: bool = True, markup: dict | None = None):
-        return self.notifier.send_to(where[0], where[1], text, html=html,
-                                     **({"reply_markup": markup} if markup else {}))
+        # Respuesta a quien pidió el comando: no se copia al DM de otros operadores.
+        with getattr(self.notifier, "sin_espejo", contextlib.nullcontext)():
+            return self.notifier.send_to(where[0], where[1], text, html=html,
+                                         **({"reply_markup": markup} if markup else {}))
 
     @staticmethod
     def help_text() -> str:

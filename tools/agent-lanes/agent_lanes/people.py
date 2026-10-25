@@ -111,6 +111,11 @@ class People:
             return False
         return person.is_owner or (person.operador and APROBAR_PRODUCCION in person.permisos)
 
+    def operadores_todas_marcas(self) -> set[str]:
+        """DM de los operadores (no Oscar) con `"*"`: reciben copia de TODAS las decisiones que van al DM de Oscar.
+        Los acotados por marca no: el aviso no dice a qué marca apunta y fallaría cerrado."""
+        return {p.user_id for p in self._by_id.values() if p.operador and TODAS_LAS_MARCAS in p.brands}
+
     def collaborator_ids(self) -> set[str]:
         return set(self._by_id)
 

@@ -57,7 +57,7 @@ from . import proc as _proc  # noqa: E402
 from .atascos import DEFAULT_APPEND_ONLY, AutoResolver, pr_branch_card_body  # noqa: E402
 from .config import ROOT, _chat_thread, _load  # noqa: E402
 from .deps import is_integration_comment, pending_parents, waiting_line  # noqa: E402
-from .hermes import OSCAR_AUTHOR, REVIEW_AUTHOR  # noqa: E402
+from .hermes import OSCAR_AUTHOR, REVIEW_AUTHOR, is_approval  # noqa: E402
 from .integration import (CHANNEL, FAILED, WAITING, PinnedSummary, link_line, phase_for, render_ficha,  # noqa: E402
                           repo_name, risk_of, summary_state, summary_text)
 from .titulos import rebase_title  # noqa: E402
@@ -693,7 +693,7 @@ class Integrator:
         slug = self.links.repo_slug(lane) if self.links else None
         for c in reversed(comments):
             body = c.get("body") or ""
-            if c.get("author") != OSCAR_AUTHOR or not body.startswith(APPROVED_PREFIX):
+            if not is_approval(c):
                 continue
             m = PR_URL_RE.search(body)
             if not m:
