@@ -488,7 +488,12 @@ class LaneRunner:
             if result["status"] == "needs_input":
                 asked = normalize_questions(result.get("questions")) or normalize_questions([result.get("summary", "")])
                 detail = "\n".join(f"- {question_text(q)}" for q in asked) or result.get("summary", "")
-                if result.get("limitation") == "guard" or looks_like_guard_limit(result.get("summary"), detail):
+                # F1-03 (FL-03): una pregunta con opciones es una decisión de Oscar aunque el texto mencione el guard: va
+                # con sus botones. El heurístico solo manda a consola si no trae opciones; la limitación DECLARADA por el
+                # worker (`limitation: guard`) sigue yendo a consola siempre.
+                con_opciones = any(q.get("options") for q in normalize_questions(result.get("questions")))
+                if result.get("limitation") == "guard" or (
+                        not con_opciones and looks_like_guard_limit(result.get("summary"), detail)):
                     return self._block_console(tid, task, detail, result)
                 detail += repeated
                 if ops and result.get("proposed_actions"):  # la acción exacta queda en la tarjeta para Oscar

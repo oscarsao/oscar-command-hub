@@ -77,6 +77,7 @@ PR_FOOTER = "🤖 Generated with [Claude Code](https://claude.com/claude-code)"
 APPROVE, CHANGES, PARK, RETRY, OPTION, OTHER = "approve", "changes", "park", "retry", "option", "other"
 GUARD_SNOOZE = "guard_snooze"  # ⏳ Aplazar un bloqueo de guard escalado a Oscar: 24 h más en la cola del integrador
 TO_INTEGRADOR = "to_integrador"  # 🧑‍💻 Que lo resuelva el integrador: Oscar no puede actuar desde Telegram
+COLA_RESUELTA = "cola_resuelta"  # ✅ Ya está resuelta (cola del integrador, F1-03/FL-04): cierra la tarjeta con resumen
 UNTRIAGE = "untriage"      # 🧊 Sacar de triage: specify_triage_task sin reescribir la tarjeta (nunca unblock)
 WAIT = "wait"              # ⏸ Esperar a…: pide el id de la tarjeta y crea la dependencia real (kanban link)
 EXPLAIN = "explain"        # 💬 Explícame más: responde con una explicación llana; no consume el teclado
@@ -105,6 +106,7 @@ CARD_PARK = "card_park"       # 🗄 Aparcar: comentario + archive
 CARD_ASK = "card_ask"         # ✍️ Responder: force_reply; el texto es la respuesta
 CARD_VETO = "card_veto"       # ⛔ Vetar: la tarjeta reversible deja de ejecutarse sola (no consume el teclado)
 CARD_ACCEPT_ALL = "card_accept_all"  # ✅ Aceptar las recomendadas del lote de tarjetas de /decisiones
+CARD_INTEGRADOR = "card_integrador"  # 🧑‍💻 Integrador (tema 🎯 Decisiones, F1-03/FL-12): la tarjeta pasa al integrador
 SNOOZE_DAYS = 7
 BUTTON_OPTION_MAX = 22  # caracteres del texto de la opción en su botón ("A · Aprobar el PR")
 REPLY_ACTIONS = (CHANGES, OTHER, CARD_ASK, PEDIR_ASK, WAIT, "eq_resp", "eq_rech")  # piden texto con force_reply
@@ -169,7 +171,7 @@ def keyboard_spec(state: str, *, block_kind: str | None = None, questions=None,
         return [[{"text": "✅ Aprobar", "action": APPROVE}, {"text": "🔁 Pedir cambios", "action": CHANGES}, park]]
     if state == "blocked" and block_kind == "console_escalated":  # 2 h en la cola del integrador sin resolverse
         return [[{"text": "🧑‍💻 Que lo resuelva el integrador", "action": TO_INTEGRADOR}],
-                [{"text": "⏳ Aplazar", "action": GUARD_SNOOZE}]]
+                [{"text": "✅ Ya está resuelta", "action": COLA_RESUELTA}, {"text": "⏳ Aplazar", "action": GUARD_SNOOZE}]]
     if state == "blocked" and block_kind in ("config", "console"):  # reintentar no arregla la config ni el guard: solo aparcar
         return [[park], [{"text": "🧑‍💻 Que lo resuelva el integrador", "action": TO_INTEGRADOR}]]
     if state == "blocked" and block_kind in ("transient", "estructural"):
@@ -186,6 +188,13 @@ def keyboard_spec(state: str, *, block_kind: str | None = None, questions=None,
         return [[{"text": "🧊 Sacar de triage", "action": UNTRIAGE}, {"text": "⏸ Esperar a…", "action": WAIT}],
                 [{"text": "✍️ Responder", "action": OTHER}, {"text": "🗄 Archivar", "action": PARK}]]
     return None
+
+
+def seed_card_keyboard_spec() -> list[list[dict]]:
+    """Botones de una tarjeta de Oscar sembrada en el tema 🎯 Decisiones (F1-03, FL-12): Hecho / Aparcar 7 días /
+    Integrador / Archivar. Mismas acciones que /decisiones (CARD_*) salvo «Integrador», que es nueva."""
+    return [[{"text": "✅ Hecho", "action": CARD_DONE}, {"text": f"⏳ Aparcar {SNOOZE_DAYS} d", "action": CARD_SNOOZE}],
+            [{"text": "🧑‍💻 Integrador", "action": CARD_INTEGRADOR}, {"text": "🗄 Archivar", "action": CARD_PARK}]]
 
 
 def card_keyboard_spec(n_options: int, recommended: int | None, options=None, veto: bool = False) -> list[list[dict]]:
@@ -1295,6 +1304,8 @@ class DecisionDesk:
             return self._to_integrador(rec, where)
         if action == GUARD_SNOOZE:
             return self._guard_snooze(rec, where)
+        if action == COLA_RESUELTA:
+            return self._cola_resuelta(rec, where)
         if action.startswith("promo_"):  # 🚀 Promover MigraTeam: Revisado / Sí, promover (promote.py)
             if action == "promo_start":
                 if not self.promoter:
@@ -1387,6 +1398,13 @@ class DecisionDesk:
             self._edit(rec, where, "blocked", "no se pudo guardar la respuesta en la tarjeta")
             return False
 
+        if action == CARD_INTEGRADOR:
+            if not h.assign(tid, INTEGRATOR_PROFILE):
+                self._edit(rec, where, None, "no se pudo pasar al integrador (mira la tarjeta)")
+                return False
+            note(f"Pasada al integrador ({INTEGRATOR_PROFILE}) por {self._who()} desde el tema 🎯 Decisiones")
+            self._edit(rec, where, None, f"🧑‍💻 la tiene el integrador ({INTEGRATOR_PROFILE})")
+            return True
         if action == CARD_SNOOZE:
             until = self.snoozes.add(tid, SNOOZE_DAYS)
             label = datetime.fromtimestamp(until).strftime("%d/%m")
@@ -1759,10 +1777,48 @@ class DecisionDesk:
         h.comment(tid, f"Aparcada por {self._who()}", author=OSCAR_AUTHOR)
         return True
 
+    def _ya_resuelta(self, rec: dict, where: dict) -> bool:
+        """FL-14: un botón de bloqueo/consola de un aviso viejo no actúa sobre una tarjeta que ya no está bloqueada.
+        Relee el estado; si es otro (done, archivada, en curso…) edita el mensaje («ya resuelta») y devuelve True.
+        Sin poder leerla (fakes, CLI caída) se sigue como antes: la acción de Hermes decide."""
+        h = self._hermes(rec)
+        if not hasattr(h, "show"):
+            return False
+        try:
+            status = ((h.show(rec["task_id"]) or {}).get("task") or {}).get("status")
+        except Exception:
+            return False
+        if not status or status in ("blocked", "triage"):
+            return False
+        self._edit(rec, where, None, f"✅ ya resuelta (ahora en {status}); no hago nada")
+        return True
+
+    def _cola_resuelta(self, rec: dict, where: dict) -> bool:
+        """✅ Ya está resuelta (cola del integrador, FL-04): el integrador ya respondió en un comentario; se cierra la
+        tarjeta con un resumen y sale de la cola. Una tarjeta que ya no está bloqueada solo se edita (FL-14)."""
+        tid, h = rec["task_id"], self._hermes(rec)
+        queue = getattr(self, "guard_queue", None)
+        if self._ya_resuelta(rec, where):
+            if queue is not None:
+                queue.remove(tid)
+            return True
+        ok, err = h.complete(tid, f"Resuelta por {self._who()} desde Telegram (cola del integrador: ya estaba "
+                                  "respondida)", {"decided_by": OSCAR_AUTHOR, "via": "cola_integrador"})
+        if not ok:
+            log.warning("%s: no se pudo cerrar desde la cola del integrador: %s", tid, err)
+            self._edit(rec, where, "blocked", "no se pudo cerrar la tarjeta (mira el panel)")
+            return False
+        if queue is not None:
+            queue.remove(tid)
+        self._edit(rec, where, None, f"✅ cerrada por {self._who()}; sale de la cola del integrador")
+        return True
+
     def _to_integrador(self, rec: dict, where: dict) -> bool:
         """Lo que Oscar no puede hacer desde Telegram (consola, guard, config) pasa al integrador: la tarjeta se
         reasigna a su perfil y queda dicho en ella quién la tiene."""
         tid, h = rec["task_id"], self._hermes(rec)
+        if self._ya_resuelta(rec, where):  # FL-14: aviso viejo sobre una tarjeta ya cerrada
+            return True
         if not h.assign(tid, INTEGRATOR_PROFILE):
             self._edit(rec, where, "blocked", "no se pudo pasar al integrador (¿la tarea está en curso?)")
             return False
@@ -1774,6 +1830,8 @@ class DecisionDesk:
     def _guard_snooze(self, rec: dict, where: dict) -> bool:
         """⏳ Aplazar: la tarjeta sigue en la cola del integrador y no vuelve a Oscar hasta dentro de 24 h."""
         queue = getattr(self, "guard_queue", None)  # la pone CommandCenter.guard_router (guard_route.GuardQueue)
+        if self._ya_resuelta(rec, where):  # FL-14
+            return True
         if queue is None or not queue.snooze(rec["task_id"]):
             self._edit(rec, where, "blocked", "no se pudo aplazar: ya no está en la cola del integrador")
             return False

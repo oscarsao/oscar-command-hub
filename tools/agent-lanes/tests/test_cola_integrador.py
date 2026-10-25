@@ -6,7 +6,7 @@ from datetime import datetime
 from types import SimpleNamespace
 
 from agent_lanes import resumen_carriles as rc
-from agent_lanes.decisions import GUARD_SNOOZE, TO_INTEGRADOR, DecisionDesk, keyboard_spec
+from agent_lanes.decisions import COLA_RESUELTA, GUARD_SNOOZE, TO_INTEGRADOR, DecisionDesk, keyboard_spec
 from agent_lanes.guard_route import (GuardNotifier, GuardQueue, GuardRouter, integrator_text, oscar_text,
                                      queue_view)
 from agent_lanes.hermes import GUARD_LIMIT_MARK
@@ -152,7 +152,8 @@ def test_escalation_reaches_oscar_with_mention_and_two_buttons():
     assert dm["reply_markup"]["block_kind"] == "console_escalated"
     spec = keyboard_spec("blocked", block_kind="console_escalated")
     assert [(b["text"], b["action"]) for row in spec for b in row] == [
-        ("🧑‍💻 Que lo resuelva el integrador", TO_INTEGRADOR), ("⏳ Aplazar", GUARD_SNOOZE)]
+        ("🧑‍💻 Que lo resuelva el integrador", TO_INTEGRADOR), ("✅ Ya está resuelta", COLA_RESUELTA),
+        ("⏳ Aplazar", GUARD_SNOOZE)]
     assert "Que lo resuelva" in oscar_text(entry, 1_000_000 + 3 * H)
 
 
@@ -166,7 +167,8 @@ def test_without_attention_topic_queue_still_holds_and_oscar_gets_dm_only():
 def test_guard_snooze_button_uses_queue_and_reports_when_gone(tmp_path):
     edits = []
     desk = SimpleNamespace(guard_queue=GuardQueue(tmp_path / "c.json"),
-                           _edit=lambda rec, where, state, text, **k: edits.append((state, text)))
+                           _edit=lambda rec, where, state, text, **k: edits.append((state, text)),
+                           _ya_resuelta=lambda rec, where: False)
     desk.guard_queue.add(pend())
     assert DecisionDesk._guard_snooze(desk, {"task_id": "t_1"}, {}) is True and edits[-1][0] == "parked"
     assert DecisionDesk._guard_snooze(desk, {"task_id": "t_9"}, {}) is False and edits[-1][0] == "blocked"

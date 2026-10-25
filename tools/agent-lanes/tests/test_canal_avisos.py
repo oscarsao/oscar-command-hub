@@ -86,8 +86,10 @@ def test_sin_destino_o_incompleto_queda_apagado(tmp_path):
         assert load_telegram_settings(yml)["decisiones"] is None, cfg
 
 
-def test_el_lanes_yaml_real_no_lo_activa_todavia():
-    assert load_telegram_settings()["decisiones"] is None  # el integrador pone el id del tema al crearlo
+def test_el_lanes_yaml_real_ya_lo_activa_con_chat_y_tema():
+    # 25-10 (e02ac31): el integrador creó el tema 🎯 Decisiones y lo puso en lanes.yaml (antes este test pedía None)
+    dest = load_telegram_settings()["decisiones"]
+    assert dest and dest[0].startswith("-100") and dest[1] not in ("", "0")
 
 
 # --- paso 2: clasificación en un solo sitio ------------------------------------------------------------------------

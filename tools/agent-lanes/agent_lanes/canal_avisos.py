@@ -11,6 +11,11 @@ Un solo sitio que dice a dónde va cada tipo de mensaje del bot de carriles (bor
 
 Sin `destinos.decisiones` todo sale exactamente como antes (DM de Oscar / copia espejo al DM).
 
+Siembra (F1-03, FL-02/FL-12): al arrancar y cada día a las 9:00 (Madrid) el tema recibe el backlog que calcula
+`lo_tuyo.py` (lo mismo que `lanes.py pendiente`): un mensaje con botones por cosa, 1 s entre mensajes y sin repetir lo
+que ya está abierto (por tipo+tarjeta, ni lo que ya tiene un aviso vivo de su tarea). Cada `REVISAR_SEMILLAS` se
+recalcula para cerrar lo que ya no está pendiente; las semillas no caducan por su teclado (abrir la ficha no decide).
+
 El contador no suma ni resta: se deriva del estado. Una decisión del tema sigue abierta mientras el teclado vigente de
 ese mensaje esté vivo en el CallbackStore (respuesta por Hermes, texto libre, aviso nuevo de la misma tarea o un fallo
 que devuelve los botones quedan cubiertos solos), así que un reinicio del runner rehace el mismo número.
@@ -25,7 +30,9 @@ import re
 import threading
 import time
 from collections.abc import Callable
+from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from .integration import PinnedSummary, age_label, topic_link
 from .notices import markup_token, truncate
@@ -70,9 +77,20 @@ ETIQUETAS = {"needs_input": ("pregunta de un carril", "preguntas de carriles"),
              "solape": ("solape de tarjetas", "solapes de tarjetas"),
              "aprobar": ("revisión lista para aprobar", "revisiones listas para aprobar"),
              "integrar": ("paso de integración", "pasos de integración"),
-             "blocked": ("tarjeta bloqueada", "tarjetas bloqueadas")}
+             "blocked": ("tarjeta bloqueada", "tarjetas bloqueadas"),
+             "validar": ("validación del carril ops", "validaciones del carril ops"),
+             "cola": ("bloqueo en la cola del integrador", "bloqueos en la cola del integrador"),
+             "tuyo": ("tarjeta tuya", "tarjetas tuyas"),
+             "externo": ("PR de sesión que espera tu OK", "PR de sesiones que esperan tu OK"),
+             "integrador": ("paso del integrador", "pasos del integrador")}
 
 GRACIA = 15 * 60  # s: un teclado gastado tanto tiempo (y no devuelto) = decisión cerrada aunque nadie avisara
+MADRID = ZoneInfo("Europe/Madrid")
+SEMBRAR_HORA = 9               # siembra diaria (además de la del arranque)
+REVISAR_SEMILLAS = 30 * 60     # s entre recálculos que solo cierran lo ya resuelto (sin publicar nada nuevo)
+PAUSA_ENTRE_MENSAJES = 1.0     # s entre mensajes de la siembra (TG-07: varias fichas seguidas dan 429)
+SEMBRAR_MAX = 40               # tope de mensajes por siembra
+NO_CIERRAN = frozenset({"lt_open", "estado_mas", "explain", "detail"})  # abren/explican: no deciden
 HEAD_MAX = 90
 _TAG_RE = re.compile(r"<[^>]+>")
 
@@ -110,7 +128,9 @@ class CanalAvisos:
     tema son espejos marcados `decision`). Estado en `state_dir`/decisiones_tema.json y decisiones_fijado.json."""
 
     def __init__(self, notifier, owner_dm: str, destino: tuple[str, str] | None, state_dir: Path | str, *,
-                 vivo: Callable[[str], bool], messages=None, clock: Callable[[], float] = time.time):
+                 vivo: Callable[[str], bool], messages=None, clock: Callable[[], float] = time.time,
+                 sembrador: Callable[[], list[dict]] | None = None, sleep: Callable[[float], None] = time.sleep,
+                 run_async: bool = False):
         self.notifier = notifier
         self.owner_dm = str(owner_dm)
         self.destino = (str(destino[0]), str(destino[1])) if destino else None
@@ -121,6 +141,10 @@ class CanalAvisos:
         self.fijado = (PinnedSummary(notifier, self.destino, Path(state_dir) / "decisiones_fijado.json")
                        if self.destino else None)
         self._lock = threading.RLock()
+        # Siembra (F1-03): `sembrador()` -> [{clave, tid, tipo, texto, markup (dict o callable)}] (ver semilla()).
+        self.sembrador, self.sleep, self.run_async = sembrador, sleep, run_async
+        self._inicio_pendiente = True
+        self._sembrando = threading.Lock()
 
     # --- clasificación ---------------------------------------------------------------------------------------------
 
@@ -198,6 +222,8 @@ class CanalAvisos:
                 if token not in self._tokens(e, actual):
                     continue
                 hit = True
+                if e.get("rol") == "semilla" and (button or {}).get("action") in NO_CIERRAN:
+                    continue  # 👁 Ver / 📖 Ver más abren la ficha: la decisión sigue pendiente
                 # Sigue habiendo un teclado vivo en el mensaje: pregunta siguiente (set_token), ✖ No o confirmación
                 # caducada del doble toque (vuelve el teclado original). No se cierra.
                 if any(t != token and self.vivo(t) for t in self._tokens(e, actual)):
@@ -225,11 +251,14 @@ class CanalAvisos:
         abierto. Nunca lanza."""
         if not self.destino:
             return
+        self._sembrar_si_toca()
         try:
             with self._lock:
                 data = self._load()
                 now, cambio = self.clock(), False
                 for key, e in list(data["abiertas"].items()):
+                    if e.get("rol") == "semilla":
+                        continue  # las cierra el recálculo de la siembra o su botón (resuelta)
                     if not self._sigue_en_la_tarea(e):
                         self._cerrar(data, key, f"↪️ Ya no está pendiente (hay un aviso más reciente)\n"
                                                 f"{e.get('head') or ''}".strip())
@@ -253,6 +282,89 @@ class CanalAvisos:
             self.fijado.update(texto)
         except Exception as exc:  # el contador es una ayuda: nunca tumba un aviso ni la pasada
             log.warning("tema Decisiones: no se pudo refrescar el contador: %s", exc)
+
+    # --- siembra del backlog (F1-03) ------------------------------------------------------------------------------
+
+    def _toca(self) -> str | None:
+        """«inicio» (primera pasada tras arrancar), «diario» (desde las 9:00, una vez al día), «revisar» (solo cerrar,
+        cada REVISAR_SEMILLAS) o None."""
+        if not self.sembrador or not self.destino:
+            return None
+        if self._inicio_pendiente:
+            return "inicio"
+        now = self.clock()
+        dt = datetime.fromtimestamp(now, MADRID)
+        estado = self._load().get("sembrado") or {}
+        if dt.hour >= SEMBRAR_HORA and estado.get("dia") != f"{dt:%Y-%m-%d}":
+            return "diario"
+        if now - float(estado.get("revisado_at") or 0) >= REVISAR_SEMILLAS:
+            return "revisar"
+        return None
+
+    def _sembrar_si_toca(self) -> None:
+        modo = self._toca()
+        if not modo or not self._sembrando.acquire(blocking=False):
+            return
+        self._inicio_pendiente = False
+
+        def run() -> None:
+            try:
+                n = self.sembrar(publicar=modo != "revisar")
+                if n:
+                    log.info("tema Decisiones: sembradas %d decisiones (%s)", n, modo)
+            except Exception as exc:  # la siembra es una ayuda: nunca tumba la pasada
+                log.warning("tema Decisiones: la siembra (%s) falló: %s", modo, exc)
+            finally:
+                self._sembrando.release()
+            if self.run_async:
+                self.refrescar()
+
+        if self.run_async:
+            threading.Thread(target=run, name="siembra-decisiones", daemon=True).start()
+        else:
+            run()
+
+    def sembrar(self, publicar: bool = True) -> int:
+        """Recalcula el backlog: cierra las semillas que ya no están y, con `publicar`, envía las nuevas (1 s entre
+        mensajes, tope SEMBRAR_MAX). Devuelve cuántas publicó."""
+        items = list(self.sembrador() or ()) if self.sembrador else []
+        claves = {it["clave"] for it in items}
+        now = self.clock()
+        dt = datetime.fromtimestamp(now, MADRID)
+        with self._lock:
+            data = self._load()
+            for key, e in list(data["abiertas"].items()):
+                if e.get("rol") == "semilla" and e.get("clave") not in claves:
+                    self._cerrar(data, key, f"✅ Ya no está pendiente\n{e.get('head') or ''}".strip())
+            abiertas = list(data["abiertas"].values())
+            ya = {e.get("clave") for e in abiertas if e.get("rol") == "semilla"}
+            con_aviso = {e.get("tid") for e in abiertas if e.get("rol") != "semilla" and e.get("tid")}
+            nuevos = [it for it in items if it["clave"] not in ya and not (it.get("tid") and it["tid"] in con_aviso)]
+            estado = dict(data.get("sembrado") or {}, revisado_at=now)
+            if publicar and dt.hour >= SEMBRAR_HORA:
+                estado["dia"] = f"{dt:%Y-%m-%d}"
+            data["sembrado"] = estado
+            self._save(data)
+        if not publicar:
+            return 0
+        n = 0
+        for it in nuevos[:SEMBRAR_MAX]:
+            if n:
+                self.sleep(PAUSA_ENTRE_MENSAJES)
+            markup = it["markup"]() if callable(it.get("markup")) else it.get("markup")
+            extra = {"reply_markup": markup} if markup else {}
+            try:
+                sent = self.notifier.send_to(self.destino[0], self.destino[1], it["texto"], html=False, **extra)
+            except Exception as exc:
+                log.warning("tema Decisiones: no se pudo sembrar %s: %s", it["clave"], exc)
+                continue
+            if sent and sent.get("message_id"):
+                self._registrar({"tipo": it.get("tipo") or "decision", "rol": "semilla", "clave": it["clave"],
+                                 "tid": it.get("tid"), "token": markup_token(markup),
+                                 "head": cabecera(it["texto"], False), **_donde(sent)})
+                log.info("decisión publicada en el tema (semilla) %s", it["clave"])
+                n += 1
+        return n
 
     def confirmacion(self, original: str, nuevo: str) -> None:
         """1.er toque del doble toque (consola.pedir): el mensaje lleva ahora [✅ Sí] [✖ No] con otro teclado. La
@@ -301,7 +413,7 @@ class CanalAvisos:
     def _registrar(self, entry: dict) -> None:
         with self._lock:
             data = self._load()
-            if entry.get("tid"):  # una decisión nueva de la misma tarea sustituye a la anterior
+            if entry.get("tid") and entry.get("rol") != "semilla":  # un aviso nuevo de la tarea sustituye al anterior
                 for key, e in list(data["abiertas"].items()):
                     if e.get("tid") == entry["tid"] and not _misma(e, entry):
                         self._cerrar(data, key, f"↪️ Sustituida por un aviso más reciente\n{e.get('head') or ''}"
@@ -378,6 +490,21 @@ def contador_texto(abiertas: list[dict], now: float) -> str:
     oldest = min(float(e.get("at") or now) for e in abiertas)
     lines.append(f"La más antigua lleva {html.escape(age_label(oldest, now))}.")
     return "\n".join(lines)
+
+
+# Tipo del contador de cada kind de lo_tuyo («pregunta» cuenta igual que el aviso en vivo de un needs_input).
+TIPO_SEMILLA = {"pregunta": "needs_input", "atascada": "blocked"}
+
+
+def semilla(it: dict, markup, verbo: str, now: float) -> dict:
+    """Ítem de lo_tuyo -> semilla del tema: {clave, tid, tipo, texto, markup}. `markup`: teclado o función que lo
+    emite (solo se llama si de verdad se publica: así el recálculo de cada 30 min no gasta teclados)."""
+    from .notices import hours_ago
+    cuando = f" · hace {hours_ago(it['since'], now)} h" if it.get("since") else ""
+    extra = f"\n{truncate(it['extra'], 200)}" if it.get("extra") else ""
+    texto = f"🎯 {verbo} · {it['tid']} · {truncate(it.get('title') or '', 90)}{cuando}{extra}"
+    return {"clave": f"{it['kind']}:{it['tid']}", "tid": it["tid"] if str(it["tid"]).startswith("t_") else None,
+            "tipo": TIPO_SEMILLA.get(it["kind"], it["kind"]), "texto": texto, "markup": markup}
 
 
 def _misma(a: dict, b: dict) -> bool:

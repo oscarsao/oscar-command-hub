@@ -86,6 +86,18 @@ def _protect_collaborator_dms(notifier: "TelegramNotifier", env: dict, people=No
     notifier.collab_view = collab_view
 
 
+RETRY_AFTER_MAX = 10  # s: más espera que esto bloquearía la pasada; se reintenta igual tras el tope
+
+
+def retry_after(description: str | None) -> float | None:
+    """Segundos de «Too Many Requests: retry after N» (429); None si el error es otro."""
+    desc = str(description or "").lower()
+    if "too many requests" not in desc and "retry after" not in desc:
+        return None
+    m = re.search(r"retry after (\d+)", desc)
+    return float(m.group(1)) if m else 1.0
+
+
 class TelegramAPIError(RuntimeError):
     """Telegram respondió con error; `description` es el texto de la API (nunca contiene el token)."""
 
@@ -109,6 +121,7 @@ class TelegramNotifier:
         self.collab_chats: set[str] = set()
         self.collab_view = None
         self.owner_id: str | None = None
+        self.sleep = time.sleep  # inyectable en tests (espera del reintento ante 429)
 
     def _is_collab_chat(self, chat_id) -> bool:
         """Falla ABIERTO es lo que hay que evitar: con el filtro activo, todo chat privado (id positivo) que no sea el de
@@ -193,7 +206,15 @@ class TelegramNotifier:
             payload["reply_markup"] = reply_markup
         if reply_to:
             payload["reply_parameters"] = {"message_id": int(reply_to), "allow_sending_without_reply": True}
-        result = self._api("sendMessage", payload)
+        try:
+            result = self._api("sendMessage", payload)
+        except TelegramAPIError as exc:
+            # 429 (TG-07): se espera lo que pide Telegram (con tope) y se reintenta UNA vez; si vuelve a fallar, sube.
+            wait = retry_after(exc.description)
+            if wait is None:
+                raise
+            getattr(self, "sleep", time.sleep)(min(wait, RETRY_AFTER_MAX) + 0.5)
+            result = self._api("sendMessage", payload)
         return {"chat_id": str(chat_id), "thread_id": str(thread_id or "0"), "message_id": result.get("message_id")}
 
     def edit(self, chat_id: str, message_id, text: str, *, html: bool = True,

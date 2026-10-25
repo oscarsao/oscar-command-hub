@@ -147,6 +147,8 @@ def main(argv: list[str] | None = None) -> int:
         decisions.team_notice = tg_settings.get("team_notice") or None
         # DECISIÓN / INFORMATIVO / URGENTE (canal_avisos.py): sin telegram.destinos.decisiones, todo como antes.
         decisions.canal = canal_avisos.para_desk(decisions, tg_settings["decisiones"])
+        # Siembra del tema (F1-03): al arrancar y a las 9:00 con lo de lo_tuyo; en su hilo (1 s entre mensajes).
+        decisions.canal.sembrador, decisions.canal.run_async = commands.semillas, True
         if tg_settings["decisiones"]:
             log.info("tema 🎯 Decisiones activo: %s/%s", *tg_settings["decisiones"])
         decisions.collab = CollabIntake(notify, load_people(owner), hermes_for=hermes_for, state_path=COLLAB_STATE)

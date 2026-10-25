@@ -8,6 +8,7 @@ CommandCenter (cada uno abre la ficha de siempre con sus botones: este módulo n
 Ítem = {kind, tid, title, board, since, prio, url, extra}. `kind`:
   pregunta   tarea de carril en needs_input         -> ✍️ Responder
   atascada   🧊 Hermes la paró por bloquearse        -> 👁 Ver
+  validar    tarjeta del carril ops en review (la valida Oscar: no hay PR) -> ✅ Validar (abre la ficha)
   aprobar    tarea lista para integrar (PR listo)   -> ✅ Aprobar (abre la ficha con [✅ Aprobar]); solo si su rama sigue
              abierta y sin fusionar y no pasa de `aprobar_max_dias`
   cola       bloqueo de LIMITACIÓN-GUARD en la cola del integrador (integrador_cola.json) -> 👁 Ver
@@ -32,8 +33,9 @@ SETTINGS_PATH = ROOT / "lo_tuyo.yaml"
 URGENTE, NORMAL, BAJA = "urgente", "normal", "baja"
 GRUPOS = ((URGENTE, "🔴 Urgente"), (NORMAL, "🟡 Normal"), (BAJA, "⚪ Cuando puedas"))
 # kind -> (verbo del botón, orden dentro del grupo)
-KINDS = {"pregunta": ("✍️ Responder", 0), "aprobar": ("✅ Aprobar", 1), "atascada": ("👁 Ver", 2), "cola": ("👁 Ver", 3),
-         "externo": ("🔗 PR", 4), "tuyo": ("👁 Ver", 5), "integrador": ("📖 Ver más", 6)}
+KINDS = {"pregunta": ("✍️ Responder", 0), "aprobar": ("✅ Aprobar", 1), "validar": ("✅ Validar", 1),
+         "atascada": ("👁 Ver", 2), "cola": ("👁 Ver", 3), "externo": ("🔗 PR", 4), "tuyo": ("👁 Ver", 5),
+         "integrador": ("📖 Ver más", 6)}
 SIEMPRE_URGENTE = ("atascada", "cola")  # bloquean a otros sin que nadie lo vea
 _ESPERA_RE = re.compile(r"\boscar\b|esper|pendiente|bloquead|necesit|pide|ok\b", re.I)
 
@@ -108,6 +110,22 @@ def de_externos(items: dict[str, dict]) -> list[dict]:
     return out
 
 
+def de_validar_ops(lanes: dict, hermes_for) -> list[dict]:
+    """Tarjetas del carril ops en review: esperan el [✅ Validar] de Oscar (F1-03, FL-02). Un tablero ilegible se salta."""
+    from .notices import decision_since
+    out = []
+    for lane in lanes.values():
+        if getattr(lane, "kind", "") != "ops" or not lane.board:
+            continue
+        try:
+            tasks = hermes_for(lane.board).list_status(lane.name, "review")
+        except Exception:
+            continue
+        out += [item("validar", t["id"], t.get("title"), board=lane.board, since=decision_since(t), prio=_prio(t))
+                for t in tasks]
+    return out
+
+
 def de_tarjetas(cards: list[dict]) -> list[dict]:
     """Ítems desde [{board, task, since}] (tarjetas a nombre de Oscar)."""
     return [item("tuyo", c["task"]["id"], c["task"].get("title"), board=c.get("board") or "", since=c.get("since"),
@@ -176,6 +194,7 @@ def de_kanban(lanes: dict, hermes_for, extra_boards=("default",), *, aj: Ajustes
                                     prio=_prio(t)))
         except Exception:
             continue
+    out += de_validar_ops(lanes, hermes_for)
     for board in boards:
         h = hermes_for(board)
         for status in ("ready", "todo", "blocked"):
@@ -205,7 +224,7 @@ def grupo_de(it: dict, aj: Ajustes, now: float) -> str:
         return URGENTE
     if prio is not None and prio < 0:
         return BAJA
-    if since and it["kind"] in ("pregunta", "aprobar", "externo") and now - since >= aj.urgente_horas * 3600:
+    if since and it["kind"] in ("pregunta", "aprobar", "validar", "externo") and now - since >= aj.urgente_horas * 3600:
         return URGENTE
     return NORMAL
 
