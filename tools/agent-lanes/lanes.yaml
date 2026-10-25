@@ -47,10 +47,17 @@ telegram:
   # Con enabled: true, si alguien escribe a ESTE bot en uno de los chats (@mención o respuesta a un mensaje suyo)
   # contesta una vez por minuto «esto lo lleva el asistente del equipo». Lo que hablan entre ellos no se contesta.
   # 25-10 (Oscar, «sí, activa el aviso»): Andrea e Ingerber están sin Hermes (hermes: false, 24-10) y no recibían respuesta.
+  # Segundo disparo (t_62bc2a5f): quien en tools/telegram/people.yaml tiene `hermes: false` (Hermes lo bloquea en
+  # silencio) y escribe a Hermes recibe este mismo aviso, UNA vez por persona y día (y con el enfriamiento del chat).
+  # «Escribe a Hermes» = @mención de `hermes_username`, respuesta a un mensaje de ese bot, o texto libre en un tema de
+  # `hermes_topics` (los free_response_topics de Hermes, donde contesta sin mención: «chat:tema»). Quien tiene Hermes
+  # (Oscar, María, Ángel) y las charlas entre personas sin mención a un bot no reciben nada.
   team_notice:
     enabled: true
     chats: [-1004277259008]   # Marketing
     text: "Hermes (@oscarsaoBot) todavía no está disponible para el equipo: llegará con el asistente de equipo. Mientras, aquí os atiende Trabajos (/ayuda@pildora_carriles_bot) y lo demás se lo pedís a Oscar."
+  # Opcionales de t_62bc2a5f (bajo team_notice): hermes_username: oscarsaoBot  y  hermes_topics: ["-100XXXXXXXXXX:406"]
+  # (temas con respuesta libre de Hermes, p. ej. Marketing t406). Sin ellos solo cuentan @mención y respuesta al bot.
   # Texto libre de Oscar = respuesta a la decisión pendiente de ESE tema (auditoría t_dddcc232, P1), SOLO si el mensaje
   # es una respuesta (reply_to) a un mensaje de este bot (24-10: Trabajos = motor silencioso; la conversación es de Hermes). Con una sola
   # pendiente la toma como respuesta (eco + Deshacer); con varias pregunta cuál. Nunca promueve/fusiona/despliega.

@@ -511,6 +511,7 @@ class DecisionDesk:
         self.collab = None        # CollabIntake: DM de colaboradores (people.yaml) -> tarjeta [IDEA]; None = como antes
         self.canal = None         # canal_avisos.CanalAvisos: tema 🎯 Decisiones (DECISIÓN/INFO/URGENTE); None = como antes
         self.people: People | None = None  # people.yaml; None = se lee la primera vez que hace falta (el runner lo fija)
+        self._team_notice_day: dict[str, str] = {}  # user_id -> día (ISO) del último aviso «sin Hermes»
         self._tl = threading.local()       # quién actúa en este hilo (nombre de un operador que no es Oscar)
         self._help_at: dict[str, float] = {}  # chat -> instante de la última ayuda (enfriamiento)
         self.tree = None          # deps.TreeReader: líneas 🔗/⏸/↳ al redibujar un aviso (opcional)
@@ -814,7 +815,11 @@ class DecisionDesk:
     def _team_notice(self, msg: dict, chat: dict) -> bool:
         """Grupo del equipo (telegram.team_notice en lanes.yaml, APAGADO por defecto): si le escriben a ESTE bot
         (@mención o respuesta a un mensaje suyo), avisa de que esto lo lleva el asistente del equipo. Lo que hablan
-        entre ellos no se contesta. True = avisó."""
+        entre ellos no se contesta. True = avisó.
+
+        Además (t_62bc2a5f): quien en people.yaml tiene `hermes: false` y escribe a Hermes (@mención de
+        `hermes_username`, respuesta a un mensaje de ese bot, o texto libre en un tema de `hermes_topics`, donde Hermes
+        contesta sin mención) recibe el aviso, como mucho una vez por persona y día."""
         cfg = self.team_notice or {}
         chat_id = str(chat.get("id"))
         if not cfg.get("enabled") or chat_id not in {str(c) for c in cfg.get("chats") or ()}:
@@ -822,9 +827,17 @@ class DecisionDesk:
         text = msg.get("text") or ""
         username = (getattr(self.commands, "bot_username", None) or "").lstrip("@").lower()
         bot_id = getattr(self.notifier, "bot_id", None)
-        replied = ((msg.get("reply_to_message") or {}).get("from") or {}).get("id")
+        replied_from = (msg.get("reply_to_message") or {}).get("from") or {}
+        replied = replied_from.get("id")
         mentioned = bool(username) and f"@{username}" in text.lower()
-        if not (mentioned or (bot_id and replied is not None and str(replied) == str(bot_id))):
+        to_us = mentioned or bool(bot_id and replied is not None and str(replied) == str(bot_id))
+        user_id = (msg.get("from") or {}).get("id")
+        day = None
+        if not to_us and self._to_hermes(msg, cfg, chat_id, text, replied_from) and self._people().sin_hermes(user_id):
+            day = (str(user_id), datetime.now().date().isoformat())
+            if self._team_notice_day.get(day[0]) == day[1]:
+                return False  # ya avisada hoy
+        elif not to_us:
             return False
         stamp = time.monotonic()
         last = self._help_at.get(f"team:{chat_id}")
@@ -838,7 +851,28 @@ class DecisionDesk:
         except Exception as exc:
             log.warning("no pude enviar el aviso al equipo: %s", exc)
             return False
+        if day:
+            self._team_notice_day[day[0]] = day[1]
         return True
+
+    @staticmethod
+    def _to_hermes(msg: dict, cfg: dict, chat_id: str, text: str, replied_from: dict) -> bool:
+        """¿Va el mensaje a Hermes? @mención de su username, respuesta a un mensaje suyo o texto libre en un tema de
+        `hermes_topics` (los `free_response_topics` de Hermes: ahí contesta sin mención)."""
+        hermes = str(cfg.get("hermes_username") or "oscarsaoBot").lstrip("@").lower()
+        if f"@{hermes}" in text.lower():
+            return True
+        if replied_from.get("is_bot") and str(replied_from.get("username") or "").lower() == hermes:
+            return True
+        thread = str(msg.get("message_thread_id") or "")
+        for topic in cfg.get("hermes_topics") or ():
+            if isinstance(topic, dict):
+                topic_chat, topic_thread = topic.get("chat"), topic.get("thread")
+            else:  # "<chat>:<tema>", como free_response_topics de Hermes
+                topic_chat, _, topic_thread = str(topic).rpartition(":")
+            if str(topic_chat) == chat_id and thread and str(topic_thread) == thread and text.strip():
+                return True
+        return False
 
     HELP_COOLDOWN = 30.0 # s: un único aviso de ayuda por chat en ese plazo (sin ráfagas ni bucles)
 
