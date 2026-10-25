@@ -562,7 +562,15 @@ def gather(now: float, runner_log: Path, hermes_log: Path) -> dict:
     return {"items": items, "lanes": lanes, "now": now, "since": since, "profiles": hermes_profiles(HERMES_EXE),
             "branches": branches, "drift": migrateam_drift(lanes, GH_EXE),
             "hermes_log": read_log(hermes_log, since), "hermes_log_path": str(hermes_log),
-            "runner_log": read_log(runner_log, since), "runner_log_path": str(runner_log)}
+            "runner_log": read_rotated(runner_log, since), "runner_log_path": str(runner_log)}
+
+
+def read_rotated(path: Path, since: float, keep: int = 3) -> list[tuple[float, str, str]] | None:
+    """runner.log rota a medianoche (F1-06): la ventana de la auditoría abarca también los últimos ficheros rotados
+    (runner.log.AAAA-MM-DD). None solo si no se pudo leer ninguno."""
+    parts = [read_log(f, since) for f in [*sorted(path.parent.glob(path.name + ".*"))[-keep:], path]]
+    found = [p for p in parts if p is not None]
+    return [line for p in found for line in p] if found else None
 
 
 def create_card(title: str, body: str, key: str) -> str:

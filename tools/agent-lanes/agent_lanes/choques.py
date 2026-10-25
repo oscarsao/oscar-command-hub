@@ -428,7 +428,7 @@ def detectar(lanes: dict, hermes_for, git: Git, ajustes: Ajustes | None = None, 
                         continue  # dos tarjetas solo de texto: ya las avisa solapes.py
                     clase, comun = clasificar(a, b, repo, remote, git, ajustes)
                     if clase == "aditivo":
-                        log.info("choques: %s y %s avanzan en paralelo (aditivo)", a.uid, b.uid)
+                        log.debug("choques: %s y %s avanzan en paralelo (aditivo)", a.uid, b.uid)  # F1-06: era INFO
                         continue
                     out.append(Choque(solapes._norm_repo(repo), clase, a, b, comun, propuesta(clase, a, b)))
         except Exception as exc:

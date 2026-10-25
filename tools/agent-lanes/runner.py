@@ -12,7 +12,7 @@ import logging
 import sys
 import threading
 import time
-from logging.handlers import RotatingFileHandler
+from logging.handlers import TimedRotatingFileHandler
 
 from agent_lanes import canal_avisos, ciego, consola, doctor_config, drain, notices, resumen_carriles
 from agent_lanes.bandeja import load as load_bandeja
@@ -53,6 +53,12 @@ from agent_lanes.verify import verify
 from agent_lanes.worker import ClaudeWorker
 
 LOCK = ROOT / ".state" / "runner.lock"
+LOG_DAYS = 14  # F1-06 (DISP-12): un fichero por día y 14 días de historia (antes 2 MB x 3 = ~14 h)
+
+
+def log_handler(path) -> TimedRotatingFileHandler:
+    """runner.log rota a medianoche y guarda LOG_DAYS días (runner.log.AAAA-MM-DD)."""
+    return TimedRotatingFileHandler(path, when="midnight", backupCount=LOG_DAYS, encoding="utf-8", delay=True)
 TG_OFFSET = ROOT / ".state" / "tg_offset"      # offset de getUpdates del bot de carriles
 REMINDERS_STATE = ROOT / ".state" / "reminders.json"  # franjas 13:00/18:00 ya enviadas
 STUCK_STATE = ROOT / ".state" / "stuck_avisos.json"  # avisos de 🧊 atascadas ya enviados (tarjeta:estado:ronda)
@@ -94,7 +100,7 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
     handlers = [logging.StreamHandler()]
     if args.log_file:
-        handlers = [RotatingFileHandler(args.log_file, maxBytes=2_000_000, backupCount=3, encoding="utf-8")]
+        handlers = [log_handler(args.log_file)]
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(threadName)s %(message)s",
                         handlers=handlers)
     log = logging.getLogger("agent_lanes")

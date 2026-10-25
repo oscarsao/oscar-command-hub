@@ -31,6 +31,7 @@ from rich.text import Text
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import dbwatch  # noqa: E402  (sonda de la base de Supabase; mismo directorio)
+import disponibilidad as disp  # noqa: E402  (F1-06: latido, batería, tareas diarias perdidas; mismo directorio)
 import prodwatch  # noqa: E402  (despliegues de producción en Vercel y salud del servidor; mismo directorio)
 
 HOME = Path.home()
@@ -55,7 +56,7 @@ WATCH_PROCS = ("claude", "python", "pythonw", "node", "chrome", "hermes", "cloud
 LOG_LEVEL_RE = re.compile(r"\b(WARNING|ERROR|CRITICAL)\b")
 # Silencio del DM de 23:00 a 08:00 (30-09): solo pasan las caídas reales (runner, Hermes, servicios, listado de tareas).
 QUIET_START, QUIET_END = 23, 8
-OUTAGE_KEYS = ("runner-dead", "gw-dead", "health-", "list-fail", "db-down", "db-slow", "vercel-prod")
+OUTAGE_KEYS = ("runner-dead", "gw-dead", "health-", "list-fail", "db-down", "db-slow", "vercel-prod", "battery-low")
 PROD_EVERY = 300      # s entre comprobaciones de Vercel (producción) y del servidor (health + Dokploy)
 DB_EVERY = 300        # s entre sondas de la base de Supabase (01-10: saturada 30-09 y 01-10)
 DB_MAX_CONNS = 45     # AVISO por encima (el plan Micro admite 60)
@@ -71,7 +72,12 @@ LIST_FAIL_GAP = 240  # s sin fallos nuevos = recuperado (el runner lista cada ~6
 RAM_REPORT_EVERY = 4 * 3600  # s entre informes de RAM al DM (antes: aviso repetido cada hora mientras RAM > 88 %)
 ALERT_CAP_HOURS = 24  # como mucho un aviso por clave y día (retro 22-10); editable: ajustes_hub.json avisos.alerta_cada_horas
 CAP_EXEMPT = ("INFO", "RESUELTO")
-WATCHED_CODE = ("monitor.py", "dbwatch.py", "prodwatch.py")  # si cambian en disco, el monitor se reinicia solo
+WATCHED_CODE = ("monitor.py", "dbwatch.py", "prodwatch.py", "disponibilidad.py")  # si cambian, se reinicia solo
+RESUMEN_INFO = LANES / ".state" / "resumen_info.json"  # resumen diario INFO del runner (F1-04)
+RUNNER_LOCK = LANES / ".state" / "runner.lock"
+# Tareas diarias laborables que se relanzan si a la hora + margen no han dejado línea de hoy en su log (DISP-09).
+DAILY_TASKS = (disp.TareaDiaria("Auditor diario carriles", LANES / ".state" / "auditor.log", (7, 40), 50),
+               disp.TareaDiaria("Resumen diario Hermes", LANES / ".state" / "brief.log", (8, 0), 90))
 
 
 def alert_cap_seconds() -> float:
@@ -196,9 +202,13 @@ def dm_pusher():
 
 
 class Monitor:
-    def __init__(self, *, write_log: bool = False, push=None, db=None, prod=None):
+    def __init__(self, *, write_log: bool = False, push=None, db=None, prod=None, latido=None, tareas=None):
         STATE.mkdir(exist_ok=True)
         self.write_log, self.push = write_log, push
+        self.latido = latido  # disponibilidad.Latido o None (F1-06: Oscar HQ + Kuma cada 5 min)
+        self.tareas = tareas  # disponibilidad.TareasDiarias o None
+        self.read_battery = None  # inyectable en tests (psutil.sensors_battery)
+        self.resumen_path = RESUMEN_INFO
         self.prod, self.prod_at = prod, 0.0  # prodwatch.ProdWatch o None (sin avisos de producción/servidor)
         self.db, self.db_at = db, 0.0  # dbwatch.DbWatch o None (vigilancia de Supabase desactivada)
         self.alerts: deque[tuple[str, str, str]] = deque(maxlen=14)  # (hora, nivel, texto)
@@ -364,6 +374,59 @@ class Monitor:
                        + " porque su última ejecución había fallado.", "rerun-jobs", every=0)
         return rerun
 
+    # --- disponibilidad (F1-06) -----------------------------------------------------------------------
+    def info_resumen(self, tipo: str, texto: str, clave: str) -> None:
+        """INFO al resumen diario del runner (una vez al día por clave); siempre queda también en alerts.log."""
+        self.alert("INFO", texto, f"{tipo}-{clave}", every=0)
+        if self.write_log:
+            disp.anotar_resumen(self.resumen_path, tipo, texto, clave, now=self.now)
+
+    def check_battery(self) -> tuple[float, bool] | None:
+        """DISP-05: sin corriente 10 min = AVISO al DM; por debajo del 20 % sin corriente = ALTA (también de noche:
+        si se agota, se para el hub). Al enchufar, «resuelto». Cada desenchufe va también al resumen diario."""
+        b = disp.bateria(self.read_battery)
+        unplugged = b is not None and not b[1]
+        pct = b[0] if b else 100.0
+        if unplugged and not self.__dict__.get("_bat_unplugged"):  # una línea por desenchufe, no por vuelta
+            self.info_resumen("bateria", f"PC sin corriente ({pct:.0f} %) a las {self.now():%H:%M}",
+                              f"{self.now():%Y-%m-%d}")
+        self._bat_unplugged = unplugged
+        self.condition("battery-on", unplugged, f"El PC funciona con batería ({pct:.0f} %).",
+                       "enchúfalo: con la tapa cerrada o 10 min inactivo se suspende y el hub se para.",
+                       min_hits=1, min_secs=disp.BATERIA_AVISO_SEG, level="AVISO", every=3600)
+        self.condition("battery-low", unplugged and pct < disp.BATERIA_ALTA_PCT,
+                       f"Batería del PC al {pct:.0f} % y sin corriente: si se agota, se para todo el hub.",
+                       "enchúfalo ya.", min_hits=1, level="ALTA", every=1800)
+        return b
+
+    def heartbeat(self) -> dict | None:
+        """Latido cada 5 min (Oscar HQ y Kuma). Un fallo seguido 30 min avisa una vez; la vuelta, «resuelto»."""
+        if not (self.write_log and self.latido):
+            return None
+        b = disp.bateria(self.read_battery)
+        detalle = {"runner": "VIVO" in self.lanes_text or disp.runner_pid_vivo(RUNNER_LOCK),
+                   "ram_pct": round(psutil.virtual_memory().percent), "bateria_pct": round(b[0]) if b else None,
+                   "enchufado": b[1] if b else None}
+        res = self.latido.tick(detalle)
+        if res is None:
+            return None
+        for destino, ok in res.items():
+            motivo = self.latido.fallos.get(destino) or "sin respuesta"
+            self.condition(f"latido-{destino}", not ok,
+                           f"El latido del PC a {'Oscar HQ' if destino == 'ohq' else 'Uptime Kuma'} falla ({motivo}).",
+                           "mira la red del PC y la clave/URL del latido en agent-lanes/.env (sin pegarla en el chat).",
+                           min_hits=6, every=3600, level="MEDIA")
+        return res
+
+    def check_daily_tasks(self) -> list[str]:
+        if not (self.write_log and self.tareas):
+            return []
+        out = self.tareas.tick()
+        for name in out:
+            self.info_resumen("relanzada", f"«{name}» no se había ejecutado hoy: relanzada a las {self.now():%H:%M}",
+                              name)
+        return out
+
     # --- PC -------------------------------------------------------------------------------------------
     def pc(self) -> Panel:
         cpu = psutil.cpu_percent(None)
@@ -432,7 +495,10 @@ class Monitor:
         # Un reinicio deja el runner ~20 s sin proceso, y con Hermes cargado `lanes.py status` tarda y el runner sale
         # «no vivo» 2-3 min y se recupera solo (162 avisos el 23-10). Oscar, 23-10: avisar a los 5 min, no al minuto.
         draining = (LANES / ".state" / "drain.json").exists()
-        self.condition("runner-dead", "VIVO" not in self.lanes_text and not draining,
+        # DISP-10: con RAM al límite `lanes.py status` tarda o falla y el runner sigue vivo: si el PID de runner.lock
+        # vive, no es «runner parado» (si de verdad está colgado lo dirá el latido de Oscar HQ / Kuma).
+        dead = "VIVO" not in self.lanes_text and not disp.runner_pid_vivo(RUNNER_LOCK)
+        self.condition("runner-dead", dead and not draining,
                        "El runner de carriles lleva más de cinco minutos parado: no se reclaman tareas (quedan en cola, "
                        "no se pierde nada).",
                        "en el PC: Programador de tareas → "
@@ -721,6 +787,16 @@ class Monitor:
         return root
 
 
+def ohq_api_url_default() -> str:
+    """`ohq.api_url` de lanes.yaml (F1-02); OHQ_API_URL del .env manda sobre esto."""
+    try:
+        import yaml
+        cfg = (yaml.safe_load((LANES / "lanes.yaml").read_text(encoding="utf-8")) or {}).get("ohq") or {}
+        return str(cfg.get("api_url") or "").strip() if isinstance(cfg, dict) else ""
+    except Exception:
+        return ""
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--once", action="store_true")
@@ -759,18 +835,23 @@ def run_headless(interval: float = 15.0) -> int:
     pidf.write_text(str(os.getpid()))
     envs = [LANES / ".env", Path(__file__).resolve().parent / ".env"]
     prod = prodwatch.from_config(LANES / "lanes.yaml", envs, STATE / "prodwatch.json", skip_urls=HEALTH.values())
-    mon = Monitor(write_log=True, push=dm_pusher(), db=dbwatch.from_env(envs), prod=prod)
+    env = dbwatch.read_env((disp.OHQ_KEY, disp.KUMA_KEY, disp.OHQ_URL_KEY), envs)
+    latido = disp.Latido.desde_env(env, api_url_defecto=ohq_api_url_default())
+    mon = Monitor(write_log=True, push=dm_pusher(), db=dbwatch.from_env(envs), prod=prod, latido=latido)
+    mon.tareas = disp.TareasDiarias(DAILY_TASKS, estado=STATE / "tareas_diarias.json", run=mon.run, now=mon.now)
     mon.alert("INFO", "Monitor headless arrancado" + ("" if mon.db else " (vigilancia de Supabase desactivada: falta "
               + dbwatch.ENV_KEY + ")"), every=0)
     try:  # F1-02: una línea INFO con cada vigilancia y su estado (solo nombres); nunca impide arrancar
         partes = [f"Supabase: {'activa' if mon.db else 'desactivada (falta ' + dbwatch.ENV_KEY + ')'}"]
         partes += prod.estado_vigilancias() if prod else ["prodwatch: sin nada que vigilar en lanes.yaml"]
+        partes += latido.estado()
         mon.alert("INFO", "Vigilancias: " + " · ".join(partes), "vigilancias-arranque", every=0)
     except Exception as exc:
         mon.alert("MEDIA", f"monitor: no pude resumir las vigilancias: {exc}", "self-vigilancias", every=3600)
     started = code_fingerprint()
     while True:
-        for step in (mon.pc, mon.system, mon.chats, mon.alerts_panel, mon.refresh_db, mon.refresh_prod):
+        for step in (mon.pc, mon.system, mon.chats, mon.alerts_panel, mon.refresh_db, mon.refresh_prod,
+                     mon.check_battery, mon.heartbeat, mon.check_daily_tasks):
             try:
                 step()
             except Exception as exc:  # una comprobación rota no para las demás

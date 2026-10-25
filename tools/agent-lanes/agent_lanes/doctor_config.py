@@ -69,6 +69,8 @@ def diagnostico(env: dict, data: dict, *, publico: bool | None = None, lanes_pat
     filas.append(_fila("sync_usuarios (suspensiones del panel)", faltan_ohq,
                        "" if env.get("OHQ_API_URL") or not base else "URL por defecto de lanes.yaml"))
     filas.append(_fila("vigilancia_equipo (👥 Equipo con la API de Oscar HQ)", faltan_ohq))
+    filas.append(_fila("latido del PC a Oscar HQ (monitor, F1-06)", faltan_ohq))
+    filas.append(_fila("latido del PC a Uptime Kuma (monitor, F1-06)", _falta("KUMA_PUSH_URL", env=env)))
     integ = (data.get("integrator") or {}).get("lanes") or {}
     if not _truthy(env.get("INTEGRATOR_ENABLED")):
         filas.append(Fila("integrador", APAGADO, "falta INTEGRATOR_ENABLED=true"))
