@@ -1,6 +1,10 @@
 """Reconciliación del kanban con lo que pasa fuera de él (spec: specs/reconciliacion.md).
 
 - `Reconciler.close_from_prs()`: PR mergeado/cerrado -> cierra o archiva las tarjetas vinculadas y avisa UNA vez.
+  F1-05 (FL-07/FL-08): un PR fusionado fuera del integrador (consola, ramas `fix/*`/`feat/*` con «Cierra: t_x») deja
+  `INTEGRADO <sha> · PR <url>` en la tarjeta (así deps.py la ve integrada); una tarjeta `scheduled`/`blocked` se
+  desbloquea antes de completarla (Hermes no completa una aparcada); y un PR abierto de consola SIN «Cierra: t_x»
+  se avisa una vez: es obligatorio para que su tarjeta se cierre sola.
 - `Reconciler.obsolete_pass()`: una vez al día propone archivar tarjetas obsoletas con un botón (nunca archiva sola).
 - `record_decision()` / `main()`: `lanes.py tarjeta ...`, para que el integrador registre en la tarjeta lo decidido en
   otro canal. Todo queda comentado en la tarjeta (con autor) y en .state/reconcile-audit.jsonl.
@@ -33,6 +37,9 @@ STALE_HOURS = 72
 MAX_PROPOSALS = 5
 KEEP_DAYS = 7
 INTEGRATOR_PROFILE = "oscar-e2"
+INTEGRATED_PREFIX, INTEGRATOR_AUTHOR = "INTEGRADO", "lane-integrator"  # = integrator.INTEGRATED_PREFIX / _AUTHOR
+UNBLOCK_FIRST = ("scheduled", "blocked")  # FL-08: Hermes solo completa tras unblock
+CONSOLE_BRANCH_RE = re.compile(r"(?:fix|feat)/")  # ramas de la consola (olas, oscar-e2): deben llevar «Cierra: t_x»
 GH_EXE = r"C:\Program Files\GitHub CLI\gh.exe"
 ACTIONS = ("comentar", "archivar", "reasignar", "resuelta")
 
@@ -64,7 +71,8 @@ def gh_prs(slugs: list[str], run=_proc.run, limit: int = 40, sleep=None) -> list
     for slug in slugs:
         try:
             cp = _proc.run_retrying([GH_EXE, "pr", "list", "--repo", slug, "--state", "all", "--limit", str(limit),
-                                     "--json", "number,title,body,headRefName,state,mergedAt,url"], runner=run,
+                                     "--json", "number,title,body,headRefName,state,mergedAt,url,mergeCommit"],
+                                    runner=run,
                                     sleep=sleep, label=f"gh pr list {slug}", transient=_proc.gh_network_error,
                                     capture_output=True, text=True, encoding="utf-8", errors="replace")
             if cp.returncode == 0:
@@ -93,7 +101,7 @@ class _State:
             self.data = raw if isinstance(raw, dict) else {}
         except (OSError, json.JSONDecodeError):
             pass
-        for key in ("resolved", "kept", "proposed"):
+        for key in ("resolved", "kept", "proposed", "sin_cierra"):
             self.data.setdefault(key, {})
 
     def save(self) -> None:
@@ -138,6 +146,7 @@ class Reconciler:
         for pr in self.prs():
             outcome = pr_outcome(pr)
             if not outcome:
+                self._warn_console_pr(pr)
                 continue
             for tid in pr_refs(pr):
                 key = f"{tid}:{pr.get('number')}"
@@ -156,12 +165,33 @@ class Reconciler:
             self.state.save()
         return done
 
+    def _warn_console_pr(self, pr: dict) -> None:
+        """PR abierto de una rama de consola sin «Cierra: t_x»: un aviso por PR (su tarjeta no se cerraría sola)."""
+        branch, n = str(pr.get("headRefName") or ""), pr.get("number")
+        if not CONSOLE_BRANCH_RE.match(branch) or pr_refs(pr) or str(pr.get("state")).upper() != "OPEN":
+            return
+        key = f"{pr.get('url') or ''}#{n}"
+        if key in self.state.data["sin_cierra"]:
+            return
+        self.state.data["sin_cierra"][key] = self.clock()
+        self.state.save()
+        self.send(f"🔗 PR #{n} ({branch}) sin «Cierra: t_x»\nLas ramas de consola deben decir qué tarjeta cierran, o "
+                  f"la tarjeta se queda abierta al fusionar.\n➡️ Próximo paso: añade «Cierra: t_xxxxxxxx» a la "
+                  f"descripción del PR {pr.get('url') or ''} · Lo da: el integrador".strip(), None)
+
     def _resolve(self, h, tid: str, show: dict, pr: dict, outcome: str, board: str = "default") -> None:
         n, url = pr.get("number"), pr.get("url") or ""
         title = (show.get("task") or {}).get("title") or ""
         if outcome == "merged":
             where = f"PR #{n} (mergeado)"
             h.comment(tid, f"RECONCILIACIÓN: resuelta en {where} {url}".strip(), author="reconciliacion")
+            sha = str((pr.get("mergeCommit") or {}).get("oid") or "").strip()
+            integrated = any(str(c.get("body") or "").startswith(INTEGRATED_PREFIX + " ")
+                             and c.get("author") == INTEGRATOR_AUTHOR for c in show.get("comments") or [])
+            if re.fullmatch(r"[0-9a-f]{7,40}", sha) and not integrated:  # fusión de consola: mismo rastro que el lote
+                h.comment(tid, f"{INTEGRATED_PREFIX} {sha} · PR {url}".strip(), author=INTEGRATOR_AUTHOR)
+            if (show.get("task") or {}).get("status") in UNBLOCK_FIRST:
+                h.unblock(tid)  # FL-08: si falla, complete dirá que no y el aviso pide cerrarla a mano
             ok, _ = h.complete(tid, f"Resuelta en {where}", {"reconciled": True, "pr": n})
             step = "ninguno: tarjeta cerrada" if ok else "ciérrala o archívala (no pude cerrarla sola)"
         else:

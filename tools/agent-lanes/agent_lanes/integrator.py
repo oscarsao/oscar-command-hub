@@ -81,7 +81,10 @@ INT_MIGRATION_APPLIED = "int_mig_applied"  # ✅ Migración aplicada (ficha fusi
 INT_APPLY = "int_apply"  # claude-hub: [🔁 Aplicar (reinicio ordenado)] tras fusionar
 INT_BATCH_MERGE = "int_batch_merge"  # [🔀 Fusionar lote] (política con `batch: daily`, ver batch.py)
 INT_BATCH_FIX, INT_BATCH_REBASE, INT_BATCH_SKIP = "int_batch_fix", "int_batch_rebase", "int_batch_skip"  # rama fuera del lote
-BATCH_EXCLUDED_ACTIONS = (INT_BATCH_FIX, INT_BATCH_REBASE, INT_BATCH_SKIP)
+# Rama que GitHub no pudo actualizar con la base (update-branch con conflicto, F1-05): además de [🔁 Crear tarjeta de
+# rebase] (INT_BATCH_REBASE), [🧑‍💻 Lo resuelvo en consola] y [🗑 Descartar PR].
+INT_BATCH_CONSOLE, INT_BATCH_DISCARD = "int_batch_console", "int_batch_discard"
+BATCH_EXCLUDED_ACTIONS = (INT_BATCH_FIX, INT_BATCH_REBASE, INT_BATCH_SKIP, INT_BATCH_CONSOLE, INT_BATCH_DISCARD)
 INT_BATCH_BUILD = "int_batch_build"  # [🔀 Fusionar lote] del aviso diario «N PR esperando lote»: monta el lote ya
 INT_ACTIONS = (INT_MERGE, INT_DEPLOY, INT_MERGE_DEPLOY, INT_MIGRATION_APPLIED, INT_APPLY, INT_BATCH_MERGE,
                INT_BATCH_BUILD, *BATCH_EXCLUDED_ACTIONS)
@@ -757,6 +760,12 @@ class Integrator:
                 st = self._state(tid)
             if not self.dry_run:
                 self._warn_stale_batch(lane, task, number, url, pr, st)
+            else:  # F1-05: en seco se dice si el lote la actualizaría con la base (update-branch) o ya está al día
+                cand = {"tid": tid, "pr": number, "head_sha": pr["headRefOid"], "title": task.get("title") or tid}
+                with self._lock:
+                    for c in self.batches._update_branches(lane, self.links.repo_slug(lane), [cand], []):
+                        self._out(f"[dry-run] {tid} · PR #{number}: "
+                                  + (c.get("update_note") or f"al día con {lane.base}"))
             return "dry-run:batch_pending" if self.dry_run else "batch_pending"
         if st.get("head_sha") == pr["headRefOid"] and st.get("status") in ("failed", "offered", "merging"):
             # Gates ya hechos sobre esta cabeza; se repiten al pulsar si la base se movió. Un `failed` SÍ se reevalúa

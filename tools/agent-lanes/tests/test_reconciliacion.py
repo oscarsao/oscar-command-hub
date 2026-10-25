@@ -206,3 +206,45 @@ def test_cli_tarjeta(tmp_path, monkeypatch):
     code = reconcile.main(["comentar", "t_aaaaaaaa", "--autor", "oscar-e2", "visto", "con", "Oscar"],
                           hermes_for=lambda b: h, out=out.append)
     assert code == 0 and h.calls[0][2].endswith("visto con Oscar") and "registrado" in out[0]
+
+
+# --- F1-05: fusiones de consola, scheduled y «Cierra: t_x» ---------------------------------------------------
+
+def _with_unblock(h):
+    def unblock(tid):
+        h.calls.append(("unblock", tid))
+        h.cards[tid]["status"] = "ready"
+        return True
+    h.unblock = unblock
+    return h
+
+
+def test_scheduled_con_pr_fusionado_queda_done(tmp_path):
+    cards = {"t_aaaaaaaa": {"status": "scheduled", "title": "Aparcada"}}
+    merged = {**pr(9, branch="fix/avisos", body="Cierra: t_aaaaaaaa"), "mergeCommit": {"oid": "a" * 40}}
+    rec, h, sent, _ = make(tmp_path, cards, [merged])
+    _with_unblock(h)
+    assert rec.close_from_prs() == ["t_aaaaaaaa"]
+    names = [c[0] for c in h.calls]
+    assert names.index("unblock") < names.index("complete") and cards["t_aaaaaaaa"]["status"] == "done"
+    integ = [c for c in h.calls if c[0] == "comment" and c[2].startswith("INTEGRADO ")]
+    assert integ == [("comment", "t_aaaaaaaa", f"INTEGRADO {'a' * 40} · PR http://pr/9", "lane-integrator")]
+
+
+def test_fusion_de_consola_no_duplica_integrado(tmp_path):
+    cards = {"t_aaaaaaaa": {"status": "review", "comments": [
+        {"author": "lane-integrator", "body": "INTEGRADO " + "b" * 40 + " · PR http://pr/9"}]}}
+    merged = {**pr(9, branch="lane/t_aaaaaaaa"), "mergeCommit": {"oid": "b" * 40}}
+    rec, h, _, _ = make(tmp_path, cards, [merged])
+    rec.close_from_prs()
+    assert not [c for c in h.calls if c[0] == "comment" and c[2].startswith("INTEGRADO ")]
+    assert cards["t_aaaaaaaa"]["status"] == "done"
+
+
+def test_pr_de_consola_sin_cierra_avisa_una_vez(tmp_path):
+    prs = [pr(11, "OPEN", branch="feat/hub-f1", body="sin tarjeta"), pr(12, "OPEN", branch="fix/x", body="Cierra: t_aaaaaaaa"),
+           pr(13, "OPEN", branch="angel/cosa")]
+    rec, _, sent, _ = make(tmp_path, {"t_aaaaaaaa": {"status": "ready"}}, prs)
+    rec.close_from_prs()
+    rec.close_from_prs()
+    assert len(sent) == 1 and "PR #11" in sent[0][0] and "Cierra: t_" in sent[0][0]
