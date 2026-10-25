@@ -348,20 +348,52 @@ def record_decision(h, action: str, tid: str, author: str, text: str = "", *, pr
     return True, f"{tid}: {action} registrado por {author}"
 
 
-def main(argv: list[str], *, hermes_for: Callable | None = None, out: Callable[[str], None] = print) -> int:
-    """`lanes.py tarjeta <accion> <t_id> --autor <quien> [--a perfil] [--board b] [texto]`."""
+def veto_solicitante(people, solicitante: str, board: str, show: dict) -> str | None:
+    """P06 (F1-07): quien pide el cambio debe ser Oscar o un operador de people.yaml con la marca de la tarjeta (la de
+    su carril o, si no, la del tablero). None = permitido; si no, el motivo. Transitorio hasta F2 (identidad real)."""
+    from .nueva_tarjeta import Rechazo, resolver_solicitante
+    from .notices import BOARD_BRANDS, BRANDS
+    try:
+        person = resolver_solicitante(people, solicitante)
+    except Rechazo as exc:
+        return str(exc)
+    if not (person.is_owner or person.operador):
+        return f"{person.name} no puede cambiar tarjetas (no es operador en people.yaml)"
+    marca = BRANDS.get(str((show.get("task") or {}).get("assignee") or "")) or BOARD_BRANDS.get(board)
+    if not people.puede_en(person.user_id, marca):
+        return f"{person.name} no puede actuar en tarjetas de {marca or 'una marca desconocida'} (veto de marca)"
+    return None
+
+
+def main(argv: list[str], *, hermes_for: Callable | None = None, out: Callable[[str], None] = print,
+         people=None) -> int:
+    """`lanes.py tarjeta <accion> <t_id> --autor <quien> --solicitante <clave|id> [--a perfil] [--board b] [texto]`."""
     ap = argparse.ArgumentParser(prog="lanes.py tarjeta")
     ap.add_argument("action", choices=ACTIONS)
     ap.add_argument("task_id")
     ap.add_argument("text", nargs="*")
     ap.add_argument("--autor", required=True)
+    ap.add_argument("--solicitante", required=True, help="clave de people.yaml, user_id de Telegram u 'oscar'")
     ap.add_argument("--a", dest="profile")
     ap.add_argument("--board", default="default")
     args = ap.parse_args(argv)
     if hermes_for is None:
         from .hermes import HermesCLI
         hermes_for = lambda board: HermesCLI(board, author=args.autor)  # noqa: E731
-    ok, msg = record_decision(hermes_for(args.board), args.action, args.task_id, args.autor, " ".join(args.text),
+    if people is None:
+        from .decisions import OWNER_TELEGRAM_ID
+        from .people import load_people
+        people = load_people(os.environ.get("OWNER_TELEGRAM_ID") or OWNER_TELEGRAM_ID)
+    h = hermes_for(args.board)
+    try:
+        show = h.show(args.task_id) if TID_RE.fullmatch(args.task_id or "") else {}
+    except Exception:
+        show = {}
+    why = veto_solicitante(people, args.solicitante, args.board, show or {})
+    if why:
+        out(f"✋ {why}")
+        return 2
+    ok, msg = record_decision(h, args.action, args.task_id, args.autor, " ".join(args.text),
                               profile=args.profile)
     out(msg)
     return 0 if ok else 1

@@ -5,7 +5,8 @@
     py -3.12 lanes.py close <task_id> "<resumen>"  # verificación mecánica + request-review (nunca merge)
     py -3.12 lanes.py renotify [--lane X] [--task t_id] [--dry-run] [--force]
                                                    # reenvía con botones los avisos pendientes de decisión
-    py -3.12 lanes.py tarjeta <comentar|archivar|reasignar|resuelta> <task_id> --autor <quien> [--a perfil] [texto]
+    py -3.12 lanes.py tarjeta <comentar|archivar|reasignar|resuelta> <task_id> --autor <quien>
+                                       --solicitante <clave|id> [--a perfil] [texto]   # veto de marca (F1-07, P06)
                                                    # el integrador registra en la tarjeta lo decidido en otro canal
                                                    # (comentario REGISTRO por <autor> + .state/reconcile-audit.jsonl)
     py -3.12 lanes.py tarjeta nueva "<título>" "<texto>" --solicitante <clave|id> [--chat C --thread T --mensaje M]

@@ -1,0 +1,26 @@
+# Plantilla versionada de la config de Hermes (CF-08, D53-A; F1-07 del plan del hub 25-10).
+#
+# NO es una copia de config.yaml: solo lo que importa para la seguridad y que se puede comprobar sin leer secretos.
+# Nada de tokens, URLs de MCP, contraseñas ni ids de chat (el repo del hub tiene que poder ser público sin fugas).
+# `apply_hermes_config.py --check` compara el config.yaml real con esto y SOLO AVISA (no cambia nada) de la deriva.
+# Cambiar la config real de Hermes sigue siendo una tarea del integrador con .bak y OK de Oscar (F1-10, F2-09).
+
+# Herramientas que Hermes NO debe tener por plataforma. Telegram: hoy tiene terminal, file y browser (decisión
+# pendiente de Oscar sobre su propio Hermes: dos perfiles). Hasta F2 el `--check` lo señala como informativo.
+# `kanban` sigue permitido hasta F2 (hub-tools por MCP lo sustituye).
+toolsets_prohibidos:
+  telegram: [terminal, file, browser, code_execution, computer_use, delegation, cronjob]
+  cron: [terminal, file, browser, code_execution, computer_use]
+
+# Valores exactos (clave con puntos -> valor). Solo booleanos o textos no secretos.
+valores:
+  gateway.allow_all_users: false
+  memory.write_approval: true
+  skills.write_approval: true
+  kanban.auto_decompose: false
+  kanban.auto_promote_children: false
+
+# Herramientas de MCP que deben seguir excluidas en cada servidor ACTIVO (si el servidor está apagado, no se mira).
+mcp_excluidas:
+  supabase: [apply_migration, execute_sql, pause_project, restore_project, delete_branch, merge_branch, reset_branch]
+  vercel: [cancel_deployment, edit_project_env]

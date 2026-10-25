@@ -153,7 +153,7 @@ defaults:
     # (t_b28a1ed7, t_77bcf9b0 y t_04db0d4e se pararon en npm ci / tsc / node). Solo instalar, compilar, lint y tests;
     # despliegues, alembic contra BD remota y merges siguen vetados por contract/guard.py.
     - "Bash(npm ci:*)"
-    - "Bash(npm install:*)"
+    # F1-07 (S-06): fuera `npm install:*` (aprobaba `npm install <paquete>` sin preguntar); el guard veta añadir paquetes.
     - "Bash(npm run:*)"
     - "Bash(npm test:*)"
     - "Bash(pnpm install:*)"

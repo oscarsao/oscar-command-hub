@@ -9,6 +9,7 @@ Las alertas nuevas se añaden a .state/alerts.log (Claude las vigila desde su se
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import sqlite3
@@ -75,6 +76,7 @@ CAP_EXEMPT = ("INFO", "RESUELTO")
 WATCHED_CODE = ("monitor.py", "dbwatch.py", "prodwatch.py", "disponibilidad.py")  # si cambian, se reinicia solo
 RESUMEN_INFO = LANES / ".state" / "resumen_info.json"  # resumen diario INFO del runner (F1-04)
 RUNNER_LOCK = LANES / ".state" / "runner.lock"
+HERMES_CHECK = LANES.parent / "hermes-config" / "apply_hermes_config.py"  # --check: solo avisa (F1-07, CF-08)
 # Tareas diarias laborables que se relanzan si a la hora + margen no han dejado línea de hoy en su log (DISP-09).
 DAILY_TASKS = (disp.TareaDiaria("Auditor diario carriles", LANES / ".state" / "auditor.log", (7, 40), 50),
                disp.TareaDiaria("Resumen diario Hermes", LANES / ".state" / "brief.log", (8, 0), 90))
@@ -417,6 +419,29 @@ class Monitor:
                            "mira la red del PC y la clave/URL del latido en agent-lanes/.env (sin pegarla en el chat).",
                            min_hits=6, every=3600, level="MEDIA")
         return res
+
+    def check_hermes_config(self) -> list[str] | None:
+        """F1-07 (CF-08): una vez al día (desde las 9:00) compara la config de Hermes con la plantilla del hub. Solo
+        avisa en el resumen diario; nunca cambia nada. None = hoy ya se miró o aún no toca."""
+        if not self.write_log:
+            return None
+        now = self.now()
+        hoy = f"{now:%Y-%m-%d}"
+        if now.hour < 9 or self.__dict__.get("_hermes_cfg_day") == hoy:
+            return None
+        self._hermes_cfg_day = hoy
+        cmd = [sys.executable, str(HERMES_CHECK), "--check", "--json"]
+        try:
+            cp = self.run(cmd)
+            data = json.loads((cp.stdout or "").strip().splitlines()[-1])
+        except Exception as exc:
+            self.alert("MEDIA", f"monitor: no pude comprobar la config de Hermes ({type(exc).__name__})",
+                       "self-hermes-config", every=86400)
+            return None
+        lines = [str(x) for x in data.get("deriva") or []]
+        if lines:
+            self.info_resumen("hermes_config", "Config de Hermes: " + "; ".join(lines)[:260], hoy)
+        return lines
 
     def check_daily_tasks(self) -> list[str]:
         if not (self.write_log and self.tareas):
@@ -851,7 +876,7 @@ def run_headless(interval: float = 15.0) -> int:
     started = code_fingerprint()
     while True:
         for step in (mon.pc, mon.system, mon.chats, mon.alerts_panel, mon.refresh_db, mon.refresh_prod,
-                     mon.check_battery, mon.heartbeat, mon.check_daily_tasks):
+                     mon.check_battery, mon.heartbeat, mon.check_daily_tasks, mon.check_hermes_config):
             try:
                 step()
             except Exception as exc:  # una comprobación rota no para las demás

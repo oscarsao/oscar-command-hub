@@ -42,10 +42,16 @@ SIN_COMMITS = "la rama no tiene commits sobre la base; empuja el trabajo"
 def aprobada_por_oscar(show: dict) -> bool:
     """APROBADO-OSCAR de Oscar posterior a la última petición de review (`review_requested`): la aprobó desde la
     escalada y el PR ya está abierto. Si el implementador vuelve a pedir review después, la aprobación ya no cuenta."""
+    from . import aprobaciones
     events = (show or {}).get("events") or []
     last_request = max((e.get("created_at") or 0 for e in events if e.get("kind") == "review_requested"), default=0)
+    tid = str(((show or {}).get("task") or {}).get("id") or "")
+    # P08 (F1-07): el comentario no basta (lo puede escribir cualquiera con la CLI): hace falta el registro local
+    # del bot de carriles para ese PR.
     return any(c.get("author") == OSCAR_AUTHOR and (c.get("body") or "").startswith(APPROVED_PREFIX)
-               and (c.get("created_at") or 0) >= last_request for c in (show or {}).get("comments") or [])
+               and (c.get("created_at") or 0) >= last_request
+               and aprobaciones.aprobado(tid, aprobaciones.pr_de_comentario(c.get("body")))
+               for c in (show or {}).get("comments") or [])
 
 
 def implementation_metadata(show: dict) -> dict:

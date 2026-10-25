@@ -1686,11 +1686,18 @@ class DecisionDesk:
         stamp = self._now().strftime("%Y-%m-%d %H:%M")
         if not self._hermes(rec).comment(tid, f"APROBADO-OSCAR {stamp} · PR {url}{self._by()}", author=OSCAR_AUTHOR):
             log.warning("%s: PR %s abierto pero no se pudo comentar la aprobación en la tarjeta", tid, url)
+        recorded = False
         if self.integrator:  # registro local PR + commit aprobado: lo único de lo que se fía el Integrador
             try:
-                self.integrator.record_approval(lane, tid, number)
+                recorded = bool(self.integrator.record_approval(lane, tid, number))
             except Exception as exc:
                 log.warning("%s: no se pudo registrar la aprobación para el integrador: %s", tid, exc)
+        if not recorded:  # P08: review/renotify solo creen el registro local; sin integrador, el mínimo
+            from . import aprobaciones
+            try:
+                aprobaciones.registrar(tid, number, by=self._who())
+            except Exception as exc:
+                log.warning("%s: no se pudo guardar el registro local de la aprobación: %s", tid, exc)
         # Nunca se fusiona aquí: el merge es del carril Integrador. Si el carril no tiene política en el integrador
         # automático, [🔀 Integrar] (dos toques) crea la tarjeta para el integrador en vez de esperar a la consola.
         markup = None

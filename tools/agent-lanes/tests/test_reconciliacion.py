@@ -203,9 +203,63 @@ def test_registro_rechaza_sin_autor_o_id_o_datos(tmp_path):
 def test_cli_tarjeta(tmp_path, monkeypatch):
     monkeypatch.setattr(reconcile, "AUDIT_PATH", tmp_path / "a.jsonl")
     h, out = FakeHermes({"t_aaaaaaaa": {"status": "ready"}}), []
-    code = reconcile.main(["comentar", "t_aaaaaaaa", "--autor", "oscar-e2", "visto", "con", "Oscar"],
-                          hermes_for=lambda b: h, out=out.append)
+    code = reconcile.main(["comentar", "t_aaaaaaaa", "--autor", "oscar-e2", "--solicitante", "oscar", "visto", "con",
+                           "Oscar"], hermes_for=lambda b: h, out=out.append, people=_people(tmp_path))
     assert code == 0 and h.calls[0][2].endswith("visto con Oscar") and "registrado" in out[0]
+
+
+# --- F1-07 (P06): `tarjeta` exige --solicitante con veto de marca ---------------------------------------------
+
+PEOPLE_YAML = """people:
+  angel:
+    name: Angel
+    user_id: 200000002
+    role: coo
+    brands: [Píldora, Signal]
+    operador: true
+  ingerber:
+    name: Ingerber
+    user_id: 200000003
+    role: marketing
+    brands: [Píldora]
+"""
+
+
+def _people(tmp_path):
+    from agent_lanes.people import load_people
+    f = tmp_path / "people.yaml"
+    f.write_text(PEOPLE_YAML, encoding="utf-8")
+    return load_people("100000001", f)
+
+
+def test_tarjeta_sin_solicitante_no_arranca(tmp_path):
+    import pytest
+    with pytest.raises(SystemExit):
+        reconcile.main(["archivar", "t_aaaaaaaa", "--autor", "x"], hermes_for=lambda b: None, out=print)
+
+
+def test_tarjeta_archivar_con_angel_sobre_migrateam_se_rechaza(tmp_path, monkeypatch):
+    monkeypatch.setattr(reconcile, "AUDIT_PATH", tmp_path / "a.jsonl")
+    cards = {"t_aaaaaaaa": {"status": "ready"}}
+    h, out = FakeHermes(cards), []
+    show = h.show
+    h.show = lambda tid: {**show(tid), "task": {**show(tid)["task"], "assignee": "claude-migrateam"}}
+    code = reconcile.main(["archivar", "t_aaaaaaaa", "--autor", "hermes", "--solicitante", "200000002",
+                           "--board", "migrateam"], hermes_for=lambda b: h, out=out.append, people=_people(tmp_path))
+    assert code != 0 and "veto de marca" in out[0] and cards["t_aaaaaaaa"]["status"] == "ready"
+    # sobre su marca sí puede
+    h.show = lambda tid: {**show(tid), "task": {**show(tid)["task"], "assignee": "claude-oscarhq"}}
+    code = reconcile.main(["archivar", "t_aaaaaaaa", "--autor", "hermes", "--solicitante", "angel",
+                           "--board", "oscarhq"], hermes_for=lambda b: h, out=out.append, people=_people(tmp_path))
+    assert code == 0 and cards["t_aaaaaaaa"]["status"] == "archived"
+
+
+def test_tarjeta_no_operador_o_desconocido_se_rechaza(tmp_path):
+    h, out = FakeHermes({"t_aaaaaaaa": {"status": "ready"}}), []
+    for who in ("ingerber", "999999999"):
+        assert reconcile.main(["resuelta", "t_aaaaaaaa", "--autor", "x", "--solicitante", who],
+                              hermes_for=lambda b: h, out=out.append, people=_people(tmp_path)) == 2
+    assert not [c for c in h.calls if c[0] == "complete"]
 
 
 # --- F1-05: fusiones de consola, scheduled y «Cierra: t_x» ---------------------------------------------------

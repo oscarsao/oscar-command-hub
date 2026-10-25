@@ -92,26 +92,29 @@ cada acción aprobada en `next_steps` ("APROBADA, pendiente de ejecución") y la
 Requiere preguntas con `action_id` en el schema y un tipo de botón nuevo; hasta entonces v1 termina en propuesta.
 
 ## Responder desde Hermes
-Oscar puede contestar a Hermes (en su DM) la pregunta de un carril en vez de pulsar los botones del bot de Trabajos.
-Para que el runner lo tome como respuesta, Hermes la apunta en la tarjeta con **este formato exacto** y con su perfil
-`default`:
+Oscar (o un operador de people.yaml) puede contestar a Hermes la pregunta de un carril en vez de pulsar los botones
+del bot de Trabajos. Para que el runner lo tome como respuesta, Hermes la apunta en la tarjeta con **este formato
+exacto**, con su perfil `default`, el nombre de quien responde y su id de Telegram (F1-07, P07):
 
 ```
-hermes kanban --board <tablero> comment <t_id> --author default "RESPUESTA-OSCAR: <respuesta>"
+hermes kanban --board <tablero> comment <t_id> --author default "RESPUESTA-<PERSONA> (id=<telegram_id>): <respuesta>"
 ```
 
 Con varias preguntas, una línea por pregunta, numeradas en el orden del aviso:
 
 ```
-RESPUESTA-OSCAR: 1) Sí, adelante
+RESPUESTA-OSCAR (id=<telegram_id>): 1) Sí, adelante
 2) 19 €
 ```
 
 Reglas (el runner no interpreta nada más):
-- El cuerpo **empieza** por `RESPUESTA-OSCAR:` (mayúsculas, con guion y dos puntos, sin nada delante) y lleva texto
-  detrás. No cuentan `Respuesta de Oscar: …`, `Oscar decide (28-09): …` ni resúmenes libres.
-- Autor: solo `default` (Hermes) u `oscar-telegram`. Lo escrito por los workers (`agent-lanes`, `lane-*`) o por el
-  integrador (`lane-integrator`) se ignora aunque lleve el prefijo.
+- El cuerpo **empieza** por `RESPUESTA-<PERSONA> (id=<n>):` y lleva texto detrás. El id tiene que ser el de Oscar o el
+  de un operador de people.yaml y el nombre tiene que ser el suyo (clave o nombre, sin tildes ni mayúsculas que
+  importen). Sin id, con un id desconocido o con un nombre que no casa, no desbloquea nada y tampoco llega al worker
+  como nota. No cuentan `Respuesta de Oscar: …`, `Oscar decide (28-09): …` ni resúmenes libres.
+- `RESPUESTA-OSCAR: …` sin id solo vale escrito por el bot de carriles (`oscar-telegram`), que ya comprobó quién pulsó.
+  Lo escrito por los workers (`agent-lanes`, `lane-*`) o por el integrador (`lane-integrator`) se ignora siempre.
+- Transitorio hasta F2: allí las respuestas llevan la identidad real de quien escribe (hub.task_comments).
 - Solo vale si es **posterior al último bloqueo** needs_input de la tarea. Una respuesta de una ronda anterior no
   responde la pregunta nueva: si el worker vuelve a preguntar, hay que escribir otro `RESPUESTA-OSCAR:`.
 - Una respuesta por tarea bloqueada. Si Oscar ya respondió con botones, no hace falta (y la tarea ya no estará

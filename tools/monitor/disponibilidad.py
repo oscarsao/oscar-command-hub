@@ -186,7 +186,7 @@ class TareasDiarias:
         return out
 
 
-RESUMEN_TIPOS = ("bateria", "relanzada")  # = claves de agent_lanes.resumen_carriles.TIPOS_RESUMEN que usa el monitor
+RESUMEN_TIPOS = ("bateria", "relanzada", "hermes_config")  # = claves de agent_lanes.resumen_carriles.TIPOS_RESUMEN que usa el monitor
 
 
 def anotar_resumen(path: Path, tipo: str, texto: str, clave: str | None = None,

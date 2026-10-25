@@ -3,6 +3,11 @@
 Claude Code pipes the hook input JSON on stdin. Exit 0 = no objection,
 exit 2 = block (stderr is shown to the model). Blocks in every permission mode.
 Docs: https://code.claude.com/docs/en/hooks
+
+F1-07 (3f de la auditoría del 25-10): `npm install <paquete>` vetado (y `npm i|add|update|uninstall…`); la herramienta
+PowerShell pasa por las mismas reglas que Bash (push a master, merges, despliegues); Write/Edit fuera del worktree de
+la tarea vetado; y antes de un `git push` de lane/* se pasa el secret-scan del integrador a lo añadido frente a la
+base (AGENT_LANES_BASE): con un posible secreto no se empuja.
 """
 from __future__ import annotations
 
@@ -13,6 +18,7 @@ import shlex
 import sys
 
 WRITE_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit"}
+SHELL_TOOLS = {"Bash", "PowerShell"}
 ALEMBIC_DB_CMDS = {"upgrade", "downgrade", "stamp", "current"}
 LOCAL_DB = re.compile(r"(localhost|127\.0\.0\.1|::1|sqlite)", re.I)
 SEGMENT_SPLIT = re.compile(r"&&|\|\||;|\||\n")
@@ -108,6 +114,8 @@ def _check_git_merge(tokens: list[str], allowed: list[str] | None = None) -> str
 PKG_DIR_FLAGS = {"-c", "--dir", "--prefix", "--workspace-root", "--cwd"}
 PKG_BAD_CMDS = {"add", "dlx", "link", "unlink", "publish", "remove", "rm", "uninstall", "update", "up", "upgrade"}
 PKG_INSTALL = {"install", "i"}
+NPM_BAD_CMDS = {"add", "i", "in", "ins", "inst", "insta", "instal", "install", "isntall", "uninstall", "un", "unlink",
+                "remove", "rm", "r", "update", "up", "upgrade", "link", "ln", "publish", "exec", "x"}
 
 
 def _outside_worktree(val: str) -> bool:
@@ -134,7 +142,7 @@ def _check_pkg_manager(low: list[str]) -> str | None:
             if _outside_worktree(val):
                 return f"{name} {flag} fuera del worktree prohibido"
     if idx is None:
-        return None
+        return _check_npm(args)
     positional, skip = [], False
     for a in args:
         if skip:
@@ -147,6 +155,71 @@ def _check_pkg_manager(low: list[str]) -> str | None:
         return f"pnpm {positional[0]} prohibido para workers: solo `pnpm install --frozen-lockfile`, exec, run y lint"
     if positional and positional[0] in PKG_INSTALL and len(positional) > 1:
         return "pnpm install con paquetes prohibido (añadir dependencias): usa `pnpm install --frozen-lockfile`"
+    return None
+
+
+def _check_npm(args: list[str]) -> str | None:
+    """npm: `npm ci`, `npm install` sin paquetes (desde el lockfile), run/test. Añadir o quitar dependencias
+    (`npm install <pkg>`, `npm i x`, `npm add`, `update`, `uninstall`, `link`, `publish`, `exec`) está vetado (S-06)."""
+    positional = [a for a in args if not a.startswith("-")]
+    if not positional:
+        return None
+    cmd = positional[0]
+    if cmd in PKG_INSTALL | {"in", "ins", "inst", "insta", "instal", "isntall", "add"} and len(positional) > 1:
+        return "npm install con paquetes prohibido (añadir dependencias): usa `npm ci` o `npm install` a secas"
+    if cmd in NPM_BAD_CMDS - PKG_INSTALL - {"in", "ins", "inst", "insta", "instal", "isntall"}:
+        return f"npm {cmd} prohibido para workers: solo `npm ci`, `npm install` sin paquetes, run y test"
+    return None
+
+
+def inside(path: str, root: str) -> bool:
+    """¿`path` (absoluto o relativo a `root`) queda dentro de `root`? Sin distinguir mayúsculas (Windows)."""
+    full = os.path.normcase(os.path.realpath(os.path.join(root, path)))
+    base = os.path.normcase(os.path.realpath(root))
+    try:
+        return os.path.commonpath([full, base]) == base
+    except ValueError:  # otra unidad
+        return False
+
+
+def _check_write_path(path: str, env: dict, cwd: str | None) -> str | None:
+    """Worker de implementación: solo escribe dentro de su worktree (AGENT_LANES_WORKTREE o el cwd del hook)."""
+    if not env.get("AGENT_LANES_TASK") or not path:
+        return None
+    root = env.get("AGENT_LANES_WORKTREE") or cwd
+    if not root:
+        return "no sé cuál es tu worktree: escritura bloqueada por seguridad"
+    if not inside(path, root):
+        return f"escritura fuera del worktree prohibida ({os.path.basename(path)}): solo dentro de {root}"
+    return None
+
+
+def _is_push(command: str) -> bool:
+    return any("git" in (low := [t.lower() for t in _tokens(seg.strip())]) and "push" in low
+               for seg in SEGMENT_SPLIT.split(command) if seg.strip())
+
+
+def secret_scan_push(cwd: str | None, base: str | None, run=None) -> str | None:
+    """Secret-scan del integrador sobre lo añadido en la rama frente a la base, antes del push. Falla cerrado: si no
+    se puede revisar, no se empuja. Solo nombra archivo:línea y la regla, nunca el valor."""
+    import subprocess
+    if not base:
+        return None  # sin base declarada (consola, tests antiguos): no hay contra qué comparar
+    run = run or subprocess.run
+    try:
+        cp = run(["git", "-C", cwd or ".", "diff", "--no-color", "--no-ext-diff", "--no-renames", f"{base}...HEAD"],
+                 capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120)
+    except Exception as exc:
+        return f"no pude revisar secretos antes del push ({type(exc).__name__}); avisa en needs_input"
+    if cp.returncode != 0:
+        return "no pude revisar secretos antes del push (git diff falló); avisa en needs_input"
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    from agent_lanes.integrator import scan_secrets  # import tardío: solo al empujar
+    hits = scan_secrets(cp.stdout or "")
+    if hits:
+        where = ", ".join(f"{p}:{n} ({r})" for p, n, r in hits[:5])
+        return (f"posible secreto en lo que vas a empujar: {where}. Quítalo (o usa un valor de ejemplo evidente) y "
+                "vuelve a hacer commit; si es un falso positivo, explícalo en needs_input")
     return None
 
 
@@ -189,7 +262,7 @@ def check(payload: dict, env: dict | None = None) -> str | None:
     if tool.startswith("mcp__"):
         return f"herramienta MCP {tool} prohibida para workers (los workers corren sin MCP)"
     reviewer = env.get("AGENT_LANES_ROLE") == "revisor"
-    if tool == "Bash":
+    if tool in SHELL_TOOLS:
         if reviewer:
             return _check_reviewer_bash(ti.get("command", ""))
         try:
@@ -200,13 +273,18 @@ def check(payload: dict, env: dict | None = None) -> str | None:
             push_ok = [str(r).lower() for r in json.loads(env.get("AGENT_LANES_PUSH_OK") or "[]")]
         except (ValueError, TypeError):
             push_ok = []  # ilegible: ninguna rama extra (falla cerrado)
-        return check_bash(ti.get("command", ""), env.get("DATABASE_URL"), env.get("AGENT_LANES_TASK"), merge_ok, push_ok)
+        command = ti.get("command", "")
+        reason = check_bash(command, env.get("DATABASE_URL"), env.get("AGENT_LANES_TASK"), merge_ok, push_ok)
+        if reason or not (env.get("AGENT_LANES_TASK") and _is_push(command)):
+            return reason
+        return secret_scan_push(env.get("AGENT_LANES_WORKTREE") or payload.get("cwd"), env.get("AGENT_LANES_BASE"))
     if tool in WRITE_TOOLS and reviewer:
         return f"el revisor es de solo lectura: {tool} prohibido"
     if tool in WRITE_TOOLS:
         path = ti.get("file_path") or ti.get("notebook_path") or ""
         if WORKFLOWS.search(path):
             return "escritura en .github/workflows/ prohibida para workers"
+        return _check_write_path(path, env, payload.get("cwd"))
     return None
 
 
