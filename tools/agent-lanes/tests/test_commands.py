@@ -92,6 +92,9 @@ class Bot:
 
     def edit(self, chat_id, message_id, text, *, html=True, reply_markup=None):
         self.edits.append({"chat": str(chat_id), "mid": message_id, "text": text, "markup": reply_markup})
+        for m in self.sent:  # el «Un momento…» de los comandos lentos se sustituye por el resultado, como en Telegram
+            if m["message_id"] == message_id and m["text"] == "⏳ Un momento…":
+                m.update(text=text, markup=reply_markup)
         return True
 
     def edit_markup(self, chat_id, message_id, reply_markup):
