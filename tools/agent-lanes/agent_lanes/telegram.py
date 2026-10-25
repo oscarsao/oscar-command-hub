@@ -1,19 +1,13 @@
 """Telegram Bot API notifier. The token is read from agent-lanes/.env and never logged or raised."""
 from __future__ import annotations
 
-import contextlib
 import json
 import os
 import re
-import threading
 import time
 import urllib.error
 import urllib.request
 from pathlib import Path
-
-from .espejos import Espejos
-
-ESPEJOS_FILE = Path(__file__).resolve().parents[1] / ".state" / "espejos_operador.json"
 
 # Contract with W3b (Hermes topics): a task created from a Telegram topic carries this line in its body,
 # and every lane notice for that task goes back to that chat/thread. thread=0 means the group's General.
@@ -89,11 +83,11 @@ def _protect_collaborator_dms(notifier: "TelegramNotifier", env: dict, people=No
     owner = env.get("OWNER_TELEGRAM_ID") or OWNER_TELEGRAM_ID
     notifier.owner_id = str(owner)
     people = _people(env) if people is None else people
-    # Operadores con todas las marcas (María): reciben las decisiones del DM de Oscar y NO pasan por collab_view.
+    # F1-09 (D4-A): los operadores con todas las marcas (María) no pasan por collab_view; deciden con los mismos
+    # botones que Oscar (tema 🎯 Decisiones o su DM). Los acotados por marca (Ángel) siguen filtrados (D9 pendiente).
     notifier.operator_chats = people.operadores_todas_marcas()
     notifier.collab_chats = people.collaborator_ids() - notifier.operator_chats
     notifier.collab_view = collab_view
-    notifier.espejos = Espejos(ESPEJOS_FILE)
 
 
 RETRY_AFTER_MAX = 10  # s: más espera que esto bloquearía la pasada; se reintenta igual tras el tope
@@ -130,25 +124,9 @@ class TelegramNotifier:
         # DM de colaboradores: nada sale hacia ellos sin pasar por collab_view (ver notifier_from_env).
         self.collab_chats: set[str] = set()
         self.collab_view = None
+        self.operator_chats: set[str] = set()  # operadores con todas las marcas: fuera del filtro de colaboradores
         self.owner_id: str | None = None
         self.sleep = time.sleep  # inyectable en tests (espera del reintento ante 429)
-        # Operadores (María) con copia de las decisiones del DM de Oscar. Sin `espejos` no se copia nada.
-        self.operator_chats: set[str] = set()
-        self.espejos: Espejos | None = None
-        self._tl = threading.local()
-
-    @contextlib.contextmanager
-    def sin_espejo(self):
-        """Los envíos de este hilo no se copian al DM de otros operadores (respuesta a un comando de quien lo pidió)."""
-        previo = getattr(self._tl, "sin_espejo", False)
-        self._tl.sin_espejo = True
-        try:
-            yield
-        finally:
-            self._tl.sin_espejo = previo
-
-    def tiene_copias(self, chat_id, message_id) -> bool:
-        return bool(self.espejos and self.espejos.hermanos(chat_id, message_id))
 
     def _is_collab_chat(self, chat_id) -> bool:
         """Falla ABIERTO es lo que hay que evitar: con el filtro activo, todo chat privado (id positivo) que no sea el de
@@ -157,7 +135,7 @@ class TelegramNotifier:
         if not self.collab_view:
             return False
         cid = str(chat_id)
-        if cid in self.operator_chats:
+        if cid in self.operator_chats:  # antes del recurso de «todo DM desconocido es colaborador»
             return False
         if cid in self.collab_chats:
             return True
@@ -244,48 +222,10 @@ class TelegramNotifier:
                 raise
             getattr(self, "sleep", time.sleep)(min(wait, RETRY_AFTER_MAX) + 0.5)
             result = self._api("sendMessage", payload)
-        sent = {"chat_id": str(chat_id), "thread_id": str(thread_id or "0"), "message_id": result.get("message_id")}
-        if not getattr(self._tl, "sin_espejo", False):
-            self._copiar_a_operadores(sent, text, html, silent, reply_markup, reply_to)
-        return sent
-
-    def _copiar_a_operadores(self, sent: dict, text: str, html: bool, silent: bool, reply_markup, reply_to) -> None:
-        """Una decisión (mensaje con botones) para el DM de Oscar se copia al DM de cada operador con todas las marcas,
-        con los mismos botones (mismo token: decide el primero que pulse). Fallo de una copia (DM sin /start): se
-        ignora, el aviso de Oscar ya salió."""
-        if not (self.espejos and self.operator_chats and sent.get("message_id") and not reply_to):
-            return
-        if sent["chat_id"] != str(self.owner_id) or sent["thread_id"] != "0":
-            return
-        if not any("callback_data" in b for row in (reply_markup or {}).get("inline_keyboard") or () for b in row):
-            return
-        copias = [(sent["chat_id"], sent["message_id"])]
-        for chat in sorted(self.operator_chats):
-            try:
-                copy = self.send_to(chat, None, text, silent=silent, html=html, reply_markup=reply_markup)
-            except Exception:  # sin /start, bot bloqueado...: no rompe el aviso de Oscar
-                continue
-            if copy and copy.get("message_id"):
-                copias.append((copy["chat_id"], copy["message_id"]))
-        if len(copias) > 1:
-            self.espejos.add(copias)
-
-    def _hermanos(self, chat_id, message_id) -> list[tuple[str, str]]:
-        return self.espejos.hermanos(chat_id, message_id) if self.espejos else []
+        return {"chat_id": str(chat_id), "thread_id": str(thread_id or "0"), "message_id": result.get("message_id")}
 
     def edit(self, chat_id: str, message_id, text: str, *, html: bool = True,
              reply_markup: dict | None = None) -> bool:
-        """Edita el mensaje y sus copias en el DM de otros operadores. Devuelve lo del mensaje pedido."""
-        ok = self._edit_uno(chat_id, message_id, text, html=html, reply_markup=reply_markup)
-        for chat, mid in self._hermanos(chat_id, message_id):
-            try:
-                self._edit_uno(chat, mid, text, html=html, reply_markup=reply_markup)
-            except Exception:
-                pass
-        return ok
-
-    def _edit_uno(self, chat_id: str, message_id, text: str, *, html: bool = True,
-                  reply_markup: dict | None = None) -> bool:
         """True si el mensaje queda con ese texto. False si ya no se puede editar (borrado, >48 h...).
         Sin `reply_markup`, Telegram quita los botones que tuviera el mensaje."""
         if not self._token or not message_id:
@@ -309,16 +249,7 @@ class TelegramNotifier:
         return True
 
     def edit_markup(self, chat_id: str, message_id, reply_markup: dict | None) -> bool:
-        """Cambia solo los botones (None = quitarlos), también en las copias del DM de otros operadores."""
-        ok = self._edit_markup_uno(chat_id, message_id, reply_markup)
-        for chat, mid in self._hermanos(chat_id, message_id):
-            try:
-                self._edit_markup_uno(chat, mid, reply_markup)
-            except Exception:
-                pass
-        return ok
-
-    def _edit_markup_uno(self, chat_id: str, message_id, reply_markup: dict | None) -> bool:
+        """Cambia solo los botones (None = quitarlos)."""
         if not self._token or not message_id:
             return False
         if self._is_collab_chat(chat_id):
@@ -354,12 +285,6 @@ class TelegramNotifier:
         return int(tid) if tid else None
 
     def delete(self, chat_id: str, message_id) -> bool:
-        ok = self._delete_uno(chat_id, message_id)
-        for chat, mid in self._hermanos(chat_id, message_id):
-            self._delete_uno(chat, mid)
-        return ok
-
-    def _delete_uno(self, chat_id: str, message_id) -> bool:
         if not self._token or not message_id:
             return False
         try:

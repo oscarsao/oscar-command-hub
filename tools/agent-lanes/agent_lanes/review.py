@@ -17,7 +17,7 @@ from typing import Callable
 
 from . import telegram_lane
 from .config import ROOT, Lane
-from .hermes import OSCAR_AUTHOR, REVIEW_AUTHOR, is_approval
+from .hermes import OSCAR_AUTHOR, REVIEW_AUTHOR
 from .integration import CHANNEL, link_line, render_ficha, repo_name, risk_of, risks_from_files
 from .notices import (MessageStore, TaskNotices, files_label, fit_reason, money, questions_block, render, status_line,
                       test_label, truncate)
@@ -48,7 +48,8 @@ def aprobada_por_oscar(show: dict) -> bool:
     tid = str(((show or {}).get("task") or {}).get("id") or "")
     # P08 (F1-07): el comentario no basta (lo puede escribir cualquiera con la CLI): hace falta el registro local
     # del bot de carriles para ese PR.
-    return any(is_approval(c) and (c.get("created_at") or 0) >= last_request
+    return any(c.get("author") == OSCAR_AUTHOR and (c.get("body") or "").startswith(APPROVED_PREFIX)
+               and (c.get("created_at") or 0) >= last_request
                and aprobaciones.aprobado(tid, aprobaciones.pr_de_comentario(c.get("body")))
                for c in (show or {}).get("comments") or [])
 

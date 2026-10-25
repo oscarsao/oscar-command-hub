@@ -63,13 +63,6 @@ CONTRACT = {
 REVIEW_AUTHOR = "lane-review"  # author of the review lane's change requests (read back by the implementer)
 OSCAR_AUTHOR = "oscar-telegram"  # Oscar's decisions from Telegram buttons (answers are read back by the implementer)
 ANSWER_PREFIX = "Respuesta de Oscar:"
-# Aprobación de un PR: Hermes registra APROBADO-MARIA cuando la da María; vale igual que APROBADO-OSCAR (mismo autor).
-APPROVED_PREFIXES = ("APROBADO-OSCAR", "APROBADO-MARIA")
-
-
-def is_approval(comment: dict) -> bool:
-    """¿Comentario de aprobación de un operador? Exige el autor de Oscar: un worker no puede aprobarse a sí mismo."""
-    return comment.get("author") == OSCAR_AUTHOR and (comment.get("body") or "").startswith(APPROVED_PREFIXES)
 
 # Respuesta de Oscar llegada por Hermes (clarify en su DM, 28-09): Hermes la apunta en la tarjeta con SU perfil
 # (`default`) y este prefijo EXACTO. Nada más cuenta como respuesta: ni "Oscar decide (28-09): …" ni "Respuesta de

@@ -1010,35 +1010,10 @@ class DecisionDesk:
             self._spawn(self._en_nombre_de(actor, lambda: consola.pedir(self, token, rec, button, where)))
             return
         answer(cq.get("id"), "Hecho, lo aplico")
-        sello = self._sellar(actor, where)
-        self._spawn(self._con_sello(sello, self._en_nombre_de(actor, lambda: self._safe(token, rec, where,
+        self._spawn(self._en_nombre_de(actor, lambda: self._safe(token, rec, where,
                                                                  lambda: self._act(rec, button, where),
                                                                  replay={"kind": "act", "button": button,
-                                                                         "actor": actor}))))
-
-    def _sellar(self, actor, where: dict) -> str | None:
-        """Si el aviso tiene copias en el DM de otro operador: les quita los botones ya (nadie decide dos veces) y
-        devuelve «decidido por María 10:32» para el estado final. None = sin copias (todo como siempre)."""
-        copias = getattr(self.notifier, "tiene_copias", None)
-        if not (copias and copias(where["chat_id"], where["message_id"])):
-            return None
-        try:
-            self.notifier.edit_markup(where["chat_id"], where["message_id"], None)
-        except Exception as exc:
-            log.info("no se pudieron retirar los botones de las copias: %s", exc)
-        return f"decidido por {self.operador_nombre(actor) or 'Oscar'} {self._now():%H:%M}"
-
-    def _con_sello(self, sello: str | None, fn: Callable[[], None]) -> Callable[[], None]:
-        if not sello:
-            return fn
-
-        def run() -> None:
-            self._tl.sello = sello
-            try:
-                fn()
-            finally:
-                self._tl.sello = None
-        return run
+                                                                         "actor": actor})))
 
     def _reply(self, msg: dict) -> bool:
         """Respuesta de Oscar a un force_reply: pedir cambios o respuesta libre. True si había una pendiente."""
@@ -2078,8 +2053,6 @@ class DecisionDesk:
         if keep_text:  # solo devolver los botones
             self.notifier.edit_markup(where["chat_id"], where["message_id"], markup)
             return
-        if status and (sello := getattr(self._tl, "sello", None)):  # copia en el DM de otro operador: quién y cuándo
-            status = f"{status} · {sello}"
         if rec.get("group") or rec.get("accept_all") or self._free(rec):  # grupo / cabecera / selector: texto propio
             self._edit_text(where, status or "")
             return
