@@ -79,9 +79,8 @@ def test_free_text_in_group_or_topic_is_ignored(env):
 
 def test_unknown_command_in_group_needs_explicit_bot_suffix(env):
     desk, bot, _ = env
-    send(desk, "/foo", chat=GROUP, ctype="supergroup")  # sin sufijo: puede ser de Hermes
     send(desk, "/foo@otro_bot", chat=GROUP, ctype="supergroup", mid=61)
-    assert bot.sent == []
+    assert bot.sent == []  # (/foo sin sufijo solo recibe el aviso de comando ajeno: test_comandos_ajenos)
     send(desk, "/foo@pildora_carriles_bot", chat=GROUP, ctype="supergroup", mid=62, message_thread_id=231,
          is_topic_message=True)
     assert len(bot.sent) == 1 and bot.sent[0]["thread_id"] == "231"

@@ -559,17 +559,32 @@ class MessageStore:
     # Oscar). Una decisión tomada en cualquiera edita todas y retira sus botones. Registro principal intacto
     # ({chat_id, thread_id, message_id, bot, token}); las copias van en "mirrors".
 
-    def add_mirror(self, tid: str, sent: dict | None, *, token: str | None = None, bot: str | None = None) -> None:
+    def add_mirror(self, tid: str, sent: dict | None, *, token: str | None = None, bot: str | None = None,
+                   decision: bool = False) -> None:
+        """`decision`: copia en el tema 🎯 Decisiones (canal_avisos): sigue a las decisiones (botones, ✅) pero no a los
+        avisos de progreso de la tarea (▶️, terminada), que pisarían el «✅ … por <persona>»."""
         if not sent or not sent.get("message_id"):
             return
         mirror = {"chat_id": str(sent["chat_id"]), "thread_id": str(sent.get("thread_id") or "0"),
                   "message_id": sent["message_id"], **({"token": token} if token else {}),
-                  **({"bot": str(bot)} if bot else {})}
+                  **({"bot": str(bot)} if bot else {}), **({"decision": True} if decision else {})}
         rec = dict(self.get(tid) or {})
         rec["mirrors"] = [m for m in rec.get("mirrors") or ()
                           if (str(m.get("chat_id")), m.get("message_id")) != (mirror["chat_id"], mirror["message_id"])]
         rec["mirrors"].append(mirror)
         rec["mirrors"] = rec["mirrors"][-10:]
+        self.put(tid, rec)
+
+    def drop_mirror(self, tid: str, chat_id, message_id) -> None:
+        """Suelta una copia (decisión ya cerrada en el tema): ni la sincronización ni los avisos nuevos la tocan."""
+        rec = self.get(tid)
+        if not rec or not rec.get("mirrors"):
+            return
+        rec = dict(rec)
+        rec["mirrors"] = [m for m in rec["mirrors"]
+                          if (str(m.get("chat_id")), str(m.get("message_id"))) != (str(chat_id), str(message_id))]
+        if not rec["mirrors"]:
+            rec.pop("mirrors")
         self.put(tid, rec)
 
     def set_token(self, tid: str, token: str) -> None:
@@ -624,7 +639,7 @@ class TaskNotices:
     def publish(self, tid: str, text: str, target=None, lane_target=None, *, alert: bool = False,
                 reply_markup: dict | None = None, mirror_to: str | None = None, channel: str | None = None,
                 leave_behind: Callable[[dict], str] | None = None, followup: list[str] | None = None,
-                keep_previous: bool = False) -> None:
+                keep_previous: bool = False, decision_to: tuple[str, str] | None = None) -> dict | None:
         """`mirror_to`: chat (DM de Oscar) que recibe además una copia del aviso, con los mismos botones. Si el aviso
         principal ya cayó en ese chat, no se duplica.
 
@@ -633,7 +648,14 @@ class TaskNotices:
 
         `channel`: canal del aviso (None = tema del carril; "integration" = tema de Integración). Un aviso de otro
         canal nunca edita el mensaje del anterior: se envía uno nuevo. `leave_behind(sent)`: al pasar una alerta a otro
-        canal, el mensaje anterior no se borra sino que se edita con esta línea corta (enlace al nuevo)."""
+        canal, el mensaje anterior no se borra sino que se edita con esta línea corta (enlace al nuevo).
+
+        `decision_to` (chat, thread): tema 🎯 Decisiones (canal_avisos.publicar). Con `alert`, recibe una copia con los
+        mismos botones, registrada como espejo `decision` (no la pisan los avisos de progreso). Si el aviso principal ya
+        cayó en ese tema, no se duplica.
+
+        Devuelve {"main": enviado, "decision": copia del tema o None} cuando sale un mensaje nuevo; None si solo se
+        editó, se descartó por idéntico o Telegram está apagado."""
         rec = self.store.get(tid)
         bot = getattr(self.notifier, "bot_id", None)
         # Idempotencia: el mismo aviso de la misma tarea, dos veces seguidas (dos pasadas, o el runner viejo y el
@@ -656,7 +678,7 @@ class TaskNotices:
             mirrors = []  # las copias del otro canal no siguen a este aviso
         if rec and mine and not alert:
             if self.notifier.edit(rec["chat_id"], rec["message_id"], text, **extra):
-                for m in mirrors:  # las copias siguen el estado de la tarea (sin notificar)
+                for m in (m for m in mirrors if not m.get("decision")):  # las copias siguen el estado (sin notificar)
                     try:
                         self.notifier.edit(m["chat_id"], m["message_id"], text, **extra)
                     except Exception as exc:
@@ -670,7 +692,7 @@ class TaskNotices:
                 log.info("%s: no se pudo resolver el tema del proyecto: %s", tid, exc)
         sent = self.notifier.send(text, target, lane_target, silent=not alert, **extra)
         if not sent:
-            return
+            return None
         if bot:
             sent = {**sent, "bot": str(bot)}
         token = markup_token(reply_markup)
@@ -710,12 +732,29 @@ class TaskNotices:
                 dm = str(mirror_to)
             except Exception as exc:  # DM sin /start ("chat not found", 403): no rompe el aviso del tema
                 log.info("%s: no se pudo enviar la copia al DM: %s", tid, exc)
+        copy = None
+        if alert and decision_to and hasattr(self.notifier, "send_to") and                 (str(sent.get("chat_id")), str(sent.get("thread_id") or "0")) != (str(decision_to[0]), str(decision_to[1])):
+            try:
+                copy = self.notifier.send_to(str(decision_to[0]), str(decision_to[1]), text, **extra)
+                self.store.add_mirror(tid, copy, token=token, bot=bot, decision=True)
+            except Exception as exc:  # el aviso principal ya salió: la copia del tema es una ayuda
+                log.info("%s: no se pudo enviar la copia al tema Decisiones: %s", tid, exc)
+                copy = None
         if alert and followup:
-            self._send_followup(tid, followup, target, lane_target, dm)
+            self._send_followup(tid, followup, target, lane_target, dm,
+                                topic=tuple(decision_to) if copy else None)
+        return {"main": sent, "decision": copy}
 
-    def _send_followup(self, tid: str, lines: list[str], target, lane_target, dm: str | None) -> None:
-        """El resto de las preguntas en mensajes aparte (sin notificación), al tema y, si hubo copia, al DM."""
+    def _send_followup(self, tid: str, lines: list[str], target, lane_target, dm: str | None,
+                       topic: tuple[str, str] | None = None) -> None:
+        """El resto de las preguntas en mensajes aparte (sin notificación), al tema y, si hubo copia, al DM (o al tema
+        🎯 Decisiones: `topic`)."""
         for chunk in split_text([html.escape(line) for line in lines]):
+            if topic:
+                try:
+                    self.notifier.send_to(topic[0], topic[1], chunk, silent=True)
+                except Exception as exc:
+                    log.info("%s: no se pudo enviar el resto al tema Decisiones: %s", tid, exc)
             try:
                 self.notifier.send(chunk, target, lane_target, silent=True)
             except Exception as exc:

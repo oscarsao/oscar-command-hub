@@ -209,6 +209,11 @@ def pedir(desk, token: str, rec: dict, button: dict, where: dict, now=None) -> b
         _devolver(desk, token, rec, where)
         _say(desk, where, f"⛔ {op.boton}: no pude pedir la confirmación en ese mensaje; abre la ficha con /tarea.")
         return False
+    if getattr(desk, "canal", None):  # tema 🎯 Decisiones: la decisión sigue abierta con el teclado [✅ Sí] [✖ No]
+        try:
+            desk.canal.confirmacion(token, ctoken)
+        except Exception as exc:
+            log.info("consola: no se pudo anotar la confirmación en el tema Decisiones: %s", exc)
     return True
 
 
