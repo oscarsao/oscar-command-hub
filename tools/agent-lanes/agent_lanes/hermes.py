@@ -366,7 +366,39 @@ class HermesError(RuntimeError):
     pass
 
 
-class HermesCLI:
+def preparar_tarjeta(board: str, title: str, body: str, assignee: str) -> tuple[str, str]:
+    """(cuerpo, assignee) de una tarjeta nueva, igual en todos los backends del kanban (F2-02): aviso de título,
+    enrutado de [Telegram] al carril claude-telegram y marca «Tamaño: GRANDE»."""
+    titulos.warn_title(title)  # aviso en el log si no sigue «[Proyecto] Qué · paso»; nunca bloquea
+    # Enrutado automático (22-10): [Telegram] / bots de Telegram -> claude-telegram, si trabaja en este tablero.
+    routed = telegram_lane.ruta(assignee, title, body)
+    if routed != assignee and board == telegram_lane.board_destino():
+        body, assignee = telegram_lane.con_repo(body, assignee), routed
+    body = grandes.marcar(title, body)  # tarea grande -> «Tamaño: GRANDE» en el cuerpo (hueco grande del runner)
+    return body, assignee
+
+
+class KanbanComun:
+    """Lecturas derivadas de `show` que comparten todos los backends del kanban (hermes, supabase)."""
+
+    def review_feedback(self, task_id: str) -> list[str]:
+        """Change requests left by the review lane, oldest first (empty for a first run)."""
+        comments = self.show(task_id).get("comments") or []
+        return [c["body"] for c in comments if c.get("author") == REVIEW_AUTHOR]
+
+    def oscar_answers(self, task_id: str) -> list[str]:
+        """Oscar's answers to the worker's questions (Telegram buttons / free reply / RESPUESTA-OSCAR vía Hermes),
+        oldest first."""
+        return oscar_answers_from(self.show(task_id))
+
+    def answered_for(self, task_id: str, questions) -> list[tuple[str, str]] | None:
+        return find_answered(self.show(task_id), questions)
+
+    def coordinator_notes(self, task_id: str) -> list[str]:
+        return coordinator_notes_from(self.show(task_id))
+
+
+class HermesCLI(KanbanComun):
     def __init__(self, board: str, exe: Path = HERMES_EXE, runner=_proc.run, author: str = "agent-lanes",
                  sleep=time.sleep, backoff: tuple[float, ...] = READONLY_BACKOFF,
                  timeout_backoff: tuple[float, ...] | None = None):
@@ -433,16 +465,18 @@ class HermesCLI:
     def list_ready(self, assignee: str) -> list[dict]:
         return self.list_status(assignee, "ready")
 
+    def list_all(self, archived: bool = False) -> list[dict]:
+        """Todas las tarjetas del tablero (con `archived`, también las archivadas): auditor y resumen diario."""
+        cp = self._call("list", "--json", *(["--archived"] if archived else []))
+        if cp.returncode != 0:
+            raise HermesError(f"list failed: {(cp.stderr or '').strip()[:300]}")
+        return json.loads(cp.stdout or "[]")
+
     def create(self, title: str, body: str, assignee: str, *, priority: int | None = None, key: str | None = None,
                created_by: str | None = None, parents: list[str] | None = None) -> str:
         """Crea una tarjeta y devuelve su id. --body-file: un cuerpo que empieza por "- " no se toma como flag.
         `parents` = ids del mismo tablero de los que depende (un --parent por id)."""
-        titulos.warn_title(title)  # aviso en el log si no sigue «[Proyecto] Qué · paso»; nunca bloquea
-        # Enrutado automático (22-10): [Telegram] / bots de Telegram -> claude-telegram, si trabaja en este tablero.
-        routed = telegram_lane.ruta(assignee, title, body)
-        if routed != assignee and self.board == telegram_lane.board_destino():
-            body, assignee = telegram_lane.con_repo(body, assignee), routed
-        body = grandes.marcar(title, body)  # tarea grande -> «Tamaño: GRANDE» en el cuerpo (hueco grande del runner)
+        body, assignee = preparar_tarjeta(getattr(self, "board", None), title, body, assignee)
         fd, tmp = tempfile.mkstemp(prefix="tarjeta-", suffix=".md")
         try:
             with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as fh:
@@ -480,22 +514,6 @@ class HermesCLI:
         if cp.returncode != 0:
             raise HermesError(f"show {task_id} failed: {cp.stderr.strip()[:300]}")
         return json.loads(cp.stdout)
-
-    def review_feedback(self, task_id: str) -> list[str]:
-        """Change requests left by the review lane, oldest first (empty for a first run)."""
-        comments = self.show(task_id).get("comments") or []
-        return [c["body"] for c in comments if c.get("author") == REVIEW_AUTHOR]
-
-    def oscar_answers(self, task_id: str) -> list[str]:
-        """Oscar's answers to the worker's questions (Telegram buttons / free reply / RESPUESTA-OSCAR vía Hermes),
-        oldest first."""
-        return oscar_answers_from(self.show(task_id))
-
-    def answered_for(self, task_id: str, questions) -> list[tuple[str, str]] | None:
-        return find_answered(self.show(task_id), questions)
-
-    def coordinator_notes(self, task_id: str) -> list[str]:
-        return coordinator_notes_from(self.show(task_id))
 
     def assign(self, task_id: str, profile: str) -> bool:
         return self._call("assign", task_id, profile).returncode == 0

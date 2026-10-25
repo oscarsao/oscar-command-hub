@@ -197,10 +197,10 @@ def reparar_main(argv: list[str], *, hermes_for: Callable | None = None, out: Ca
     ap.add_argument("--board", default="default")
     args = ap.parse_args(argv)
     from .decisions import OWNER_TELEGRAM_ID
-    from .hermes import HermesCLI
+    from .kanban_api import backend_for
     from .people import load_people
     people = people or load_people(OWNER_TELEGRAM_ID)
-    h = (hermes_for or (lambda b: HermesCLI(b, author="agent-lanes")))(args.board)
+    h = (hermes_for or (lambda b: backend_for(b, author="agent-lanes")))(args.board)
     n = sin_pista = 0
     for st in ESTADOS_REPARAR + ("done",):
         for t in h.list_status_all(st):
@@ -239,11 +239,11 @@ def main(argv: list[str], *, hermes_for: Callable | None = None, out: Callable[[
     from .commands import LANE_HINTS
     from .config import load_lanes
     from .decisions import OWNER_TELEGRAM_ID
-    from .hermes import HermesCLI
+    from .kanban_api import backend_for
     from .notices import BRANDS
     from .people import load_people
     cache: dict = {}
-    hermes_for = hermes_for or (lambda b: cache.setdefault(b, HermesCLI(b, author="agent-lanes")))
+    hermes_for = hermes_for or (lambda b: cache.setdefault(b, backend_for(b, author="agent-lanes")))
     try:
         res = crear(titulo=args.titulo, texto=" ".join(args.texto) or args.titulo, solicitante=args.solicitante,
                     chat=args.chat, thread=args.thread, mensaje=args.mensaje, carril=args.carril,

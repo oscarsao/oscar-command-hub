@@ -371,3 +371,20 @@ ficha por tarjeta de carril parada más de 24 h en ready sin worker, blocked, tr
 `t_xxxxxxxx · título · estado · hace N d H h` con [🔁 Reintentar] [🛠 Integrador] [🗄 Archivar]. No entran las `running`,
 las `scheduled` ni las asignadas a personas (solo se leen las de un carril). Sin paradas no manda nada. También sale una
 línea «Paradas» en /salud. Hora, umbral de horas y nº de fichas se editan con /ajustes (grupo Atascos).
+
+## Backend del kanban (`KANBAN_BACKEND`, F2-02/F2-03 del plan del hub)
+
+Todo el hub crea su cliente del kanban con `kanban_api.backend_for(board, author=...)`, nunca con `HermesCLI(...)`.
+- `hermes` (por defecto, sin cambios): la CLI de Hermes sobre su SQLite.
+- `supabase`: tablas `hub.*` en Postgres con el rol `hub_core`; conexión en `HUB_DB_DSN` (entorno o `.env`, nunca en
+  el repo). Esquema esperado: `tests/fixtures/hub_schema_f2.sql` (la migración real es F2-01 en oscar-hq);
+  `check_contract()` lo comprueba al arrancar el runner.
+- Selector: `KANBAN_BACKEND` del entorno manda sobre `runner.kanban_backend` de lanes.yaml. Vuelta atrás = una variable.
+
+`tools/kanban_migrar.py` (F2-03): `copiar` (copia coherente en solo lectura), `recuentos`, `importar [--seco]`,
+`comparar`, `exportar`/`volver` (hub.* -> SQLite con el esquema exacto de Hermes, en una carpeta nueva fuera de la de
+Hermes) y `exportar --espejo --retener 14` (espejo nocturno). Solo imprime recuentos agregados e ids.
+
+Pruebas con Postgres: `HUB_TEST_DSN` a una BD desechable (p. ej. `docker run --rm -p 127.0.0.1:55432:5432
+-e POSTGRES_PASSWORD=... postgres:16-alpine`); sin ella se saltan. Con `KANBAN_COPIA_DIR` (copia local, nunca la carpeta
+de Hermes) se repiten la ida y vuelta y el contrato entre backends con datos reales.

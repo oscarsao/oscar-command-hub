@@ -2233,6 +2233,7 @@ def _cli_integrator() -> "Integrator":
     from .config import load_env, load_lanes, load_telegram_settings
     from .decisions import CALLBACKS_DIR, OWNER_TELEGRAM_ID, CallbackStore, DecisionDesk
     from .hermes import HermesCLI
+    from .kanban_api import backend_for
     from .notices import LinkBuilder
     from .runner import MESSAGES_DIR
     from .telegram import notifier_from_env
@@ -2242,7 +2243,7 @@ def _cli_integrator() -> "Integrator":
     env, tg, lanes = load_env(), load_telegram_settings(), load_lanes()
     settings = load_integrator_settings(env=env, lane_filter=False)
     cache: dict[str, HermesCLI] = {}
-    hermes_for = lambda board: cache.setdefault(board, HermesCLI(board, author=COORDINATOR_AUTHOR))  # noqa: E731
+    hermes_for = lambda board: cache.setdefault(board, backend_for(board, author=COORDINATOR_AUTHOR))  # noqa: E731
     links = LinkBuilder(env.get("KANBAN_BASE_URL") or tg["kanban_base_url"])
     notifier, lanes_bot = notifier_from_env(env, tg)
     desk = None
@@ -2256,6 +2257,7 @@ def _cli_integrator() -> "Integrator":
 def main(argv: list[str] | None = None) -> int:
     from .config import load_env, load_lanes, load_telegram_settings
     from .hermes import HermesCLI
+    from .kanban_api import backend_for
     from .notices import LinkBuilder
 
     for stream in (sys.stdout, sys.stderr):
@@ -2271,7 +2273,7 @@ def main(argv: list[str] | None = None) -> int:
     settings = load_integrator_settings(env=load_env())
     cache: dict[str, HermesCLI] = {}
     links = LinkBuilder(load_telegram_settings()["kanban_base_url"])
-    integ = Integrator(settings, lanes, hermes_for=lambda b: cache.setdefault(b, HermesCLI(b)), links=links,
+    integ = Integrator(settings, lanes, hermes_for=lambda b: cache.setdefault(b, backend_for(b)), links=links,
                        dry_run=True)
     if args.batch:
         lane, policy = lanes[args.lane], settings.policies.get(args.lane) or Policy(lane=args.lane)

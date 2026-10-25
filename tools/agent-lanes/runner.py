@@ -40,6 +40,7 @@ from agent_lanes.reconcile import ReconcileTicker, Reconciler, gh_prs
 from agent_lanes.aviso import REMIND_HOURS, StuckWatcher
 from agent_lanes.git_ops import GitOps, github_slug_problem
 from agent_lanes.hermes import HermesCLI
+from agent_lanes.kanban_api import backend_for
 from agent_lanes.integration import IntegrationRoute
 from agent_lanes.integrator import build_integrator, load_integrator_settings
 from agent_lanes.promote import Promoter, load_promote_configs
@@ -112,7 +113,7 @@ def main(argv: list[str] | None = None) -> int:
     hermes_cache: dict[str, HermesCLI] = {}
 
     def hermes_for(board: str) -> HermesCLI:
-        return hermes_cache.setdefault(board, HermesCLI(board))
+        return hermes_cache.setdefault(board, backend_for(board))
 
     problems = hermes_for(next(l.board for l in all_lanes.values() if l.board)).check_contract()
     if problems:

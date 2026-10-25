@@ -50,6 +50,7 @@ if __package__ in (None, ""):  # ejecutado como script: agent-lanes/ al path par
 
 from agent_lanes import proc as _proc  # noqa: E402
 from agent_lanes.config import ROOT  # noqa: E402
+from agent_lanes.hermes import HermesError  # noqa: E402
 from agent_lanes.notices import DECISION_TAGS, OSCAR_ASSIGNEE, truncate  # noqa: E402
 
 log = logging.getLogger("auditor")
@@ -448,11 +449,12 @@ def _run(args: list[str], timeout: int = 120, cwd: str | None = None) -> subproc
 def collect_tasks(hermes_for, boards=BOARDS) -> list[dict]:
     items = []
     for b in boards:
-        cp = hermes_for(b)._call("list", "--json", "--archived")
-        if cp.returncode != 0:
-            log.warning("list del board %s falló: %s", b, (cp.stderr or "")[:200])
+        try:
+            tasks = hermes_for(b).list_all(archived=True)
+        except (HermesError, ValueError) as exc:
+            log.warning("list del board %s falló: %s", b, str(exc)[:200])
             continue
-        items += [{"board": b, "task": t, "detail": None} for t in json.loads(cp.stdout or "[]")]
+        items += [{"board": b, "task": t, "detail": None} for t in tasks]
     return items
 
 
@@ -551,10 +553,11 @@ def read_log(path: Path, since: float, max_bytes: int = 4_000_000) -> list[tuple
 def gather(now: float, runner_log: Path, hermes_log: Path) -> dict:
     from agent_lanes.config import load_lanes
     from agent_lanes.hermes import HERMES_EXE, HermesCLI
+    from agent_lanes.kanban_api import backend_for
     from agent_lanes.integrator import GH_EXE
     lanes = load_lanes()
     cache: dict[str, HermesCLI] = {}
-    hermes_for = lambda b: cache.setdefault(b, HermesCLI(b, author="auditor"))  # noqa: E731
+    hermes_for = lambda b: cache.setdefault(b, backend_for(b, author="auditor"))  # noqa: E731
     since = window_start(now)
     items = collect_tasks(hermes_for)
     branches = lane_branches(lanes)
@@ -576,7 +579,13 @@ def read_rotated(path: Path, since: float, keep: int = 3) -> list[tuple[float, s
 def create_card(title: str, body: str, key: str) -> str:
     """Una tarjeta en default para oscar. --body-file: un cuerpo que empieza por "- " no se toma como flag."""
     from agent_lanes.hermes import HermesCLI
-    h = HermesCLI(CARD_BOARD, author="auditor")
+    from agent_lanes.kanban_api import backend_for
+    h = backend_for(CARD_BOARD, author="auditor")
+    if not isinstance(h, HermesCLI):  # backend supabase: misma tarjeta por la interfaz pública (F2-02)
+        try:
+            return h.create(title, body, OSCAR_ASSIGNEE, key=key, created_by="auditor")
+        except HermesError as exc:
+            raise RuntimeError(f"kanban create falló: {str(exc)[:300]}") from exc
     fd, tmp = tempfile.mkstemp(prefix="auditoria-", suffix=".md")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
@@ -598,18 +607,17 @@ AUDIT_TITLE_PREFIX = "[DECISIÓN] Auditoría diaria"
 
 def archive_previous(new_id: str) -> list[str]:
     """Archiva las auditorías anteriores aún abiertas: solo vale la del día (28-09, Oscar: sin acumular tarjetas)."""
-    from agent_lanes.hermes import HermesCLI
-    h = HermesCLI(CARD_BOARD, author="auditor")
-    cp = h._call("list", "--json")
+    from agent_lanes.kanban_api import backend_for
+    h = backend_for(CARD_BOARD, author="auditor")
     try:
-        tasks = json.loads(cp.stdout or "[]") if cp.returncode == 0 else []
-    except json.JSONDecodeError:
+        tasks = h.list_all()
+    except (HermesError, ValueError):
         tasks = []
     done = []
     for t in tasks:
         if (t.get("id") != new_id and str(t.get("title") or "").startswith(AUDIT_TITLE_PREFIX)
                 and t.get("status") not in ("done", "archived")):
-            if h._call("archive", t["id"]).returncode == 0:
+            if h.archive(t["id"]):
                 done.append(t["id"])
     if done:
         log.info("auditorías anteriores archivadas: %s", done)

@@ -434,12 +434,12 @@ def main(argv: list[str], *, runner: LimpiezaRunner | None = None, out: Callable
     ap.parse_args(argv)
     if runner is None:
         from .config import load_lanes
-        from .hermes import HermesCLI
+        from .kanban_api import backend_for
         from .reconcile import gh_prs
         lanes = load_lanes()
         boards = sorted({l.board for l in lanes.values() if l.board})
         slugs = sorted({l.github for l in lanes.values() if l.github})
-        runner = LimpiezaRunner(lambda b: HermesCLI(b), boards, lambda: gh_prs(slugs), lambda *a: None)
+        runner = LimpiezaRunner(lambda b: backend_for(b), boards, lambda: gh_prs(slugs), lambda *a: None)
     found = runner.candidatas()
     out(f"{len(found)} candidata(s) a cierre (dry-run: no se ha enviado ni cambiado nada)")
     for n, c in enumerate(found, 1):

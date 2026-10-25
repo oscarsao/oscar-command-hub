@@ -381,8 +381,8 @@ def main(argv: list[str], *, hermes_for: Callable | None = None, out: Callable[[
     ap.add_argument("--board", default="default")
     args = ap.parse_args(argv)
     if hermes_for is None:
-        from .hermes import HermesCLI
-        hermes_for = lambda board: HermesCLI(board, author=args.autor)  # noqa: E731
+        from .kanban_api import backend_for
+        hermes_for = lambda board: backend_for(board, author=args.autor)  # noqa: E731
     if people is None:
         from .decisions import OWNER_TELEGRAM_ID
         from .people import load_people

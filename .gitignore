@@ -3,3 +3,6 @@ __pycache__/
 
 # Informes de retro semanal generados por el integrador (sin versionar)
 docs/retro/
+
+# Copias locales del kanban de Hermes para pruebas del importador (datos reales: nunca al repo público)
+.copia_kanban/
