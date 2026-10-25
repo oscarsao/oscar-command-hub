@@ -1,6 +1,7 @@
 """lanes.yaml loader."""
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -130,6 +131,18 @@ def _chat_thread(cfg: dict | None, any_thread: str = "0") -> tuple[str, str] | N
     return str(cfg["chat"]), any_thread if thread is None else str(thread)
 
 
+def _destino(cfg, name: str) -> tuple[str, str] | None:
+    """{chat, thread} de un destino que NO admite valor por defecto: sin `thread` (o con 0) caería en el General del
+    grupo, así que falta cualquiera de los dos = destino apagado (y se avisa en el log)."""
+    if not cfg:
+        return None
+    chat, thread = (cfg.get("chat"), cfg.get("thread")) if isinstance(cfg, dict) else (None, None)
+    if not chat or not thread or str(thread) == "0":
+        logging.getLogger("agent_lanes").warning("%s necesita chat y thread (distinto de 0); queda apagado", name)
+        return None
+    return str(chat), str(thread)
+
+
 def load_telegram_settings(path: Path | None = None) -> dict:
     """Top-level `telegram:` block (+ `integration_telegram`). generic_origins: orígenes sin marca; thread omitido =
     cualquier hilo ("*").
@@ -144,6 +157,8 @@ def load_telegram_settings(path: Path | None = None) -> dict:
             "team_notice": cfg.get("team_notice") or {},
             # Texto libre como respuesta a la decisión pendiente del tema ({window_hours, max_choices}); None = apagado.
             "free_text": dict(cfg["free_text"]) if cfg.get("free_text") else None,
+            # Tema «🎯 Decisiones» (telegram.destinos.decisiones {chat, thread}); None = todo al DM de Oscar como antes.
+            "decisiones": _destino((cfg.get("destinos") or {}).get("decisiones"), "telegram.destinos.decisiones"),
             # Tema de Integración (fichas de PR/merge/deploy + resumen fijado); None = tema del carril, como antes.
             "integration": _chat_thread(data.get("integration_telegram")),
             # Tema «Atención» (avisos accionables con @mención) {chat, thread, mention, remind_hours}; None = apagado.
