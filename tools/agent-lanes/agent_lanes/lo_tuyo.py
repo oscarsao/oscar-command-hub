@@ -128,8 +128,8 @@ def de_validar_ops(lanes: dict, hermes_for) -> list[dict]:
 
 def de_tarjetas(cards: list[dict]) -> list[dict]:
     """Ítems desde [{board, task, since}] (tarjetas a nombre de Oscar)."""
-    return [item("tuyo", c["task"]["id"], c["task"].get("title"), board=c.get("board") or "", since=c.get("since"),
-                 prio=_prio(c["task"])) for c in cards]
+    return [dict(item("tuyo", c["task"]["id"], c["task"].get("title"), board=c.get("board") or "", since=c.get("since"),
+                      prio=_prio(c["task"])), status=c["task"].get("status")) for c in cards]
 
 
 def de_estado(est: dict | None) -> list[dict]:

@@ -257,7 +257,10 @@ class CanalAvisos:
         abierto. Nunca lanza."""
         if not self.destino:
             return
-        self._sembrar_si_toca()
+        try:
+            self._sembrar_si_toca()
+        except Exception as exc:  # estado de la siembra ilegible: el contador y los avisos siguen
+            log.warning("tema Decisiones: no se pudo decidir la siembra: %s", exc)
         try:
             with self._lock:
                 data = self._load()

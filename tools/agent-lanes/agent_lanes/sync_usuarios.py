@@ -321,8 +321,8 @@ class ApiOhq:
 
     @classmethod
     def desde_entorno(cls, env=None, http=_http_real) -> "ApiOhq":
-        from .config import ohq_api_url
-        env = os.environ if env is None else env
+        from .config import load_env, ohq_api_url
+        env = {**load_env(), **os.environ} if env is None else env  # .env del hub + entorno (F1-02)
         base, clave = ohq_api_url(env), env.get("OHQ_API_KEY", "")  # URL: .env o, sin ella, lanes.yaml (F1-02)
         if not base or not clave:
             raise SystemExit("faltan OHQ_API_URL y/o OHQ_API_KEY en el entorno")

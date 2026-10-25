@@ -1100,7 +1100,8 @@ class CommandCenter:
             tid, board, verbo = it["tid"], it.get("board") or "", _lo_tuyo.verbo(it)
             if it.get("url"):
                 return {"inline_keyboard": [[{"text": verbo, "url": it["url"]}]]}
-            if it["kind"] == "tuyo":
+            if it["kind"] == "tuyo" and it.get("status") in (None, *DECISION_CARD_STATUSES):
+                # Hecho/Aparcar/Integrador/Archivar solo actúan en ready/blocked (_card_act); el resto abre la ficha
                 rec = self.desk.card_rec_for({"task_id": tid, "board": board, "title": it.get("title")})
                 return lambda: store.issue(rec, seed_card_keyboard_spec())[1]
             if it["kind"] == "cola":

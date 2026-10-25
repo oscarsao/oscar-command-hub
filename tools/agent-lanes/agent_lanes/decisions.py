@@ -1802,8 +1802,11 @@ class DecisionDesk:
             if queue is not None:
                 queue.remove(tid)
             return True
-        ok, err = h.complete(tid, f"Resuelta por {self._who()} desde Telegram (cola del integrador: ya estaba "
-                                  "respondida)", {"decided_by": OSCAR_AUTHOR, "via": "cola_integrador"})
+        result = f"Resuelta por {self._who()} desde Telegram (cola del integrador: ya estaba respondida)"
+        meta = {"decided_by": OSCAR_AUTHOR, "via": "cola_integrador"}
+        ok, err = h.complete(tid, result, meta)
+        if not ok and hasattr(h, "requeue_triage") and h.requeue_triage(tid):  # Hermes no completa desde triage
+            ok, err = h.complete(tid, result, meta)
         if not ok:
             log.warning("%s: no se pudo cerrar desde la cola del integrador: %s", tid, err)
             self._edit(rec, where, "blocked", "no se pudo cerrar la tarjeta (mira el panel)")

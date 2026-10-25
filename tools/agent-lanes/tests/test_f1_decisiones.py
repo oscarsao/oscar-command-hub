@@ -364,3 +364,51 @@ def test_otro_error_no_se_reintenta():
     except TelegramAPIError:
         pass
     assert tg.calls == 1 and tg.slept == []
+
+
+# --- robustez (revisión) ------------------------------------------------------------------------------------------
+
+def test_refrescar_no_lanza_con_el_estado_de_siembra_roto(tmp_path):
+    import json
+    tg, clock = TG(), Clock(ts(10))
+    (tmp_path / "decisiones_tema.json").write_text(json.dumps({"abiertas": {}, "sembrado": {"revisado_at": "x"}}),
+                                                   encoding="utf-8")
+    c = canal(tmp_path, tg, clock, lambda: items_3(clock()))
+    c._inicio_pendiente = False
+    c.refrescar()  # no lanza: _toca() falla con float("x") y se registra
+    c.enviar("monitor", "🔴 caída")  # y los avisos siguen saliendo
+    assert any(p["text"] == "🔴 caída" for p in tg.sends())
+
+
+def test_tarjeta_tuya_conserva_su_estado_para_elegir_botones():
+    got = lo_tuyo.de_tarjetas([{"board": "default", "task": {"id": "t_dddd0001", "title": "x", "status": "running"},
+                                "since": 1.0}])
+    assert got[0]["status"] == "running"
+
+
+def test_el_render_real_admite_estado_none():
+    from agent_lanes.notices import render
+    assert "t_1" in render(None, "t_1", "T", "claude-hub", "✅ ya resuelta (ahora en done); no hago nada")
+
+
+def test_ya_esta_resuelta_desde_triage_la_saca_y_la_cierra(tmp_path):
+    class TriageH(FakeH):
+        def __init__(self):
+            super().__init__("triage")
+            self.requeued = []
+
+        def complete(self, tid, result, metadata):
+            if self.status == "triage":
+                return False, "not in a completable status"
+            return super().complete(tid, result, metadata)
+
+        def requeue_triage(self, tid):
+            self.requeued.append(tid)
+            self.status = "ready"
+            return "ready"
+
+    h = TriageH()
+    desk = _desk(h, tmp_path)
+    desk.guard_queue.add(_pend())
+    assert DecisionDesk._cola_resuelta(desk, {"task_id": "t_1"}, {}) is True
+    assert h.requeued == ["t_1"] and h.completed
