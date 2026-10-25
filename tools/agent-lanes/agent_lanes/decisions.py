@@ -509,6 +509,7 @@ class DecisionDesk:
         self.commands = None      # CommandCenter: /hoy, /decisiones, /aprobar, /tareas, /tarea
         self.team_notice: dict | None = None  # telegram.team_notice de lanes.yaml (enabled, chats, text); None = apagado
         self.collab = None        # CollabIntake: DM de colaboradores (people.yaml) -> tarjeta [IDEA]; None = como antes
+        self.canal = None         # canal_avisos.CanalAvisos: tema 🎯 Decisiones (DECISIÓN/INFO/URGENTE); None = como antes
         self.people: People | None = None  # people.yaml; None = se lee la primera vez que hace falta (el runner lo fija)
         self._tl = threading.local()       # quién actúa en este hilo (nombre de un operador que no es Oscar)
         self._help_at: dict[str, float] = {}  # chat -> instante de la última ayuda (enfriamiento)
@@ -1007,6 +1008,15 @@ class DecisionDesk:
                 log.info("%s: decisión aplicada en el reintento %d", rec.get("task_id"), attempts)
             for tok in before - {token}:
                 self.store.consume(tok)
+            if self.canal:  # tema 🎯 Decisiones: «✅ <acción> por <persona>», sin botones, y el contador baja
+                try:
+                    pulsado = (replay or {}).get("button")
+                    if (pulsado or {}).get("action") == consola.CS_SI:  # «✅ Integrar por María», no «✅ Sí por…»
+                        op = consola.OPS.get(consola.accion_real(rec, pulsado))
+                        pulsado = {"text": op.boton} if op else pulsado
+                    self.canal.resuelta(token, pulsado, self._who())
+                except Exception as exc:
+                    log.warning("%s: no se pudo cerrar la decisión en el tema: %s", rec.get("task_id"), exc)
         back = (rec.get("consola") or {}).get("volver") if not ok else None
         if back:  # ✅ de la consola que falló: vuelve el teclado del aviso (1.er toque), no la confirmación
             consola._devolver(self, back, rec, where)

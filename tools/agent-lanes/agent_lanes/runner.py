@@ -12,7 +12,7 @@ import uuid
 from pathlib import Path
 from typing import Callable, NamedTuple
 
-from . import avisos_revision, bloqueos, clasificador, grandes, holds, telegram_lane
+from . import avisos_revision, bloqueos, canal_avisos, clasificador, grandes, holds, telegram_lane
 from . import consulta as _consulta
 from . import deps
 from . import proc as _proc
@@ -186,9 +186,10 @@ class LaneRunner:
                                                     questions=questions, changed_files=changed_files,
                                                     summary=summary, for_oscar=for_oscar, yes_no=yes_no,
                                                     q_index=q_index)
-                self._notices.publish(tid, text, target, lane_target, alert=alert, reply_markup=markup, keep_previous=keep,
-                                      followup=list(getattr(bullets, "overflow", None) or ()) or None,
-                                      **({"mirror_to": mirror} if mirror else {}))
+                canal_avisos.publicar(canal_avisos.de(self._decisions), self._notices, canal_avisos.tipo_de_estado(state),
+                                      tid, text, target, lane_target, alert=alert, reply_markup=markup,
+                                      mirror=mirror, keep_previous=keep,
+                                      followup=list(getattr(bullets, "overflow", None) or ()) or None)
                 return
             except Exception as exc:
                 log.warning("aviso a Telegram falló (intento %d/2): %s", attempt, exc)
