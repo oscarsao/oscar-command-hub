@@ -330,3 +330,31 @@ def test_git_fetch_real_con_runner_falso():
 def test_choques_yaml_trae_los_ajustes_tempranos():
     aj = load_ajustes()
     assert aj.temprano and aj.fetch
+
+
+# --- aviso temprano con las fuentes del 25-10 (solo tarjetas): el PR se lee aunque `pr` no sea fuente -------------------
+
+def _solo_tarjetas(**kw):
+    return Ajustes(fuentes=("tarjetas",), **kw)
+
+
+def test_temprano_con_solo_tarjetas_lee_el_pr_de_la_rama_lane():
+    g = FakeGit({"lane/t_1": (NOW, "x", [CMD]), "lane/t_2": (NOW, "y", [CMD])},
+                prs=[_pr(280, "lane/t_1")], reales={frozenset(("lane/t_1", "lane/t_2")): False})
+    cards = [card("t_1", "uno"), card("t_2", "dos")]
+    [c] = run(g, cards, _solo_tarjetas())
+    assert c.clase == "temprano" and "va primero (ya tiene PR)" in c.propuesta
+    assert (c.a.pr, c.b.pr) in ((280, 0), (0, 280))
+    assert run(g, cards, _solo_tarjetas(temprano=False)) == []
+
+
+def test_solo_tarjetas_no_crea_unidades_de_ramas_ni_pr_sueltos():
+    g = FakeGit({"lane/t_1": (NOW, "x", [CMD]), "feat/otra": (NOW, "y", [CMD])},
+                prs=[_pr(9, "feat/otra")], reales={frozenset(("lane/t_1", "feat/otra")): False})
+    assert run(g, [card("t_1", "uno")], _solo_tarjetas()) == []
+
+
+def test_temprano_con_solo_tarjetas_no_llama_a_gh_si_esta_apagado():
+    g = FakeGit({"lane/t_1": (NOW, "x", [CMD])})
+    g.prs = lambda repo: (_ for _ in ()).throw(AssertionError("gh pr list no debería llamarse"))
+    run(g, [card("t_1", "uno")], _solo_tarjetas(temprano=False))

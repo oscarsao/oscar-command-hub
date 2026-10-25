@@ -13,10 +13,12 @@ E1 SOLO AVISA a Oscar (una vez por conjunto + clase): no frena, no encola, no me
 (E4). Un fallo de git/`gh`/Hermes degrada a «sin información»: nunca lanza. Ajustes en `choques.yaml` (se relee en cada
 pasada; ausente o inválido = defaults de `Ajustes`). Spec: specs/choques-entre-tareas.md.
 
-Aviso temprano (24-10): la clase `temprano` salta ANTES de que haya conflicto: dos ramas que ya tocan los mismos
-ficheros (git las fusiona limpio hoy) y alguna con PR abierto. Va primero la que ya tiene PR; el aviso solo pide
+Aviso temprano (24-10): la clase `temprano` salta ANTES de que haya conflicto: dos unidades que ya tocan los mismos
+ficheros (git las fusiona limpio hoy) y alguna con PR abierto. Con las fuentes del 25-10 (solo `tarjetas`) son dos
+tarjetas activas con rama lane/<id> empujada; el PR se lee aunque `pr` esté apagado como fuente. Es una DECISIÓN
+(tipo «choque» de canal_avisos: «¿cuál primero?»), con botones. Va primero la que ya tiene PR; el aviso solo pide
 [✅ Confirmar: X primero, la otra espera] (se anota en `.state/choques_orden.json`; no frena nada por sí mismo: lo que
-frena es la prevención al lanzar). Cubre cualquier rama remota viva del repo (carril o persona). Antes de cada barrido
+frena es la prevención al lanzar). Las ramas de carril o de persona sueltas solo entran si `fuentes` las activa. Antes de cada barrido
 se hace `git fetch --prune <remote>` (`fetch`), para ver ramas nuevas sin esperar a que alguien las traiga.
 
 Botones (23-10): TODO aviso lleva teclado. Entre dos tarjetas, los de fusion.py (fusionar/encadenar/…); siempre
@@ -323,7 +325,10 @@ def unidades_repo(repo: str, remote: str, base: str, tarjetas: list[dict], git: 
     `silenciadas` (botón «Silenciar rama») no cuentan: ni como unidad propia ni como zona de su tarjeta."""
     sol = _solapes_aj(ajustes)
     ramas = {r: (ts, autor) for r, ts, autor in git.ramas_remotas(repo, remote, base)}
-    prs = {p["headRefName"]: p for p in git.prs(repo)} if "pr" in ajustes.fuentes else {}
+    # PR abiertos: con fuente `pr` crean unidades y reactivan ramas cerradas; con solo tarjetas (25-10) se leen igual,
+    # pero solo para marcar qué tarjeta ya tiene PR (lo que pide el aviso `temprano`).
+    prs_abiertos = {p["headRefName"]: p for p in git.prs(repo)} if ("pr" in ajustes.fuentes or ajustes.temprano) else {}
+    prs = prs_abiertos if "pr" in ajustes.fuentes else {}
     cerradas = getattr(git, "ramas_cerradas", lambda _r: set())(repo) - set(prs)  # un PR nuevo abierto la reactiva
     ramas = {r: v for r, v in ramas.items() if r not in cerradas and r not in silenciadas}
     unidades: dict[str, Unidad] = {}
@@ -334,10 +339,10 @@ def unidades_repo(repo: str, remote: str, base: str, tarjetas: list[dict], git: 
         if z is not None:
             u.rama, u.rutas = rama, z
         usadas.add(rama)
-        if rama in prs:
-            u.pr = int(prs[rama].get("number") or 0)
-            u.url = str(prs[rama].get("url") or "")
-            u.dueno = u.dueno or str((prs[rama].get("author") or {}).get("login") or "")
+        if rama in prs_abiertos:
+            u.pr = int(prs_abiertos[rama].get("number") or 0)
+            u.url = str(prs_abiertos[rama].get("url") or "")
+            u.dueno = u.dueno or str((prs_abiertos[rama].get("author") or {}).get("login") or "")
 
     if "tarjetas" in ajustes.fuentes:
         for t in tarjetas:
