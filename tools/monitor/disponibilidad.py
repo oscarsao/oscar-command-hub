@@ -43,7 +43,9 @@ def bateria(sensors: Callable | None = None) -> tuple[float, bool] | None:
 
 
 def runner_pid_vivo(lock: Path, pid_exists: Callable[[int], bool] | None = None) -> bool:
-    """True si runner.lock nombra un PID que sigue vivo. Sin lock legible = False (no se sabe: manda `status`)."""
+    """True si runner.lock nombra un PID vivo y es un proceso de Python (un PID reutilizado por otro programa no
+    cuenta). Es el mismo criterio que usa `lanes.py status` para decir VIVO: sirve cuando `status` va lento o falla.
+    Sin lock legible = False (no se sabe: manda `status`)."""
     try:
         pid = int(json.loads(Path(lock).read_text(encoding="utf-8")).get("pid") or 0)
     except (OSError, ValueError, AttributeError):
@@ -53,7 +55,9 @@ def runner_pid_vivo(lock: Path, pid_exists: Callable[[int], bool] | None = None)
     try:
         if pid_exists is None:
             import psutil
-            pid_exists = psutil.pid_exists
+
+            def pid_exists(p: int) -> bool:
+                return psutil.pid_exists(p) and "python" in psutil.Process(p).name().lower()
         return bool(pid_exists(pid))
     except Exception:
         return False

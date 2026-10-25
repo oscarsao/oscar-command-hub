@@ -137,7 +137,8 @@ class DailyLaneSummary:
 
 TIPOS_RESUMEN = {"vigilancia": "🔌 Vigilancias apagadas", "relanzada": "🔁 Tareas programadas relanzadas",
                  "limpieza": "🧹 Limpieza pendiente", "workflow_sin_origen": "🧩 Workflows sin origen",
-                 "bateria": "🔋 Batería del PC", "hermes_config": "🧭 Config de Hermes fuera de la plantilla"}
+                 "bateria": "🔋 Batería del PC", "hermes_config": "🧭 Config de Hermes fuera de la plantilla",
+                 "pr_sin_cierra": "🔗 PR de consola sin «Cierra: t_x»"}
 RESUMEN_INFO_HOUR = 9
 RESUMEN_INFO_MAX = 40   # líneas por resumen (el resto se cuenta)
 

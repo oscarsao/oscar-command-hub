@@ -199,3 +199,9 @@ def test_monitor_mira_la_config_de_hermes_una_vez_al_dia(tmp_path, monkeypatch):
     assert "--check" in calls[0]
     data = json.loads((tmp_path / "resumen.json").read_text(encoding="utf-8"))
     assert data["eventos"][0]["tipo"] == "hermes_config"
+
+
+def test_el_hook_del_worker_cubre_powershell():
+    cfg = json.loads((Path(__file__).resolve().parents[1] / "contract" / "worker-settings.json").read_text(encoding="utf-8"))
+    matchers = [h["matcher"] for h in cfg["hooks"]["PreToolUse"]]
+    assert any("PowerShell" in m.split("|") for m in matchers)

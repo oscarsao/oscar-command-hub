@@ -175,6 +175,9 @@ class Reconciler:
             return
         self.state.data["sin_cierra"][key] = self.clock()
         self.state.save()
+        from .resumen_carriles import anotar  # F1-04: es INFO, va al resumen diario; sin resumen, al momento
+        if anotar("pr_sin_cierra", f"PR #{n} ({branch}) sin «Cierra: t_x»: {pr.get('url') or ''}".strip(), key):
+            return
         self.send(f"🔗 PR #{n} ({branch}) sin «Cierra: t_x»\nLas ramas de consola deben decir qué tarjeta cierran, o "
                   f"la tarjeta se queda abierta al fusionar.\n➡️ Próximo paso: añade «Cierra: t_xxxxxxxx» a la "
                   f"descripción del PR {pr.get('url') or ''} · Lo da: el integrador".strip(), None)

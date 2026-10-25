@@ -302,3 +302,17 @@ def test_pr_de_consola_sin_cierra_avisa_una_vez(tmp_path):
     rec.close_from_prs()
     rec.close_from_prs()
     assert len(sent) == 1 and "PR #11" in sent[0][0] and "Cierra: t_" in sent[0][0]
+
+
+def test_pr_sin_cierra_va_al_resumen_diario_si_esta_instalado(tmp_path):
+    from agent_lanes import resumen_carriles
+    diario = resumen_carriles.DiarioInfo(lambda t: True, tmp_path / "resumen.json")
+    resumen_carriles.instalar(diario)
+    try:
+        rec, _, sent, _ = make(tmp_path, {}, [pr(11, "OPEN", branch="fix/x", body="")])
+        rec.close_from_prs()
+        assert sent == []
+        data = json.loads((tmp_path / "resumen.json").read_text(encoding="utf-8"))
+        assert data["eventos"][0]["tipo"] == "pr_sin_cierra" and "PR #11" in data["eventos"][0]["texto"]
+    finally:
+        resumen_carriles.instalar(None)

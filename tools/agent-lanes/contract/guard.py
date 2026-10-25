@@ -213,9 +213,12 @@ def secret_scan_push(cwd: str | None, base: str | None, run=None) -> str | None:
         return f"no pude revisar secretos antes del push ({type(exc).__name__}); avisa en needs_input"
     if cp.returncode != 0:
         return "no pude revisar secretos antes del push (git diff falló); avisa en needs_input"
-    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    from agent_lanes.integrator import scan_secrets  # import tardío: solo al empujar
-    hits = scan_secrets(cp.stdout or "")
+    try:  # un fallo aquí tiene que BLOQUEAR (exit 2), no salir con 1 (Claude Code lo trataría como «sin objeción»)
+        sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        from agent_lanes.integrator import scan_secrets  # import tardío: solo al empujar
+        hits = scan_secrets(cp.stdout or "")
+    except Exception as exc:
+        return f"no pude revisar secretos antes del push ({type(exc).__name__}); avisa en needs_input"
     if hits:
         where = ", ".join(f"{p}:{n} ({r})" for p, n, r in hits[:5])
         return (f"posible secreto en lo que vas a empujar: {where}. Quítalo (o usa un valor de ejemplo evidente) y "

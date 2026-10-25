@@ -521,7 +521,8 @@ class Monitor:
         # «no vivo» 2-3 min y se recupera solo (162 avisos el 23-10). Oscar, 23-10: avisar a los 5 min, no al minuto.
         draining = (LANES / ".state" / "drain.json").exists()
         # DISP-10: con RAM al límite `lanes.py status` tarda o falla y el runner sigue vivo: si el PID de runner.lock
-        # vive, no es «runner parado» (si de verdad está colgado lo dirá el latido de Oscar HQ / Kuma).
+        # vive (y es Python), no es «runner parado». Es el mismo criterio que usa `status` para decir VIVO, así que
+        # no se pierde nada: un runner colgado con el proceso vivo tampoco lo detectaba `status`.
         dead = "VIVO" not in self.lanes_text and not disp.runner_pid_vivo(RUNNER_LOCK)
         self.condition("runner-dead", dead and not draining,
                        "El runner de carriles lleva más de cinco minutos parado: no se reclaman tareas (quedan en cola, "
