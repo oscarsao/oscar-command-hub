@@ -35,6 +35,8 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from .integration import PinnedSummary, age_label, topic_link
+from .resumen_carriles import TIPOS_RESUMEN
+from .resumen_carriles import anotar as anotar_resumen
 from .notices import markup_token, truncate
 from .telegram import resolve_target
 
@@ -70,6 +72,8 @@ CLASES: dict[str, str] = {
     "team_notice": INFO,         # 23 aviso al equipo en Marketing
     "fijado": INFO,              # 24 mensajes fijados (Integración, panel de carriles)
 }
+# Los tipos del resumen diario INFO (F1-04, resumen_carriles.TIPOS_RESUMEN: vigilancia, relanzada, limpieza,
+# workflow_sin_origen, bateria) son INFORMATIVOS por la regla general (tipo fuera de la tabla = INFO).
 
 # Etiqueta de cada tipo en el contador fijado (singular, plural).
 ETIQUETAS = {"needs_input": ("pregunta de un carril", "preguntas de carriles"),
@@ -162,6 +166,8 @@ class CanalAvisos:
         """Aviso sin mensaje por tarea. DECISIÓN -> tema (+ línea al DM); lo demás -> `defecto` (DM de Oscar si no se
         dice otra cosa), exactamente como antes."""
         extra = {"reply_markup": markup} if markup is not None else {}
+        if not con_botones(markup) and tipo in TIPOS_RESUMEN and anotar_resumen(tipo, text):
+            return None  # F1-04: INFO sin botones del resumen diario; sale una vez al día (URGENTE nunca entra aquí)
         if not self.es_decision(tipo, markup):
             chat, thread = defecto or (self.owner_dm, None)
             return self.notifier.send_to(chat, thread, text, html=html_text, **extra)

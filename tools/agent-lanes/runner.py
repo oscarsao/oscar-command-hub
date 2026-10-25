@@ -14,7 +14,7 @@ import threading
 import time
 from logging.handlers import RotatingFileHandler
 
-from agent_lanes import canal_avisos, ciego, consola, doctor_config, drain, notices
+from agent_lanes import canal_avisos, ciego, consola, doctor_config, drain, notices, resumen_carriles
 from agent_lanes.bandeja import load as load_bandeja
 from agent_lanes.board_guard import BoardGuardTicker
 from agent_lanes.choques import ChoquesTicker
@@ -195,10 +195,18 @@ def main(argv: list[str] | None = None) -> int:
     # Tema de Integración (integration_telegram): la tarjeta done con ✅ Aprobar va allí aunque el integrador esté apagado.
     integration = (IntegrationRoute(tg_settings["integration"], load_integrator_settings(env=env, lane_filter=False).policies)
                    if tg_settings.get("integration") else None)
+    diario = None
+    if decisions and not args.once:  # resumen diario de avisos INFO (F1-04): un mensaje al día al DM de Oscar
+        owner_dm = env.get("OWNER_TELEGRAM_ID") or OWNER_TELEGRAM_ID
+        diario = resumen_carriles.DiarioInfo(
+            lambda text: bool(notify.send_to(owner_dm, None, text, html=False, silent=True)),
+            ROOT / ".state" / "resumen_info.json")
+        resumen_carriles.instalar(diario)
     if not args.once:  # doctor-config (F1-02): una vez al arrancar, al log y al tema de Integración; nunca tumba nada
         doctor_config.publicar_al_arrancar(
             (lambda text: notify.send_to(*integration.target, text, html=False, silent=True))
-            if integration and notify.enabled else (lambda text: None))
+            if integration and notify.enabled else (lambda text: None),
+            anotar=resumen_carriles.anotar if diario else None)
     for name, lane in selected.items():
         if lane.kind == "review":
             runners.append(ReviewRunner(lane, all_lanes, hermes_for=hermes_for, git=git, reviewer=ClaudeReviewer(),
@@ -372,6 +380,12 @@ def main(argv: list[str] | None = None) -> int:
                     log.info("decisiones en cola reintentadas: %d", retried)
             except Exception as exc:
                 log.warning("reintento de decisiones en cola falló: %s", exc)
+        if diario:
+            try:
+                if diario.tick():
+                    log.info("resumen diario de avisos INFO enviado")
+            except Exception as exc:
+                log.warning("resumen diario INFO falló: %s", exc)
         if hub_panel:
             hub_panel.tick()  # nunca lanza; lee el kanban como mucho cada min_seconds y solo edita si cambia
         if args.once:  # una pasada con barrera: la plaza reservada también se atiende y se espera

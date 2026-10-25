@@ -8,7 +8,7 @@ from __future__ import annotations
 import json
 import logging
 
-from . import avisos_revision, canal_avisos
+from . import avisos_revision, canal_avisos, resumen_carriles
 from . import proc as _proc
 import time
 import uuid
@@ -432,4 +432,5 @@ def sweep_done(lane: Lane, h, git) -> list[str]:
                 cleaned.append(task["id"])
             else:
                 log.warning("%s: limpieza pendiente: %s", task["id"], msg)
+                resumen_carriles.anotar("limpieza", f"{task['id']}: {msg}", clave=task["id"])  # F1-04: 1 vez al día
     return cleaned

@@ -160,12 +160,17 @@ def main(argv: list[str]) -> int:
     return 0
 
 
-def publicar_al_arrancar(send: Callable[[str], object], *, informe_fn: Callable[[], str] = informe) -> bool:
-    """Una vez al arrancar el runner: el informe al tema de Integración. Nunca lanza (un fallo solo deja log)."""
+def publicar_al_arrancar(send: Callable[[str], object], *, informe_fn: Callable[[], str] = informe,
+                         anotar: Callable | None = None) -> bool:
+    """Una vez al arrancar el runner: el informe al tema de Integración y, con `anotar` (resumen diario INFO, F1-04),
+    cada función apagada como «vigilancia apagada». Nunca lanza (un fallo solo deja log)."""
     try:
         text = informe_fn()
         log.info("doctor-config al arrancar:\n%s", text)
         send(text)
+        for line in text.splitlines() if anotar else ():
+            if line.startswith(ICONOS[APAGADO]):
+                anotar("vigilancia", line.removeprefix(ICONOS[APAGADO]).strip(), line)
         return True
     except Exception as exc:
         log.warning("doctor-config al arrancar falló: %s", exc)
