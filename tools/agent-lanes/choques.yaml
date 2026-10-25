@@ -4,9 +4,9 @@ activo: true                  # false = apagado (no barre ni avisa)
 minutos: 10                   # cada cuánto se barre
 fuentes:
   tarjetas: true              # tarjetas activas de los tableros (con su rama lane/<id> si ya existe)
-  ramas_lane: true            # ramas remotas lane/* aún sin fusionar en la base
-  pr: true                    # PR abiertos (gh pr list); si gh falla se ignora
-  ramas_personas: true        # ramas remotas NO lane/* con commits recientes y sin fusionar (Angel, equipo…)
+  ramas_lane: false           # 25-10 (Oscar): false. Había 171 ramas sin fusionar en oscar-hq (muchas de tarjetas cerradas) y >1.000 avisos en 2 días
+  pr: false                   # 25-10 (Oscar): false; solo se avisa de choques entre tarjetas activas (decisiones reales)
+  ramas_personas: false       # 25-10 (Oscar): false, mismo motivo; las ramas con PR abierto siguen entrando por «pr»
 ramas_personas_dias: 14       # antigüedad máxima del último commit de una rama de persona
 estados: [ready, todo, running, blocked]
 nivel: modulo                 # archivo = solo si comparten un fichero; modulo = también si comparten carpeta
@@ -24,7 +24,7 @@ avisar_compatibles: false     # true = avisar también «misma zona, compatibles
 prevenir_al_lanzar: true      # false = no frena nada (solo avisos)
 prevenir_nivel: archivo       # archivo = solo si comparten fichero; modulo = también carpeta (encolaría mucho más)
 prevenir_estados: [running, review]
-prevenir_ramas_lane: true     # también ramas lane/* sin fusionar (recientes o con PR abierto)
+prevenir_ramas_lane: false    # 25-10 (Oscar): false; frena solo contra tarjetas running/review (prevenir_estados)
 prevenir_max_horas: 24        # tope de espera por choque; después se lanza igualmente
 prevenir_cache_minutos: 2     # caché de git/gh entre vueltas del planificador
 # Contradicción de intención: si dos unidades de la misma zona casan un par (una dice A, la otra dice B) -> «revisar».
