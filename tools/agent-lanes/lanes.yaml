@@ -142,6 +142,23 @@ defaults:
     - "Bash(pnpm test:*)"
     - "Bash(pnpm exec tsc:*)"
     - "Bash(pnpm exec vitest:*)"
+    # 25-10 (OK de Oscar): Oscar HQ usa pnpm; los workers lo pedían como `npx pnpm@10 install --frozen-lockfile` (t_b14317c3,
+    # t_78b8b58d) y no coincidía con ninguna regla. Solo instalar con lockfile, tsc, vitest y lint; `pnpm add`, `-g` y
+    # `dlx` los deniegan contract/worker-settings.json y contract/guard.py.
+    - "Bash(npx pnpm@10 install:*)"
+    - "Bash(npx pnpm@10 exec:*)"
+    - "Bash(npx pnpm@10 run:*)"
+    - "Bash(npx pnpm@10 lint:*)"
+    - "Bash(npx -y pnpm@10 install:*)"
+    - "Bash(npx -y pnpm@10 exec:*)"
+    - "Bash(corepack pnpm@10.18.3 install:*)"
+    - "Bash(corepack pnpm@10.18.3 exec:*)"
+    - "Bash(corepack pnpm@10.18.3 run:*)"
+    - "Bash(pnpm lint:*)"
+    - "Bash(pnpm exec next lint:*)"
+    - "Bash(npx next lint:*)"
+    - "Bash(cd dashboard:*)"
+    - "Bash(cd frontend:*)"
     - "Bash(npx tsc:*)"
     - "Bash(npx vitest:*)"
     - "Bash(npx eslint:*)"

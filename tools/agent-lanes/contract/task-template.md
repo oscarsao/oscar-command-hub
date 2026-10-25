@@ -17,3 +17,4 @@ Fast-Track | Spec-Lite | Pitch
 
 ## Test focalizado
 <Comando que el worker debe ejecutar. El runner ejecuta además el test_cmd del carril (lanes.yaml).>
+<Oscar HQ `dashboard/`: pnpm, nunca `npm ci`. `npx pnpm@10 exec tsc --noEmit` · `npx pnpm@10 exec vitest run` · `npx pnpm@10 lint`; el runner ya instala node_modules. Un comando por llamada, sin `&&`.>

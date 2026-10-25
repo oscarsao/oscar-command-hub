@@ -1,6 +1,21 @@
 {
   "permissions": {
-    "deny": ["mcp__*"]
+    "deny": [
+      "mcp__*",
+      "Bash(pnpm add:*)",
+      "Bash(pnpm dlx:*)",
+      "Bash(pnpm install -g:*)",
+      "Bash(pnpm install --global:*)",
+      "Bash(pnpm add -g:*)",
+      "Bash(npx pnpm@10 add:*)",
+      "Bash(npx pnpm@10 dlx:*)",
+      "Bash(npx -y pnpm@10 add:*)",
+      "Bash(corepack pnpm@10.18.3 add:*)",
+      "Bash(npm install -g:*)",
+      "Bash(npm i -g:*)",
+      "Bash(npm install --global:*)",
+      "Bash(npm i --global:*)"
+    ]
   },
   "hooks": {
     "PreToolUse": [
