@@ -123,6 +123,8 @@ def test_subida_sin_env_y_con_retencion_remota(bk, entorno):
     subidos = [k for k in st.objetos if k.startswith("2026-10-25/")]
     assert n == len(subidos) and n > 0
     assert not any(k.endswith(".env") for k in st.objetos)  # el .env no sale del PC
+    assert not any(k.startswith("2026-10-25/config/") for k in st.objetos)  # ni ninguna config
+    assert "2026-10-25/manifest.json" in st.objetos and "2026-10-25/hermes/kanban.db" in st.objetos
     assert sobran == ["2026-10-01"]
     assert not any(k.startswith("2026-10-01/") for k in st.objetos)
 
@@ -136,3 +138,29 @@ def test_main_sin_credenciales_no_sube(bk, entorno, monkeypatch, capsys):
     assert codigo == 3
     assert "no se sube" in capsys.readouterr().err
     assert (dest / "2026-10-25" / "manifest.json").is_file()
+
+
+def test_env_file_lee_solo_las_dos_claves(bk, tmp_path, monkeypatch):
+    env = tmp_path / ".env"
+    lineas = ["# x", 'SUPABASE_URL="https://ejemplo.supabase.co"', "SUPABASE_SERVICE_ROLE_KEY=clave",
+              "OTRA=no", "export SUPABASE_ANON_KEY=tampoco"]
+    env.write_text("\n".join(lineas) + "\n", encoding="utf-8")
+    assert bk.leer_env_file(env) == {"SUPABASE_URL": "https://ejemplo.supabase.co", "SUPABASE_SERVICE_ROLE_KEY": "clave"}
+    monkeypatch.delenv("SUPABASE_URL", raising=False)
+    monkeypatch.delenv("SUPABASE_SERVICE_ROLE_KEY", raising=False)
+    st = bk.Storage.desde_entorno("hub-backups", bk.leer_env_file(env))
+    assert st.base == "https://ejemplo.supabase.co/storage/v1" and st.clave == "clave"
+
+
+def test_bak_junto_retiene_14_y_no_toca_otros_bak(bk, entorno):
+    home, hub, dest = entorno
+    for d in range(1, 16):
+        (home / f"config.yaml.bak-202610{d:02d}-workflow").write_text("v", encoding="utf-8")
+    (home / "config.yaml.bak-20260927-dashboard").write_text("manual", encoding="utf-8")
+    (home / "SOUL.md.bak-20261001-workflow").write_text("s", encoding="utf-8")
+    bk.hacer_copia(dest, home, "2026-10-25", hub=hub, oscarhq=hub, bak_junto=True, retencion=14)
+    wf = sorted(p.name for p in home.glob("config.yaml.bak-*-workflow"))
+    assert len(wf) == 14 and wf[-1] == "config.yaml.bak-20261025-workflow"
+    assert "config.yaml.bak-20261002-workflow" not in wf  # las dos más antiguas fuera (16 - 14)
+    assert (home / "config.yaml.bak-20260927-dashboard").is_file()
+    assert (home / "SOUL.md.bak-20261001-workflow").is_file()  # retención por fichero, no global

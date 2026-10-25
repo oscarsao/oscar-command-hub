@@ -11,13 +11,14 @@ Qué hace en cada ejecución (una carpeta por día, ``<dest>/<AAAA-MM-DD>/``):
 4. ``manifest.json`` con tamaño, sha256 e integridad de cada fichero y el SHA de ``main`` del hub y ``master`` de oscar-hq.
 5. Retención: conserva las 14 carpetas de día más recientes y borra el resto (solo carpetas con nombre de fecha).
 6. Con ``--subir``: sube la carpeta a Supabase Storage (bucket ``hub-backups``, privado) con ``SUPABASE_URL`` y
-   ``SUPABASE_SERVICE_ROLE_KEY`` del entorno (no crea credenciales nuevas) y aplica la misma retención en el bucket.
-   ``.env`` NUNCA se sube: solo se copia en local.
+   ``SUPABASE_SERVICE_ROLE_KEY`` del entorno o de ``--env-file`` (un .env ya existente, p. ej. el de oscar-hq; solo se
+   leen esas dos claves; no crea credenciales nuevas) y aplica la misma retención en el bucket. Solo se suben las BD
+   (``hermes/``) y ``manifest.json``: la config (``config/``, con tokens y secretos) NUNCA sale del PC.
 
 Uso::
 
     py -3.12 tools/backup_kanban.py                       # copia local en ~/hub-backups
-    py -3.12 tools/backup_kanban.py --subir               # y además a Supabase Storage
+    py -3.12 tools/backup_kanban.py --subir --env-file C:/Users/oscar/dev/oscar-hq/.env
     py -3.12 tools/backup_kanban.py --dest D:/copias --retencion 14 --bak-junto
 
 Restaurar: copiar ``kanban.db`` / ``state.db`` de la carpeta del día a un ``HERMES_HOME`` temporal y comprobar
@@ -44,8 +45,11 @@ HUB = Path(__file__).resolve().parents[1]
 RETENCION = 14
 BUCKET = "hub-backups"
 _DIA = re.compile(r"^\d{4}-\d{2}-\d{2}$")
-# Nunca salen del PC (llevan tokens).
-NO_SUBIR = {".env"}
+# Lo único que sale del PC: las BD y el manifiesto. config/ lleva tokens y secretos.
+SUBIR_CARPETAS = ("hermes",)
+SUBIR_FICHEROS = ("manifest.json",)
+_BAK = re.compile(r"\.bak-\d{8}-workflow$")
+CLAVES_STORAGE = ("SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY")
 
 
 def hermes_home() -> Path:
@@ -123,6 +127,32 @@ def sha_rama(repo: Path, rama: str) -> str | None:
     return None
 
 
+def leer_env_file(ruta: Path, claves: tuple[str, ...] = CLAVES_STORAGE) -> dict[str, str]:
+    """Lee SOLO ``claves`` de un fichero dotenv (no ejecuta nada ni toca el resto)."""
+    out: dict[str, str] = {}
+    for linea in ruta.read_text(encoding="utf-8").splitlines():
+        linea = linea.strip()
+        if not linea or linea.startswith("#") or "=" not in linea:
+            continue
+        k, _, v = linea.removeprefix("export ").partition("=")
+        k, v = k.strip(), v.strip()
+        if k in claves and v:
+            if len(v) >= 2 and v[0] == v[-1] and v[0] in "'\"":
+                v = v[1:-1]
+            out[k] = v
+    return out
+
+
+def retener_bak_junto(origen: Path, conservar: int = RETENCION) -> list[str]:
+    """Borra los ``<fichero>.bak-AAAAMMDD-workflow`` más antiguos de ``origen`` (nunca otros .bak)."""
+    baks = sorted((p for p in origen.parent.glob(origen.name + ".bak-*-workflow")
+                   if (m := _BAK.search(p.name)) and p.name[:m.start()] == origen.name), key=lambda p: p.name)
+    sobran = baks[:-conservar] if conservar > 0 else baks
+    for p in sobran:
+        p.unlink()
+    return [p.name for p in sobran]
+
+
 def aplicar_retencion(dest: Path, conservar: int = RETENCION) -> list[str]:
     """Borra las carpetas de día más antiguas; devuelve las borradas."""
     dias = sorted((p for p in dest.iterdir() if p.is_dir() and _DIA.match(p.name)), key=lambda p: p.name)
@@ -133,7 +163,7 @@ def aplicar_retencion(dest: Path, conservar: int = RETENCION) -> list[str]:
 
 
 def hacer_copia(dest: Path, home: Path, hoy: str, *, hub: Path = HUB, oscarhq: Path | None = None,
-                bak_junto: bool = False) -> dict:
+                bak_junto: bool = False, retencion: int = RETENCION) -> dict:
     carpeta = dest / hoy
     carpeta.mkdir(parents=True, exist_ok=True)
     manifiesto: dict = {"fecha": hoy, "creado": dt.datetime.now().isoformat(timespec="seconds"),
@@ -160,6 +190,7 @@ def hacer_copia(dest: Path, home: Path, hoy: str, *, hub: Path = HUB, oscarhq: P
             junto = origen.with_name(origen.name + sufijo)
             if not junto.exists():
                 shutil.copy2(origen, junto)
+            retener_bak_junto(origen, retencion)
     oscarhq = oscarhq or (Path.home() / "dev" / "oscar-hq")
     manifiesto["sha"] = {"hub/main": sha_rama(hub, "main"), "oscar-hq/master": sha_rama(oscarhq, "master")}
     (carpeta / "manifest.json").write_text(json.dumps(manifiesto, indent=2, ensure_ascii=False) + "\n",
@@ -176,8 +207,9 @@ class Storage:
         self.bucket = bucket
 
     @classmethod
-    def desde_entorno(cls, bucket: str = BUCKET) -> "Storage | None":
-        url, clave = os.environ.get("SUPABASE_URL"), os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
+    def desde_entorno(cls, bucket: str = BUCKET, extra: dict[str, str] | None = None) -> "Storage | None":
+        fuente = {**(extra or {}), **{k: os.environ[k] for k in CLAVES_STORAGE if os.environ.get(k)}}
+        url, clave = fuente.get("SUPABASE_URL"), fuente.get("SUPABASE_SERVICE_ROLE_KEY")
         return cls(url, clave, bucket) if url and clave else None
 
     def _peticion(self, metodo: str, ruta: str, datos: bytes | None = None, tipo: str = "application/json",
@@ -214,8 +246,11 @@ class Storage:
 
 def subir_copia(st: Storage, carpeta: Path, conservar: int = RETENCION) -> tuple[int, list[str]]:
     n = 0
-    for p in sorted(carpeta.rglob("*")):
-        if p.is_file() and p.name not in NO_SUBIR and not p.name.endswith(".env"):
+    candidatos = [carpeta / f for f in SUBIR_FICHEROS]
+    for sub in SUBIR_CARPETAS:
+        candidatos += sorted((carpeta / sub).rglob("*"))
+    for p in candidatos:
+        if p.is_file():
             st.subir(f"{carpeta.name}/{p.relative_to(carpeta).as_posix()}", p)
             n += 1
     dias = sorted(e["name"] for e in st.listar("") if not e.get("id") and _DIA.match(e["name"]))
@@ -233,6 +268,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--retencion", type=int, default=RETENCION)
     ap.add_argument("--subir", action="store_true", help="subir a Supabase Storage (bucket hub-backups)")
     ap.add_argument("--bucket", default=BUCKET)
+    ap.add_argument("--env-file", type=Path, default=None,
+                    help="dotenv existente del que leer SOLO SUPABASE_URL y SUPABASE_SERVICE_ROLE_KEY")
     ap.add_argument("--bak-junto", action="store_true", help="dejar <fichero>.bak-<fecha>-workflow junto a cada config")
     ap.add_argument("--fecha", default=None, help=argparse.SUPPRESS)
     a = ap.parse_args(argv)
@@ -243,7 +280,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     hoy = a.fecha or dt.date.today().isoformat()
     a.dest.mkdir(parents=True, exist_ok=True)
-    m = hacer_copia(a.dest, home, hoy, oscarhq=a.oscarhq_repo, bak_junto=a.bak_junto)
+    m = hacer_copia(a.dest, home, hoy, oscarhq=a.oscarhq_repo, bak_junto=a.bak_junto, retencion=a.retencion)
     borradas = aplicar_retencion(a.dest, a.retencion)
     print(f"copia {a.dest / hoy}: {len(m['bases'])} BD, {len(m['config'])} config, "
           f"hub/main={m['sha']['hub/main']}, oscar-hq/master={m['sha']['oscar-hq/master']}")
@@ -253,9 +290,15 @@ def main(argv: list[str] | None = None) -> int:
     for e in m["errores"]:
         print(f"ERROR: {e}", file=sys.stderr)
     if a.subir:
-        st = Storage.desde_entorno(a.bucket)
+        extra: dict[str, str] = {}
+        if a.env_file:
+            try:
+                extra = leer_env_file(a.env_file)
+            except OSError as e:
+                print(f"AVISO: no se pudo leer --env-file: {e}", file=sys.stderr)
+        st = Storage.desde_entorno(a.bucket, extra)
         if st is None:
-            print("AVISO: sin SUPABASE_URL/SUPABASE_SERVICE_ROLE_KEY en el entorno; no se sube", file=sys.stderr)
+            print("AVISO: sin SUPABASE_URL/SUPABASE_SERVICE_ROLE_KEY (entorno ni --env-file); no se sube", file=sys.stderr)
             return codigo or 3
         try:
             n, sobran = subir_copia(st, a.dest / hoy, a.retencion)
