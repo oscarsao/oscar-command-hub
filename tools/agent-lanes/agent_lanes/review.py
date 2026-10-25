@@ -17,7 +17,7 @@ from typing import Callable
 
 from . import telegram_lane
 from .config import ROOT, Lane
-from .hermes import OSCAR_AUTHOR, REVIEW_AUTHOR
+from .hermes import OSCAR_AUTHOR, REVIEW_AUTHOR, is_approval
 from .integration import CHANNEL, link_line, render_ficha, repo_name, risk_of, risks_from_files
 from .notices import (MessageStore, TaskNotices, files_label, fit_reason, money, questions_block, render, status_line,
                       test_label, truncate)
@@ -44,8 +44,8 @@ def aprobada_por_oscar(show: dict) -> bool:
     escalada y el PR ya está abierto. Si el implementador vuelve a pedir review después, la aprobación ya no cuenta."""
     events = (show or {}).get("events") or []
     last_request = max((e.get("created_at") or 0 for e in events if e.get("kind") == "review_requested"), default=0)
-    return any(c.get("author") == OSCAR_AUTHOR and (c.get("body") or "").startswith(APPROVED_PREFIX)
-               and (c.get("created_at") or 0) >= last_request for c in (show or {}).get("comments") or [])
+    return any(is_approval(c) and (c.get("created_at") or 0) >= last_request
+               for c in (show or {}).get("comments") or [])
 
 
 def implementation_metadata(show: dict) -> dict:
