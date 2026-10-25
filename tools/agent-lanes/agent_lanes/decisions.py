@@ -512,6 +512,7 @@ class DecisionDesk:
         self.people: People | None = None  # people.yaml; None = se lee la primera vez que hace falta (el runner lo fija)
         self._tl = threading.local()       # quién actúa en este hilo (nombre de un operador que no es Oscar)
         self._help_at: dict[str, float] = {}  # chat -> instante de la última ayuda (enfriamiento)
+        self._foreign_at: dict[tuple, float] = {}  # (chat, persona, comando) -> último aviso de comando ajeno
         self.tree = None          # deps.TreeReader: líneas 🔗/⏸/↳ al redibujar un aviso (opcional)
         # 💬 Explícame más: rec -> texto llano (claude -p --model haiku sin herramientas); inyectable en tests.
         self.explainer = explainer or (lambda rec: _explain(rec, runner=self._run))
@@ -797,7 +798,39 @@ class DecisionDesk:
             result = "respondido"
         elif owner_dm and self._wants_help(msg, is_cmd, target):
             result = self._help(msg, name if is_cmd else None)
+        elif self._foreign_command(msg, chat, target):
+            result = "respondido"
         self._log_update(chat.get("id"), kind, name, result)
+
+    FOREIGN_COOLDOWN = 600.0  # s: un aviso por persona y comando en ese plazo
+
+    def _foreign_command(self, msg: dict, chat: dict, target) -> bool:
+        """/comando sin @bot en un grupo que NO es de Trabajos: dice de quién es (Hermes) o que no existe. Un aviso por
+        persona y comando cada 10 min. True = avisó."""
+        from .commands import HERMES_BOT, HERMES_COMMANDS
+        sender = msg.get("from") or {}
+        if (not target or target[1] or target[2] or chat.get("type") not in ("group", "supergroup")
+                or sender.get("is_bot")):
+            return False
+        cmd = re.sub(r"[^A-Za-z0-9_]", "", target[0])[:32]
+        key = (str(chat.get("id")), str(sender.get("id")), cmd)
+        stamp = time.monotonic()
+        self._foreign_at = {k: t for k, t in self._foreign_at.items() if stamp - t < self.FOREIGN_COOLDOWN}
+        if key in self._foreign_at:
+            return False
+        hermes = getattr(self, "hermes_commands", None) or HERMES_COMMANDS
+        if cmd.lower() in hermes:
+            text = f"Ese comando es de Hermes: escribe /{cmd}@{HERMES_BOT}"
+        else:
+            text = "Ese comando no existe; /ayuda"
+        thread = str(msg.get("message_thread_id") or 0) if msg.get("is_topic_message") else "0"
+        try:
+            self.notifier.send_to(chat.get("id"), thread, text, html=False, reply_to=msg.get("message_id"))
+        except Exception as exc:
+            log.warning("no pude avisar del comando ajeno: %s", exc)
+            return False
+        self._foreign_at[key] = stamp
+        return True
 
     @staticmethod
     def _wants_help(msg: dict, is_cmd: bool, target) -> bool:
