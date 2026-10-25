@@ -101,3 +101,23 @@ def test_ticker_respeta_el_intervalo(env):
     h.status["t_00000001"] = "done"
     assert len(ticker.tick()) == 2
     assert ticker.tick() == []  # misma hora: no vuelve a mirar
+
+
+def test_workflow_sin_origen_no_se_reanuda(env):
+    store, h, av, sent = env
+    w = store.get("wf_1")
+    w.pop("origen")
+    store.put(w)
+    h.status["t_00000001"] = "done"
+    assert av.tick() == []
+    assert h.created == ["A"] and sent == [] and store.get("wf_1")["tarjetas"][0]["estado"] == "activa"
+
+
+def test_gasto_que_cruza_el_tope_en_la_ultima_tarjeta_entrega(env):
+    store, h, av, sent = env
+    h.status["t_00000001"] = "done"
+    av.tick()
+    h.status["t_00000002"] = h.status["t_00000003"] = "done"
+    h.cost["t_00000003"] = 20.0  # la última tarjeta supera el tope y pausa el workflow
+    av.tick()
+    assert store.get("wf_1")["estado"] == "entregado" and "Entregado" in sent[-1][2]

@@ -83,8 +83,10 @@ class AvanceWorkflows:
         """Una pasada. Devuelve las tarjetas nuevas creadas (para el log). Nunca lanza."""
         creadas: list[str] = []
         try:
+            # Sin `origen` (workflows anteriores al avance automático) no se tocan: los reactiva el integrador a mano.
             vivos = [w for w in self.store.load().values()
-                     if w.get("tipo") == workflows.TIPO and w.get("estado") in (*workflows.ACTIVOS, "pausado")]
+                     if w.get("tipo") == workflows.TIPO and w.get("origen")
+                     and w.get("estado") in (*workflows.ACTIVOS, "pausado")]
         except Exception as exc:
             log.warning("workflows: no se pudo leer el estado: %s", type(exc).__name__)
             return creadas
@@ -113,10 +115,11 @@ class AvanceWorkflows:
                              "que decidas qué hacer.")
                 return []
         wf = self.store.get(wid)
+        if wf["estado"] in (*workflows.ACTIVOS, "pausado") and all(
+                any(c["titulo"] == i["titulo"] and c["estado"] == "hecha" for c in wf["tarjetas"]) for i in wf["plan"]):
+            return self._entregar(wid)  # también si el gasto de la última tarjeta cruzó el tope
         if wf["estado"] not in workflows.ACTIVOS:  # pausado por gasto o bloqueado: no se crea nada
             return []
-        if all(any(c["titulo"] == i["titulo"] and c["estado"] == "hecha" for c in wf["tarjetas"]) for i in wf["plan"]):
-            return self._entregar(wid)
         nuevos = workflows.launch(self.store, wid,
                                   make_create_card(wf, self.lanes, self.hermes_for, self.truncate), aj)
         if nuevos:
