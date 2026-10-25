@@ -13,6 +13,15 @@ Eres el worker de UNA tarea del kanban de Hermes. Trabajas sin humano delante: n
 - Tests: usa EXACTAMENTE `py -3.12 -m pytest <rutas> -q`. Es el único comando de tests permitido en el carril:
   `python -m pytest`, `pytest` o `cd x && ...` se deniegan. No crees scripts auxiliares para lanzar tests; no
   podrás borrarlos y bloquean la limpieza del worktree.
+- Frontend de Oscar HQ (`dashboard/`): usa **pnpm**, nunca `npm ci`/`npm install` (no hay package-lock.json). El runner ya
+  instala `dashboard/node_modules` al crear tu worktree; si no existe, instala con
+  `npx pnpm@10 install --frozen-lockfile` (sin `pnpm add` ni paquetes nuevos). Compila y prueba con
+  `npx pnpm@10 exec tsc --noEmit`, `npx pnpm@10 exec vitest run` y `npx pnpm@10 lint`. Haz `cd dashboard` en una llamada
+  propia y lanza esos comandos después, uno por llamada.
+- **Un comando por llamada de Bash**: sin `&&`, `;`, `|` ni `cd x && ...` (el guard y los permisos evalúan cada
+  segmento y un comando compuesto se rechaza entero). Sin `git -C`: usa rutas relativas a la raíz del worktree.
+  `git add <ruta>`, `git commit -m "..."` y `git push -u origin lane/<task_id>` van cada uno en su llamada y no piden aprobación.
+  Reserva presupuesto para commit y push: ante el límite, commitea y empuja lo hecho antes de seguir probando.
 - Cambios mínimos y dentro del alcance de la tarea. Nada de refactors oportunistas.
 
 ## Git — reglas duras

@@ -105,6 +105,51 @@ def _check_git_merge(tokens: list[str], allowed: list[str] | None = None) -> str
     return None
 
 
+PKG_DIR_FLAGS = {"-c", "--dir", "--prefix", "--workspace-root", "--cwd"}
+PKG_BAD_CMDS = {"add", "dlx", "link", "unlink", "publish", "remove", "rm", "uninstall", "update", "up", "upgrade"}
+PKG_INSTALL = {"install", "i"}
+
+
+def _outside_worktree(val: str) -> bool:
+    val = val.strip("\"'")
+    return val.startswith(("/", "\\", "~")) or bool(re.match(r"^[a-z]:", val)) or ".." in re.split(r"[\\/]", val)
+
+
+def _check_pkg_manager(low: list[str]) -> str | None:
+    """pnpm (directo, `npx pnpm@10`, `corepack pnpm@10.x`): solo `install` desde el lockfile y exec/run/lint dentro del
+    worktree. Nada de `pnpm add|dlx|link|publish...`, instalaciones globales (también npm -g) ni rutas fuera del
+    worktree (25-10)."""
+    idx = next((i for i, t in enumerate(low) if t == "pnpm" or t.startswith("pnpm@")), None)
+    is_npm = bool(low) and low[0] in ("npm", "npm.cmd")
+    if idx is None and not is_npm:
+        return None
+    args = low[(idx + 1 if idx is not None else 1):]
+    name = "pnpm" if idx is not None else "npm"
+    if any(a in ("-g", "--global", "--location=global") for a in args):
+        return f"{name} global (-g) prohibido para workers: solo dependencias del worktree"
+    for i, a in enumerate(args):
+        flag, _, inline = a.partition("=")
+        if flag in PKG_DIR_FLAGS:
+            val = inline or (args[i + 1] if i + 1 < len(args) else "")
+            if _outside_worktree(val):
+                return f"{name} {flag} fuera del worktree prohibido"
+    if idx is None:
+        return None
+    positional, skip = [], False
+    for a in args:
+        if skip:
+            skip = False
+        elif a in PKG_DIR_FLAGS | {"--store-dir", "--filter", "-f"}:  # flags que llevan su valor aparte
+            skip = True
+        elif not a.startswith("-"):
+            positional.append(a)
+    if positional and positional[0] in PKG_BAD_CMDS:
+        return f"pnpm {positional[0]} prohibido para workers: solo `pnpm install --frozen-lockfile`, exec, run y lint"
+    if positional and positional[0] in PKG_INSTALL and len(positional) > 1:
+        return "pnpm install con paquetes prohibido (añadir dependencias): usa `pnpm install --frozen-lockfile`"
+    return None
+
+
 def check_bash(command: str, env_db_url: str | None, task: str | None = None,
                merge_ok: list[str] | None = None, push_ok: list[str] | None = None) -> str | None:
     for segment in SEGMENT_SPLIT.split(command):
@@ -114,6 +159,9 @@ def check_bash(command: str, env_db_url: str | None, task: str | None = None,
         tokens = _tokens(seg)
         low = [t.lower() for t in tokens]
         reason = _check_git_push(low, task, push_ok) or _check_git_merge(low, merge_ok)
+        if reason:
+            return reason
+        reason = _check_pkg_manager(low)
         if reason:
             return reason
         if "gh" in low and "pr" in low and "merge" in low:
