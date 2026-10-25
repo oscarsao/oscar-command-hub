@@ -6,3 +6,6 @@ docs/retro/
 
 # Copias locales del kanban de Hermes para pruebas del importador (datos reales: nunca al repo público)
 .copia_kanban/
+
+# Copias .bak-<fecha>-workflow de tools/backup_kanban.py --bak-junto (F0-01)
+*.bak-????????-workflow
