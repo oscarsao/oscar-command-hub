@@ -68,8 +68,8 @@ telegram:
   # a este tema; al DM de Oscar solo una línea con enlace. Al decidir, el mensaje pasa a «✅ <acción> por <persona>» y
   # un mensaje fijado del tema lleva «N decisiones pendientes» (agent_lanes/canal_avisos.py). Hacen falta chat Y thread
   # (thread != 0); sin la clave todo sigue yendo al DM como antes. El integrador pondrá el id del tema al crearlo:
-  # destinos:
-  #   decisiones: {chat: -1003530490339, thread: <id del tema 🎯 Decisiones>}
+  destinos:   # 25-10 (Oscar, botón): tema 🎯 Decisiones creado por el integrador en Gestión
+    decisiones: {chat: -1003530490339, thread: 2053}
 
 # Tema de Integración (28-09, Oscar): TODO aviso de PR/merge/deploy (tarjeta done con ✅ Aprobar, "Listo para integrar",
 # gates fallidos, en espera, fusionado, desplegado, fallo de deploy) va aquí como ficha con cabecera por riesgo
