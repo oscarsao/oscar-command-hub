@@ -34,7 +34,9 @@ runner:
 # Grupo Gestión -1003530490339: t5 Operaciones · General, t230 Operaciones · MigraTeam, t231 Operaciones · Píldora.
 telegram:
   # Los user_id del equipo (tools/telegram/people.yaml) NO van aquí: su DM no es un origen genérico y debe volver a
-  # su chat (requiere añadirlos a TELEGRAM_ALLOWED_CHATS en .env; cambio manual de Oscar).
+  # su chat. Allowlist DERIVADA (F1-02): TELEGRAM_ALLOWED_CHATS del .env + los user_id de people.yaml (sin null ni
+  # suspendidos) + los chats que este fichero ya usa como destino (temas de carril, final_only, Integración,
+  # 🎯 Decisiones, panel del hub, 👥 Equipo). Ya no hace falta repetirlos a mano en el .env (telegram.allowlist).
   generic_origins:
     - {chat: 6744452215}              # DM de Oscar (cualquier hilo)
     - {chat: -1003530490339, thread: 5}  # Gestión · Operaciones General
@@ -70,6 +72,10 @@ telegram:
   # (thread != 0); sin la clave todo sigue yendo al DM como antes. El integrador pondrá el id del tema al crearlo:
   destinos:   # 25-10 (Oscar, botón): tema 🎯 Decisiones creado por el integrador en Gestión
     decisiones: {chat: -1003530490339, thread: 2053}
+
+# API de Oscar HQ (F1-02, CF-03): URL por defecto de sync_usuarios y de la vigilancia del 👥 Equipo. OHQ_API_URL del
+# .env manda sobre esta; la CLAVE (OHQ_API_KEY) solo va en el .env y no tiene valor por defecto (sin ella, apagados).
+ohq: {api_url: https://api.pildoradigital.com}
 
 # Tema de Integración (28-09, Oscar): TODO aviso de PR/merge/deploy (tarjeta done con ✅ Aprobar, "Listo para integrar",
 # gates fallidos, en espera, fusionado, desplegado, fallo de deploy) va aquí como ficha con cabecera por riesgo

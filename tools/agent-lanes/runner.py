@@ -14,7 +14,7 @@ import threading
 import time
 from logging.handlers import RotatingFileHandler
 
-from agent_lanes import canal_avisos, ciego, consola, drain, notices
+from agent_lanes import canal_avisos, ciego, consola, doctor_config, drain, notices
 from agent_lanes.bandeja import load as load_bandeja
 from agent_lanes.board_guard import BoardGuardTicker
 from agent_lanes.choques import ChoquesTicker
@@ -193,6 +193,10 @@ def main(argv: list[str] | None = None) -> int:
     # Tema de Integración (integration_telegram): la tarjeta done con ✅ Aprobar va allí aunque el integrador esté apagado.
     integration = (IntegrationRoute(tg_settings["integration"], load_integrator_settings(env=env, lane_filter=False).policies)
                    if tg_settings.get("integration") else None)
+    if not args.once:  # doctor-config (F1-02): una vez al arrancar, al log y al tema de Integración; nunca tumba nada
+        doctor_config.publicar_al_arrancar(
+            (lambda text: notify.send_to(*integration.target, text, html=False, silent=True))
+            if integration and notify.enabled else (lambda text: None))
     for name, lane in selected.items():
         if lane.kind == "review":
             runners.append(ReviewRunner(lane, all_lanes, hermes_for=hermes_for, git=git, reviewer=ClaudeReviewer(),

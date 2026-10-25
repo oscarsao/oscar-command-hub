@@ -762,6 +762,12 @@ def run_headless(interval: float = 15.0) -> int:
     mon = Monitor(write_log=True, push=dm_pusher(), db=dbwatch.from_env(envs), prod=prod)
     mon.alert("INFO", "Monitor headless arrancado" + ("" if mon.db else " (vigilancia de Supabase desactivada: falta "
               + dbwatch.ENV_KEY + ")"), every=0)
+    try:  # F1-02: una línea INFO con cada vigilancia y su estado (solo nombres); nunca impide arrancar
+        partes = [f"Supabase: {'activa' if mon.db else 'desactivada (falta ' + dbwatch.ENV_KEY + ')'}"]
+        partes += prod.estado_vigilancias() if prod else ["prodwatch: sin nada que vigilar en lanes.yaml"]
+        mon.alert("INFO", "Vigilancias: " + " · ".join(partes), "vigilancias-arranque", every=0)
+    except Exception as exc:
+        mon.alert("MEDIA", f"monitor: no pude resumir las vigilancias: {exc}", "self-vigilancias", every=3600)
     started = code_fingerprint()
     while True:
         for step in (mon.pc, mon.system, mon.chats, mon.alerts_panel, mon.refresh_db, mon.refresh_prod):

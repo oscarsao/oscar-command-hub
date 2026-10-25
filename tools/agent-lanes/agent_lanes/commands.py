@@ -632,12 +632,12 @@ class CommandCenter:
         import os
 
         from . import vigilancia as vg
-        from .config import load_env
+        from .config import load_env, ohq_api_url
         from .sync_usuarios import ApiOhq
         cfg = vg.load_config()
         env = {**load_env(), **os.environ}
-        api = ApiOhq(env["OHQ_API_URL"], env["OHQ_API_KEY"]) if env.get("OHQ_API_URL") and env.get("OHQ_API_KEY") \
-            else None
+        base = ohq_api_url(env)  # .env manda; sin él, ohq.api_url de lanes.yaml (F1-02)
+        api = ApiOhq(base, env["OHQ_API_KEY"]) if base and env.get("OHQ_API_KEY") else None
         if api is None:
             log.info("vigilancia: sin OHQ_API_URL/OHQ_API_KEY; solo vigilo el kanban de Hermes")
 

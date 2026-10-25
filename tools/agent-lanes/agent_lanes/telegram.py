@@ -46,24 +46,43 @@ def in_scope(target: tuple[str, str] | None, scopes) -> bool:
 def notifier_from_env(env: dict, tg_settings: dict) -> tuple[TelegramNotifier, bool]:
     """(notificador, es_bot_de_carriles). CARRILES_BOT_TOKEN = bot propio de los carriles (botones + escucha); sin
     él, el bot de Hermes (TELEGRAM_BOT_TOKEN) y sin botones. La usan el runner y `lanes.py renotify`."""
-    allowed = {c.strip() for c in env.get("TELEGRAM_ALLOWED_CHATS", "").split(",") if c.strip()}
     lanes_bot = env.get("CARRILES_BOT_TOKEN") or None
+    people = _people(env)
     notifier = TelegramNotifier(lanes_bot or env.get("TELEGRAM_BOT_TOKEN"), env.get("TELEGRAM_CHAT_ID"),
-                                env.get("TELEGRAM_THREAD_ID"), allowed_chats=allowed,
+                                env.get("TELEGRAM_THREAD_ID"), allowed_chats=allowlist(env, people=people),
                                 generic_origins=tg_settings["generic_origins"])
-    _protect_collaborator_dms(notifier, env)
+    _protect_collaborator_dms(notifier, env, people)
     return notifier, bool(lanes_bot)
 
 
-def _protect_collaborator_dms(notifier: "TelegramNotifier", env: dict) -> None:
+def _people(env: dict):
+    from .decisions import OWNER_TELEGRAM_ID
+    from .people import load_people
+    return load_people(env.get("OWNER_TELEGRAM_ID") or OWNER_TELEGRAM_ID)
+
+
+def env_allowed_chats(env: dict) -> set[str]:
+    return {c.strip() for c in str(env.get("TELEGRAM_ALLOWED_CHATS") or "").split(",") if c.strip()}
+
+
+def allowlist(env: dict, *, people=None, lanes_path: Path | None = None) -> set[str]:
+    """Chats a los que un Origen-Telegram puede devolver avisos (F1-02): TELEGRAM_ALLOWED_CHATS del .env + los user_id
+    de people.yaml (los que `load_people` acepta: sin null, sin suspendidos, falla cerrado) + los chats que lanes.yaml
+    ya usa como destino (config.chats_de_confianza). Ningún id nuevo vive en el código ni en el .env: sale de esos
+    dos ficheros, que ya los tienen."""
+    from .config import chats_de_confianza
+    people = _people(env) if people is None else people
+    return env_allowed_chats(env) | set(people.collaborator_ids()) | chats_de_confianza(lanes_path)
+
+
+def _protect_collaborator_dms(notifier: "TelegramNotifier", env: dict, people=None) -> None:
     """DM de los colaboradores (tools/telegram/people.yaml): todo lo que les llegue pasa por collab_view (solo t_id,
     estado y enlace; sin botones). Falla cerrado: sin people.yaml legible no hay colaboradores."""
     from .collab_intake import collab_view
     from .decisions import OWNER_TELEGRAM_ID
-    from .people import load_people
     owner = env.get("OWNER_TELEGRAM_ID") or OWNER_TELEGRAM_ID
     notifier.owner_id = str(owner)
-    notifier.collab_chats = load_people(owner).collaborator_ids()
+    notifier.collab_chats = (_people(env) if people is None else people).collaborator_ids()
     notifier.collab_view = collab_view
 
 

@@ -20,8 +20,9 @@
 #     (fusionar a main/master, desplegar, migraciones, variables de entorno; ver specs/carril-integrador-telegram.md).
 #     Decisión de Oscar 22-10: Oscar (owner, implícito), María y Angel, en TODAS las marcas para este permiso (no
 #     depende de `brands`). Lo lee People.puede_aprobar_produccion; el resto de permisos del YAML se ignoran.
-#   - Tras rellenar un user_id (Oscar, a mano): anadirlo a TELEGRAM_ALLOWED_CHATS en tools/agent-lanes/.env para que
-#     los avisos vuelvan a su DM, y que la persona envie /start al bot. NO anadirlo a generic_origins de lanes.yaml.
+#   - Tras rellenar un user_id (Oscar, a mano): la persona envia /start al bot. Ya NO hace falta copiarlo a
+#     TELEGRAM_ALLOWED_CHATS del .env: la allowlist del bot de carriles se deriva de este fichero + lanes.yaml (F1-02,
+#     agent_lanes/telegram.allowlist). NO anadirlo a generic_origins de lanes.yaml.
 #   - brands: la primera marca decide el tablero de sus tarjetas (Pildora -> oscarhq, MigraTeam -> migrateam). Ademas
 #     limita lo que ejecuta un operador: solo actua (comandos, botones, aprobaciones, fusiones, despliegues) en esas
 #     marcas; "*" = todas (Maria). Sin "*" y sin marca clara en el destino, se rechaza. OscarHQ cuenta como Pildora.
