@@ -14,7 +14,7 @@ import threading
 import time
 from logging.handlers import RotatingFileHandler
 
-from agent_lanes import ciego, consola, drain, notices
+from agent_lanes import canal_avisos, ciego, consola, drain, notices
 from agent_lanes.bandeja import load as load_bandeja
 from agent_lanes.board_guard import BoardGuardTicker
 from agent_lanes.choques import ChoquesTicker
@@ -144,6 +144,10 @@ def main(argv: list[str] | None = None) -> int:
                                  classifier=triaje.clasificar)
         decisions.commands = commands
         decisions.team_notice = tg_settings.get("team_notice") or None
+        # DECISIÓN / INFORMATIVO / URGENTE (canal_avisos.py): sin telegram.destinos.decisiones, todo como antes.
+        decisions.canal = canal_avisos.para_desk(decisions, tg_settings["decisiones"])
+        if tg_settings["decisiones"]:
+            log.info("tema 🎯 Decisiones activo: %s/%s", *tg_settings["decisiones"])
         decisions.collab = CollabIntake(notify, load_people(owner), hermes_for=hermes_for, state_path=COLLAB_STATE)
         log.info("comandos del bot registrados en: %s", register_commands(notify))
         UpdatePoller(notify, decisions, TG_OFFSET).start()
@@ -239,15 +243,14 @@ def main(argv: list[str] | None = None) -> int:
         owner_dm = env.get("OWNER_TELEGRAM_ID") or OWNER_TELEGRAM_ID
         boards = sorted({l.board for l in all_lanes.values() if l.board})
         slugs = sorted({l.github for l in all_lanes.values() if l.github})
+        canal = decisions.canal
         recon = Reconciler(hermes_for, boards, lambda: gh_prs(slugs),
-                           lambda text, markup=None: notify.send_to(owner_dm, None, text, html=False,
-                                                                    reply_markup=markup),
+                           canal_avisos.emisor(canal, notify, "reconcile", owner_dm),
                            issue=decisions.store.issue, state_path=ROOT / ".state" / "reconcile.json")
         decisions.reconciler = recon
         reconcile = ReconcileTicker(recon, minutes=float(env.get("RECONCILE_MINUTES") or 10))
         limpieza_runner = LimpiezaRunner(hermes_for, boards, lambda: gh_prs(slugs),  # propone cierres; nunca cierra sola
-                                         lambda text, markup=None: notify.send_to(owner_dm, None, text, html=False,
-                                                                                  reply_markup=markup),
+                                         canal_avisos.emisor(canal, notify, "limpieza", owner_dm),
                                          issue=decisions.store.issue, state_path=ROOT / ".state" / "limpieza.json")
         recon.peer, limpieza_runner.peer = limpieza_runner.silenciada, recon.silenciada  # «Mantener» en uno silencia el otro
         decisions.limpieza = limpieza_runner
@@ -268,14 +271,14 @@ def main(argv: list[str] | None = None) -> int:
         avisos_ticker = AvisosRevisionTicker(avisos_rev)
     if not args.once:  # guarda de tablero (ADR-036): tarjetas en un tablero que su carril no lee
         owner_dm = env.get("OWNER_TELEGRAM_ID") or OWNER_TELEGRAM_ID
+        canal = canal_avisos.de(decisions)  # tipo de cada aviso -> tema 🎯 Decisiones o DM (canal_avisos.CLASES)
         guard = BoardGuardTicker(all_lanes, hermes_for, apply=env.get("BOARD_GUARD_APPLY", "").lower() == "true",
-                                 send=lambda text: notify.send_to(owner_dm, None, text, html=False),
+                                 send=canal_avisos.emisor(canal, notify, "board_guard", owner_dm),
                                  state_path=ROOT / ".state" / "board_guard.json",
                                  minutes=float(env.get("BOARD_GUARD_MINUTES") or 10))
         # Solape de alcance entre tarjetas activas del mismo repo: avisa a Oscar, no fusiona nada (solapes.yaml).
         solapes = SolapeTicker(all_lanes, hermes_for,
-                               send=lambda text, markup=None: notify.send_to(owner_dm, None, text, html=False,
-                                                                             reply_markup=markup),
+                               send=canal_avisos.emisor(canal, notify, "solape", owner_dm),
                                state_path=ROOT / ".state" / "solapes.json",
                                issue=decisions.store.issue if decisions else None)
         if decisions:
@@ -283,8 +286,7 @@ def main(argv: list[str] | None = None) -> int:
             decisions.fusion = Fusion(all_lanes, hermes_for)  # fusionar / encadenar / duplicada / pausar (fusion.py)
         # Choques reales en git (ramas lane/*, PR, ramas de personas): solo avisa a Oscar con propuesta (choques.yaml).
         choques = ChoquesTicker(all_lanes, hermes_for,
-                                send=lambda text, markup=None: notify.send_to(owner_dm, None, text, html=False,
-                                                                              reply_markup=markup),
+                                send=canal_avisos.emisor(canal, notify, "choque", owner_dm),
                                 state_path=ROOT / ".state" / "choques.json",
                                 issue=decisions.store.issue if decisions else None)
         if decisions:

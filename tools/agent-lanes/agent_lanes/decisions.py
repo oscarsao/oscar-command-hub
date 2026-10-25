@@ -509,6 +509,7 @@ class DecisionDesk:
         self.commands = None      # CommandCenter: /hoy, /decisiones, /aprobar, /tareas, /tarea
         self.team_notice: dict | None = None  # telegram.team_notice de lanes.yaml (enabled, chats, text); None = apagado
         self.collab = None        # CollabIntake: DM de colaboradores (people.yaml) -> tarjeta [IDEA]; None = como antes
+        self.canal = None         # canal_avisos.CanalAvisos: tema 🎯 Decisiones (DECISIÓN/INFO/URGENTE); None = como antes
         self.people: People | None = None  # people.yaml; None = se lee la primera vez que hace falta (el runner lo fija)
         self._tl = threading.local()       # quién actúa en este hilo (nombre de un operador que no es Oscar)
         self._help_at: dict[str, float] = {}  # chat -> instante de la última ayuda (enfriamiento)
