@@ -341,6 +341,8 @@ def main(argv: list[str] | None = None) -> int:
             paradas.tick()
         if avisos_ticker:
             avisos_ticker.tick()
+        if decisions and decisions.canal:  # tema 🎯 Decisiones: cierra lo ya resuelto y edita el contador fijado
+            decisions.canal.refrescar()  # nunca lanza; sin destinos.decisiones no hace nada
         try:  # tarjetas de Telegram que ya estaban en hub/oscarhq (ready) -> claude-telegram; las running no se tocan
             if moved := telegram_lane.reasignar_abiertas(hermes_for, all_lanes):
                 log.info("claude-telegram: tarjetas reasignadas: %s", moved)

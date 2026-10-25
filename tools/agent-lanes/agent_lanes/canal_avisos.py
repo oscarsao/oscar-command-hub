@@ -18,13 +18,16 @@ que devuelve los botones quedan cubiertos solos), así que un reinicio del runne
 from __future__ import annotations
 
 import html
+import json
 import logging
+import os
 import re
+import threading
 import time
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable
 
-from .integration import topic_link
+from .integration import PinnedSummary, age_label, topic_link
 from .notices import markup_token, truncate
 from .telegram import resolve_target
 
@@ -114,6 +117,10 @@ class CanalAvisos:
         self.vivo = vivo
         self.messages = messages
         self.clock = clock
+        self.path = Path(state_dir) / "decisiones_tema.json"
+        self.fijado = (PinnedSummary(notifier, self.destino, Path(state_dir) / "decisiones_fijado.json")
+                       if self.destino else None)
+        self._lock = threading.RLock()
 
     # --- clasificación ---------------------------------------------------------------------------------------------
 
@@ -136,7 +143,10 @@ class CanalAvisos:
             return self.notifier.send_to(chat, thread, text, html=html_text, **extra)
         sent = self.notifier.send_to(self.destino[0], self.destino[1], text, html=html_text, **extra)
         if sent and sent.get("message_id"):
+            self._registrar({"tipo": tipo, "rol": "solo", "token": markup_token(markup),
+                             "head": cabecera(text, html_text), **_donde(sent)})
             self._linea_dm(cabecera(text, html_text), sent)
+            self.refrescar()
         return sent
 
     # --- avisos por tarea (TaskNotices) ------------------------------------------------------------------------------
@@ -158,9 +168,181 @@ class CanalAvisos:
         if not out:
             return  # aviso idéntico ya enviado (o Telegram apagado): nada nuevo que registrar
         main, copia = out.get("main"), out.get("decision")
-        donde = copia if copia and copia.get("message_id") else (main if main and _en(main, self.destino) else None)
-        if donde and not (main and self.es_dm((main.get("chat_id"), main.get("thread_id")))):
-            self._linea_dm(cabecera(text), donde)
+        if copia and copia.get("message_id"):
+            rol, donde = "mirror", copia   # copia del tema (espejo `decision` de la tarea)
+        elif main and main.get("message_id") and _en(main, self.destino):
+            rol, donde = "main", main      # el principal cayó en el tema (iba al DM)
+        else:
+            return
+        head = cabecera(text)
+        self._registrar({"tipo": tipo, "rol": rol, "tid": tid, "token": markup_token(reply_markup), "head": head,
+                         **_donde(donde)})
+        if not self.es_dm((main.get("chat_id"), main.get("thread_id"))):
+            self._linea_dm(head, donde)
+        self.refrescar()
+
+    # --- al decidir ----------------------------------------------------------------------------------------------
+
+    def resuelta(self, token: str, button: dict | None, persona: str) -> bool:
+        """Botón pulsado (por quien sea) y aplicado: el mensaje del tema pasa a «✅ <acción> por <persona>» sin botones
+        y deja de seguir a la tarea. Varias preguntas en secuencia: si el mensaje ya lleva el teclado de la siguiente
+        (MessageStore.set_token), sigue abierto. True si el teclado era de una decisión del tema."""
+        if not self.destino or not token:
+            return False
+        accion = accion_de(button)
+        with self._lock:
+            data = self._load()
+            hit = False
+            for key, e in list(data["abiertas"].items()):
+                actual = self._token_actual(e)
+                if token not in self._tokens(e, actual):
+                    continue
+                hit = True
+                # Sigue habiendo un teclado vivo en el mensaje: pregunta siguiente (set_token), ✖ No o confirmación
+                # caducada del doble toque (vuelve el teclado original). No se cierra.
+                if any(t != token and self.vivo(t) for t in self._tokens(e, actual)):
+                    if actual and self.vivo(actual):
+                        e["token"] = actual
+                    e.pop("gone_at", None)
+                    continue
+                hora = time.strftime("%H:%M", time.localtime(self.clock()))
+                self._cerrar(data, key, f"✅ {accion} por {persona} · {hora}\n{e.get('head') or ''}".strip())
+            if hit:
+                self._save(data)
+        if hit:
+            self.refrescar()
+        return hit
+
+    # --- contador fijado -------------------------------------------------------------------------------------------
+
+    def pendientes(self) -> list[dict]:
+        with self._lock:
+            return list(self._load()["abiertas"].values())
+
+    def refrescar(self) -> None:
+        """Cierra lo que ya no está pendiente y edita el mensaje fijado con el contador (solo si cambia). Un teclado
+        gastado cuenta como cerrado tras GRACIA: mientras se aplica la acción (o si falla y vuelven los botones) sigue
+        abierto. Nunca lanza."""
+        if not self.destino:
+            return
+        try:
+            with self._lock:
+                data = self._load()
+                now, cambio = self.clock(), False
+                for key, e in list(data["abiertas"].items()):
+                    if not self._sigue_en_la_tarea(e):
+                        self._cerrar(data, key, f"↪️ Ya no está pendiente (hay un aviso más reciente)\n"
+                                                f"{e.get('head') or ''}".strip())
+                        cambio = True
+                        continue
+                    actual = self._token_actual(e)
+                    if any(self.vivo(t) for t in self._tokens(e, actual, registro=False)):
+                        if e.pop("gone_at", None) is not None or (actual and actual != e.get("token")):
+                            e["token"] = actual or e.get("token")
+                            cambio = True
+                        continue
+                    if not e.get("gone_at"):
+                        e["gone_at"] = now
+                        cambio = True
+                    elif now - float(e["gone_at"]) >= GRACIA:
+                        self._cerrar(data, key, f"✅ Ya no está pendiente\n{e.get('head') or ''}".strip())
+                        cambio = True
+                if cambio:
+                    self._save(data)
+                texto = contador_texto(list(data["abiertas"].values()), now)
+            self.fijado.update(texto)
+        except Exception as exc:  # el contador es una ayuda: nunca tumba un aviso ni la pasada
+            log.warning("tema Decisiones: no se pudo refrescar el contador: %s", exc)
+
+    def confirmacion(self, original: str, nuevo: str) -> None:
+        """1.er toque del doble toque (consola.pedir): el mensaje lleva ahora [✅ Sí] [✖ No] con otro teclado. La
+        decisión sigue abierta mientras ese teclado viva y el ✅ Sí la cierra con la acción real."""
+        if not self.destino or not original or not nuevo:
+            return
+        with self._lock:
+            data = self._load()
+            hit = False
+            for e in data["abiertas"].values():
+                if original in self._tokens(e, self._token_actual(e)):
+                    e["extra"] = [*(e.get("extra") or [])[-4:], nuevo]
+                    e.pop("gone_at", None)
+                    hit = True
+            if hit:
+                self._save(data)
+
+    # --- registro --------------------------------------------------------------------------------------------------
+
+    @staticmethod
+    def _tokens(e: dict, actual: str | None, registro: bool = True) -> list[str]:
+        """Teclados del mensaje: el vigente, el registrado al enviar (`registro`) y los de confirmación del doble
+        toque. En los avisos por tarea el registrado puede ser ya de una pregunta anterior: para saber si sigue
+        abierto cuenta el vigente (`registro=False`)."""
+        base = [actual] if e.get("rol") in ("mirror", "main") else [e.get("token")]
+        if registro:
+            base.append(e.get("token"))
+        return [t for t in (*base, *(e.get("extra") or ())) if t]
+
+    def _token_actual(self, e: dict) -> str | None:
+        """Teclado vigente del mensaje del tema: el de su copia en MessageStore (set_token lo mantiene al día en las
+        preguntas en secuencia) o, en los avisos sueltos, el del registro."""
+        if e.get("rol") in ("mirror", "main") and self.messages and e.get("tid"):
+            for m in self.messages.all_messages(e["tid"]):
+                if _misma(m, e):
+                    return m.get("token") or e.get("token")
+            return None
+        return e.get("token")
+
+    def _sigue_en_la_tarea(self, e: dict) -> bool:
+        """Una copia que un aviso nuevo de la misma tarea ya retiró (TaskNotices le quita los botones) no cuenta."""
+        if e.get("rol") not in ("mirror", "main") or not self.messages or not e.get("tid"):
+            return True
+        return any(_misma(m, e) for m in self.messages.all_messages(e["tid"]))
+
+    def _registrar(self, entry: dict) -> None:
+        with self._lock:
+            data = self._load()
+            if entry.get("tid"):  # una decisión nueva de la misma tarea sustituye a la anterior
+                for key, e in list(data["abiertas"].items()):
+                    if e.get("tid") == entry["tid"] and not _misma(e, entry):
+                        self._cerrar(data, key, f"↪️ Sustituida por un aviso más reciente\n{e.get('head') or ''}"
+                                     .strip())
+            entry["at"] = self.clock()
+            data["abiertas"][f"{entry['chat_id']}:{entry['message_id']}"] = entry
+            self._save(data)
+
+    def _cerrar(self, data: dict, key: str, texto: str) -> None:
+        """Edita el mensaje del tema (texto plano, sin botones) y lo suelta de la tarea: los avisos posteriores de la
+        tarea (▶️, terminada) ya no lo pisan."""
+        e = data["abiertas"].pop(key, None)
+        if not e:
+            return
+        try:
+            self.notifier.edit(e["chat_id"], e["message_id"], texto, html=False)
+        except Exception as exc:
+            log.info("tema Decisiones: no se pudo editar %s: %s", e.get("message_id"), exc)
+        if self.messages and e.get("tid"):
+            try:
+                if e.get("rol") == "mirror":
+                    self.messages.drop_mirror(e["tid"], e["chat_id"], e["message_id"])
+                elif e.get("rol") == "main" and _misma(self.messages.get(e["tid"]) or {}, e):
+                    self.messages.drop(e["tid"])  # el siguiente aviso de la tarea sale como mensaje nuevo
+            except Exception as exc:
+                log.info("tema Decisiones: no se pudo soltar la copia de %s: %s", e.get("tid"), exc)
+
+    def _load(self) -> dict:
+        try:
+            data = json.loads(self.path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            data = {}
+        if not isinstance(data.get("abiertas"), dict):
+            data["abiertas"] = {}
+        return data
+
+    def _save(self, data: dict) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self.path.with_suffix(f".{os.getpid()}.{threading.get_ident()}.tmp")
+        tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        os.replace(tmp, self.path)
 
     def _resuelto(self, target, lane_target) -> tuple | None:
         """Chat donde caería el aviso principal (la misma regla que TelegramNotifier.send)."""
@@ -179,6 +361,27 @@ class CanalAvisos:
             self.notifier.send_to(self.owner_dm, None, text, html=False, silent=False)
         except Exception as exc:  # DM sin /start: la decisión ya está en el tema
             log.info("tema Decisiones: no se pudo avisar al DM: %s", exc)
+
+
+def contador_texto(abiertas: list[dict], now: float) -> str:
+    """Texto (HTML) del mensaje fijado: «🎯 N decisiones pendientes», desglose por tipo y la más antigua."""
+    n = len(abiertas)
+    if not n:
+        return "🎯 <b>Sin decisiones pendientes</b>"
+    lines = [f"🎯 <b>{n} decisi{'ón' if n == 1 else 'ones'} pendiente{'' if n == 1 else 's'}</b>"]
+    por_tipo: dict[str, int] = {}
+    for e in abiertas:
+        por_tipo[e.get("tipo") or "?"] = por_tipo.get(e.get("tipo") or "?", 0) + 1
+    for tipo, k in sorted(por_tipo.items(), key=lambda x: (-x[1], x[0])):
+        one, many = ETIQUETAS.get(tipo, ("decisión", "decisiones"))
+        lines.append(f"• {k} {html.escape(one if k == 1 else many)}")
+    oldest = min(float(e.get("at") or now) for e in abiertas)
+    lines.append(f"La más antigua lleva {html.escape(age_label(oldest, now))}.")
+    return "\n".join(lines)
+
+
+def _misma(a: dict, b: dict) -> bool:
+    return (str(a.get("chat_id")), str(a.get("message_id"))) == (str(b.get("chat_id")), str(b.get("message_id")))
 
 
 def _donde(sent: dict) -> dict:

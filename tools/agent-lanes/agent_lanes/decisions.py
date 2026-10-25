@@ -1008,6 +1008,15 @@ class DecisionDesk:
                 log.info("%s: decisión aplicada en el reintento %d", rec.get("task_id"), attempts)
             for tok in before - {token}:
                 self.store.consume(tok)
+            if self.canal:  # tema 🎯 Decisiones: «✅ <acción> por <persona>», sin botones, y el contador baja
+                try:
+                    pulsado = (replay or {}).get("button")
+                    if (pulsado or {}).get("action") == consola.CS_SI:  # «✅ Integrar por María», no «✅ Sí por…»
+                        op = consola.OPS.get(consola.accion_real(rec, pulsado))
+                        pulsado = {"text": op.boton} if op else pulsado
+                    self.canal.resuelta(token, pulsado, self._who())
+                except Exception as exc:
+                    log.warning("%s: no se pudo cerrar la decisión en el tema: %s", rec.get("task_id"), exc)
         back = (rec.get("consola") or {}).get("volver") if not ok else None
         if back:  # ✅ de la consola que falló: vuelve el teclado del aviso (1.er toque), no la confirmación
             consola._devolver(self, back, rec, where)

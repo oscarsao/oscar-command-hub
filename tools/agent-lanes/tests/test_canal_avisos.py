@@ -13,7 +13,15 @@ from agent_lanes.decisions import CallbackStore, DecisionDesk
 from agent_lanes.notices import MessageStore, TaskNotices
 from agent_lanes.runner import LaneRunner
 from agent_lanes.telegram import TelegramNotifier
-from tests.test_runner_state import GOOD, LANE, FakeGit, FakeHermes, FakeVerifier, FakeWorker, ok_outcome
+from tests.test_runner_state import (
+    GOOD,
+    LANE,
+    FakeGit,
+    FakeHermes,
+    FakeVerifier,
+    FakeWorker,
+    ok_outcome,
+)
 
 OWNER = "6744452215"
 GESTION = "-1003530490339"
@@ -39,8 +47,9 @@ class TG(TelegramNotifier):
             return {"message_id": self._mid}
         return True
 
-    def sends(self, chat=None, thread=None):
-        out = [p for m, p in self.calls if m == "sendMessage"]
+    def sends(self, chat=None, thread=None, fijado=False):
+        """Mensajes enviados; sin `fijado`, sin el contador fijado del tema (se prueba aparte)."""
+        out = [p for m, p in self.calls if m == "sendMessage" and (fijado or not p["text"].startswith("🎯 <b>"))]
         if chat is not None:
             out = [p for p in out if str(p["chat_id"]) == str(chat)]
         if thread is not None:
@@ -220,3 +229,219 @@ def test_runner_needs_input_sin_tema_igual_que_antes(tmp_path):
     assert not tg.sends(GESTION, "777")
     dm = [p for p in tg.sends(OWNER) if p.get("reply_markup")]
     assert len(dm) == 1 and "¿A o B?" in dm[0]["text"]  # la copia espejo completa de siempre
+
+
+# --- paso 3: al decidir, ✅ por <persona> y contador fijado ---------------------------------------------------------
+
+MARIA, INTRUSO = "5516823836", "8847860660"
+PEOPLE = """people:
+  maria:
+    name: María
+    user_id: "5516823836"
+    role: coo
+    brands: ["*"]
+    operador: true
+  ingerber:
+    name: Ingerber
+    user_id: "8847860660"
+    role: cmo
+"""
+
+
+def _desk_people(tmp_path, tg, store, h):
+    from agent_lanes.people import load_people
+    desk = _desk(tmp_path, tg, store)
+    desk.hermes_for = lambda b: h
+    p = tmp_path / "people.yaml"
+    p.write_text(PEOPLE, encoding="utf-8")
+    desk.people = load_people(OWNER, p)
+    return desk
+
+
+def _pulsar(desk, markup, n, *, user, mid, thread="777", cid="cq"):
+    data = [b["callback_data"] for row in markup["inline_keyboard"] for b in row][n]
+    desk.handle_update({"update_id": 1, "callback_query": {
+        "id": cid, "from": {"id": int(user)}, "data": data,
+        "message": {"message_id": mid, "chat": {"id": int(GESTION)}, "message_thread_id": int(thread)}}})
+
+
+def _pregunta(desk, tg, store, questions):
+    markup = desk.markup("needs_input", task={"id": "t_1", "title": "T"}, lane=LANE, questions=questions)
+    canal_avisos.publicar(desk.canal, TaskNotices(tg, store), "needs_input", "t_1", "❓ t_1 · ¿Qué BD?", None,
+                          TEMA_CARRIL, alert=True, reply_markup=markup, mirror=OWNER)
+    (tema,) = [p for p in tg.sends(GESTION, "777") if p.get("reply_markup")]
+    return markup, tema_mid(tg, tema)
+
+
+def fijado(tg):
+    """Texto vigente del mensaje fijado del tema (creado una vez y luego editado)."""
+    (sent,) = [p for p in tg.sends(GESTION, "777", fijado=True) if p["text"].startswith("🎯 <b>")]
+    mid = tema_mid(tg, sent)
+    edits = tg.edits(mid)
+    return edits[-1]["text"] if edits else sent["text"]
+
+
+def test_maria_decide_desde_el_tema_y_el_mensaje_queda_con_su_nombre(tmp_path):
+    from tests.test_decisions import DeskHermes
+    tg, store, h = TG(), MessageStore(), DeskHermes()
+    desk = _desk_people(tmp_path, tg, store, h)
+    markup, mid = _pregunta(desk, tg, store, [{"question": "¿Qué BD?", "options": ["Supabase", "SQLite"]}])
+    assert fijado(tg).startswith("🎯 <b>1 decisión pendiente</b>")
+    _pulsar(desk, markup, 1, user=MARIA, mid=mid)
+    assert ("unblock", "t_1") in h.calls
+    assert any("DECIDIDO-POR: María" in c[2] for c in h.calls if c[0] == "comment")  # su nombre en la tarjeta
+    final = tg.edits(mid)[-1]
+    assert final["text"].startswith("✅ B por María · ") and "reply_markup" not in final
+    assert fijado(tg) == "🎯 <b>Sin decisiones pendientes</b>" and desk.canal.pendientes() == []
+    # un aviso de progreso posterior de la tarea ya no pisa el «✅ … por María»
+    n = len(tg.edits(mid))
+    TaskNotices(tg, store).publish("t_1", "▶️ t_1 · en marcha", None, TEMA_CARRIL)
+    assert len(tg.edits(mid)) == n
+
+
+def test_quien_no_es_operador_no_decide_y_sigue_pendiente(tmp_path):
+    from tests.test_decisions import DeskHermes
+    tg, store, h = TG(), MessageStore(), DeskHermes()
+    desk = _desk_people(tmp_path, tg, store, h)
+    markup, mid = _pregunta(desk, tg, store, [{"question": "¿Qué BD?", "options": ["Supabase", "SQLite"]}])
+    _pulsar(desk, markup, 0, user=INTRUSO, mid=mid)
+    assert h.calls == [] and not tg.edits(mid)
+    assert len(desk.canal.pendientes()) == 1
+
+
+def test_pulsar_en_el_tema_del_carril_tambien_cierra_la_copia_del_tema(tmp_path):
+    from tests.test_decisions import DeskHermes
+    tg, store, h = TG(), MessageStore(), DeskHermes()
+    desk = _desk_people(tmp_path, tg, store, h)
+    markup, mid = _pregunta(desk, tg, store, [{"question": "¿Qué BD?", "options": ["Supabase", "SQLite"]}])
+    carril_mid = store.get("t_1")["message_id"]
+    _pulsar(desk, markup, 0, user=OWNER, mid=carril_mid, thread="231")
+    assert tg.edits(mid)[-1]["text"].startswith("✅ A por Oscar · ")
+    assert desk.canal.pendientes() == []
+
+
+def test_varias_preguntas_sigue_abierta_hasta_la_ultima(tmp_path):
+    from tests.test_decisions import DeskHermes
+    tg, store, h = TG(), MessageStore(), DeskHermes()
+    desk = _desk_people(tmp_path, tg, store, h)
+    markup, mid = _pregunta(desk, tg, store, [{"question": "¿Qué BD?", "options": ["Supabase", "SQLite"]},
+                                              {"question": "¿Cola?", "options": ["Redis", "Ninguna"]}])
+    _pulsar(desk, markup, 0, user=OWNER, mid=mid)
+    step = tg.edits(mid)[-1]
+    assert "Pregunta 2/2" in step["text"] and step.get("reply_markup")  # la misma tarjeta, con la 2ª
+    assert len(desk.canal.pendientes()) == 1 and fijado(tg).startswith("🎯 <b>1 decisión pendiente</b>")
+    _pulsar(desk, step["reply_markup"], 1, user=MARIA, mid=mid, cid="cq2")
+    assert tg.edits(mid)[-1]["text"].startswith("✅ B por María · ")
+    assert desk.canal.pendientes() == [] and ("unblock", "t_1") in h.calls
+
+
+def _kb(token):
+    return {"inline_keyboard": [[{"text": "🙈 Ignorar este par", "callback_data": f"{token}:0"}]]}
+
+
+def test_contador_sube_baja_y_se_edita_el_mismo_fijado(tmp_path):
+    tg, vivos = TG(), {"tokA00001", "tokB00001"}
+    c = canal(tmp_path, tg, vivos=vivos)
+    c.enviar("choque", "⛔ Choque t_a / t_b", _kb("tokA00001"))
+    c.enviar("solape", "🔀 Solape t_c / t_d", _kb("tokB00001"))
+    texto = fijado(tg)
+    assert texto.startswith("🎯 <b>2 decisiones pendientes</b>")
+    assert "• 1 choque entre tarjetas" in texto and "• 1 solape de tarjetas" in texto
+    assert c.resuelta("tokA00001", {"text": "🙈 Ignorar este par"}, "Oscar")
+    assert fijado(tg).startswith("🎯 <b>1 decisión pendiente</b>")
+    choque_mid = tema_mid(tg, tg.sends(GESTION, "777")[0])
+    assert tg.edits(choque_mid)[-1]["text"].startswith("✅ Ignorar este par por Oscar · ")
+    assert len([p for m, p in tg.calls if m == "pinChatMessage"]) == 1  # un solo fijado, editado
+    assert len([p for p in tg.sends(GESTION, "777", fijado=True) if p["text"].startswith("🎯 <b>")]) == 1
+    assert not c.resuelta("tokZ00009", {"text": "x"}, "Oscar")  # teclado ajeno al tema: no toca nada
+
+
+def test_reinicio_rehace_el_mismo_contador_y_lo_resuelto_fuera_se_cierra_tras_la_gracia(tmp_path):
+    tg, vivos, now = TG(), {"tokA00001", "tokB00001"}, [1_000_000.0]
+    c = CanalAvisos(tg, OWNER, TEMA, tmp_path, vivo=lambda t: t in vivos, clock=lambda: now[0])
+    c.enviar("choque", "⛔ Choque t_a / t_b", _kb("tokA00001"))
+    c.enviar("choque", "⛔ Choque t_e / t_f", _kb("tokB00001"))
+    c2 = CanalAvisos(tg, OWNER, TEMA, tmp_path, vivo=lambda t: t in vivos, clock=lambda: now[0])  # runner nuevo
+    assert len(c2.pendientes()) == 2
+    vivos.discard("tokA00001")  # gastado por otra vía (Hermes, texto libre) o mientras se aplica la acción
+    c2.refrescar()
+    assert len(c2.pendientes()) == 2  # dentro de la gracia: sigue abierta (si la acción falla vuelven los botones)
+    now[0] += canal_avisos.GRACIA + 1
+    c2.refrescar()
+    assert len(c2.pendientes()) == 1 and fijado(tg).startswith("🎯 <b>1 decisión pendiente</b>")
+    mid = tema_mid(tg, tg.sends(GESTION, "777")[0])
+    assert tg.edits(mid)[-1]["text"].startswith("✅ Ya no está pendiente")
+
+
+def test_aviso_nuevo_de_la_misma_tarea_sustituye_a_la_decision_anterior(tmp_path):
+    tg, store = TG(), MessageStore()
+    c = canal(tmp_path, tg, messages=store, vivos={"tok123456", "tok999999"})
+    notices = TaskNotices(tg, store)
+    canal_avisos.publicar(c, notices, "needs_input", "t_1", "❓ t_1 · 1ª", None, TEMA_CARRIL, alert=True,
+                          reply_markup=KB, mirror=OWNER)
+    kb2 = {"inline_keyboard": [[{"text": "🔁 Reintentar", "callback_data": "tok999999:0"}]]}
+    canal_avisos.publicar(c, notices, "blocked", "t_1", "⛔ t_1 · bloqueada", None, TEMA_CARRIL, alert=True,
+                          reply_markup=kb2, mirror=OWNER)
+    (pend,) = c.pendientes()
+    assert pend["tipo"] == "blocked" and pend["token"] == "tok999999"
+    primero = tema_mid(tg, [p for p in tg.sends(GESTION, "777") if p["text"].startswith("❓")][0])
+    assert tg.edits(primero)[-1]["text"].startswith("↪️ Sustituida")
+
+
+def test_sin_tema_no_hay_contador_ni_registro(tmp_path):
+    tg = TG()
+    c = canal(tmp_path, tg, destino=None, vivos={"tokA00001"})
+    c.enviar("choque", "⛔ Choque", _kb("tokA00001"))
+    c.refrescar()
+    assert not c.resuelta("tokA00001", {"text": "x"}, "Oscar")
+    assert not (tmp_path / "decisiones_tema.json").exists() and not (tmp_path / "decisiones_fijado.json").exists()
+    assert [p["chat_id"] for p in tg.sends(fijado=True)] == [OWNER]
+
+
+def _integrador_con_tema(tmp_path):
+    """Integrador de test_consola (ficha «Listo para integrar» con [🔀 Integrar], dos toques) + tema Decisiones."""
+    from tests.test_consola import setup as consola_setup
+    integ, w, h, tg, d = consola_setup(tmp_path)
+    mids, edits = iter(range(5000, 6000)), []
+
+    def send_to(chat, thread, text, **k):
+        return {"chat_id": str(chat), "thread_id": str(thread or 0), "message_id": next(mids)}
+
+    def edit(chat_id, message_id, text, reply_markup=None, **kw):
+        edits.append({"mid": message_id, "text": text, "markup": reply_markup})
+        return True
+
+    tg.send_to, tg.edit = send_to, edit
+    now = [1_000_000.0]
+    d.canal = canal_avisos.para_desk(d, TEMA)
+    d.canal.clock = lambda: now[0]
+    integ.run_pass()
+    return integ, w, tg, d, now, edits
+
+
+def test_doble_toque_sigue_abierto_mientras_espera_el_si_y_cierra_con_la_accion_real(tmp_path):
+    from tests.test_consola import first, merges
+    from tests.test_integrator import buttons, tap
+    _integ, w, tg, d, now, edits = _integrador_con_tema(tmp_path)
+    (pend,) = d.canal.pendientes()
+    assert pend["tipo"] == "integrar" and pend["chat_id"] == GESTION and pend["thread_id"] == "777"
+    tap(d, first(tg.sent[-1]["markup"]))  # 1.er toque: [✅ Sí, integrar] [✖ No]
+    assert buttons(tg.markups[-1])[0].startswith("✅ Sí, integrar")
+    now[0] += canal_avisos.GRACIA + 60  # tarda en confirmar: el teclado [✅ Sí] sigue vivo
+    d.canal.refrescar()
+    assert len(d.canal.pendientes()) == 1 and not [e for e in edits if e["mid"] == pend["message_id"]]
+    tap(d, first(tg.markups[-1]))  # ✅ Sí
+    assert len(merges(w)) == 1 and d.canal.pendientes() == []
+    final = [e for e in edits if e["mid"] == pend["message_id"]][-1]
+    assert final["text"].startswith("✅ Integrar por Oscar · ") and final["markup"] is None
+
+
+def test_doble_toque_con_no_vuelve_el_teclado_y_sigue_pendiente(tmp_path):
+    from tests.test_consola import first, merges
+    from tests.test_integrator import tap
+    _integ, w, tg, d, _now, edits = _integrador_con_tema(tmp_path)
+    (pend,) = d.canal.pendientes()
+    tap(d, first(tg.sent[-1]["markup"]))
+    tap(d, first(tg.markups[-1], 1))  # ✖ No
+    assert not merges(w) and len(d.canal.pendientes()) == 1
+    assert not [e for e in edits if e["mid"] == pend["message_id"] and e["text"].startswith("✅")]
