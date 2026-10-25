@@ -32,7 +32,8 @@ from agent_lanes.deps import ShowCache, TreeReader
 from agent_lanes.hermes_answers import HermesAnswers
 from agent_lanes.reminders import Reminders
 from agent_lanes.limpieza import LimpiezaRunner, LimpiezaTicker
-from agent_lanes import avisos_revision
+from agent_lanes import avisos_revision, workflows
+from agent_lanes.avance_workflows import AvanceTicker, AvanceWorkflows
 from agent_lanes.avisos_revision import AvisosRevision, AvisosRevisionTicker
 from agent_lanes.paradas import ParadasRunner, ParadasTicker
 from agent_lanes.reconcile import ReconcileTicker, Reconciler, gh_prs
@@ -233,6 +234,7 @@ def main(argv: list[str] | None = None) -> int:
     limpieza = None
     paradas = None
     avisos_ticker = None
+    wf_ticker = None
     solapes = None
     choques = None
     if decisions and not args.once:  # PR resueltos -> tarjetas cerradas; propuesta diaria de obsoletas (con botón)
@@ -266,6 +268,13 @@ def main(argv: list[str] | None = None) -> int:
                                     chat=str(p_chat), issue=decisions.store.issue)
         avisos_revision.instalar(avisos_rev)
         avisos_ticker = AvisosRevisionTicker(avisos_rev)
+        # Workflows de Telegram: al terminar una tarjeta se crean los pasos que desbloquea y se avisa a quien lo pidió.
+        wf_store = decisions.commands.workflow_store if decisions.commands else workflows.Store()
+        wf_ticker = AvanceTicker(AvanceWorkflows(
+            wf_store, all_lanes, hermes_for,
+            lambda chat, thread, text, markup=None: notify.send_to(chat, thread, text, html=False, reply_markup=markup),
+            notices.truncate, issue=decisions.store.issue, fallback=(owner_dm, None)),
+            minutes=float(env.get("RECONCILE_MINUTES") or 10))
     if not args.once:  # guarda de tablero (ADR-036): tarjetas en un tablero que su carril no lee
         owner_dm = env.get("OWNER_TELEGRAM_ID") or OWNER_TELEGRAM_ID
         guard = BoardGuardTicker(all_lanes, hermes_for, apply=env.get("BOARD_GUARD_APPLY", "").lower() == "true",
@@ -339,6 +348,9 @@ def main(argv: list[str] | None = None) -> int:
             paradas.tick()
         if avisos_ticker:
             avisos_ticker.tick()
+        if wf_ticker:
+            if creadas := wf_ticker.tick():
+                log.info("workflows: tarjetas nuevas: %s", creadas)
         try:  # tarjetas de Telegram que ya estaban en hub/oscarhq (ready) -> claude-telegram; las running no se tocan
             if moved := telegram_lane.reasignar_abiertas(hermes_for, all_lanes):
                 log.info("claude-telegram: tarjetas reasignadas: %s", moved)

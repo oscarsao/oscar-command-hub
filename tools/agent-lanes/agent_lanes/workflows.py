@@ -22,7 +22,7 @@ log = logging.getLogger("agent_lanes")
 STATE_PATH = ROOT / ".state" / "workflows.json"
 SETTINGS_PATH = ROOT / "workflows.yaml"
 TIPO = "workflow"
-ESTADOS = ("plan", "aprobado", "en curso", "pausado", "entregado", "parado")
+ESTADOS = ("plan", "aprobado", "en curso", "pausado", "entregado", "parado", "bloqueado")
 ACTIVOS = ("aprobado", "en curso")
 
 
@@ -36,6 +36,7 @@ class Ajustes:
     max_workstreams_codigo: int = 3
     escalar_horas: int = 2
     recordar_horas: int = 24
+    eur_por_usd: float = 0.92  # el coste de cada tarjeta se mide en USD (cost_usd del worker)
 
 
 def _valido(key: str, v: object) -> bool:
@@ -56,7 +57,7 @@ def load_ajustes(path: Path | str | None = None) -> Ajustes:
     vals = {f.name: raw[f.name] if f.name in raw and _valido(f.name, raw[f.name]) else getattr(base, f.name)
             for f in fields(Ajustes)}
     for k in vals:  # los contadores son enteros
-        if k not in ("tope_eur", "paso_ampliar_eur"):
+        if k not in ("tope_eur", "paso_ampliar_eur", "eur_por_usd"):
             vals[k] = int(vals[k])
     return Ajustes(**vals)
 
@@ -183,6 +184,17 @@ def card_done(store: Store, wid: str, card_id: str) -> dict:
             c["estado"] = "hecha"
     store.put(wf)
     return wf
+
+
+def card_blocked(store: Store, wid: str, card_id: str) -> dict:
+    """Una tarjeta del workflow se archivó: el workflow queda «bloqueado» y no crea más pasos."""
+    wf = _need(store, wid)
+    for c in wf["tarjetas"]:
+        if c["id"] == card_id:
+            c["estado"] = "bloqueada"
+    if wf["estado"] in ACTIVOS or wf["estado"] == "pausado":
+        wf["estado"] = "bloqueado"
+    return store.put(wf)
 
 
 def progreso(wf: dict) -> str:

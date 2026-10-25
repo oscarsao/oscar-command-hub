@@ -72,6 +72,7 @@ from . import lo_tuyo as _lo_tuyo
 from . import personal as _personal
 from . import tareas_movil as _tm
 from . import tipo_peticion, titulos, triaje, workflows
+from .avance_workflows import make_create_card
 from .aviso import UrgentBlockWatcher, mention
 from .card_options import PREPARED_AUTHOR, PREPARED_PREFIX, CardSpec, card_message, parse_card
 from .decisions import (APPROVE, CHANGES, DEPLOY_ASK, DEPLOY_NO, FALTA, FLUJO, HAZLO, OWNER_TELEGRAM_ID, PARK, TRIAJE,
@@ -1897,7 +1898,7 @@ class CommandCenter:
     def workflow_choice(self, rec: dict, button: dict, where: dict) -> bool:
         """Botón del plan. Solo [Aprobar] crea tarjetas (la primera tanda: las que no dependen de otra)."""
         wid, store = rec.get("wid") or "", self.workflow_store
-        if button.get("index") != 1:
+        if button.get("index") not in (1, 2, 3):
             if store.get(wid):
                 workflows.parar(store, wid)
             self.notifier.edit(where["chat_id"], where["message_id"], "🚫 Plan descartado, no he creado nada", html=False)
@@ -1905,16 +1906,15 @@ class CommandCenter:
         wf = store.get(wid)
         if not wf:
             return False
-        origin = (where["chat_id"], where["thread_id"])
-
-        def create_card(item: dict, req: str) -> str:
-            lane = self.lanes[item["carril"]]
-            body = (f"## Objetivo\n{item.get('cuerpo') or item['titulo']}\n\n## Límites\n"
-                    f"{item.get('limites') or '- Solo lo que pide el objetivo; nada más.'}\n\n"
-                    f"req: {req}\nOrigen: /workflow {wid}\nOrigen-Telegram: chat={origin[0]} thread={origin[1]}\n")
-            key = "wf-" + hashlib.sha1(f"{wid}|{item['titulo']}".encode()).hexdigest()[:16]
-            return self.hermes_for(lane.board).create(truncate(item["titulo"], HAZLO_TITLE_MAX), body, item["carril"],
-                                                      key=key, created_by="oscar")
+        if button.get("index") in (2, 3):  # botones del aviso de gasto: [➕ Ampliar] / [⛔ Parar]
+            wf = workflows.ampliar(store, wid) if button["index"] == 2 else workflows.parar(store, wid)
+            self.notifier.edit(where["chat_id"], where["message_id"],
+                               f"➕ Tope ampliado a {wf['tope_eur']:g} €: el workflow sigue." if button["index"] == 2
+                               else "⛔ Workflow parado: no se crean más tarjetas.", html=False)
+            return True
+        wf["origen"] = {"chat": where["chat_id"], "thread": where["thread_id"]}  # los avisos de avance vuelven aquí
+        store.put(wf)
+        create_card = make_create_card(wf, self.lanes, self.hermes_for, lambda t, n: truncate(t, n))
 
         try:
             workflows.approve(store, wid)
