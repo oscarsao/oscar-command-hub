@@ -9,3 +9,4 @@ max_tarjetas_activas: 5     # tarjetas de carril activas a la vez por workflow
 max_workstreams_codigo: 3   # workstreams de código en paralelo (todos los workflows)
 escalar_horas: 2            # cola del integrador: escalar a Oscar un bloqueo tras estas horas
 recordar_horas: 24          # y recordárselo tras estas
+eur_por_usd: 0.92           # cambio para pasar el coste en USD de cada tarjeta a euros
