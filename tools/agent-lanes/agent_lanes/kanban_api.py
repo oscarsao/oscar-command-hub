@@ -71,14 +71,31 @@ _TASK_SQL = ("SELECT id, title, body, assignee, status, priority, created_by, cr
              "FROM hub.tasks")
 
 
-def backend_name(env: dict | None = None) -> str:
-    """Backend elegido: `KANBAN_BACKEND` del entorno o `runner.kanban_backend` de lanes.yaml; `hermes` si no hay
-    nada. Un valor desconocido es un error (mejor no arrancar que hablar con el kanban equivocado)."""
-    from .config import kanban_backend
-    name = kanban_backend(env)
-    if name not in BACKENDS:
-        raise ValueError(f"KANBAN_BACKEND={name!r} no es válido (opciones: {', '.join(BACKENDS)})")
-    return name
+_resolved: str | None = None
+_resolved_lock = threading.Lock()
+
+
+def backend_name() -> str:
+    """Backend de ESTE proceso: `KANBAN_BACKEND` del entorno > .env del hub > `runner.kanban_backend` de lanes.yaml >
+    `hermes`. Se resuelve UNA vez por proceso (editar lanes.yaml con el runner vivo no parte el hub en dos kanbans;
+    el cambio rige al reiniciar). Un valor desconocido es un error: mejor no arrancar que hablar con otro kanban."""
+    global _resolved
+    with _resolved_lock:
+        if _resolved is None:
+            from .config import kanban_backend
+            name = kanban_backend()
+            if name not in BACKENDS:
+                raise ValueError(f"KANBAN_BACKEND={name!r} no es válido (opciones: {', '.join(BACKENDS)})")
+            _resolved = name
+            log.info("kanban: backend=%s", name)
+        return _resolved
+
+
+def reset_backend() -> None:
+    """Olvida el backend resuelto (solo pruebas)."""
+    global _resolved
+    with _resolved_lock:
+        _resolved = None
 
 
 def backend_for(board: str, author: str = "agent-lanes", *, backend: str | None = None, **kw):

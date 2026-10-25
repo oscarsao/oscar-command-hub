@@ -172,11 +172,14 @@ def load_runner_settings(path: Path | None = None) -> dict:
                            **(_load(path).get("runner") or {})})
 
 
-def kanban_backend(env: dict | None = None, path: Path | None = None) -> str:
-    """Backend del kanban (F2-02): `KANBAN_BACKEND` del entorno (o de `env`) manda; si no, `runner.kanban_backend`
-    de lanes.yaml; por defecto `hermes` (la CLI de Hermes de siempre). Lo valida kanban_api.backend_name."""
+def kanban_backend(env: dict | None = None, path: Path | None = None, env_file: Path | None = None) -> str:
+    """Backend del kanban (F2-02): `KANBAN_BACKEND` del entorno (o de `env`) > el de `.env` del hub >
+    `runner.kanban_backend` de lanes.yaml > `hermes` (la CLI de Hermes de siempre). Lo valida y fija
+    kanban_api.backend_name (una vez por proceso)."""
     import os
     value = str((env if env is not None else os.environ).get("KANBAN_BACKEND") or "").strip().lower()
+    if not value:
+        value = str(load_env(env_file).get("KANBAN_BACKEND") or "").strip().lower()
     if not value:
         try:
             value = str((_load(path).get("runner") or {}).get("kanban_backend") or "").strip().lower()

@@ -11,6 +11,13 @@ from agent_lanes.hermes import HermesCLI, HermesError
 from agent_lanes.kanban_api import SupabaseKanban, backend_for, backend_name
 
 
+@pytest.fixture(autouse=True)
+def _backend_sin_memoria():
+    kanban_api.reset_backend()
+    yield
+    kanban_api.reset_backend()
+
+
 def test_por_defecto_es_hermes_y_no_cambia_nada(monkeypatch, tmp_path):
     monkeypatch.delenv("KANBAN_BACKEND", raising=False)
     monkeypatch.setattr(config, "ROOT", tmp_path)  # lanes.yaml ausente -> hermes
@@ -25,8 +32,23 @@ def test_lanes_yaml_y_entorno(monkeypatch, tmp_path):
     monkeypatch.delenv("KANBAN_BACKEND", raising=False)
     assert backend_name() == "supabase"
     assert isinstance(backend_for("default"), SupabaseKanban)
-    monkeypatch.setenv("KANBAN_BACKEND", "hermes")  # el entorno manda sobre lanes.yaml (vuelta atrás = 1 variable)
+    kanban_api.reset_backend()
+    (tmp_path / ".env").write_text("KANBAN_BACKEND=hermes\n", encoding="utf-8")  # .env del hub > lanes.yaml
     assert backend_name() == "hermes"
+    kanban_api.reset_backend()
+    (tmp_path / ".env").write_text("KANBAN_BACKEND=supabase\n", encoding="utf-8")
+    monkeypatch.setenv("KANBAN_BACKEND", "hermes")  # el entorno manda sobre todo (vuelta atrás = 1 variable)
+    assert backend_name() == "hermes"
+
+
+def test_se_resuelve_una_vez_por_proceso(monkeypatch, tmp_path):
+    """Editar lanes.yaml/.env con el runner vivo no parte el hub en dos kanbans: rige al reiniciar."""
+    monkeypatch.setattr(config, "ROOT", tmp_path)
+    monkeypatch.delenv("KANBAN_BACKEND", raising=False)
+    assert backend_name() == "hermes"
+    (tmp_path / "lanes.yaml").write_text("runner:\n  kanban_backend: supabase\n", encoding="utf-8")
+    monkeypatch.setenv("KANBAN_BACKEND", "supabase")
+    assert backend_name() == "hermes" and type(backend_for("default")) is HermesCLI
 
 
 def test_valor_desconocido_no_arranca(monkeypatch):

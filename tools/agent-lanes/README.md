@@ -379,7 +379,9 @@ Todo el hub crea su cliente del kanban con `kanban_api.backend_for(board, author
 - `supabase`: tablas `hub.*` en Postgres con el rol `hub_core`; conexión en `HUB_DB_DSN` (entorno o `.env`, nunca en
   el repo). Esquema esperado: `tests/fixtures/hub_schema_f2.sql` (la migración real es F2-01 en oscar-hq);
   `check_contract()` lo comprueba al arrancar el runner.
-- Selector: `KANBAN_BACKEND` del entorno manda sobre `runner.kanban_backend` de lanes.yaml. Vuelta atrás = una variable.
+- Selector: `KANBAN_BACKEND` del entorno > `KANBAN_BACKEND` del `.env` del hub > `runner.kanban_backend` de lanes.yaml >
+  `hermes`. Se resuelve una vez por proceso (rige al reiniciar) y el runner lo escribe al arrancar: `kanban: backend=…`.
+  Vuelta atrás = una variable y un reinicio.
 
 `tools/kanban_migrar.py` (F2-03): `copiar` (copia coherente en solo lectura), `recuentos`, `importar [--seco]`,
 `comparar`, `exportar`/`volver` (hub.* -> SQLite con el esquema exacto de Hermes, en una carpeta nueva fuera de la de
