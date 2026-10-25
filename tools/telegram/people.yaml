@@ -1,4 +1,5 @@
 # Personas del equipo que pueden escribir por DM al bot de carriles (@pildora_carriles_bot).
+# Decisiones de roles y permisos (D4-D10, 25-10): decisions/2026-10-25-personas-roles-permisos.md
 # UNA SOLA FUENTE de permisos (24-10, Oscar): tambien manda en Hermes (@oscarsaoBot). Tras editar este fichero:
 #   py -3.12 tools/telegram/sincronizar_permisos.py --apply   (allowed users del .env y tabla de SOUL.md de Hermes)
 #   hermes gateway restart
