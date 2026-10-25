@@ -132,7 +132,8 @@ def test_yaml_sobrescribe_y_ausente_son_defaults(tmp_path):
 
 def test_choques_yaml_del_repo_es_valido():
     a = load_ajustes(choques.SETTINGS_PATH)
-    assert a.activo and len(a.patrones) >= 2 and set(a.fuentes) == set(choques.FUENTES)
+    # 25-10 (Oscar): el repo compara solo tarjetas activas; basta con que las fuentes sean válidas y haya alguna.
+    assert a.activo and len(a.patrones) >= 2 and a.fuentes and set(a.fuentes) <= set(choques.FUENTES)
 
 
 def test_ticker_avisa_una_vez_por_par_y_clase(tmp_path):
