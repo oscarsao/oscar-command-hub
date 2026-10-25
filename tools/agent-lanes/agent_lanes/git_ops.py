@@ -5,6 +5,7 @@ import json
 import logging
 import subprocess
 
+from . import pnpm_setup
 from . import proc as _proc
 from pathlib import Path
 
@@ -29,6 +30,11 @@ class GitOps:
         return cp
 
     def prepare_worktree(self, lane: Lane, task_id: str) -> str:
+        path = self._prepare_worktree(lane, task_id)
+        pnpm_setup.ensure_pnpm_deps(path, lane.worktree_root)  # best effort, con timeout y log; nunca lanza
+        return path
+
+    def _prepare_worktree(self, lane: Lane, task_id: str) -> str:
         branch = f"lane/{task_id}"
         path = Path(lane.worktree_root) / f"lane-{task_id}"
         self._git(lane.repo, "fetch", lane.remote, lane.base)

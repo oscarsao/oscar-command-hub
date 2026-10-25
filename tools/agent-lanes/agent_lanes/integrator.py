@@ -51,6 +51,7 @@ if __package__ in (None, ""):  # `py agent_lanes/integrator.py`
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     __package__ = "agent_lanes"
 
+from . import canal_avisos  # noqa: E402
 from . import consola  # noqa: E402
 from . import drain  # noqa: E402
 from . import proc as _proc  # noqa: E402
@@ -1134,12 +1135,13 @@ class Integrator:
             if target:
                 owner = str(getattr(self.desk, "owner_id", "") or "") if self.desk else ""
                 prefix = link or f"🚦 {task['id']} · {truncate(task.get('title'), 40)}"
-                self._notices.publish(task["id"], text, None, target, alert=True, reply_markup=markup,
-                                      channel=CHANNEL, leave_behind=lambda sent: link_line(prefix, sent),
-                                      **({"mirror_to": owner} if owner else {}))
+                canal_avisos.publicar(canal_avisos.de(self.desk), self._notices, "integrar", task["id"], text, None,
+                                      target, alert=True, reply_markup=markup, mirror=owner or None,
+                                      channel=CHANNEL, leave_behind=lambda sent: link_line(prefix, sent))
             else:
-                self._notices.publish(task["id"], text, telegram_target(task.get("body")), lane.telegram,
-                                      alert=True, reply_markup=markup)
+                canal_avisos.publicar(canal_avisos.de(self.desk), self._notices, "integrar", task["id"], text,
+                                      telegram_target(task.get("body")), lane.telegram, alert=True,
+                                      reply_markup=markup)
         except Exception as exc:
             log.warning("%s: aviso del integrador falló: %s", task["id"], exc)
 

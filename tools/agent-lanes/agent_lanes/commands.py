@@ -72,6 +72,7 @@ from . import lo_tuyo as _lo_tuyo
 from . import personal as _personal
 from . import tareas_movil as _tm
 from . import tipo_peticion, titulos, triaje, workflows
+from .avance_workflows import make_create_card
 from .aviso import UrgentBlockWatcher, mention
 from .card_options import PREPARED_AUTHOR, PREPARED_PREFIX, CardSpec, card_message, parse_card
 from .decisions import (APPROVE, CHANGES, DEPLOY_ASK, DEPLOY_NO, FALTA, FLUJO, HAZLO, OWNER_TELEGRAM_ID, PARK, TRIAJE,
@@ -125,6 +126,17 @@ COMMANDS = (
 )
 COMMAND_SCOPES = ("default", "all_private_chats", "all_group_chats")
 HELP_ALIASES = ("start", "ayuda", "help")
+HERMES_BOT = "oscarsaoBot"
+# Comandos propios de Hermes en Gestión (25-10). No hay forma fiable de pedírselos a Hermes desde aquí, así que es una
+# lista fija: si Hermes añade alguno, añádelo aquí (o pasa otra lista en `DecisionDesk.hermes_commands`).
+HERMES_COMMANDS = frozenset((
+    "new", "reset", "status", "approve", "deny", "stop", "retry", "undo", "model", "usage", "compress", "title",
+    "background", "sethome", "personality", "resume", "branch", "yolo", "verbose", "reasoning", "queue", "voice",
+    "update", "platforms", "commands", "profile", "insights", "skills", "cron", "reload", "debug", "restart",
+    "history", "save", "rollback", "fast", "tools", "toolsets", "paste", "image", "stats", "context", "clear"))
+# Comandos que tardan (leen el kanban): se contesta al momento «Un momento…» y se edita con el resultado.
+SLOW_COMMANDS = ("tareas", "aprobar", "atencion")
+MOMENTO = "⏳ Un momento…"
 NOT_OWNER = ("Este comando es solo para operadores. Pide a Oscar o a María que lo haga, o escribe tu petición en "
              "texto libre y se la paso")
 # Comandos sin marca clara o con efecto directo en repos/sesiones de Oscar: un operador acotado por marca no los usa.
@@ -339,6 +351,7 @@ class CommandCenter:
             return True
         actuando = getattr(self.desk, "actuando", None)  # firma las acciones con el nombre del operador (no Oscar)
         self._ctx.actor = actor  # quién pidió el comando (las ofertas de /hoy se filtran por sus marcas)
+        self._ctx.momento = self._momento(where) if cmd in SLOW_COMMANDS else None
         try:
             with actuando(actor) if actuando else contextlib.nullcontext():
                 if cmd in HELP_ALIASES:
@@ -348,7 +361,20 @@ class CommandCenter:
         except Exception as exc:
             log.warning("/%s falló: %s", cmd, exc)
             self._send(where, f"No pude completar /{cmd}; detalle en el log", html=False)
+        finally:
+            sobra, self._ctx.momento = getattr(self._ctx, "momento", None), None
+            if sobra:  # el comando no mandó nada: que el «Un momento…» no se quede colgado
+                self.notifier.edit(sobra["chat_id"], sobra["message_id"], "Listo, sin nada que mostrar.", html=False)
         return True
+
+    def _momento(self, where) -> dict | None:
+        """Manda «Un momento…» al instante (el comando tarda y Oscar lo repetía); `_send` lo edita con el resultado."""
+        try:
+            sent = self.notifier.send_to(where[0], where[1], MOMENTO, html=False)
+        except Exception as exc:
+            log.warning("no pude enviar el «un momento»: %s", exc)
+            return None
+        return sent if sent and sent.get("message_id") else None
 
     def es_operador(self, user_id) -> bool:
         """Oscar o un operador de people.yaml (`operador: true`): mismo acceso a los comandos."""
@@ -411,12 +437,26 @@ class CommandCenter:
         return chat, thread
 
     def _send(self, where: tuple[str, str], text: str, *, html: bool = True, markup: dict | None = None):
+        momento = getattr(self._ctx, "momento", None)
+        if momento and momento["chat_id"] == str(where[0]):  # primer mensaje del comando: reemplaza el «Un momento…»
+            self._ctx.momento = None
+            if self.notifier.edit(momento["chat_id"], momento["message_id"], text, html=html,
+                                  **({"reply_markup": markup} if markup else {})):
+                return momento
         return self.notifier.send_to(where[0], where[1], text, html=html,
                                      **({"reply_markup": markup} if markup else {}))
 
     @staticmethod
     def help_text() -> str:
         return ("Comandos del bot de trabajos:\n" + "\n".join(f"/{c} · {d}" for c, d in COMMANDS)
+                + "\n\nDónde contesta cada bot:"
+                + "\n· Trabajos (yo): a los /comandos y a las respuestas (reply) a mis mensajes. En grupo no leo el "
+                  "texto suelto."
+                + "\n· Hermes (@oscarsaoBot): conversa sin mención en Gestión (temas 5, 230, 231 y 1903), Marketing "
+                  "(tema 406) y Desarrollo (tema 71); en el resto de temas, menciónalo."
+                + "\n· Un /comando de Hermes (/new, /status…) escríbelo como /comando@oscarsaoBot; los míos, como "
+                  "/comando@pildora_carriles_bot."
+                + "\n· Para pedir una tarea: /hazlo <texto> en cualquier tema, o escríbeme en privado."
                 + "\n\nCon /hazlo la tarea se crea ya, con prioridad alta y tope de 15 minutos; te aviso al terminar."
                 + "\nCon /sesion abres una sesión: lo que escribas aquí se acumula y /sesion fin lo agrupa en UNA tarjeta."
                 + "\n/desplegar pide dos toques (🚀 y ✅ Sí); /promover también pide doble confirmación."
@@ -1897,7 +1937,7 @@ class CommandCenter:
     def workflow_choice(self, rec: dict, button: dict, where: dict) -> bool:
         """Botón del plan. Solo [Aprobar] crea tarjetas (la primera tanda: las que no dependen de otra)."""
         wid, store = rec.get("wid") or "", self.workflow_store
-        if button.get("index") != 1:
+        if button.get("index") not in (1, 2, 3):
             if store.get(wid):
                 workflows.parar(store, wid)
             self.notifier.edit(where["chat_id"], where["message_id"], "🚫 Plan descartado, no he creado nada", html=False)
@@ -1905,16 +1945,15 @@ class CommandCenter:
         wf = store.get(wid)
         if not wf:
             return False
-        origin = (where["chat_id"], where["thread_id"])
-
-        def create_card(item: dict, req: str) -> str:
-            lane = self.lanes[item["carril"]]
-            body = (f"## Objetivo\n{item.get('cuerpo') or item['titulo']}\n\n## Límites\n"
-                    f"{item.get('limites') or '- Solo lo que pide el objetivo; nada más.'}\n\n"
-                    f"req: {req}\nOrigen: /workflow {wid}\nOrigen-Telegram: chat={origin[0]} thread={origin[1]}\n")
-            key = "wf-" + hashlib.sha1(f"{wid}|{item['titulo']}".encode()).hexdigest()[:16]
-            return self.hermes_for(lane.board).create(truncate(item["titulo"], HAZLO_TITLE_MAX), body, item["carril"],
-                                                      key=key, created_by="oscar")
+        if button.get("index") in (2, 3):  # botones del aviso de gasto: [➕ Ampliar] / [⛔ Parar]
+            wf = workflows.ampliar(store, wid) if button["index"] == 2 else workflows.parar(store, wid)
+            self.notifier.edit(where["chat_id"], where["message_id"],
+                               f"➕ Tope ampliado a {wf['tope_eur']:g} €: el workflow sigue." if button["index"] == 2
+                               else "⛔ Workflow parado: no se crean más tarjetas.", html=False)
+            return True
+        wf["origen"] = {"chat": where["chat_id"], "thread": where["thread_id"]}  # los avisos de avance vuelven aquí
+        store.put(wf)
+        create_card = make_create_card(wf, self.lanes, self.hermes_for, lambda t, n: truncate(t, n))
 
         try:
             workflows.approve(store, wid)

@@ -8,7 +8,7 @@ from __future__ import annotations
 import json
 import logging
 
-from . import avisos_revision
+from . import avisos_revision, canal_avisos
 from . import proc as _proc
 import time
 import uuid
@@ -159,13 +159,13 @@ class ReviewRunner:
                 if integ:  # tema de Integración (nunca el origen) + copia espejo en el DM de Oscar
                     owner = str(getattr(self._decisions, "owner_id", "") or "") if alert else ""
                     prefix = f"✅ {task['id']} · {truncate(task.get('title'), 40)} · lista para aprobar"
-                    self._notices.publish(task["id"], text, None, integ.target, alert=alert, reply_markup=markup,
-                                          channel=CHANNEL, leave_behind=lambda sent: link_line(prefix, sent),
-                                          **({"mirror_to": owner} if owner else {}))
+                    canal_avisos.publicar(canal_avisos.de(self._decisions), self._notices, "aprobar", task["id"], text,
+                                          None, integ.target, alert=alert, reply_markup=markup, mirror=owner or None,
+                                          channel=CHANNEL, leave_behind=lambda sent: link_line(prefix, sent))
                     return
-                self._notices.publish(task["id"], text, target, lane_target, alert=alert, reply_markup=markup,
-                                      followup=list(getattr(bullets, "overflow", None) or ()) or None,
-                                      **({"mirror_to": mirror} if mirror else {}))
+                canal_avisos.publicar(canal_avisos.de(self._decisions), self._notices, canal_avisos.tipo_de_estado(state),
+                                      task["id"], text, target, lane_target, alert=alert, reply_markup=markup,
+                                      mirror=mirror, followup=list(getattr(bullets, "overflow", None) or ()) or None)
                 return
             except Exception as exc:
                 log.warning("aviso a Telegram falló (intento %d/2): %s", attempt, exc)

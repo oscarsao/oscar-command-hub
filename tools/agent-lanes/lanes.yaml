@@ -46,16 +46,30 @@ telegram:
   # Aviso al equipo (APAGADO por defecto: sin esta clave, o con enabled: false, el bot ignora el texto de los grupos).
   # Con enabled: true, si alguien escribe a ESTE bot en uno de los chats (@mención o respuesta a un mensaje suyo)
   # contesta una vez por minuto «esto lo lleva el asistente del equipo». Lo que hablan entre ellos no se contesta.
-  # team_notice:
-  #   enabled: false
-  #   chats: [-100XXXXXXXXXX]   # id del grupo de Marketing (lo decide Oscar)
-  #   text: Esto lo lleva el asistente del equipo: escríbele a él.
+  # 25-10 (Oscar, «sí, activa el aviso»): Andrea e Ingerber están sin Hermes (hermes: false, 24-10) y no recibían respuesta.
+  # Segundo disparo (t_62bc2a5f): quien en tools/telegram/people.yaml tiene `hermes: false` (Hermes lo bloquea en
+  # silencio) y escribe a Hermes recibe este mismo aviso, UNA vez por persona y día (y con el enfriamiento del chat).
+  # «Escribe a Hermes» = @mención de `hermes_username`, respuesta a un mensaje de ese bot, o texto libre en un tema de
+  # `hermes_topics` (los free_response_topics de Hermes, donde contesta sin mención: «chat:tema»). Quien tiene Hermes
+  # (Oscar, María, Ángel) y las charlas entre personas sin mención a un bot no reciben nada.
+  team_notice:
+    enabled: true
+    chats: [-1004277259008]   # Marketing
+    text: "Hermes (@oscarsaoBot) todavía no está disponible para el equipo: llegará con el asistente de equipo. Mientras, aquí os atiende Trabajos (/ayuda@pildora_carriles_bot) y lo demás se lo pedís a Oscar."
+  # Opcionales de t_62bc2a5f (bajo team_notice): hermes_username: oscarsaoBot  y  hermes_topics: ["-100XXXXXXXXXX:406"]
+  # (temas con respuesta libre de Hermes, p. ej. Marketing t406). Sin ellos solo cuentan @mención y respuesta al bot.
   # Texto libre de Oscar = respuesta a la decisión pendiente de ESE tema (auditoría t_dddcc232, P1), SOLO si el mensaje
   # es una respuesta (reply_to) a un mensaje de este bot (24-10: Trabajos = motor silencioso; la conversación es de Hermes). Con una sola
   # pendiente la toma como respuesta (eco + Deshacer); con varias pregunta cuál. Nunca promueve/fusiona/despliega.
   # window_hours: solo cuentan avisos enviados en las últimas N horas. max_choices: botones del selector.
   # Quitar el bloque apaga la función.
   free_text: {window_hours: 72, max_choices: 5}
+  # Tema «🎯 Decisiones» (25-10, Oscar): lo que necesita decisión (de Oscar, María o Ángel) va AL MOMENTO y con botones
+  # a este tema; al DM de Oscar solo una línea con enlace. Al decidir, el mensaje pasa a «✅ <acción> por <persona>» y
+  # un mensaje fijado del tema lleva «N decisiones pendientes» (agent_lanes/canal_avisos.py). Hacen falta chat Y thread
+  # (thread != 0); sin la clave todo sigue yendo al DM como antes. El integrador pondrá el id del tema al crearlo:
+  destinos:   # 25-10 (Oscar, botón): tema 🎯 Decisiones creado por el integrador en Gestión
+    decisiones: {chat: -1003530490339, thread: 2053}
 
 # Tema de Integración (28-09, Oscar): TODO aviso de PR/merge/deploy (tarjeta done con ✅ Aprobar, "Listo para integrar",
 # gates fallidos, en espera, fusionado, desplegado, fallo de deploy) va aquí como ficha con cabecera por riesgo
@@ -141,6 +155,23 @@ defaults:
     - "Bash(pnpm test:*)"
     - "Bash(pnpm exec tsc:*)"
     - "Bash(pnpm exec vitest:*)"
+    # 25-10 (OK de Oscar): Oscar HQ usa pnpm; los workers lo pedían como `npx pnpm@10 install --frozen-lockfile` (t_b14317c3,
+    # t_78b8b58d) y no coincidía con ninguna regla. Solo instalar con lockfile, tsc, vitest y lint; `pnpm add`, `-g` y
+    # `dlx` los deniegan contract/worker-settings.json y contract/guard.py.
+    - "Bash(npx pnpm@10 install:*)"
+    - "Bash(npx pnpm@10 exec:*)"
+    - "Bash(npx pnpm@10 run:*)"
+    - "Bash(npx pnpm@10 lint:*)"
+    - "Bash(npx -y pnpm@10 install:*)"
+    - "Bash(npx -y pnpm@10 exec:*)"
+    - "Bash(corepack pnpm@10.18.3 install:*)"
+    - "Bash(corepack pnpm@10.18.3 exec:*)"
+    - "Bash(corepack pnpm@10.18.3 run:*)"
+    - "Bash(pnpm lint:*)"
+    - "Bash(pnpm exec next lint:*)"
+    - "Bash(npx next lint:*)"
+    - "Bash(cd dashboard:*)"
+    - "Bash(cd frontend:*)"
     - "Bash(npx tsc:*)"
     - "Bash(npx vitest:*)"
     - "Bash(npx eslint:*)"
