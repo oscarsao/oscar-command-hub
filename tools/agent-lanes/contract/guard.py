@@ -112,10 +112,27 @@ def _check_git_merge(tokens: list[str], allowed: list[str] | None = None) -> str
 
 
 PKG_DIR_FLAGS = {"-c", "--dir", "--prefix", "--workspace-root", "--cwd"}
-PKG_BAD_CMDS = {"add", "dlx", "link", "unlink", "publish", "remove", "rm", "uninstall", "update", "up", "upgrade"}
+PKG_BAD_CMDS = {"add", "dlx", "link", "unlink", "publish", "remove", "rm", "uninstall", "update", "up", "upgrade",
+                "create"}
 PKG_INSTALL = {"install", "i"}
 NPM_BAD_CMDS = {"add", "i", "in", "ins", "inst", "insta", "instal", "install", "isntall", "uninstall", "un", "unlink",
-                "remove", "rm", "r", "update", "up", "upgrade", "link", "ln", "publish", "exec", "x"}
+                "remove", "rm", "r", "update", "up", "upgrade", "link", "ln", "publish", "exec", "x", "init", "create",
+                "innit"}
+NPM_INSTALL_CMDS = PKG_INSTALL | {"in", "ins", "inst", "insta", "instal", "isntall", "add", "it", "install-test"}
+# Opciones de npm que llevan su valor en el token siguiente (`npm --prefix . install x`): lista cerrada. El valor no es
+# el comando. Las booleanas (-D, --save-dev, --no-audit…) no se saltan: `npm install --save-dev x` sigue vetado.
+NPM_VALUE_FLAGS = PKG_DIR_FLAGS | {"-w", "--workspace", "--registry", "--cache", "--userconfig", "--globalconfig",
+                                   "--tag", "--omit", "--include", "--loglevel", "--script-shell", "--install-strategy"}
+# Comandos de npm que no cambian dependencias. El resto (desconocidos incluidos) se veta: falla cerrado, así una opción
+# con valor que no esté en NPM_VALUE_FLAGS no convierte su valor en «comando» y deja pasar lo que va detrás.
+NPM_RUN_CMDS = {"run", "run-script", "rum", "urn", "test", "t", "tst", "start", "stop", "restart"}
+NPM_OK_CMDS = NPM_RUN_CMDS | {"ci", "clean-install", "ic", "install-clean", "isntall-clean", "cit", "install-ci-test",
+                              "ls", "list", "ll", "la", "outdated", "view", "info", "show", "v", "help", "explain",
+                              "why", "doctor", "prefix", "root", "pack", "fund", "query", "audit", "cache"}
+# `npx <paquete>`: los de las reglas `Bash(npx …)` de lanes.yaml (pnpm pasa luego por las reglas de pnpm). Sin TTY
+# (el worker en -p) npx asume --yes, así que con o sin -y baja y ejecuta lo que se le pida: se mira el paquete.
+NPX_OK = {"pnpm", "next", "tsc", "vitest", "eslint"}
+YARN_BAD_CMDS = PKG_BAD_CMDS | {"global", "unplug", "patch", "set", "plugin"}
 
 
 def _outside_worktree(val: str) -> bool:
@@ -123,24 +140,94 @@ def _outside_worktree(val: str) -> bool:
     return val.startswith(("/", "\\", "~")) or bool(re.match(r"^[a-z]:", val)) or ".." in re.split(r"[\\/]", val)
 
 
-def _check_pkg_manager(low: list[str]) -> str | None:
-    """pnpm (directo, `npx pnpm@10`, `corepack pnpm@10.x`): solo `install` desde el lockfile y exec/run/lint dentro del
-    worktree. Nada de `pnpm add|dlx|link|publish...`, instalaciones globales (también npm -g) ni rutas fuera del
-    worktree (25-10)."""
-    idx = next((i for i, t in enumerate(low) if t == "pnpm" or t.startswith("pnpm@")), None)
-    is_npm = bool(low) and low[0] in ("npm", "npm.cmd")
-    if idx is None and not is_npm:
-        return None
-    args = low[(idx + 1 if idx is not None else 1):]
-    name = "pnpm" if idx is not None else "npm"
-    if any(a in ("-g", "--global", "--location=global") for a in args):
-        return f"{name} global (-g) prohibido para workers: solo dependencias del worktree"
+def _pkg_name(token: str) -> str:
+    """'C:/nodejs/npm.cmd' -> 'npm', 'pnpm@10' -> 'pnpm@10' (la versión se mira aparte)."""
+    return re.sub(r"\.(exe|cmd|bat|ps1|js)$", "", re.split(r"[\\/]", token)[-1])
+
+
+def _npx_package(token: str) -> str:
+    """'pnpm@10' -> 'pnpm', '@scope/x@1' -> '@scope/x'."""
+    if token.startswith("@"):
+        return "@" + token[1:].split("@", 1)[0]
+    return token.split("@", 1)[0]
+
+
+def _dir_outside(name: str, args: list[str]) -> str | None:
     for i, a in enumerate(args):
         flag, _, inline = a.partition("=")
         if flag in PKG_DIR_FLAGS:
             val = inline or (args[i + 1] if i + 1 < len(args) else "")
             if _outside_worktree(val):
                 return f"{name} {flag} fuera del worktree prohibido"
+    return None
+
+
+def _check_npx(args: list[str]) -> str | None:
+    """`npx <paquete permitido>` (NPX_OK). Nada de `-p/--package` ni `-c/--call` (ejecutan lo que digan)."""
+    for a in args:
+        flag = a.partition("=")[0]
+        if flag in ("-p", "--package", "-c", "--call"):
+            return "npx -p/--package/-c prohibido para workers: solo `npx <paquete permitido>`"
+        if a.startswith("-"):
+            continue
+        pkg = _npx_package(a)
+        if pkg not in NPX_OK:
+            return (f"npx {pkg} prohibido para workers (con o sin -y baja y ejecuta código del registro): solo "
+                    + ", ".join(sorted(NPX_OK)))
+        return None
+    return None
+
+
+def _check_yarn(args: list[str]) -> str | None:
+    """yarn (directo o `corepack yarn`): install desde el lockfile, run, test. Nada de add/global/dlx/up/remove…"""
+    if any(a in ("-g", "--global") for a in args):
+        return "yarn global prohibido para workers: solo dependencias del worktree"
+    reason = _dir_outside("yarn", args)
+    if reason:
+        return reason
+    positional, skip = [], False
+    for a in args:
+        if skip:
+            skip = False
+        elif a in PKG_DIR_FLAGS | {"--modules-folder", "--cache-folder", "--registry"}:
+            skip = True
+        elif not a.startswith("-"):
+            positional.append(a)
+    if positional and positional[0] in YARN_BAD_CMDS:
+        return f"yarn {positional[0]} prohibido para workers: solo `yarn install` desde el lockfile, run y test"
+    if positional and positional[0] in PKG_INSTALL and len(positional) > 1:
+        return "yarn install con paquetes prohibido (añadir dependencias)"
+    return None
+
+
+def _check_pkg_manager(low: list[str]) -> str | None:
+    """pnpm (directo, `npx pnpm@10`, `corepack pnpm@10.x`): solo `install` desde el lockfile y exec/run/lint dentro del
+    worktree. Nada de `pnpm add|dlx|link|publish...`, instalaciones globales (también npm -g) ni rutas fuera del
+    worktree (25-10). npx solo con los paquetes de NPX_OK, yarn sin add/global/dlx, pnpx nunca (= pnpm dlx)."""
+    head = _pkg_name(low[0]) if low else ""
+    if head == "pnpx":
+        return "pnpx (= pnpm dlx) prohibido para workers"
+    if head == "npx":
+        reason = _check_npx(low[1:])
+        if reason:
+            return reason
+    if head == "yarn" or head.startswith("yarn@"):
+        return _check_yarn(low[1:])
+    if head == "corepack":
+        j = next((i for i in range(1, len(low)) if not low[i].startswith("-")), None)
+        if j is not None and (low[j] == "yarn" or low[j].startswith("yarn@")):
+            return _check_yarn(low[j + 1:])
+    idx = next((i for i, t in enumerate(low) if t == "pnpm" or t.startswith("pnpm@")), None)
+    is_npm = head == "npm"
+    if idx is None and not is_npm:
+        return None
+    args = low[(idx + 1 if idx is not None else 1):]
+    name = "pnpm" if idx is not None else "npm"
+    if any(a in ("-g", "--global", "--location=global") for a in args):
+        return f"{name} global (-g) prohibido para workers: solo dependencias del worktree"
+    reason = _dir_outside(name, args)
+    if reason:
+        return reason
     if idx is None:
         return _check_npm(args)
     positional, skip = [], False
@@ -160,16 +247,31 @@ def _check_pkg_manager(low: list[str]) -> str | None:
 
 def _check_npm(args: list[str]) -> str | None:
     """npm: `npm ci`, `npm install` sin paquetes (desde el lockfile), run/test. Añadir o quitar dependencias
-    (`npm install <pkg>`, `npm i x`, `npm add`, `update`, `uninstall`, `link`, `publish`, `exec`) está vetado (S-06)."""
-    positional = [a for a in args if not a.startswith("-")]
+    (`npm install <pkg>`, `npm i x`, `npm add`, `update`, `uninstall`, `link`, `publish`, `exec`, `init <x>`) está
+    vetado (S-06). Los valores de las opciones (`--prefix .`) no cuentan como comando, y un comando que no está en
+    NPM_OK_CMDS se veta (falla cerrado)."""
+    positional, skip = [], False
+    for a in args:
+        if skip:
+            skip = False
+        elif a in NPM_VALUE_FLAGS:
+            skip = True
+        elif not a.startswith("-"):
+            positional.append(a)
     if not positional:
         return None
     cmd = positional[0]
-    if cmd in PKG_INSTALL | {"in", "ins", "inst", "insta", "instal", "isntall", "add"} and len(positional) > 1:
-        return "npm install con paquetes prohibido (añadir dependencias): usa `npm ci` o `npm install` a secas"
-    if cmd in NPM_BAD_CMDS - PKG_INSTALL - {"in", "ins", "inst", "insta", "instal", "isntall"}:
+    if cmd in NPM_INSTALL_CMDS:
+        if len(positional) > 1 or cmd == "add":
+            return "npm install con paquetes prohibido (añadir dependencias): usa `npm ci` o `npm install` a secas"
+        return None
+    if cmd == "audit" and positional[1:2] == ["fix"]:
+        return "npm audit fix prohibido para workers: cambia dependencias"
+    if cmd in NPM_OK_CMDS:
+        return None
+    if cmd in NPM_BAD_CMDS:
         return f"npm {cmd} prohibido para workers: solo `npm ci`, `npm install` sin paquetes, run y test"
-    return None
+    return f"npm {cmd} no está entre los comandos permitidos a workers (ci, install sin paquetes, run, test, ls, view…)"
 
 
 def inside(path: str, root: str) -> bool:
