@@ -340,3 +340,57 @@ def test_team_notice_answers_only_when_addressed_and_once_per_minute(env):
     env.desk._help_at.clear()
     env.desk.handle_update(group_msg("@pildora_carriles_bot"))
     assert len(sent) == 2
+
+
+def hermes_env(env, tmp_path):
+    from agent_lanes.people import load_people
+    f = tmp_path / "people.yaml"
+    f.write_text('people:\n  andrea: {user_id: "777", role: marketing, brands: [Píldora], hermes: false}\n'
+                 '  ingerber: {user_id: "778", role: cmo, brands: [Píldora], hermes: false}\n'
+                 '  angel: {user_id: "779", role: dev, brands: [Píldora], operador: true}\n', encoding="utf-8")
+    env.desk.people = load_people("1", f)
+    env.desk.owner_id = "1"
+    cc, out = center(env)
+    cc.bot_username = "pildora_carriles_bot"
+    sent = []
+    env.desk.notifier = SimpleNamespace(send_to=lambda *a, **k: sent.append(a[2]), bot_id="42")
+    env.desk.team_notice = {"enabled": True, "chats": [-900], "hermes_topics": ["-900:406"]}
+    return sent
+
+
+def test_team_notice_sin_hermes_mention_reply_and_free_topic(env, tmp_path):
+    sent = hermes_env(env, tmp_path)
+    env.desk.handle_update(group_msg("@oscarsaoBot hola", uid=777))
+    assert len(sent) == 1 and "asistente del equipo" in sent[0]
+    env.desk._help_at.clear()
+    hermes = {"from": {"id": 9, "is_bot": True, "username": "oscarsaoBot"}}
+    env.desk.handle_update(group_msg("y esto", uid=778, reply_to_message=hermes))
+    assert len(sent) == 2
+    env.desk._help_at.clear()
+    env.desk.handle_update(group_msg("sin mención", uid=777, message_thread_id=406, is_topic_message=True))
+    assert len(sent) == 2  # Andrea ya avisada hoy
+    env.desk._team_notice_day.clear()
+    env.desk.handle_update(group_msg("sin mención", uid=777, message_thread_id=406, is_topic_message=True))
+    assert len(sent) == 3
+    env.desk._team_notice_day.clear()
+    env.desk._help_at.clear()
+    env.desk.handle_update(group_msg("otro tema", uid=777, message_thread_id=500, is_topic_message=True))
+    assert len(sent) == 3  # tema sin respuesta libre de Hermes
+
+
+def test_team_notice_sin_hermes_ignores_people_with_hermes_and_chatter(env, tmp_path):
+    sent = hermes_env(env, tmp_path)
+    for uid in (1, 779, 12345):  # Oscar, operador con Hermes, desconocido
+        env.desk.handle_update(group_msg("@oscarsaoBot hola", uid=uid))
+    env.desk.handle_update(group_msg("charla entre nosotras", uid=777))
+    assert sent == []
+
+
+def test_team_notice_sin_hermes_once_per_person_and_day(env, tmp_path):
+    sent = hermes_env(env, tmp_path)
+    env.desk.handle_update(group_msg("@oscarsaoBot uno", uid=777))
+    env.desk._help_at.clear()  # sin enfriamiento del chat: lo frena el límite por persona y día
+    env.desk.handle_update(group_msg("@oscarsaoBot dos", uid=777))
+    assert len(sent) == 1
+    env.desk.handle_update(group_msg("@oscarsaoBot otra persona", uid=778))
+    assert len(sent) == 2

@@ -59,6 +59,7 @@ class Person:
     caps: frozenset = field(default_factory=frozenset)
     operador: bool = False  # people.yaml `operador: true`: mismo acceso que Oscar en el bot (comandos, botones, aprobaciones)
     permisos: frozenset = field(default_factory=frozenset)  # people.yaml `permisos:` (solo los de PERMISOS_YAML)
+    hermes: bool = True  # people.yaml `hermes: false` (estricto): Hermes no le contesta; el bot de carriles le avisa
 
     def can(self, cap: str) -> bool:
         return cap in self.caps
@@ -85,6 +86,11 @@ class People:
         """Oscar (owner) o una persona de people.yaml con `operador: true`. Única fuente de verdad del acceso al bot."""
         person = self.lookup(user_id)
         return bool(person and (person.is_owner or person.operador))
+
+    def sin_hermes(self, user_id) -> bool:
+        """Persona de people.yaml con `hermes: false`. Oscar y los desconocidos (no están en el YAML) nunca."""
+        person = self.lookup(user_id)
+        return bool(person and not person.is_owner and not person.hermes)
 
     def restringido(self, user_id) -> bool:
         """True si es un operador acotado por marca (ni Oscar ni quien tenga `"*"`)."""
@@ -167,5 +173,5 @@ def load_people(owner_id: str, path: Path | str | None = None) -> People:
         pedidos = cfg.get("permisos") if isinstance(cfg.get("permisos"), list) else []
         permisos = frozenset(str(x) for x in pedidos) & PERMISOS_YAML
         persons.append(Person(_clean(key), _clean(cfg.get("name") or key) or _clean(key), uid, role, brands, caps,
-                              cfg.get("operador") is True, permisos))
+                              cfg.get("operador") is True, permisos, cfg.get("hermes") is not False))
     return People(owner_id, persons)
