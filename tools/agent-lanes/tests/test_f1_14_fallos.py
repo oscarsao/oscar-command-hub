@@ -130,3 +130,66 @@ def test_al_dia_lista_lo_sin_desplegar_con_titulo_y_enlace():
     st = ProjectState("oscarhq", SimpleNamespace(board="default"), None, sin_desplegar=["t_abcdef01"])
     texto = AlDia(integ, ajustes_path="no-existe.yaml").resumen(st, "dev")
     assert "t_abcdef01 · Arreglar el login (/tarea t_abcdef01)" in texto
+
+
+# --- 6. monitor: «runner parado» y «resuelto» agrupados, con causa y sin «Qué hacer» si se resuelve solo --------
+
+import importlib.util  # noqa: E402
+import sys  # noqa: E402
+from datetime import datetime  # noqa: E402
+from pathlib import Path  # noqa: E402
+
+import pytest  # noqa: E402
+
+MON = Path(__file__).resolve().parents[2] / "monitor" / "monitor.py"
+
+
+@pytest.fixture
+def monitor(tmp_path, monkeypatch):
+    pytest.importorskip("psutil")
+    pytest.importorskip("rich")
+    spec = importlib.util.spec_from_file_location("monitor_f1_14", MON)
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = mod
+    spec.loader.exec_module(mod)
+    monkeypatch.setattr(mod, "STATE", tmp_path)
+    monkeypatch.setattr(mod, "ALERTS_LOG", tmp_path / "alerts.log")
+    return mod
+
+
+def _episodio(m, reloj, activo, segundos):
+    for _ in range(3):
+        m.condition("runner-dead", activo, "El runner lleva más de cinco minutos parado.", "Programador de tareas",
+                    min_secs=300, auto_secs=900, cause="RAM alta (91 %): hermes responde lento")
+    reloj[0] += segundos
+
+
+def test_runner_parado_que_se_resuelve_solo_no_manda_al_programador_y_no_se_repite(monitor, monkeypatch):
+    reloj = [1_000_000.0]
+    monkeypatch.setattr(monitor.time, "time", lambda: reloj[0])
+    pushed = []
+    m = monitor.Monitor(write_log=True, push=pushed.append)
+    m.now = lambda: datetime(2026, 10, 26, 12, 0)
+    for _ in range(2):   # dos episodios seguidos de 6 min: antes eran 4 avisos
+        m.condition("runner-dead", True, "El runner lleva más de cinco minutos parado.", "Programador de tareas",
+                    min_secs=300, auto_secs=900, cause="RAM alta (91 %): hermes responde lento")
+        reloj[0] += 360
+        _episodio(m, reloj, True, 0)
+        reloj[0] += 10
+        _episodio(m, reloj, False, 60)
+    assert len(pushed) == 2, pushed
+    parado, resuelto = pushed
+    assert "RAM alta (91 %)" in parado and "Programador de tareas" not in parado and "Qué hacer" not in parado
+    assert "Resuelto" in resuelto and "RAM alta" in resuelto
+
+
+def test_runner_parado_largo_si_dice_que_hacer(monitor, monkeypatch):
+    reloj = [1_000_000.0]
+    monkeypatch.setattr(monitor.time, "time", lambda: reloj[0])
+    pushed = []
+    m = monitor.Monitor(write_log=True, push=pushed.append)
+    m.now = lambda: datetime(2026, 10, 26, 12, 0)
+    m.condition("runner-dead", True, "parado.", "Programador de tareas", min_secs=300, auto_secs=900)
+    reloj[0] += 1200
+    _episodio(m, reloj, True, 0)
+    assert any("Qué hacer: Programador de tareas" in p for p in pushed)
