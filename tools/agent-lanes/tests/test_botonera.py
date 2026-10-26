@@ -48,7 +48,7 @@ def test_verificacion_fallida_sin_commits_recomienda_dar_por_hecha():
 
 
 def test_completar_anade_solo_lo_que_falta_sin_repetir():
-    antes = [[{"text": "🗄 Aparcar", "action": "PARK"}]]
+    antes = [[{"text": "🗄 Aparcar", "action": "park"}]]
     despues = bt.completar(antes, "blocked")
     acciones = [b["action"] for fila in despues for b in fila]
     assert len(acciones) == len(set(acciones))

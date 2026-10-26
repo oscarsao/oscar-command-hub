@@ -41,7 +41,8 @@ def diagnostico_reintentable(*, kind: str | None, reason: str = "", repeticiones
 
 def _boton(cat: dict, bid: str, estrella: bool = False) -> dict:
     d = cat["botones"][bid]
-    out = {"id": bid, "text": (ESTRELLA if estrella else "") + d["texto"], "action": d["accion"]}
+    from . import decisions  # import tardío: decisions importa este módulo
+    out = {"id": bid, "text": (ESTRELLA if estrella else "") + d["texto"], "action": getattr(decisions, d["accion"])}
     if d.get("irreversible"):
         out["confirmar"] = True      # dos toques
     if d.get("opciones_dias"):
@@ -71,3 +72,34 @@ def completar(filas: list[list[dict]], estado: str, **kw) -> list[list[dict]]:
     extra = [b for fila in ficha(estado, **kw)["filas"] for b in fila
              if b["id"] in cat["obligatorios"] and b["action"] not in hay]
     return [*filas, *[extra[i:i + 2] for i in range(0, len(extra), 2)]]
+
+
+ESTADO_DE = {"todo": "ready", "stuck": "triage"}
+
+
+def estado_de(status: str | None) -> str | None:
+    """Estado del catálogo para un estado de Hermes (None = sin botonera: archivada o desconocida)."""
+    status = ESTADO_DE.get(status or "", status)
+    return status if status in cargar()["estados"] else None
+
+
+def boton(bid: str) -> dict:
+    return _boton(cargar(), bid)
+
+
+def con_mas(filas: list[list[dict]], estado: str, **kw) -> list[list[dict]]:
+    """Filas de una ficha completas: lo que ya traía + los obligatorios que falten + «➕ Más» (lo menos usado)."""
+    return [*completar(filas, estado, **kw), [boton("mas")]]
+
+
+def filas_mas() -> list[list[dict]]:
+    return ficha(cargar()["estados"][0])["mas"]
+
+
+def spec_de_registro(rec: dict) -> list[list[dict]]:
+    """Filas (spec) de un teclado ya emitido, a partir de su registro del almacén."""
+    buttons, filas, i = rec.get("buttons") or [], [], 0
+    for n in rec.get("rows") or [len(buttons)]:
+        filas.append([dict(b) for b in buttons[i:i + n]])
+        i += n
+    return filas

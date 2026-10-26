@@ -66,6 +66,8 @@ from typing import Callable
 from urllib.parse import urlsplit
 
 from . import agrupar as _agrupar
+from . import botonera as _bt
+from . import deps
 from . import bandeja as _bandeja
 from . import clasificador, solapes
 from . import lo_tuyo as _lo_tuyo
@@ -2919,7 +2921,9 @@ class CommandCenter:
         if extra and len(text) + 1 + len(extra) <= TEXT_MAX:
             text += "\n" + extra
         row = self._fusion_row(board, show)
-        rows = [*(markup or {}).get("inline_keyboard", []), *cs_rows, *([row] if row else [])]
+        liberar = self._liberar_row(board, show)
+        rows = [*(markup or {}).get("inline_keyboard", []), *cs_rows, *([row] if row else []),
+                *([liberar] if liberar else [])]
         full = {"inline_keyboard": rows} if rows else markup
         sent = self._send(where, text, markup=full)
         if markup:  # la copia sincronizada sigue al teclado de la decisión; la fila «Fusionar con…» es aparte
@@ -3000,9 +3004,13 @@ class CommandCenter:
         elif status == "review":
             spec = [[{"text": "✅ Aprobar", "action": APPROVE}, {"text": "🔁 Pedir cambios", "action": CHANGES}]]
         elif status == "triage":
-            spec = [[{"text": "▶️ Sacar de triage", "action": UNTRIAGE}, {"text": "🗂 Archivar", "action": _tm.TR_ARCHIVAR}]]
+            spec = [[{"text": "▶️ Sacar de triage", "action": UNTRIAGE}]]
         else:
+            spec = []
+        estado = _bt.estado_de(status)  # botonera estándar (F1-14): todo estado con tarjeta tiene salida
+        if estado is None:
             return None
+        spec = _bt.con_mas(spec, estado)
         rec = {"task_id": task["id"], "board": board, "lane": task.get("assignee") or "",
                "title": task.get("title") or "", "body": (task.get("body") or "")[:1500]}
         markup = self.desk.store.issue(rec, spec)[1]
@@ -3211,6 +3219,15 @@ class CommandCenter:
             log.info("ficha: sin datos de consola (%s)", exc)
             return "", []
 
+    def _liberar_row(self, board: str, show: dict) -> list[dict] | None:
+        """Fila «🔓 Liberar» (botonera.yaml) solo si la tarjeta espera a otra por «Esperar a…» (F1-14, fallo 7)."""
+        task = show.get("task") or {}
+        if task.get("status") in ("done", "archived") or not deps.declared_waits(show):
+            return None
+        rec = {"task_id": task["id"], "board": board, "lane": task.get("assignee") or "",
+               "title": task.get("title") or ""}
+        return self.desk.store.issue(rec, [[_bt.boton("liberar")]])[1]["inline_keyboard"][0]
+
     def _fusion_row(self, board: str, show: dict) -> list[dict] | None:
         """Fila «🔗 Fusionar con…» de la ficha (fusion.py); nunca rompe la ficha."""
         fusion = getattr(self.desk, "fusion", None)
@@ -3284,9 +3301,14 @@ class CommandCenter:
                 text = render(p.state, tid, task.get("title"), lane.name, p.status,
                               self._links_for(lane, tid, p.changed_files), p.bullets, body=task.get("body"),
                               for_oscar=p.for_oscar)
+                reason = next(((e.get("payload") or {}).get("reason") or "" for e in reversed(show.get("events") or ())
+                               if e.get("kind") == "blocked"), "")
+                recomendada = _bt.diagnostico_reintentable(
+                    kind=p.block_kind, reason=reason, commits=None if p.changed_files else 0)[1] if status == "blocked" else None
                 markup = self.desk.markup(p.state, task=task, lane=lane, block_kind=p.block_kind,
                                           questions=p.questions, summary=p.summary, changed_files=p.changed_files,
-                                          for_oscar=p.for_oscar, yes_no=p.yes_no, q_index=p.q_index)
+                                          for_oscar=p.for_oscar, yes_no=p.yes_no, q_index=p.q_index,
+                                          ficha=True, recomendada=recomendada)
                 return text, markup
         state, label = STATUS_TEXT.get(status, (status or "?", status or "?"))
         lane_name = lane.name if lane else (task.get("assignee") or board)
