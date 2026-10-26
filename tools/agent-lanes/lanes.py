@@ -40,6 +40,7 @@ from agent_lanes import drain, holds
 from agent_lanes.config import ROOT, load_lanes
 from agent_lanes.git_ops import GitOps, github_slug_problem
 from agent_lanes.hermes import HermesCLI
+from agent_lanes.kanban_api import backend_for
 from agent_lanes.runner import STATE_DIR, pid_alive
 from agent_lanes.status import format_rows, lane_rows, runner_alive
 from agent_lanes.status import runner_line as _runner_line
@@ -50,7 +51,7 @@ def find_task(task_id: str):
     """(lane, hermes, task) for a task assigned to one of our implementer lanes, on any lane board."""
     lanes = {n: l for n, l in load_lanes().items() if l.kind == "implement"}
     for board in dict.fromkeys(l.board for l in lanes.values()):
-        h = HermesCLI(board, author="consola-interactiva")
+        h = backend_for(board, author="consola-interactiva")
         try:
             task = h.show(task_id)["task"]
         except Exception:
@@ -156,7 +157,7 @@ def main(argv: list[str]) -> int:
     if argv[:1] == ["pendiente"]:  # herramienta de Hermes: todo lo que espera a Oscar, solo lectura
         from agent_lanes import lo_tuyo
         boards: dict[str, HermesCLI] = {}
-        return lo_tuyo.cli(argv[1:], load_lanes(), lambda b: boards.setdefault(b, HermesCLI(b)), STATE_DIR)
+        return lo_tuyo.cli(argv[1:], load_lanes(), lambda b: boards.setdefault(b, backend_for(b)), STATE_DIR)
     if argv[:1] == ["restart"]:
         return restart(argv[1:])
     if argv[:1] == ["reload"]:  # alias de `restart --drain`: recarga el runner sin cortar workers
@@ -165,7 +166,7 @@ def main(argv: list[str]) -> int:
         print(__doc__)
         return 2
     cache: dict[str, HermesCLI] = {}
-    rows = lane_rows(load_lanes(), hermes_for=lambda b: cache.setdefault(b, HermesCLI(b)), state_dir=STATE_DIR,
+    rows = lane_rows(load_lanes(), hermes_for=lambda b: cache.setdefault(b, backend_for(b)), state_dir=STATE_DIR,
                      pid_alive=pid_alive, runner_is_alive=runner_alive(LOCK, pid_alive))
     print(format_rows(rows, runner_line()))
     return 0
