@@ -70,3 +70,40 @@ def test_block_ya_hecho_pese_al_timeout_cuenta_como_bloqueada():
     r = _runner(h)
     r._block("t_aaaaaaaa", "needs_input", "x", {"id": "t_aaaaaaaa"}, public="p")
     assert not r._block_pendiente() and [c[0] for c in h.calls].count("block") == 1
+
+
+# --- 5. «fusionado sin desplegar» comprueba el SHA servido ------------------------------------------------------
+
+import json  # noqa: E402
+
+from tests.test_integrator import MERGE, make  # noqa: E402
+
+OTRO = "b" * 40
+
+
+def _health(sha, status="healthy"):
+    return lambda url: (200, json.dumps({"status": status, "commit_sha": sha}))
+
+
+def _fusionada(integ, tid="t_1"):
+    integ._save(tid, lane="claude-migrateam", status="merged", merge_sha=MERGE)
+
+
+def test_despliegue_externo_ya_servido_no_cuenta_como_sin_desplegar(tmp_path):
+    integ, *_ = make(tmp_path, name="claude-migrateam", health=_health(MERGE))
+    _fusionada(integ)
+    assert integ._merged_states(integ.lanes["claude-migrateam"], "") == []
+    assert integ._state("t_1")["status"] == "deployed"   # concilia el estado local
+
+
+def test_si_el_servidor_sirve_otro_sha_sigue_sin_desplegar(tmp_path):
+    integ, *_ = make(tmp_path, name="claude-migrateam", health=_health(OTRO))
+    integ._is_ancestor = lambda lane, old, new: False
+    _fusionada(integ)
+    assert [t for t, _ in integ._merged_states(integ.lanes["claude-migrateam"], "")] == ["t_1"]
+
+
+def test_sin_health_valido_se_avisa_como_siempre(tmp_path):
+    integ, *_ = make(tmp_path, name="claude-migrateam", health=_health(MERGE, status="degraded"))
+    _fusionada(integ)
+    assert len(integ._merged_states(integ.lanes["claude-migrateam"], "")) == 1
