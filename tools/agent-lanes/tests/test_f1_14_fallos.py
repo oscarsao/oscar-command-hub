@@ -107,3 +107,26 @@ def test_sin_health_valido_se_avisa_como_siempre(tmp_path):
     integ, *_ = make(tmp_path, name="claude-migrateam", health=_health(MERGE, status="degraded"))
     _fusionada(integ)
     assert len(integ._merged_states(integ.lanes["claude-migrateam"], "")) == 1
+
+
+# --- 8. listas de ids con título corto y enlace a la ficha -----------------------------------------------------
+
+from agent_lanes import titulos  # noqa: E402
+
+
+def test_etiqueta_da_titulo_corto_y_enlace_a_la_ficha():
+    e = titulos.etiqueta("t_abcdef01", "[Hub] Botonera estándar en todas las fichas de tarjeta con muchas palabras · implementar")
+    assert e.startswith("t_abcdef01 · Botonera estándar") and e.endswith("(/tarea t_abcdef01)") and "[Hub]" not in e
+    assert titulos.etiqueta("t_abcdef01") == "t_abcdef01 (/tarea t_abcdef01)"
+
+
+def test_al_dia_lista_lo_sin_desplegar_con_titulo_y_enlace():
+    from types import SimpleNamespace
+
+    from agent_lanes.al_dia import AlDia, ProjectState
+
+    hermes = SimpleNamespace(show=lambda tid: {"task": {"title": "[OHQ] Arreglar el login · implementar"}})
+    integ = SimpleNamespace(hermes_for=lambda board: hermes)
+    st = ProjectState("oscarhq", SimpleNamespace(board="default"), None, sin_desplegar=["t_abcdef01"])
+    texto = AlDia(integ, ajustes_path="no-existe.yaml").resumen(st, "dev")
+    assert "t_abcdef01 · Arreglar el login (/tarea t_abcdef01)" in texto

@@ -258,6 +258,7 @@ class AlDia(ProdMixin):
         if st.sin_desplegar:
             out.append(f"🚀 Fusionado sin desplegar: {len(st.sin_desplegar)}"
                        + ("" if destino == "prod" else " (se despliega con `/al_dia … prod`)"))
+            out += [f"   · {self.etiqueta(st.lane, t)}" for t in st.sin_desplegar[:5]]
             if destino == "prod":
                 out += self.pendientes_manuales(st)
         return "\n".join(out)
