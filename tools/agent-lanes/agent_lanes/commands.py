@@ -2542,7 +2542,7 @@ class CommandCenter:
         mid = (sent or {}).get("message_id")
 
         def run() -> None:
-            lineas = []
+            lineas, ya_enviado = [], set()
             for clave in claves:
                 try:
                     st = al_dia.diagnose(clave)
@@ -2553,12 +2553,14 @@ class CommandCenter:
                     log.warning("/al_dia %s falló: %s", clave, exc)
                     lineas.append(f"📁 {clave}: no pude diagnosticarlo (detalle en el log)")
                     markup = None
-                if markup:  # los botones de cada proyecto van en su propio mensaje
+                if markup:  # los botones de cada proyecto van en su propio mensaje (y no se repite en el resumen final)
                     self._send(where, lineas[-1], html=False, markup=markup)
+                    ya_enviado.add(len(lineas) - 1)
                 if mid:
                     self.notifier.edit(where[0], mid, f"🔄 /al_dia {proyecto} {destino} · {len(lineas)}/{len(claves)} "
                                                       "proyectos…", html=False)
-            texto = "✅ /al_dia terminado\n\n" + "\n\n".join(lineas)
+            restantes = [bloque for n, bloque in enumerate(lineas) if n not in ya_enviado]
+            texto = "✅ /al_dia terminado" + ("\n\n" + "\n\n".join(restantes) if restantes else "")
             if mid:
                 self.notifier.edit(where[0], mid, texto, html=False)
             else:
