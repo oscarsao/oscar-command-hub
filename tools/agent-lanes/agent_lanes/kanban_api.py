@@ -606,6 +606,24 @@ class SupabaseKanban(KanbanComun):
             return True
         return self._write("link", run)
 
+    def unlink(self, parent_id: str, child_id: str) -> bool:
+        """Quita la dependencia padre -> hija (lo contrario de `link`); si la hija esperaba solo a ese padre, pasa a ready."""
+        from .hermes import _TID_RE
+        if not (_TID_RE.match(parent_id or "") and _TID_RE.match(child_id or "")):
+            return False
+
+        def run(cur):
+            cur.execute("UPDATE hub.tasks SET parents = array_remove(parents, %s), updated_at = now() "
+                        "WHERE id = %s AND board = %s AND %s = ANY(parents)", (parent_id, child_id, self.board, parent_id))
+            if cur.rowcount != 1:
+                return False
+            cur.execute("UPDATE hub.tasks SET status = 'ready' WHERE id = %s AND status = 'todo' AND NOT EXISTS ("
+                        "SELECT 1 FROM hub.tasks p WHERE p.id = ANY(hub.tasks.parents) "
+                        "AND p.status NOT IN ('done', 'archived'))", (child_id,))
+            self._event(cur, child_id, "unlinked", {"parent": parent_id})
+            return True
+        return self._write("unlink", run)
+
     @staticmethod
     def _ancestor(cur, candidate: str, of: str) -> bool:
         """¿`candidate` es `of` o uno de sus ancestros? (enlazar of -> candidate crearía un ciclo)."""
