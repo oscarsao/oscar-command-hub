@@ -63,7 +63,7 @@ people:
     name: Angel
     user_id: "8770041085"   # Angel (CTO OscarHQ + Signal); chat_id/DM dado por Oscar 21-10
     role: dev
-    brands: [Píldora, Signal]   # SIN MigraTeam salvo que Oscar lo confirme; sin credenciales Railway/Supabase/Vercel
+    brands: [Píldora, Signal, Hub]   # D9 (26-10): decide también el Hub. SIN MigraTeam; sin credenciales Railway/Supabase/Vercel
     can: []
     # OK final de Oscar el 22-10 (consola del integrador): operador acotado a Pildora (=OscarHQ) y Signal por el veto
     # de marca (#72). Nada en MigraTeam ni en lo demas.

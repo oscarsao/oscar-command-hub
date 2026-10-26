@@ -88,6 +88,10 @@ ETIQUETAS = {"needs_input": ("pregunta de un carril", "preguntas de carriles"),
              "externo": ("PR de sesión que espera tu OK", "PR de sesiones que esperan tu OK"),
              "integrador": ("paso del integrador", "pasos del integrador")}
 
+# Tipos cuya decisión también se copia (con los mismos botones y el mismo teclado de un solo uso) a quien en
+# people.yaml decide esa marca sin ser de todas (Ángel, D9): su tema de Desarrollo y su DM. Solo las aprobaciones.
+TIPOS_COPIA_EQUIPO = frozenset({"aprobar"})
+
 GRACIA = 15 * 60  # s: un teclado gastado tanto tiempo (y no devuelto) = decisión cerrada aunque nadie avisara
 MADRID = ZoneInfo("Europe/Madrid")
 SEMBRAR_HORA = 9               # siembra diaria (además de la del arranque)
@@ -149,6 +153,8 @@ class CanalAvisos:
         self.sembrador, self.sleep, self.run_async = sembrador, sleep, run_async
         self._inicio_pendiente = True
         self._sembrando = threading.Lock()
+        # `copias(markup)` -> ids de usuario de quienes reciben copia de una aprobación (ver para_desk); None = nadie.
+        self.copias: Callable[[dict | None], list[str]] | None = None
 
     # --- clasificación ---------------------------------------------------------------------------------------------
 
@@ -198,6 +204,7 @@ class CanalAvisos:
         if not out:
             return  # aviso idéntico ya enviado (o Telegram apagado): nada nuevo que registrar
         main, copia = out.get("main"), out.get("decision")
+        self._copias_equipo(notices, tipo, tid, text, reply_markup, main, lane_target)
         if copia and copia.get("message_id"):
             rol, donde = "mirror", copia   # copia del tema (espejo `decision` de la tarea)
         elif main and main.get("message_id") and _en(main, self.destino):
@@ -210,6 +217,34 @@ class CanalAvisos:
         if not self.es_dm((main.get("chat_id"), main.get("thread_id"))):
             self._linea_dm(head, donde)
         self.refrescar()
+
+    def _copias_equipo(self, notices, tipo: str, tid: str, text: str, markup: dict | None, main: dict | None,
+                       lane_target) -> None:
+        """D9: la aprobación de una marca de Ángel llega además a su tema de Desarrollo (el del carril, salvo que el
+        aviso principal ya cayera ahí) y a su DM. Mismo teclado y mismo token que el del tema 🎯 Decisiones: el primer
+        voto lo gasta y el resto de copias se editan a «Decidido por…» (DecisionDesk._edit). Nunca lanza."""
+        if not self.copias or tipo not in TIPOS_COPIA_EQUIPO or not markup_token(markup):
+            return
+        try:
+            ids = [str(i) for i in self.copias(markup) or ()]
+        except Exception as exc:  # falla cerrado: sin marca clara no hay copia
+            log.info("%s: no se pudo decidir las copias al equipo: %s", tid, exc)
+            return
+        if not ids:
+            return
+        destinos: list[tuple[str, str | None]] = []
+        if lane_target and len(lane_target) > 1 and str(lane_target[1]) not in ("", "0", "None"):
+            tema = (str(lane_target[0]), str(lane_target[1]))
+            if not _en(main or {}, tema) and tema != self.destino and tema[0] != self.owner_dm:
+                destinos.append(tema)
+        destinos += [(i, None) for i in ids if i != self.owner_dm]
+        token, bot = markup_token(markup), getattr(self.notifier, "bot_id", None)
+        for chat, thread in destinos:
+            try:  # trusted: el DM de Ángel está filtrado para colaboradores, estas copias llevan botones a propósito
+                sent = self.notifier.send_to(chat, thread, text, reply_markup=markup, trusted=True)
+                notices.store.add_mirror(tid, sent, token=token, bot=bot, decision=True)
+            except Exception as exc:  # DM sin /start o tema borrado: no rompe el aviso principal
+                log.info("%s: no se pudo enviar la copia al equipo: %s", tid, exc)
 
     # --- al decidir ----------------------------------------------------------------------------------------------
 
@@ -568,5 +603,18 @@ def para_desk(desk, destino: tuple[str, str] | None) -> CanalAvisos:
     def vivo(token: str) -> bool:
         return store.get(token) is not None or bool(pending and token in pending.all())
 
-    return CanalAvisos(desk.notifier, desk.owner_id, destino, Path(store.root).parent, vivo=vivo,
-                       messages=desk.messages)
+    canal = CanalAvisos(desk.notifier, desk.owner_id, destino, Path(store.root).parent, vivo=vivo,
+                        messages=desk.messages)
+
+    def copias(markup: dict | None) -> list[str]:
+        """Operadores acotados por marca (no Oscar ni los de «*») que pueden decidir TODAS las marcas de la tarjeta
+        (people.yaml). Sin marca conocida (None) o de otra marca (MigraTeam): nadie."""
+        marcas = desk.rec_marcas(store.get(markup_token(markup)) or {})
+        if not marcas or None in marcas:
+            return []
+        gente = desk._people()
+        return [p.user_id for p in gente._by_id.values()
+                if gente.restringido(p.user_id) and all(gente.puede_en(p.user_id, m) for m in marcas)]
+
+    canal.copias = copias
+    return canal
