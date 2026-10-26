@@ -1683,6 +1683,8 @@ class DecisionDesk:
             self._edit(rec, where, "blocked", "no se pudo abrir el PR; detalle en el log")
             return False
         number, url = pr
+        # D9: la identidad de quien aprueba (Oscar, María o Ángel) queda en auditoria.jsonl, también si el comentario falla
+        consola.auditar(self, "aprobar", (where or {}).get("user_id"), rec, "aprobar", pr=number)
         stamp = self._now().strftime("%Y-%m-%d %H:%M")
         if not self._hermes(rec).comment(tid, f"APROBADO-OSCAR {stamp} · PR {url}{self._by()}", author=OSCAR_AUTHOR):
             log.warning("%s: PR %s abierto pero no se pudo comentar la aprobación en la tarjeta", tid, url)
@@ -1706,7 +1708,7 @@ class DecisionDesk:
             markup = self.store.issue({**{k: v for k, v in rec.items() if k not in ("buttons", "rows", "created")},
                                        "kind": "approved_pr", "pr_number": number, "pr_url": url},
                                       [[consola.boton(consola.CS_INTEGRAR)]])[1]
-        self._edit(rec, where, "approved", f"✅ aprobada · PR #{number}", extra_links=[(f"PR #{number}", url)],
+        self._edit(rec, where, "approved", f"✅ aprobada · PR #{number} · Decidido por {self._who()}", extra_links=[(f"PR #{number}", url)],
                    markup=markup)
         return True
 

@@ -102,7 +102,7 @@ def test_dev_entries_mauredy_angel_are_scoped_devs():
     ppl = load_people(OWNER)
     assert not any(p.key == "mauredy" for p in ppl._by_id.values())  # sin id = ignorado
     angel = ppl.lookup("8770041085")
-    assert angel.key == "angel" and angel.brands == ("Píldora", "Signal") and ppl.es_operador("8770041085")
+    assert angel.key == "angel" and angel.brands == ("Píldora", "Signal", "Hub") and ppl.es_operador("8770041085")
 
 
 def test_dev_role_has_no_carril_or_production_and_is_not_operator(tmp_path):
