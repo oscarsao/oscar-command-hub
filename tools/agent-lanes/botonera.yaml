@@ -1,0 +1,23 @@
+# Botonera estándar de las fichas de tarjeta del bot Trabajos (F1-14). ÚNICO sitio donde se definen los botones:
+# texto, acción y orden. Mismo orden en todas las fichas; ⭐ marca la recomendada; `irreversible` = dos toques.
+# `accion` es el nombre de la constante de agent_lanes/decisions.py.
+botones:
+  responder:   {texto: "✍️ Responder",        accion: OTHER}          # instrucción libre: se añade a la tarjeta y la reanuda
+  integrador:  {texto: "🧑‍💻 Integrador",       accion: TO_INTEGRADOR}
+  otro_carril: {texto: "🔀 Otro carril",      accion: OTRO_CARRIL}    # elige carril del mismo tablero y reasigna
+  partir:      {texto: "✂️ Partir en dos",    accion: PARTIR}         # pide qué va a la 2.ª parte y crea esa tarjeta
+  hecha:       {texto: "✅ Dar por hecha",     accion: HECHA, irreversible: true, pide: motivo}   # el motivo hace de 2.º toque
+  aplazar:     {texto: "⏳ Aplazar",           accion: APLAZAR, opciones_dias: [1, 3, 7]}
+  mas:         {texto: "➕ Más",              accion: MAS}
+  liberar:     {texto: "🔓 Liberar",          accion: LIBERAR, solo_si: espera}   # quita la espera de «Esperar a…» y reanuda
+  archivar:    {texto: "🗄 Archivar",          accion: PARK, irreversible: true}
+  detalle:     {texto: "🔎 Detalle",           accion: DETAIL}
+  reintentar:  {texto: "🔄 Reintentar",        accion: RETRY, solo_si: diagnostico_transitorio}
+# Orden fijo de las filas; las de `mas` se despliegan con «➕ Más».
+orden:
+  principal: [responder, integrador, hecha, archivar]
+  mas: [otro_carril, partir, aplazar, detalle]
+# Los botones obligatorios de todo estado (criterio de hecho de F1-14). Reintentar se antepone solo si el diagnóstico
+# dice que puede servir.
+estados: [ready, running, blocked, needs_input, triage, review, done]
+obligatorios: [responder, integrador, hecha, archivar]

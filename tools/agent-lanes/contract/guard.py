@@ -3,6 +3,11 @@
 Claude Code pipes the hook input JSON on stdin. Exit 0 = no objection,
 exit 2 = block (stderr is shown to the model). Blocks in every permission mode.
 Docs: https://code.claude.com/docs/en/hooks
+
+F1-07 (3f de la auditoría del 25-10): `npm install <paquete>` vetado (y `npm i|add|update|uninstall…`); la herramienta
+PowerShell pasa por las mismas reglas que Bash (push a master, merges, despliegues); Write/Edit fuera del worktree de
+la tarea vetado; y antes de un `git push` de lane/* se pasa el secret-scan del integrador a lo añadido frente a la
+base (AGENT_LANES_BASE): con un posible secreto no se empuja.
 """
 from __future__ import annotations
 
@@ -13,6 +18,7 @@ import shlex
 import sys
 
 WRITE_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit"}
+SHELL_TOOLS = {"Bash", "PowerShell"}
 ALEMBIC_DB_CMDS = {"upgrade", "downgrade", "stamp", "current"}
 LOCAL_DB = re.compile(r"(localhost|127\.0\.0\.1|::1|sqlite)", re.I)
 SEGMENT_SPLIT = re.compile(r"&&|\|\||;|\||\n")
@@ -106,8 +112,27 @@ def _check_git_merge(tokens: list[str], allowed: list[str] | None = None) -> str
 
 
 PKG_DIR_FLAGS = {"-c", "--dir", "--prefix", "--workspace-root", "--cwd"}
-PKG_BAD_CMDS = {"add", "dlx", "link", "unlink", "publish", "remove", "rm", "uninstall", "update", "up", "upgrade"}
+PKG_BAD_CMDS = {"add", "dlx", "link", "unlink", "publish", "remove", "rm", "uninstall", "update", "up", "upgrade",
+                "create"}
 PKG_INSTALL = {"install", "i"}
+NPM_BAD_CMDS = {"add", "i", "in", "ins", "inst", "insta", "instal", "install", "isntall", "uninstall", "un", "unlink",
+                "remove", "rm", "r", "update", "up", "upgrade", "link", "ln", "publish", "exec", "x", "init", "create",
+                "innit"}
+NPM_INSTALL_CMDS = PKG_INSTALL | {"in", "ins", "inst", "insta", "instal", "isntall", "add", "it", "install-test"}
+# Opciones de npm que llevan su valor en el token siguiente (`npm --prefix . install x`): lista cerrada. El valor no es
+# el comando. Las booleanas (-D, --save-dev, --no-audit…) no se saltan: `npm install --save-dev x` sigue vetado.
+NPM_VALUE_FLAGS = PKG_DIR_FLAGS | {"-w", "--workspace", "--registry", "--cache", "--userconfig", "--globalconfig",
+                                   "--tag", "--omit", "--include", "--loglevel", "--script-shell", "--install-strategy"}
+# Comandos de npm que no cambian dependencias. El resto (desconocidos incluidos) se veta: falla cerrado, así una opción
+# con valor que no esté en NPM_VALUE_FLAGS no convierte su valor en «comando» y deja pasar lo que va detrás.
+NPM_RUN_CMDS = {"run", "run-script", "rum", "urn", "test", "t", "tst", "start", "stop", "restart"}
+NPM_OK_CMDS = NPM_RUN_CMDS | {"ci", "clean-install", "ic", "install-clean", "isntall-clean", "cit", "install-ci-test",
+                              "ls", "list", "ll", "la", "outdated", "view", "info", "show", "v", "help", "explain",
+                              "why", "doctor", "prefix", "root", "pack", "fund", "query", "audit", "cache"}
+# `npx <paquete>`: los de las reglas `Bash(npx …)` de lanes.yaml (pnpm pasa luego por las reglas de pnpm). Sin TTY
+# (el worker en -p) npx asume --yes, así que con o sin -y baja y ejecuta lo que se le pida: se mira el paquete.
+NPX_OK = {"pnpm", "next", "tsc", "vitest", "eslint"}
+YARN_BAD_CMDS = PKG_BAD_CMDS | {"global", "unplug", "patch", "set", "plugin"}
 
 
 def _outside_worktree(val: str) -> bool:
@@ -115,26 +140,96 @@ def _outside_worktree(val: str) -> bool:
     return val.startswith(("/", "\\", "~")) or bool(re.match(r"^[a-z]:", val)) or ".." in re.split(r"[\\/]", val)
 
 
-def _check_pkg_manager(low: list[str]) -> str | None:
-    """pnpm (directo, `npx pnpm@10`, `corepack pnpm@10.x`): solo `install` desde el lockfile y exec/run/lint dentro del
-    worktree. Nada de `pnpm add|dlx|link|publish...`, instalaciones globales (también npm -g) ni rutas fuera del
-    worktree (25-10)."""
-    idx = next((i for i, t in enumerate(low) if t == "pnpm" or t.startswith("pnpm@")), None)
-    is_npm = bool(low) and low[0] in ("npm", "npm.cmd")
-    if idx is None and not is_npm:
-        return None
-    args = low[(idx + 1 if idx is not None else 1):]
-    name = "pnpm" if idx is not None else "npm"
-    if any(a in ("-g", "--global", "--location=global") for a in args):
-        return f"{name} global (-g) prohibido para workers: solo dependencias del worktree"
+def _pkg_name(token: str) -> str:
+    """'C:/nodejs/npm.cmd' -> 'npm', 'pnpm@10' -> 'pnpm@10' (la versión se mira aparte)."""
+    return re.sub(r"\.(exe|cmd|bat|ps1|js)$", "", re.split(r"[\\/]", token)[-1])
+
+
+def _npx_package(token: str) -> str:
+    """'pnpm@10' -> 'pnpm', '@scope/x@1' -> '@scope/x'."""
+    if token.startswith("@"):
+        return "@" + token[1:].split("@", 1)[0]
+    return token.split("@", 1)[0]
+
+
+def _dir_outside(name: str, args: list[str]) -> str | None:
     for i, a in enumerate(args):
         flag, _, inline = a.partition("=")
         if flag in PKG_DIR_FLAGS:
             val = inline or (args[i + 1] if i + 1 < len(args) else "")
             if _outside_worktree(val):
                 return f"{name} {flag} fuera del worktree prohibido"
-    if idx is None:
+    return None
+
+
+def _check_npx(args: list[str]) -> str | None:
+    """`npx <paquete permitido>` (NPX_OK). Nada de `-p/--package` ni `-c/--call` (ejecutan lo que digan)."""
+    for a in args:
+        flag = a.partition("=")[0]
+        if flag in ("-p", "--package", "-c", "--call"):
+            return "npx -p/--package/-c prohibido para workers: solo `npx <paquete permitido>`"
+        if a.startswith("-"):
+            continue
+        pkg = _npx_package(a)
+        if pkg not in NPX_OK:
+            return (f"npx {pkg} prohibido para workers (con o sin -y baja y ejecuta código del registro): solo "
+                    + ", ".join(sorted(NPX_OK)))
         return None
+    return None
+
+
+def _check_yarn(args: list[str]) -> str | None:
+    """yarn (directo o `corepack yarn`): install desde el lockfile, run, test. Nada de add/global/dlx/up/remove…"""
+    if any(a in ("-g", "--global") for a in args):
+        return "yarn global prohibido para workers: solo dependencias del worktree"
+    reason = _dir_outside("yarn", args)
+    if reason:
+        return reason
+    positional, skip = [], False
+    for a in args:
+        if skip:
+            skip = False
+        elif a in PKG_DIR_FLAGS | {"--modules-folder", "--cache-folder", "--registry"}:
+            skip = True
+        elif not a.startswith("-"):
+            positional.append(a)
+    if positional and positional[0] in YARN_BAD_CMDS:
+        return f"yarn {positional[0]} prohibido para workers: solo `yarn install` desde el lockfile, run y test"
+    if positional and positional[0] in PKG_INSTALL and len(positional) > 1:
+        return "yarn install con paquetes prohibido (añadir dependencias)"
+    return None
+
+
+def _check_pkg_manager(low: list[str]) -> str | None:
+    """pnpm (directo, `npx pnpm@10`, `corepack pnpm@10.x`): solo `install` desde el lockfile y exec/run/lint dentro del
+    worktree. Nada de `pnpm add|dlx|link|publish...`, instalaciones globales (también npm -g) ni rutas fuera del
+    worktree (25-10). npx solo con los paquetes de NPX_OK, yarn sin add/global/dlx, pnpx nunca (= pnpm dlx)."""
+    head = _pkg_name(low[0]) if low else ""
+    if head == "pnpx":
+        return "pnpx (= pnpm dlx) prohibido para workers"
+    if head == "npx":
+        reason = _check_npx(low[1:])
+        if reason:
+            return reason
+    if head == "yarn" or head.startswith("yarn@"):
+        return _check_yarn(low[1:])
+    if head == "corepack":
+        j = next((i for i in range(1, len(low)) if not low[i].startswith("-")), None)
+        if j is not None and (low[j] == "yarn" or low[j].startswith("yarn@")):
+            return _check_yarn(low[j + 1:])
+    idx = next((i for i, t in enumerate(low) if t == "pnpm" or t.startswith("pnpm@")), None)
+    is_npm = head == "npm"
+    if idx is None and not is_npm:
+        return None
+    args = low[(idx + 1 if idx is not None else 1):]
+    name = "pnpm" if idx is not None else "npm"
+    if any(a in ("-g", "--global", "--location=global") for a in args):
+        return f"{name} global (-g) prohibido para workers: solo dependencias del worktree"
+    reason = _dir_outside(name, args)
+    if reason:
+        return reason
+    if idx is None:
+        return _check_npm(args)
     positional, skip = [], False
     for a in args:
         if skip:
@@ -147,6 +242,89 @@ def _check_pkg_manager(low: list[str]) -> str | None:
         return f"pnpm {positional[0]} prohibido para workers: solo `pnpm install --frozen-lockfile`, exec, run y lint"
     if positional and positional[0] in PKG_INSTALL and len(positional) > 1:
         return "pnpm install con paquetes prohibido (añadir dependencias): usa `pnpm install --frozen-lockfile`"
+    return None
+
+
+def _check_npm(args: list[str]) -> str | None:
+    """npm: `npm ci`, `npm install` sin paquetes (desde el lockfile), run/test. Añadir o quitar dependencias
+    (`npm install <pkg>`, `npm i x`, `npm add`, `update`, `uninstall`, `link`, `publish`, `exec`, `init <x>`) está
+    vetado (S-06). Los valores de las opciones (`--prefix .`) no cuentan como comando, y un comando que no está en
+    NPM_OK_CMDS se veta (falla cerrado)."""
+    positional, skip = [], False
+    for a in args:
+        if skip:
+            skip = False
+        elif a in NPM_VALUE_FLAGS:
+            skip = True
+        elif not a.startswith("-"):
+            positional.append(a)
+    if not positional:
+        return None
+    cmd = positional[0]
+    if cmd in NPM_INSTALL_CMDS:
+        if len(positional) > 1 or cmd == "add":
+            return "npm install con paquetes prohibido (añadir dependencias): usa `npm ci` o `npm install` a secas"
+        return None
+    if cmd == "audit" and positional[1:2] == ["fix"]:
+        return "npm audit fix prohibido para workers: cambia dependencias"
+    if cmd in NPM_OK_CMDS:
+        return None
+    if cmd in NPM_BAD_CMDS:
+        return f"npm {cmd} prohibido para workers: solo `npm ci`, `npm install` sin paquetes, run y test"
+    return f"npm {cmd} no está entre los comandos permitidos a workers (ci, install sin paquetes, run, test, ls, view…)"
+
+
+def inside(path: str, root: str) -> bool:
+    """¿`path` (absoluto o relativo a `root`) queda dentro de `root`? Sin distinguir mayúsculas (Windows)."""
+    full = os.path.normcase(os.path.realpath(os.path.join(root, path)))
+    base = os.path.normcase(os.path.realpath(root))
+    try:
+        return os.path.commonpath([full, base]) == base
+    except ValueError:  # otra unidad
+        return False
+
+
+def _check_write_path(path: str, env: dict, cwd: str | None) -> str | None:
+    """Worker de implementación: solo escribe dentro de su worktree (AGENT_LANES_WORKTREE o el cwd del hook)."""
+    if not env.get("AGENT_LANES_TASK") or not path:
+        return None
+    root = env.get("AGENT_LANES_WORKTREE") or cwd
+    if not root:
+        return "no sé cuál es tu worktree: escritura bloqueada por seguridad"
+    if not inside(path, root):
+        return f"escritura fuera del worktree prohibida ({os.path.basename(path)}): solo dentro de {root}"
+    return None
+
+
+def _is_push(command: str) -> bool:
+    return any("git" in (low := [t.lower() for t in _tokens(seg.strip())]) and "push" in low
+               for seg in SEGMENT_SPLIT.split(command) if seg.strip())
+
+
+def secret_scan_push(cwd: str | None, base: str | None, run=None) -> str | None:
+    """Secret-scan del integrador sobre lo añadido en la rama frente a la base, antes del push. Falla cerrado: si no
+    se puede revisar, no se empuja. Solo nombra archivo:línea y la regla, nunca el valor."""
+    import subprocess
+    if not base:
+        return None  # sin base declarada (consola, tests antiguos): no hay contra qué comparar
+    run = run or subprocess.run
+    try:
+        cp = run(["git", "-C", cwd or ".", "diff", "--no-color", "--no-ext-diff", "--no-renames", f"{base}...HEAD"],
+                 capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120)
+    except Exception as exc:
+        return f"no pude revisar secretos antes del push ({type(exc).__name__}); avisa en needs_input"
+    if cp.returncode != 0:
+        return "no pude revisar secretos antes del push (git diff falló); avisa en needs_input"
+    try:  # un fallo aquí tiene que BLOQUEAR (exit 2), no salir con 1 (Claude Code lo trataría como «sin objeción»)
+        sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        from agent_lanes.integrator import scan_secrets  # import tardío: solo al empujar
+        hits = scan_secrets(cp.stdout or "")
+    except Exception as exc:
+        return f"no pude revisar secretos antes del push ({type(exc).__name__}); avisa en needs_input"
+    if hits:
+        where = ", ".join(f"{p}:{n} ({r})" for p, n, r in hits[:5])
+        return (f"posible secreto en lo que vas a empujar: {where}. Quítalo (o usa un valor de ejemplo evidente) y "
+                "vuelve a hacer commit; si es un falso positivo, explícalo en needs_input")
     return None
 
 
@@ -189,7 +367,7 @@ def check(payload: dict, env: dict | None = None) -> str | None:
     if tool.startswith("mcp__"):
         return f"herramienta MCP {tool} prohibida para workers (los workers corren sin MCP)"
     reviewer = env.get("AGENT_LANES_ROLE") == "revisor"
-    if tool == "Bash":
+    if tool in SHELL_TOOLS:
         if reviewer:
             return _check_reviewer_bash(ti.get("command", ""))
         try:
@@ -200,13 +378,18 @@ def check(payload: dict, env: dict | None = None) -> str | None:
             push_ok = [str(r).lower() for r in json.loads(env.get("AGENT_LANES_PUSH_OK") or "[]")]
         except (ValueError, TypeError):
             push_ok = []  # ilegible: ninguna rama extra (falla cerrado)
-        return check_bash(ti.get("command", ""), env.get("DATABASE_URL"), env.get("AGENT_LANES_TASK"), merge_ok, push_ok)
+        command = ti.get("command", "")
+        reason = check_bash(command, env.get("DATABASE_URL"), env.get("AGENT_LANES_TASK"), merge_ok, push_ok)
+        if reason or not (env.get("AGENT_LANES_TASK") and _is_push(command)):
+            return reason
+        return secret_scan_push(env.get("AGENT_LANES_WORKTREE") or payload.get("cwd"), env.get("AGENT_LANES_BASE"))
     if tool in WRITE_TOOLS and reviewer:
         return f"el revisor es de solo lectura: {tool} prohibido"
     if tool in WRITE_TOOLS:
         path = ti.get("file_path") or ti.get("notebook_path") or ""
         if WORKFLOWS.search(path):
             return "escritura en .github/workflows/ prohibida para workers"
+        return _check_write_path(path, env, payload.get("cwd"))
     return None
 
 

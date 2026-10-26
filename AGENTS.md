@@ -1,6 +1,6 @@
 # AGENTS.md — Oscar Command Hub
 
-> Reglas para CUALQUIER agente (Hermes, Claude Code, Codex, OpenCode) que conecte a este repo.
+> Reglas para CUALQUIER agente (Hermes, Claude Code y, si se retoman, Codex u OpenCode) que conecte a este repo.
 
 ## Objetivo
 Este repo es el **cerebro compartido** de gestión de Oscar: proyectos, empresas, decisiones y
@@ -29,6 +29,8 @@ situaciones. NO es un repo de código de producto. Aquí se versiona contexto y 
 - `tools/agent-lanes` es el único código de este repo: el runner de carriles. Tiene sus tests y su `.env`
   (ignorado por git).
 - Hermes = Coordinador: registra, decide y avisa, pero no implementa. La Sesión Maestra está archivada (`archive/`).
+- Plan vigente del hub (25-10): `decisions/2026-10-25-arquitectura-hub-v2.md`; personas y permisos:
+  `decisions/2026-10-25-personas-roles-permisos.md`.
 
 ## Mantenimiento
 - Oscar es el CEO y decisor. Los deploys/merges a producción requieren confirmación suya.

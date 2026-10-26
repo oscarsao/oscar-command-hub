@@ -1,6 +1,10 @@
 """Reconciliación del kanban con lo que pasa fuera de él (spec: specs/reconciliacion.md).
 
 - `Reconciler.close_from_prs()`: PR mergeado/cerrado -> cierra o archiva las tarjetas vinculadas y avisa UNA vez.
+  F1-05 (FL-07/FL-08): un PR fusionado fuera del integrador (consola, ramas `fix/*`/`feat/*` con «Cierra: t_x») deja
+  `INTEGRADO <sha> · PR <url>` en la tarjeta (así deps.py la ve integrada); una tarjeta `scheduled`/`blocked` se
+  desbloquea antes de completarla (Hermes no completa una aparcada); y un PR abierto de consola SIN «Cierra: t_x»
+  se avisa una vez: es obligatorio para que su tarjeta se cierre sola.
 - `Reconciler.obsolete_pass()`: una vez al día propone archivar tarjetas obsoletas con un botón (nunca archiva sola).
 - `record_decision()` / `main()`: `lanes.py tarjeta ...`, para que el integrador registre en la tarjeta lo decidido en
   otro canal. Todo queda comentado en la tarjeta (con autor) y en .state/reconcile-audit.jsonl.
@@ -33,6 +37,9 @@ STALE_HOURS = 72
 MAX_PROPOSALS = 5
 KEEP_DAYS = 7
 INTEGRATOR_PROFILE = "oscar-e2"
+INTEGRATED_PREFIX, INTEGRATOR_AUTHOR = "INTEGRADO", "lane-integrator"  # = integrator.INTEGRATED_PREFIX / _AUTHOR
+UNBLOCK_FIRST = ("scheduled", "blocked")  # FL-08: Hermes solo completa tras unblock
+CONSOLE_BRANCH_RE = re.compile(r"(?:fix|feat)/")  # ramas de la consola (olas, oscar-e2): deben llevar «Cierra: t_x»
 GH_EXE = r"C:\Program Files\GitHub CLI\gh.exe"
 ACTIONS = ("comentar", "archivar", "reasignar", "resuelta")
 
@@ -64,7 +71,8 @@ def gh_prs(slugs: list[str], run=_proc.run, limit: int = 40, sleep=None) -> list
     for slug in slugs:
         try:
             cp = _proc.run_retrying([GH_EXE, "pr", "list", "--repo", slug, "--state", "all", "--limit", str(limit),
-                                     "--json", "number,title,body,headRefName,state,mergedAt,url"], runner=run,
+                                     "--json", "number,title,body,headRefName,state,mergedAt,url,mergeCommit"],
+                                    runner=run,
                                     sleep=sleep, label=f"gh pr list {slug}", transient=_proc.gh_network_error,
                                     capture_output=True, text=True, encoding="utf-8", errors="replace")
             if cp.returncode == 0:
@@ -93,7 +101,7 @@ class _State:
             self.data = raw if isinstance(raw, dict) else {}
         except (OSError, json.JSONDecodeError):
             pass
-        for key in ("resolved", "kept", "proposed"):
+        for key in ("resolved", "kept", "proposed", "sin_cierra"):
             self.data.setdefault(key, {})
 
     def save(self) -> None:
@@ -138,6 +146,7 @@ class Reconciler:
         for pr in self.prs():
             outcome = pr_outcome(pr)
             if not outcome:
+                self._warn_console_pr(pr)
                 continue
             for tid in pr_refs(pr):
                 key = f"{tid}:{pr.get('number')}"
@@ -156,12 +165,36 @@ class Reconciler:
             self.state.save()
         return done
 
+    def _warn_console_pr(self, pr: dict) -> None:
+        """PR abierto de una rama de consola sin «Cierra: t_x»: un aviso por PR (su tarjeta no se cerraría sola)."""
+        branch, n = str(pr.get("headRefName") or ""), pr.get("number")
+        if not CONSOLE_BRANCH_RE.match(branch) or pr_refs(pr) or str(pr.get("state")).upper() != "OPEN":
+            return
+        key = f"{pr.get('url') or ''}#{n}"
+        if key in self.state.data["sin_cierra"]:
+            return
+        self.state.data["sin_cierra"][key] = self.clock()
+        self.state.save()
+        from .resumen_carriles import anotar  # F1-04: es INFO, va al resumen diario; sin resumen, al momento
+        if anotar("pr_sin_cierra", f"PR #{n} ({branch}) sin «Cierra: t_x»: {pr.get('url') or ''}".strip(), key):
+            return
+        self.send(f"🔗 PR #{n} ({branch}) sin «Cierra: t_x»\nLas ramas de consola deben decir qué tarjeta cierran, o "
+                  f"la tarjeta se queda abierta al fusionar.\n➡️ Próximo paso: añade «Cierra: t_xxxxxxxx» a la "
+                  f"descripción del PR {pr.get('url') or ''} · Lo da: el integrador".strip(), None)
+
     def _resolve(self, h, tid: str, show: dict, pr: dict, outcome: str, board: str = "default") -> None:
         n, url = pr.get("number"), pr.get("url") or ""
         title = (show.get("task") or {}).get("title") or ""
         if outcome == "merged":
             where = f"PR #{n} (mergeado)"
             h.comment(tid, f"RECONCILIACIÓN: resuelta en {where} {url}".strip(), author="reconciliacion")
+            sha = str((pr.get("mergeCommit") or {}).get("oid") or "").strip()
+            integrated = any(str(c.get("body") or "").startswith(INTEGRATED_PREFIX + " ")
+                             and c.get("author") == INTEGRATOR_AUTHOR for c in show.get("comments") or [])
+            if re.fullmatch(r"[0-9a-f]{7,40}", sha) and not integrated:  # fusión de consola: mismo rastro que el lote
+                h.comment(tid, f"{INTEGRATED_PREFIX} {sha} · PR {url}".strip(), author=INTEGRATOR_AUTHOR)
+            if (show.get("task") or {}).get("status") in UNBLOCK_FIRST:
+                h.unblock(tid)  # FL-08: si falla, complete dirá que no y el aviso pide cerrarla a mano
             ok, _ = h.complete(tid, f"Resuelta en {where}", {"reconciled": True, "pr": n})
             step = "ninguno: tarjeta cerrada" if ok else "ciérrala o archívala (no pude cerrarla sola)"
         else:
@@ -318,20 +351,52 @@ def record_decision(h, action: str, tid: str, author: str, text: str = "", *, pr
     return True, f"{tid}: {action} registrado por {author}"
 
 
-def main(argv: list[str], *, hermes_for: Callable | None = None, out: Callable[[str], None] = print) -> int:
-    """`lanes.py tarjeta <accion> <t_id> --autor <quien> [--a perfil] [--board b] [texto]`."""
+def veto_solicitante(people, solicitante: str, board: str, show: dict) -> str | None:
+    """P06 (F1-07): quien pide el cambio debe ser Oscar o un operador de people.yaml con la marca de la tarjeta (la de
+    su carril o, si no, la del tablero). None = permitido; si no, el motivo. Transitorio hasta F2 (identidad real)."""
+    from .nueva_tarjeta import Rechazo, resolver_solicitante
+    from .notices import BOARD_BRANDS, BRANDS
+    try:
+        person = resolver_solicitante(people, solicitante)
+    except Rechazo as exc:
+        return str(exc)
+    if not (person.is_owner or person.operador):
+        return f"{person.name} no puede cambiar tarjetas (no es operador en people.yaml)"
+    marca = BRANDS.get(str((show.get("task") or {}).get("assignee") or "")) or BOARD_BRANDS.get(board)
+    if not people.puede_en(person.user_id, marca):
+        return f"{person.name} no puede actuar en tarjetas de {marca or 'una marca desconocida'} (veto de marca)"
+    return None
+
+
+def main(argv: list[str], *, hermes_for: Callable | None = None, out: Callable[[str], None] = print,
+         people=None) -> int:
+    """`lanes.py tarjeta <accion> <t_id> --autor <quien> --solicitante <clave|id> [--a perfil] [--board b] [texto]`."""
     ap = argparse.ArgumentParser(prog="lanes.py tarjeta")
     ap.add_argument("action", choices=ACTIONS)
     ap.add_argument("task_id")
     ap.add_argument("text", nargs="*")
     ap.add_argument("--autor", required=True)
+    ap.add_argument("--solicitante", required=True, help="clave de people.yaml, user_id de Telegram u 'oscar'")
     ap.add_argument("--a", dest="profile")
     ap.add_argument("--board", default="default")
     args = ap.parse_args(argv)
     if hermes_for is None:
         from .hermes import HermesCLI
         hermes_for = lambda board: HermesCLI(board, author=args.autor)  # noqa: E731
-    ok, msg = record_decision(hermes_for(args.board), args.action, args.task_id, args.autor, " ".join(args.text),
+    if people is None:
+        from .decisions import OWNER_TELEGRAM_ID
+        from .people import load_people
+        people = load_people(os.environ.get("OWNER_TELEGRAM_ID") or OWNER_TELEGRAM_ID)
+    h = hermes_for(args.board)
+    try:
+        show = h.show(args.task_id) if TID_RE.fullmatch(args.task_id or "") else {}
+    except Exception:
+        show = {}
+    why = veto_solicitante(people, args.solicitante, args.board, show or {})
+    if why:
+        out(f"✋ {why}")
+        return 2
+    ok, msg = record_decision(h, args.action, args.task_id, args.autor, " ".join(args.text),
                               profile=args.profile)
     out(msg)
     return 0 if ok else 1

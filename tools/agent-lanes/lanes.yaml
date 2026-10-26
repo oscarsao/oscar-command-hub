@@ -5,7 +5,7 @@
 
 runner:
   # Tope global de procesos claude vivos a la vez, sumando todos los carriles (review incluido).
-  # 3 por decisión de Oscar (21-oct): sube de 2 a 3 para medir cómo responde la RAM (antes 2). Esta es la ÚNICA fuente de verdad: el
+  # Valor actual: 4 (el 21-oct Oscar lo subió de 2 a 3 para medir la RAM; el 4 es posterior, CF-11). ÚNICA fuente de verdad: el
   # servicio (install-service.ps1) no fija el número en su línea de comandos; `--max-workers N` en runner.py solo
   # sirve para pruebas puntuales y PISA este valor. Ojo con la RAM: hubo un OOM el 27-09 con varias sesiones abiertas
   # y el PC va justo (~0,9 GB libres el 21-oct). Si vuelve a haber OOM, bajar a 2 (o 1) aquí y reiniciar el runner.
@@ -34,7 +34,9 @@ runner:
 # Grupo Gestión -1003530490339: t5 Operaciones · General, t230 Operaciones · MigraTeam, t231 Operaciones · Píldora.
 telegram:
   # Los user_id del equipo (tools/telegram/people.yaml) NO van aquí: su DM no es un origen genérico y debe volver a
-  # su chat (requiere añadirlos a TELEGRAM_ALLOWED_CHATS en .env; cambio manual de Oscar).
+  # su chat. Allowlist DERIVADA (F1-02): TELEGRAM_ALLOWED_CHATS del .env + los user_id de people.yaml (sin null ni
+  # suspendidos) + los chats que este fichero ya usa como destino (temas de carril, final_only, Integración,
+  # 🎯 Decisiones, panel del hub, 👥 Equipo). Ya no hace falta repetirlos a mano en el .env (telegram.allowlist).
   generic_origins:
     - {chat: 6744452215}              # DM de Oscar (cualquier hilo)
     - {chat: -1003530490339, thread: 5}  # Gestión · Operaciones General
@@ -70,6 +72,10 @@ telegram:
   # (thread != 0); sin la clave todo sigue yendo al DM como antes. El integrador pondrá el id del tema al crearlo:
   destinos:   # 25-10 (Oscar, botón): tema 🎯 Decisiones creado por el integrador en Gestión
     decisiones: {chat: -1003530490339, thread: 2053}
+
+# API de Oscar HQ (F1-02, CF-03): URL por defecto de sync_usuarios y de la vigilancia del 👥 Equipo. OHQ_API_URL del
+# .env manda sobre esta; la CLAVE (OHQ_API_KEY) solo va en el .env y no tiene valor por defecto (sin ella, apagados).
+ohq: {api_url: https://api.pildoradigital.com}
 
 # Tema de Integración (28-09, Oscar): TODO aviso de PR/merge/deploy (tarjeta done con ✅ Aprobar, "Listo para integrar",
 # gates fallidos, en espera, fusionado, desplegado, fallo de deploy) va aquí como ficha con cabecera por riesgo
@@ -119,8 +125,8 @@ defaults:
   effort: medium
   max_budget_usd: 3.0
   # Por carril, no global. Se queda en 1: cada carril trabaja un repo y dos workers en el mismo repo/checkout podrían
-  # pisarse (worktrees, migraciones, pushes). Con max_workers 2 el paralelismo sale de carriles DISTINTOS (repos
-  # distintos) o de un carril + review. No subirlo sin mirar el riesgo de ese repo.
+  # pisarse (worktrees, migraciones, pushes). El paralelismo sale de carriles DISTINTOS (repos distintos) o de un
+  # carril + review. No subirlo sin mirar el riesgo de ese repo (hoy: claude-oscarhq y claude-hub en 2, el resto en 1).
   max_parallel: 1
   # Hueco grande por carril (máx. grandes a la vez en un proyecto; fuera de max_parallel) y umbral de runtime estimado.
   max_big: 1
@@ -147,7 +153,7 @@ defaults:
     # (t_b28a1ed7, t_77bcf9b0 y t_04db0d4e se pararon en npm ci / tsc / node). Solo instalar, compilar, lint y tests;
     # despliegues, alembic contra BD remota y merges siguen vetados por contract/guard.py.
     - "Bash(npm ci:*)"
-    - "Bash(npm install:*)"
+    # F1-07 (S-06): fuera `npm install:*` (aprobaba `npm install <paquete>` sin preguntar); el guard veta añadir paquetes.
     - "Bash(npm run:*)"
     - "Bash(npm test:*)"
     - "Bash(pnpm install:*)"
@@ -452,7 +458,7 @@ integrator:
       # [🔁 Aplicar (reinicio ordenado)] = `py -3.12 lanes.py restart --drain` en el checkout vivo (apply:
       # restart_drain). El subcomando lo aporta feat/plan-d-runtime: hasta que exista en lanes.py el botón no sale.
       # El avance del checkout raíz a main (fast-forward) es parte de ese restart/deploy de HEAD, nunca del integrador.
-      # Activarlo: añadir claude-hub a INTEGRATOR_LANES en agent-lanes/.env (lo hace el coordinador).
+      # Activo: claude-hub ya está en INTEGRATOR_LANES de agent-lanes/.env (comprobado en la auditoría del 25-10).
       deploy: none
       apply: restart_drain
       risk: system                  # ⚙️ cabecera de la ficha: cambia el código que ejecuta a los workers
@@ -462,7 +468,8 @@ integrator:
     claude-scraper:
       # 01-10: Railway despliega el Scraper desde la rama base: fusionar = producción. Se verifica con GitHub
       # Deployments del commit fusionado (success), no con /health.
-      # Activarlo: añadir claude-scraper a INTEGRATOR_LANES en agent-lanes/.env (lo hace el coordinador).
+      # Activo: claude-scraper ya está en INTEGRATOR_LANES de agent-lanes/.env (auditoría del 25-10). Ojo, CF-07 sin
+      # resolver: Railway sigue desplegando el Scraper y pildora-01 también lo ejecuta; un solo entorno lo decide Oscar.
       deploy: on_merge
       deploy_check: github_deployments
       risk: production              # 🔴 PRODUCCIÓN

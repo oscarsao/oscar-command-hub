@@ -258,6 +258,7 @@ class AlDia(ProdMixin):
         if st.sin_desplegar:
             out.append(f"🚀 Fusionado sin desplegar: {len(st.sin_desplegar)}"
                        + ("" if destino == "prod" else " (se despliega con `/al_dia … prod`)"))
+            out += [f"   · {self.etiqueta(st.lane, t)}" for t in st.sin_desplegar[:5]]
             if destino == "prod":
                 out += self.pendientes_manuales(st)
         return "\n".join(out)
@@ -271,9 +272,12 @@ class AlDia(ProdMixin):
         # el escritorio de decisiones exige `task_id` en todo registro: el de «integrar todo» lleva el del primer PR
         filas = []
         if listos:
-            filas.append((f"✅ Integrar todo lo listo ({len(st.con('listo'))})", AD_INTEGRAR,
-                          dict(base, task_id=listos[0].tid)))
-            filas += [(f"🔎 #{p.number} {p.title[:30]}", AD_PR, dict(base, task_id=p.tid)) for p in listos]
+            lote = bool(getattr(st.policy, "batch", ""))   # sin lote no se ofrece «Integrar todo»: luego se negaría
+            if lote:
+                filas.append((f"✅ Integrar todo lo listo ({len(st.con('listo'))})", AD_INTEGRAR,
+                              dict(base, task_id=listos[0].tid)))
+            icono = "🔎" if lote else "🔀 Fusionar"   # el hub fusiona por PR desde la ficha de cada tarjeta
+            filas += [(f"{icono} #{p.number} {p.title[:30]}", AD_PR, dict(base, task_id=p.tid)) for p in listos]
         filas += [(f"🛠 Resolver #{p.number} (CI rojo)", AD_RESOLVER, dict(base, task_id=p.tid)) for p in rojos]
         filas += [(f"🛠 Resolver {f['titulo'][:28]} ({FALLO_TEXTO[f['fallo']]})", AD_RESOLVER,
                    dict(base, task_id=f["tid"], fallo=f["fallo"])) for f in st.fallos[:tope]]

@@ -5,7 +5,8 @@
     py -3.12 lanes.py close <task_id> "<resumen>"  # verificación mecánica + request-review (nunca merge)
     py -3.12 lanes.py renotify [--lane X] [--task t_id] [--dry-run] [--force]
                                                    # reenvía con botones los avisos pendientes de decisión
-    py -3.12 lanes.py tarjeta <comentar|archivar|reasignar|resuelta> <task_id> --autor <quien> [--a perfil] [texto]
+    py -3.12 lanes.py tarjeta <comentar|archivar|reasignar|resuelta> <task_id> --autor <quien>
+                                       --solicitante <clave|id> [--a perfil] [texto]   # veto de marca (F1-07, P06)
                                                    # el integrador registra en la tarjeta lo decidido en otro canal
                                                    # (comentario REGISTRO por <autor> + .state/reconcile-audit.jsonl)
     py -3.12 lanes.py tarjeta nueva "<título>" "<texto>" --solicitante <clave|id> [--chat C --thread T --mensaje M]
@@ -15,6 +16,8 @@
                                                    # lista (en seco) las tarjetas con el Origen-Telegram mal escrito
     py -3.12 lanes.py doctor-boards [--apply]     # tarjetas abiertas en un tablero que su carril no lee (dry-run
                                                    # por defecto; --apply las recoloca en el tablero correcto)
+    py -3.12 lanes.py doctor-config [--sin-gh]    # qué funciones del hub están activas/apagadas y por qué (solo
+                                                   # nombres de variables, nunca valores); avisa si el hub es público
     py -3.12 lanes.py pendiente [--json]           # todo lo que espera a Oscar en una lista (solo lectura; herramienta
                                                    # de Hermes; los botones están en /pendiente del bot de carriles)
     py -3.12 lanes.py restart --drain [--timeout 3600]
@@ -147,6 +150,9 @@ def main(argv: list[str]) -> int:
     if argv[:1] == ["doctor-boards"]:
         from agent_lanes import board_guard
         return board_guard.main(argv[1:])
+    if argv[:1] == ["doctor-config"]:  # solo lectura: nombres, nunca valores (F1-02)
+        from agent_lanes import doctor_config
+        return doctor_config.main(argv[1:])
     if argv[:1] == ["pendiente"]:  # herramienta de Hermes: todo lo que espera a Oscar, solo lectura
         from agent_lanes import lo_tuyo
         boards: dict[str, HermesCLI] = {}

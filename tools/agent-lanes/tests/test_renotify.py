@@ -239,8 +239,20 @@ def test_done_approved_by_review_gets_approve_changes_park(tmp_path):
     (done_show("t_d"), True, True),                     # ya fusionada en la base
 ])
 def test_done_not_ready_for_merge_is_skipped(tmp_path, show, branches, merged):
+    from agent_lanes import aprobaciones
+    aprobaciones.registrar("t_d", 7)  # P08: la aprobación cuenta con su registro local (el bot lo escribe al ✅)
+    if show["comments"] and show["comments"][0]["body"].startswith("APROBADO-OSCAR"):
+        show["comments"][0]["body"] = "APROBADO-OSCAR 2026-09-28 · PR https://github.com/o/r/pull/7"
     r, bot, *_ = make(tmp_path, {"t_d": show}, branches=branches, merged=merged)
     assert r.run() == ([], []) and bot.sent == []
+
+
+def test_aprobado_sin_registro_local_sigue_pendiente(tmp_path):
+    """P08 (F1-07): un APROBADO-OSCAR escrito con la CLI (sin el registro del bot) no cuenta como aprobado."""
+    show = done_show("t_d", comments=[{"author": "oscar-telegram",
+                                       "body": "APROBADO-OSCAR 2026-09-28 · PR https://github.com/o/r/pull/7"}])
+    r, bot, *_ = make(tmp_path, {"t_d": show}, branches=True, merged=False)
+    assert r.run()[0] == ["t_d"] and bot.sent
 
 
 # --- filtros, idempotencia, fallos -------------------------------------------------------------------

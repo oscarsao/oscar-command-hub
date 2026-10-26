@@ -46,25 +46,61 @@ def in_scope(target: tuple[str, str] | None, scopes) -> bool:
 def notifier_from_env(env: dict, tg_settings: dict) -> tuple[TelegramNotifier, bool]:
     """(notificador, es_bot_de_carriles). CARRILES_BOT_TOKEN = bot propio de los carriles (botones + escucha); sin
     él, el bot de Hermes (TELEGRAM_BOT_TOKEN) y sin botones. La usan el runner y `lanes.py renotify`."""
-    allowed = {c.strip() for c in env.get("TELEGRAM_ALLOWED_CHATS", "").split(",") if c.strip()}
     lanes_bot = env.get("CARRILES_BOT_TOKEN") or None
+    people = _people(env)
     notifier = TelegramNotifier(lanes_bot or env.get("TELEGRAM_BOT_TOKEN"), env.get("TELEGRAM_CHAT_ID"),
-                                env.get("TELEGRAM_THREAD_ID"), allowed_chats=allowed,
+                                env.get("TELEGRAM_THREAD_ID"), allowed_chats=allowlist(env, people=people),
                                 generic_origins=tg_settings["generic_origins"])
-    _protect_collaborator_dms(notifier, env)
+    _protect_collaborator_dms(notifier, env, people)
     return notifier, bool(lanes_bot)
 
 
-def _protect_collaborator_dms(notifier: "TelegramNotifier", env: dict) -> None:
+def _people(env: dict):
+    from .decisions import OWNER_TELEGRAM_ID
+    from .people import load_people
+    return load_people(env.get("OWNER_TELEGRAM_ID") or OWNER_TELEGRAM_ID)
+
+
+def env_allowed_chats(env: dict) -> set[str]:
+    return {c.strip() for c in str(env.get("TELEGRAM_ALLOWED_CHATS") or "").split(",") if c.strip()}
+
+
+def allowlist(env: dict, *, people=None, lanes_path: Path | None = None) -> set[str]:
+    """Chats a los que un Origen-Telegram puede devolver avisos (F1-02): TELEGRAM_ALLOWED_CHATS del .env + los user_id
+    de people.yaml (los que `load_people` acepta: sin null, sin suspendidos, falla cerrado) + los chats que lanes.yaml
+    ya usa como destino (config.chats_de_confianza). Ningún id nuevo vive en el código ni en el .env: sale de esos
+    dos ficheros, que ya los tienen."""
+    from .config import chats_de_confianza
+    people = _people(env) if people is None else people
+    return env_allowed_chats(env) | set(people.collaborator_ids()) | chats_de_confianza(lanes_path)
+
+
+def _protect_collaborator_dms(notifier: "TelegramNotifier", env: dict, people=None) -> None:
     """DM de los colaboradores (tools/telegram/people.yaml): todo lo que les llegue pasa por collab_view (solo t_id,
     estado y enlace; sin botones). Falla cerrado: sin people.yaml legible no hay colaboradores."""
     from .collab_intake import collab_view
     from .decisions import OWNER_TELEGRAM_ID
-    from .people import load_people
     owner = env.get("OWNER_TELEGRAM_ID") or OWNER_TELEGRAM_ID
     notifier.owner_id = str(owner)
-    notifier.collab_chats = load_people(owner).collaborator_ids()
+    people = _people(env) if people is None else people
+    # F1-09 (D4-A): los operadores con todas las marcas (María) no pasan por collab_view; deciden con los mismos
+    # botones que Oscar (tema 🎯 Decisiones o su DM). Los acotados por marca (Ángel) siguen filtrados; solo las copias de aprobación de
+    # su marca (canal_avisos._copias_equipo, D9) salen con `trusted=True` y botones.
+    notifier.operator_chats = people.operadores_todas_marcas()
+    notifier.collab_chats = people.collaborator_ids() - notifier.operator_chats
     notifier.collab_view = collab_view
+
+
+RETRY_AFTER_MAX = 10  # s: más espera que esto bloquearía la pasada; se reintenta igual tras el tope
+
+
+def retry_after(description: str | None) -> float | None:
+    """Segundos de «Too Many Requests: retry after N» (429); None si el error es otro."""
+    desc = str(description or "").lower()
+    if "too many requests" not in desc and "retry after" not in desc:
+        return None
+    m = re.search(r"retry after (\d+)", desc)
+    return float(m.group(1)) if m else 1.0
 
 
 class TelegramAPIError(RuntimeError):
@@ -89,7 +125,9 @@ class TelegramNotifier:
         # DM de colaboradores: nada sale hacia ellos sin pasar por collab_view (ver notifier_from_env).
         self.collab_chats: set[str] = set()
         self.collab_view = None
+        self.operator_chats: set[str] = set()  # operadores con todas las marcas: fuera del filtro de colaboradores
         self.owner_id: str | None = None
+        self.sleep = time.sleep  # inyectable en tests (espera del reintento ante 429)
 
     def _is_collab_chat(self, chat_id) -> bool:
         """Falla ABIERTO es lo que hay que evitar: con el filtro activo, todo chat privado (id positivo) que no sea el de
@@ -98,6 +136,8 @@ class TelegramNotifier:
         if not self.collab_view:
             return False
         cid = str(chat_id)
+        if cid in self.operator_chats:  # antes del recurso de «todo DM desconocido es colaborador»
+            return False
         if cid in self.collab_chats:
             return True
         return cid.isdigit() and cid != str(self.owner_id) and cid != str(self.chat_id)
@@ -174,7 +214,15 @@ class TelegramNotifier:
             payload["reply_markup"] = reply_markup
         if reply_to:
             payload["reply_parameters"] = {"message_id": int(reply_to), "allow_sending_without_reply": True}
-        result = self._api("sendMessage", payload)
+        try:
+            result = self._api("sendMessage", payload)
+        except TelegramAPIError as exc:
+            # 429 (TG-07): se espera lo que pide Telegram (con tope) y se reintenta UNA vez; si vuelve a fallar, sube.
+            wait = retry_after(exc.description)
+            if wait is None:
+                raise
+            getattr(self, "sleep", time.sleep)(min(wait, RETRY_AFTER_MAX) + 0.5)
+            result = self._api("sendMessage", payload)
         return {"chat_id": str(chat_id), "thread_id": str(thread_id or "0"), "message_id": result.get("message_id")}
 
     def edit(self, chat_id: str, message_id, text: str, *, html: bool = True,

@@ -15,7 +15,6 @@ from typing import Callable
 from zoneinfo import ZoneInfo
 
 from .ajustes_hub import valor
-from .aviso import mention
 from .formato_aviso import PIE_TEXTO_LIBRE
 from .notices import hours_ago, truncate
 
@@ -128,3 +127,115 @@ class DailyLaneSummary:
         self.state_path.parent.mkdir(parents=True, exist_ok=True)
         self.state_path.write_text(json.dumps({"sent": sorted(self._sent() | {key})[-14:]}), encoding="utf-8")
         return text
+
+
+# --- resumen diario de avisos INFO (F1-04, 3c) ------------------------------------------------------------------------
+# Los avisos informativos que hoy llegan sueltos o repetidos (vigilancias apagadas, tareas relanzadas, «limpieza
+# pendiente», workflows sin `origen`, batería) se apuntan aquí y salen en UN mensaje al día. ALTA/URGENTE no pasan por
+# aquí: siguen saliendo al momento. El almacén es un JSON en .state (sobrevive a reinicios y lo puede escribir otro
+# proceso, p. ej. el monitor en F1-06); un evento con la misma `clave` solo cuenta una vez al día.
+
+TIPOS_RESUMEN = {"vigilancia": "🔌 Vigilancias apagadas", "relanzada": "🔁 Tareas programadas relanzadas",
+                 "limpieza": "🧹 Limpieza pendiente", "workflow_sin_origen": "🧩 Workflows sin origen",
+                 "bateria": "🔋 Batería del PC", "hermes_config": "🧭 Config de Hermes fuera de la plantilla",
+                 "pr_sin_cierra": "🔗 PR de consola sin «Cierra: t_x»"}
+RESUMEN_INFO_HOUR = 9
+RESUMEN_INFO_MAX = 40   # líneas por resumen (el resto se cuenta)
+
+
+class DiarioInfo:
+    """`anotar(tipo, texto, clave)` guarda; `tick()` envía el resumen del día una vez, desde `hour` (Madrid), por
+    `send(text) -> bool`. Un envío fallido se reintenta en la siguiente pasada. Sin eventos no se envía nada."""
+
+    def __init__(self, send: Callable[[str], bool], state_path: Path | str, *, hour: int = RESUMEN_INFO_HOUR,
+                 now: Callable[[], datetime] = lambda: datetime.now(MADRID)):
+        self.send, self.path, self.hour, self._now = send, Path(state_path), hour, now
+
+    def _load(self) -> dict:
+        try:
+            data = json.loads(self.path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            data = {}
+        if not isinstance(data, dict):
+            data = {}
+        data.setdefault("eventos", [])
+        data.setdefault("vistas", {})
+        data.setdefault("sent", [])
+        return data
+
+    def _save(self, data: dict) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self.path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        tmp.replace(self.path)
+
+    def anotar(self, tipo: str, texto: str, clave: str | None = None) -> bool:
+        """True si queda para el resumen; False si el tipo no es de resumen (quien llama lo envía como siempre)."""
+        if tipo not in TIPOS_RESUMEN:
+            return False
+        dia = f"{self._now().astimezone(MADRID):%Y-%m-%d}"
+        data = self._load()
+        key = f"{tipo}:{clave or texto}"
+        if data["vistas"].get(key) == dia:
+            return True  # ya apuntado hoy: una vez al día
+        data["vistas"][key] = dia
+        data["vistas"] = dict(list(data["vistas"].items())[-500:])
+        data["eventos"].append({"tipo": tipo, "texto": truncate(texto, 300)})
+        self._save(data)
+        return True
+
+    def render(self, eventos: list[dict]) -> str:
+        lines = [f"🗞 Resumen diario de avisos informativos ({len(eventos)})"]
+        shown = 0
+        for tipo, titulo in TIPOS_RESUMEN.items():
+            grupo = [e for e in eventos if e.get("tipo") == tipo]
+            if not grupo:
+                continue
+            lines.append(f"\n{titulo} ({len(grupo)})")
+            for e in grupo:
+                if shown >= RESUMEN_INFO_MAX:
+                    break
+                lines.append(f"• {e.get('texto')}")
+                shown += 1
+        if len(eventos) > shown:
+            lines.append(f"\n… y {len(eventos) - shown} más")
+        lines.append("\nLo urgente (caídas, producción) no espera a este resumen: llega al momento.")
+        return "\n".join(lines)
+
+    def tick(self) -> str | None:
+        now = self._now().astimezone(MADRID)
+        key = f"{now:%Y-%m-%d}"
+        data = self._load()
+        if now.hour < self.hour or key in data["sent"] or not data["eventos"]:
+            return None
+        enviados = len(data["eventos"])
+        text = self.render(data["eventos"])
+        try:
+            ok = self.send(text)
+        except Exception as exc:
+            log.warning("resumen INFO: envío falló: %s", exc)
+            ok = False
+        if not ok:
+            return None
+        data = self._load()  # pudo apuntarse algo mientras se enviaba: solo se quitan los enviados
+        data["eventos"] = data["eventos"][enviados:]
+        data["sent"] = sorted(set(data["sent"]) | {key})[-14:]
+        self._save(data)
+        return text
+
+
+ACTIVO: "DiarioInfo | None" = None  # lo instala el runner; sin él `anotar` no hace nada (tests, consolas, --once)
+
+
+def instalar(instancia: "DiarioInfo | None") -> None:
+    global ACTIVO
+    ACTIVO = instancia
+
+
+def anotar(tipo: str, texto: str, clave: str | None = None) -> bool:
+    """Apunta un aviso INFO para el resumen del día. False sin resumen instalado o tipo ajeno (nunca lanza)."""
+    try:
+        return bool(ACTIVO) and ACTIVO.anotar(tipo, texto, clave)
+    except Exception as exc:
+        log.warning("resumen INFO: no se pudo apuntar %s: %s", tipo, exc)
+        return False

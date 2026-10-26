@@ -16,7 +16,7 @@ import logging
 import time
 from typing import Callable
 
-from . import workflows
+from . import resumen_carriles, workflows
 from .review import implementation_metadata
 
 log = logging.getLogger("agent_lanes")
@@ -84,9 +84,14 @@ class AvanceWorkflows:
         creadas: list[str] = []
         try:
             # Sin `origen` (workflows anteriores al avance automático) no se tocan: los reactiva el integrador a mano.
-            vivos = [w for w in self.store.load().values()
-                     if w.get("tipo") == workflows.TIPO and w.get("origen")
-                     and w.get("estado") in (*workflows.ACTIVOS, "pausado")]
+            todos = [w for w in self.store.load().values()
+                     if w.get("tipo") == workflows.TIPO and w.get("estado") in (*workflows.ACTIVOS, "pausado")]
+            vivos = [w for w in todos if w.get("origen")]
+            for w in todos:  # F1-04 (FL-01): los sin `origen` no avanzan solos; que se vea en el resumen diario
+                if not w.get("origen"):
+                    resumen_carriles.anotar("workflow_sin_origen", f"{w.get('id')} · "
+                                            f"{w.get('titulo') or w.get('nombre') or 'sin título'}: sin `origen`, "
+                                            "no avanza solo (lo reactiva el integrador)", clave=str(w.get("id")))
         except Exception as exc:
             log.warning("workflows: no se pudo leer el estado: %s", type(exc).__name__)
             return creadas

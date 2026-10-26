@@ -66,6 +66,8 @@ from typing import Callable
 from urllib.parse import urlsplit
 
 from . import agrupar as _agrupar
+from . import botonera as _bt
+from . import deps
 from . import bandeja as _bandeja
 from . import clasificador, solapes
 from . import lo_tuyo as _lo_tuyo
@@ -80,6 +82,7 @@ from .decisions import (APPROVE, CHANGES, DEPLOY_ASK, DEPLOY_NO, FALTA, FLUJO, H
 from .hermes import OSCAR_AUTHOR
 from .deps import (ShowCache, child_bucket, dependency_order, family, pending_parents, tree_lines,
                    waiting_line)
+from .telegram import TelegramNotifier
 from .notices import (BOARD_BRANDS, BRANDS, DECISION_CARD_STATUSES, OSCAR_ASSIGNEE, TEXT_MAX, card_url,
                       decision_since, hours_ago, is_decision_card, markup_token, next_step, normalize_questions,
                       render, status_line, truncate)
@@ -150,6 +153,7 @@ STATUS_TEXT = {"running": ("running", "en curso"), "ready": ("ready", "en cola")
 TOP_DECISIONS = 5    # /decisiones muestra las 5 más importantes; el resto con [📋 Ver todas]
 VIEW_STATUSES = ("triage", "todo", "ready", "running", "blocked", "review")  # vistas por paso: tarjetas no cerradas
 MAX_CARDS = 20    # tarjetas por /decisiones o /aprobar (el resto se cuenta en la cabecera)
+FICHAS_PAUSA = 1.0  # s entre fichas de /aprobar al mismo chat (TG-07: varias seguidas daban 429)
 CARD_TITLE_MAX = 60  # título de una tarjeta de decisión de Oscar en /decisiones
 EXTRA_BOARDS = ("default",)  # además de los tableros de los carriles: donde viven muchas tarjetas de Oscar
 HAZLO_PRIORITY = 10  # prioridad alta (kanban: más alto = antes)
@@ -632,12 +636,12 @@ class CommandCenter:
         import os
 
         from . import vigilancia as vg
-        from .config import load_env
+        from .config import load_env, ohq_api_url
         from .sync_usuarios import ApiOhq
         cfg = vg.load_config()
         env = {**load_env(), **os.environ}
-        api = ApiOhq(env["OHQ_API_URL"], env["OHQ_API_KEY"]) if env.get("OHQ_API_URL") and env.get("OHQ_API_KEY") \
-            else None
+        base = ohq_api_url(env)  # .env manda; sin él, ohq.api_url de lanes.yaml (F1-02)
+        api = ApiOhq(base, env["OHQ_API_KEY"]) if base and env.get("OHQ_API_KEY") else None
         if api is None:
             log.info("vigilancia: sin OHQ_API_URL/OHQ_API_KEY; solo vigilo el kanban de Hermes")
 
@@ -1051,6 +1055,7 @@ class CommandCenter:
         fuentes = (("preguntas", lambda: _lo_tuyo.de_pendientes(self.pending_decisions(brand), "pregunta")),
                    ("atascadas", lambda: _lo_tuyo.de_pendientes(self.stuck_tasks(brand), "atascada")),
                    ("por aprobar", lambda: _lo_tuyo.de_pendientes(self.ready_to_approve(brand), "aprobar")),
+                   ("validaciones de ops", lambda: [] if brand else _lo_tuyo.de_validar_ops(self.lanes, self.hermes_for)),
                    ("cola del integrador", cola), ("PR de sesiones", externos), ("tarjetas tuyas", tuyo),
                    ("estado del integrador", lambda: [] if brand else _lo_tuyo.de_estado(self.estado_integrador())))
         out: list[dict] = []
@@ -1080,6 +1085,37 @@ class CommandCenter:
             action = ESTADO_MAS if it["kind"] == "integrador" else LT_OPEN
             buttons.append(self.desk.store.issue(rec, [[{"text": text, "action": action}]])[1]["inline_keyboard"][0][0])
         return {"inline_keyboard": [buttons[i:i + 2] for i in range(0, len(buttons), 2)]} if buttons else None
+
+    def semillas(self) -> list[dict]:
+        """Siembra del tema 🎯 Decisiones (F1-03, FL-02/FL-12): el mismo backlog que /pendiente y `lanes.py pendiente`
+        (lo_tuyo), en orden, con los botones de cada cosa. Los teclados se emiten solo al publicar (markup diferido).
+        - tarjeta tuya: ✅ Hecho / ⏳ Aparcar 7 d / 🧑‍💻 Integrador / 🗄 Archivar (CARD_*; releen la tarjeta antes);
+        - cola del integrador: 🧑‍💻 Que lo resuelva el integrador / ✅ Ya está resuelta;
+        - PR de sesión: su enlace; paso del integrador: 📖 Ver más; el resto: la ficha de siempre con sus botones."""
+        from . import canal_avisos
+        from .decisions import (COLA_RESUELTA, ESTADO_MAS, LT_OPEN, TO_INTEGRADOR, seed_card_keyboard_spec)
+        aj = _lo_tuyo.load_ajustes(getattr(self, "lo_tuyo_settings", None))
+        now = self._now()
+        store = self.desk.store
+
+        def markup_de(it: dict):
+            tid, board, verbo = it["tid"], it.get("board") or "", _lo_tuyo.verbo(it)
+            if it.get("url"):
+                return {"inline_keyboard": [[{"text": verbo, "url": it["url"]}]]}
+            if it["kind"] == "tuyo" and it.get("status") in (None, *DECISION_CARD_STATUSES):
+                # Hecho/Aparcar/Integrador/Archivar solo actúan en ready/blocked (_card_act); el resto abre la ficha
+                rec = self.desk.card_rec_for({"task_id": tid, "board": board, "title": it.get("title")})
+                return lambda: store.issue(rec, seed_card_keyboard_spec())[1]
+            if it["kind"] == "cola":
+                rec = {"task_id": tid, "board": board, "lane": "", "title": it.get("title") or ""}
+                return lambda: store.issue(rec, [[{"text": "🧑‍💻 Que lo resuelva el integrador", "action": TO_INTEGRADOR}],
+                                                 [{"text": "✅ Ya está resuelta", "action": COLA_RESUELTA}]])[1]
+            rec = {"task_id": "pendiente", "board": board, "lane": "", "kind": it["kind"], "tid": tid}
+            action = ESTADO_MAS if it["kind"] == "integrador" else LT_OPEN
+            return lambda: store.issue(rec, [[{"text": verbo, "action": action}]])[1]
+
+        return [canal_avisos.semilla(it, markup_de(it), _lo_tuyo.verbo(it), now)
+                for it in _lo_tuyo.ordenar(self.lo_tuyo_items(None), aj, now)]
 
     def lt_open(self, rec: dict, where: dict) -> bool:
         """Botón de una línea de /pendiente: la ficha de esa cosa, con los botones que le tocan hoy (siempre fresca)."""
@@ -2423,7 +2459,9 @@ class CommandCenter:
         if any(waits.values()):
             head += "\nOrden recomendado: las marcadas con ⏸ necesitan antes el código de otra tarea."
         self._send(where, head, html=False)
-        for p in ready[:MAX_CARDS]:
+        for i, p in enumerate(ready[:MAX_CARDS]):
+            if i and isinstance(self.notifier, TelegramNotifier):  # TG-07: 1 s entre fichas al mismo chat (429)
+                getattr(self.notifier, "sleep", time.sleep)(FICHAS_PAUSA)
             text = render("done", p.tid, p.task.get("title"), p.lane.name, p.status,
                           self._links_for(p.lane, p.tid, p.changed_files), body=p.task.get("body"),
                           for_oscar=p.for_oscar,
@@ -2506,7 +2544,7 @@ class CommandCenter:
         mid = (sent or {}).get("message_id")
 
         def run() -> None:
-            lineas = []
+            lineas, ya_enviado = [], set()
             for clave in claves:
                 try:
                     st = al_dia.diagnose(clave)
@@ -2517,12 +2555,14 @@ class CommandCenter:
                     log.warning("/al_dia %s falló: %s", clave, exc)
                     lineas.append(f"📁 {clave}: no pude diagnosticarlo (detalle en el log)")
                     markup = None
-                if markup:  # los botones de cada proyecto van en su propio mensaje
+                if markup:  # los botones de cada proyecto van en su propio mensaje (y no se repite en el resumen final)
                     self._send(where, lineas[-1], html=False, markup=markup)
+                    ya_enviado.add(len(lineas) - 1)
                 if mid:
                     self.notifier.edit(where[0], mid, f"🔄 /al_dia {proyecto} {destino} · {len(lineas)}/{len(claves)} "
                                                       "proyectos…", html=False)
-            texto = "✅ /al_dia terminado\n\n" + "\n\n".join(lineas)
+            restantes = [bloque for n, bloque in enumerate(lineas) if n not in ya_enviado]
+            texto = "✅ /al_dia terminado" + ("\n\n" + "\n\n".join(restantes) if restantes else "")
             if mid:
                 self.notifier.edit(where[0], mid, texto, html=False)
             else:
@@ -2881,7 +2921,9 @@ class CommandCenter:
         if extra and len(text) + 1 + len(extra) <= TEXT_MAX:
             text += "\n" + extra
         row = self._fusion_row(board, show)
-        rows = [*(markup or {}).get("inline_keyboard", []), *cs_rows, *([row] if row else [])]
+        liberar = self._liberar_row(board, show)
+        rows = [*(markup or {}).get("inline_keyboard", []), *cs_rows, *([row] if row else []),
+                *([liberar] if liberar else [])]
         full = {"inline_keyboard": rows} if rows else markup
         sent = self._send(where, text, markup=full)
         if markup:  # la copia sincronizada sigue al teclado de la decisión; la fila «Fusionar con…» es aparte
@@ -2964,7 +3006,11 @@ class CommandCenter:
         elif status == "triage":
             spec = [[{"text": "▶️ Sacar de triage", "action": UNTRIAGE}, {"text": "🗂 Archivar", "action": _tm.TR_ARCHIVAR}]]
         else:
+            spec = []
+        estado = _bt.estado_de(status)  # botonera estándar (F1-14): todo estado con tarjeta tiene salida
+        if estado is None:
             return None
+        spec = _bt.con_mas(spec, estado)
         rec = {"task_id": task["id"], "board": board, "lane": task.get("assignee") or "",
                "title": task.get("title") or "", "body": (task.get("body") or "")[:1500]}
         markup = self.desk.store.issue(rec, spec)[1]
@@ -3173,6 +3219,15 @@ class CommandCenter:
             log.info("ficha: sin datos de consola (%s)", exc)
             return "", []
 
+    def _liberar_row(self, board: str, show: dict) -> list[dict] | None:
+        """Fila «🔓 Liberar» (botonera.yaml) solo si la tarjeta espera a otra por «Esperar a…» (F1-14, fallo 7)."""
+        task = show.get("task") or {}
+        if task.get("status") in ("done", "archived") or not deps.declared_waits(show):
+            return None
+        rec = {"task_id": task["id"], "board": board, "lane": task.get("assignee") or "",
+               "title": task.get("title") or ""}
+        return self.desk.store.issue(rec, [[_bt.boton("liberar")]])[1]["inline_keyboard"][0]
+
     def _fusion_row(self, board: str, show: dict) -> list[dict] | None:
         """Fila «🔗 Fusionar con…» de la ficha (fusion.py); nunca rompe la ficha."""
         fusion = getattr(self.desk, "fusion", None)
@@ -3246,9 +3301,14 @@ class CommandCenter:
                 text = render(p.state, tid, task.get("title"), lane.name, p.status,
                               self._links_for(lane, tid, p.changed_files), p.bullets, body=task.get("body"),
                               for_oscar=p.for_oscar)
+                reason = next(((e.get("payload") or {}).get("reason") or "" for e in reversed(show.get("events") or ())
+                               if e.get("kind") == "blocked"), "")
+                recomendada = _bt.diagnostico_reintentable(
+                    kind=p.block_kind, reason=reason, commits=None if p.changed_files else 0)[1] if status == "blocked" else None
                 markup = self.desk.markup(p.state, task=task, lane=lane, block_kind=p.block_kind,
                                           questions=p.questions, summary=p.summary, changed_files=p.changed_files,
-                                          for_oscar=p.for_oscar, yes_no=p.yes_no, q_index=p.q_index)
+                                          for_oscar=p.for_oscar, yes_no=p.yes_no, q_index=p.q_index,
+                                          ficha=True, recomendada=recomendada)
                 return text, markup
         state, label = STATUS_TEXT.get(status, (status or "?", status or "?"))
         lane_name = lane.name if lane else (task.get("assignee") or board)

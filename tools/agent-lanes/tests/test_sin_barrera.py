@@ -283,6 +283,7 @@ def test_el_runner_ignora_una_tarjeta_retenida(tmp_path, monkeypatch):
     fake = SimpleNamespace(
         lane=SimpleNamespace(name="l", kind="implement", serialize_paths=(), big_minutes=45, max_parallel=1),
         _repo_guard=None, exclude=set(), _dependency_hold=lambda tid: False, _drop_hermes_subs=lambda tid: None,
+        _conciliar_bloqueos=lambda: None,
         hermes=SimpleNamespace(list_ready=lambda name: [{"id": "t_h", "title": "x"}, {"id": "t_ok", "title": "y"}]),
         process=lambda t: "ok")
     assert [c.tid for c in LaneRunner.candidates(fake)] == ["t_ok"]

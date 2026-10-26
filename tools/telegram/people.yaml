@@ -1,4 +1,5 @@
 # Personas del equipo que pueden escribir por DM al bot de carriles (@pildora_carriles_bot).
+# Decisiones de roles y permisos (D4-D10, 25-10): decisions/2026-10-25-personas-roles-permisos.md
 # UNA SOLA FUENTE de permisos (24-10, Oscar): tambien manda en Hermes (@oscarsaoBot). Tras editar este fichero:
 #   py -3.12 tools/telegram/sincronizar_permisos.py --apply   (allowed users del .env y tabla de SOUL.md de Hermes)
 #   hermes gateway restart
@@ -20,8 +21,9 @@
 #     (fusionar a main/master, desplegar, migraciones, variables de entorno; ver specs/carril-integrador-telegram.md).
 #     Decisión de Oscar 22-10: Oscar (owner, implícito), María y Angel, en TODAS las marcas para este permiso (no
 #     depende de `brands`). Lo lee People.puede_aprobar_produccion; el resto de permisos del YAML se ignoran.
-#   - Tras rellenar un user_id (Oscar, a mano): anadirlo a TELEGRAM_ALLOWED_CHATS en tools/agent-lanes/.env para que
-#     los avisos vuelvan a su DM, y que la persona envie /start al bot. NO anadirlo a generic_origins de lanes.yaml.
+#   - Tras rellenar un user_id (Oscar, a mano): la persona envia /start al bot. Ya NO hace falta copiarlo a
+#     TELEGRAM_ALLOWED_CHATS del .env: la allowlist del bot de carriles se deriva de este fichero + lanes.yaml (F1-02,
+#     agent_lanes/telegram.allowlist). NO anadirlo a generic_origins de lanes.yaml.
 #   - brands: la primera marca decide el tablero de sus tarjetas (Pildora -> oscarhq, MigraTeam -> migrateam). Ademas
 #     limita lo que ejecuta un operador: solo actua (comandos, botones, aprobaciones, fusiones, despliegues) en esas
 #     marcas; "*" = todas (Maria). Sin "*" y sin marca clara en el destino, se rechaza. OscarHQ cuenta como Pildora.
@@ -61,7 +63,7 @@ people:
     name: Angel
     user_id: "8770041085"   # Angel (CTO OscarHQ + Signal); chat_id/DM dado por Oscar 21-10
     role: dev
-    brands: [Píldora, Signal]   # SIN MigraTeam salvo que Oscar lo confirme; sin credenciales Railway/Supabase/Vercel
+    brands: [Píldora, Signal, Hub]   # D9 (26-10): decide también el Hub. SIN MigraTeam; sin credenciales Railway/Supabase/Vercel
     can: []
     # OK final de Oscar el 22-10 (consola del integrador): operador acotado a Pildora (=OscarHQ) y Signal por el veto
     # de marca (#72). Nada en MigraTeam ni en lo demas.
