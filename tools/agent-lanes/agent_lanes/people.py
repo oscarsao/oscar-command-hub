@@ -1,4 +1,8 @@
-"""Personas del equipo con acceso por DM al bot de carriles (tools/telegram/people.yaml).
+"""Personas del equipo con acceso por DM al bot de carriles.
+
+El people.yaml REAL no está en el repo (es público y lleva ids de Telegram de personas): se lee de la variable de
+entorno AGENT_LANES_PEOPLE_FILE o, si no existe, de tools/agent-lanes/.state/people.yaml. En el repo solo hay
+tools/telegram/people.example.yaml con ids ficticios.
 
 Falla CERRADO: fichero ausente o roto, entradas sin user_id (null), roles desconocidos, ids duplicados o que
 coinciden con el de Oscar -> la persona simplemente no existe (recibe el rechazo de "no conocida"). Oscar no se
@@ -15,6 +19,7 @@ marca distinta o con un destino sin marca conocida se rechaza (falla cerrado). O
 from __future__ import annotations
 
 import logging
+import os
 import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -23,7 +28,15 @@ import yaml
 
 log = logging.getLogger("agent_lanes")
 
-PEOPLE_FILE = Path(__file__).resolve().parents[2] / "telegram" / "people.yaml"
+PEOPLE_ENV = "AGENT_LANES_PEOPLE_FILE"
+PEOPLE_EXAMPLE = Path(__file__).resolve().parents[2] / "telegram" / "people.example.yaml"  # ids ficticios, versionado
+PEOPLE_DEFAULT = Path(__file__).resolve().parents[1] / ".state" / "people.yaml"  # el real; .state/ no se versiona
+
+
+def people_file() -> Path:
+    """Ruta del people.yaml real: AGENT_LANES_PEOPLE_FILE si está definida; si no, .state/people.yaml."""
+    raw = os.environ.get(PEOPLE_ENV, "").strip()
+    return Path(raw) if raw else PEOPLE_DEFAULT
 
 CONSULTA, ESTADO, IDEA, CONTENIDO, CARRIL, PRODUCCION = "consulta", "estado", "idea", "contenido", "carril", "produccion"
 APROBAR_PRODUCCION = "aprobar_produccion"
@@ -139,14 +152,14 @@ def _user_id(raw) -> str | None:
 
 
 def load_people(owner_id: str, path: Path | str | None = None) -> People:
-    p = Path(path) if path else PEOPLE_FILE
+    p = Path(path) if path else people_file()
     try:
         data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
         entries = data.get("people") if isinstance(data, dict) else None
         if not isinstance(entries, dict):
             raise ValueError("falta el mapa `people:`")
     except Exception as exc:  # fallo cerrado: nadie más que Oscar
-        log.warning("people.yaml no se pudo leer (%s); solo Oscar tiene acceso", type(exc).__name__)
+        log.warning("people.yaml no se pudo leer en %s (%s); solo Oscar tiene acceso", p, type(exc).__name__)
         return People(owner_id)
     persons: list[Person] = []
     seen = {str(owner_id)}

@@ -1,6 +1,6 @@
 """Añade un user_id de Telegram a TELEGRAM_ALLOWED_USERS del .env de Hermes (28-09). Solo imprime la lista de IDs.
 
-Uso:  python add_allowed_user.py 5516823836 [--apply]
+Uso:  python add_allowed_user.py 123456789 [--apply]
 Los user_id no son secretos; el resto del .env no se imprime nunca. Backup: .env.bak-<fecha>-allowed.
 """
 import argparse

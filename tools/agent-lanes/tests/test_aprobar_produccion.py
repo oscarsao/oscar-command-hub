@@ -3,7 +3,7 @@ from pathlib import Path
 
 from agent_lanes.people import load_people
 
-OSCAR, MARIA, ANGEL, INGERBER = 111, 5516823836, 8770041085, 8847860660
+OSCAR, MARIA, ANGEL, INGERBER = 111, 5000000001, 5000000004, 5000000002
 
 
 def test_el_yaml_real_deja_aprobar_a_oscar_maria_y_angel():

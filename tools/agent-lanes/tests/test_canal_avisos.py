@@ -233,17 +233,17 @@ def test_runner_needs_input_sin_tema_igual_que_antes(tmp_path):
 
 # --- paso 3: al decidir, ✅ por <persona> y contador fijado ---------------------------------------------------------
 
-MARIA, INTRUSO = "5516823836", "8847860660"
+MARIA, INTRUSO = "5000000001", "5000000002"
 PEOPLE = """people:
   maria:
     name: María
-    user_id: "5516823836"
+    user_id: "5000000001"
     role: coo
     brands: ["*"]
     operador: true
   ingerber:
     name: Ingerber
-    user_id: "8847860660"
+    user_id: "5000000002"
     role: cmo
 """
 

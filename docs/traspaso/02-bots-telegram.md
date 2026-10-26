@@ -20,7 +20,7 @@ Píldora·Contenido, t83 Recursos). Ids verificados el 17-10 (`decisions/2026-10
 ## 1. Hermes (@oscarsaoBot)
 
 - **Quién puede usarlo:** por DM, Oscar y María (`TELEGRAM_ALLOWED_USERS` del `.env` de Hermes; María añadida con
-  `tools/hermes-config/autorizar_maria.sh` → `add_allowed_user.py 5516823836 --apply`). Un desconocido recibe un único
+  `tools/hermes-config/autorizar_maria.sh` → `autorizar_maria.sh <user_id de María>`). Un desconocido recibe un único
   «asistente privado» y silencio 24 h (`gateway.unauthorized_dm_behavior: decline`, `config.yaml:1035`, aplicado el 11-10 con
   `apply_dm_policy.py`). Memoria 11-10/12-10: María tiene «acceso total» como Oscar por DM, salvo código de MigraTeam (regla de
   proceso, no técnica).

@@ -40,7 +40,7 @@ STATE = Path(__file__).resolve().parent / ".state"
 ALERTS_LOG = STATE / "alerts.log"
 NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
-CHATS = {"6744452215": "DM Oscar", "5516823836": "DM María", "-1003530490339": "Gestión", "-1004277259008": "Marketing"}
+CHATS = {"6744452215": "DM Oscar","-1003530490339": "Gestión", "-1004277259008": "Marketing"}
 TOPICS = {
     "-1003530490339": {None: "Dirección", "1": "Dirección", "5": "Ops·General", "230": "Ops·MigraTeam",
                        "231": "Ops·Píldora", "6": "Ventas", "7": "Mkt·Decisiones", "355": "Finanzas", "148": "Finanzas(arch)"},

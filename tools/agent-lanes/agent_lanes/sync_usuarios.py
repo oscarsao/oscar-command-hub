@@ -34,7 +34,7 @@ import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from agent_lanes.people import PEOPLE_FILE
+from agent_lanes.people import people_file as _people_file
 
 ACCIONES = ("link", "suspend", "reactivate", "unlink", "delete")
 DESTINOS = ("people_yaml", "carriles_env", "hermes")
@@ -353,7 +353,8 @@ def resolver_filas(api: ApiOhq, ids: list[str]) -> tuple[list[str], list[str]]:
     return ok, mal
 
 
-def main(argv=None, api: ApiOhq | None = None, people_file: Path = PEOPLE_FILE, out=sys.stdout) -> int:
+def main(argv=None, api: ApiOhq | None = None, people_file: Path | None = None, out=sys.stdout) -> int:
+    people_file = people_file or _people_file()  # el people.yaml real (fuera del repo), no el ejemplo
     ap = argparse.ArgumentParser(prog="sync_usuarios", description=__doc__.split("\n")[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("plan", help="informe del cambio exacto")

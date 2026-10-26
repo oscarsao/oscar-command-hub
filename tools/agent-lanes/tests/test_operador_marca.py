@@ -14,12 +14,12 @@ from agent_lanes.people import load_people, norm_marca
 from tests.test_botones_tarjetas import setup
 from tests.test_commands import OSCAR, command, press
 
-MARIA, MAUREDY, ANGEL = 5516823836, 7000000001, 7000000002
+MARIA, MAUREDY, ANGEL = 5000000001, 7000000001, 7000000002
 
 YAML = """people:
   maria:
     name: María
-    user_id: "5516823836"
+    user_id: "5000000001"
     role: coo
     brands: [Píldora, MigraTeam, "*"]
     operador: true

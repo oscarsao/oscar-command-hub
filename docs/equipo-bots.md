@@ -83,6 +83,6 @@ Lo que **no** funciona (y qué hacer en su lugar):
 
 ## Cómo se cambia quién tiene acceso
 
-Lo hace Oscar a mano en `tools/telegram/people.yaml` (alta, baja o cambio de rol), y cada persona nueva envía
+Lo hace Oscar a mano en el `people.yaml` real, fuera del repo (`docs/people-yaml-fuera-del-repo.md`; alta, baja o cambio de rol), y cada persona nueva envía
 `/start` al bot una vez. Nada de esto se hace por chat. Los roles admitidos son `coo`, `cmo` y `marketing`; el
 permiso de producción no se puede dar desde ese fichero.
