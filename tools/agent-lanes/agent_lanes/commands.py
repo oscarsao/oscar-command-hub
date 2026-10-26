@@ -3004,7 +3004,7 @@ class CommandCenter:
         elif status == "review":
             spec = [[{"text": "✅ Aprobar", "action": APPROVE}, {"text": "🔁 Pedir cambios", "action": CHANGES}]]
         elif status == "triage":
-            spec = [[{"text": "▶️ Sacar de triage", "action": UNTRIAGE}]]
+            spec = [[{"text": "▶️ Sacar de triage", "action": UNTRIAGE}, {"text": "🗂 Archivar", "action": _tm.TR_ARCHIVAR}]]
         else:
             spec = []
         estado = _bt.estado_de(status)  # botonera estándar (F1-14): todo estado con tarjeta tiene salida

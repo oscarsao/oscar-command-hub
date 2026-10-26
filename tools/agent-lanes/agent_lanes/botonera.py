@@ -69,6 +69,8 @@ def completar(filas: list[list[dict]], estado: str, **kw) -> list[list[dict]]:
     """Añade a las filas que ya trae una ficha los obligatorios que le falten (por acción), sin repetir ninguno."""
     cat = cargar()
     hay = {b.get("action") for fila in filas for b in fila}
+    if "tr_archivar" in hay:  # el Archivar real de la ficha (h.archive) ya cubre el obligatorio
+        hay.add("park")
     extra = [b for fila in ficha(estado, **kw)["filas"] for b in fila
              if b["id"] in cat["obligatorios"] and b["action"] not in hay]
     return [*filas, *[extra[i:i + 2] for i in range(0, len(extra), 2)]]
