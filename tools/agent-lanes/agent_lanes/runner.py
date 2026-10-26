@@ -262,6 +262,7 @@ class LaneRunner:
         """Todas las tarjetas ready reclamables (prioridad de Hermes), SIN tope: el Service decide cuántas arrancar según
         los huecos (normal / grande / reservado). `big` = tarjeta grande (grandes.py); `serial` = cita rutas de
         `serialize_paths` (migraciones): dos así en este carril no corren a la vez, ni con una ya en curso."""
+        self._conciliar_bloqueos()  # el Service llama a candidates() (no a jobs()): aquí se reintentan los block fallidos
         if self._repo_guard and self.lane.kind == "implement":
             problem = self._repo_guard(self.lane)
             if problem:
@@ -293,7 +294,6 @@ class LaneRunner:
 
     def jobs(self) -> list[tuple[str, Callable[[], str]]]:
         """Work for one pass: up to max_parallel ready tasks, as (task_id, callable) for the Service (modo --once)."""
-        self._conciliar_bloqueos()
         return [(c.tid, c.job) for c in self.candidates()[: self.lane.max_parallel]]
 
     BLOCK_INTENTOS = 3

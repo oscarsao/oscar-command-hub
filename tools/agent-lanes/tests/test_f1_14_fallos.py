@@ -65,6 +65,15 @@ def test_block_que_no_se_logra_se_concilia_en_la_pasada_siguiente():
     assert h.status == "blocked" and not r._block_pendiente()
 
 
+def test_block_pendiente_se_concilia_tambien_por_candidates_que_es_lo_que_usa_el_service():
+    h = BlockFlaky(fallos=3)
+    r = _runner(h)
+    r._block("t_aaaaaaaa", "needs_input", "x", {"id": "t_aaaaaaaa"}, public="p")
+    assert h.status == "running" and "t_aaaaaaaa" in r._block_pendiente()
+    r.candidates()   # Service._candidates llama a candidates(), no a jobs()
+    assert h.status == "blocked" and not r._block_pendiente()
+
+
 def test_block_ya_hecho_pese_al_timeout_cuenta_como_bloqueada():
     h = BlockFlaky(fallos=1, status="blocked")   # el timeout llegó tras bloquear de verdad
     r = _runner(h)
