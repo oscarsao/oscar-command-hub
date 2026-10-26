@@ -50,6 +50,8 @@ EXTENSIONES = ("py", "ts", "tsx", "js", "jsx", "yaml", "yml", "md", "json", "sql
 ESTADOS = ("ready", "todo", "running", "blocked")
 URL_RE = re.compile(r"https?://\S+")
 TOKEN_RE = re.compile(r"[\w.\-]+(?:/[\w.\-]+)*/?")
+# ruta absoluta: «c:/…», «~/…» o «/algo/otro…» (con al menos dos tramos), no pegada a otra palabra o ruta
+ABS_RE = re.compile(r"(?:(?<![\w.\-/])[a-z]:/|(?<![\w.\-/:])~/|(?<![\w.\-/:])/(?=[\w.\-]+/))[\w.\-/]*")
 MAX_ESTADO = 500  # claves recordadas en el fichero de estado
 DESCARTES_PATH = ROOT / ".state" / "solapes_descartados.json"
 SOL_FUSIONAR, SOL_DISTINTAS, SOL_LUEGO = "sol_fusionar", "sol_distintas", "sol_luego"
@@ -118,7 +120,20 @@ def extraer_rutas(texto: str, ajustes: Ajustes, repo: str = "") -> set[str]:
     exts = set(ajustes.extensiones)
     base = re.sub(r"^[a-z]:/", "", _norm_repo(repo))  # el TOKEN_RE no recoge «c:»
     out: set[str] = set()
-    for tok in TOKEN_RE.findall(URL_RE.sub(" ", (texto or "").replace("\\", "/")).lower()):
+
+    def _absoluta(m: re.Match) -> str:
+        """Una ruta absoluta solo cuenta si está dentro del repo de la tarjeta (queda relativa); carpetas temporales,
+        otros repos y el home no son ficheros comunes de nadie."""
+        ruta = m.group(0)
+        if ruta.startswith("~/"):
+            return " "
+        ruta = ruta[3:] if ruta[1:2] == ":" else re.sub(r"^/(?:[a-z]/)?", "", ruta)   # «c:/» o «/c/» (git-bash) o «/»
+        if base and ruta.startswith(base + "/"):
+            return " " + ruta[len(base) + 1:]
+        return " "
+
+    texto_norm = ABS_RE.sub(_absoluta, URL_RE.sub(" ", (texto or "").replace("\\", "/")).lower())
+    for tok in TOKEN_RE.findall(texto_norm):
         tok = tok.strip(".-")
         if base and tok.startswith(base + "/"):
             tok = tok[len(base) + 1:]

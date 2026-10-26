@@ -262,6 +262,7 @@ class LaneRunner:
         """Todas las tarjetas ready reclamables (prioridad de Hermes), SIN tope: el Service decide cuántas arrancar según
         los huecos (normal / grande / reservado). `big` = tarjeta grande (grandes.py); `serial` = cita rutas de
         `serialize_paths` (migraciones): dos así en este carril no corren a la vez, ni con una ya en curso."""
+        self._conciliar_bloqueos()  # el Service llama a candidates() (no a jobs()): aquí se reintentan los block fallidos
         if self._repo_guard and self.lane.kind == "implement":
             problem = self._repo_guard(self.lane)
             if problem:
@@ -294,6 +295,33 @@ class LaneRunner:
     def jobs(self) -> list[tuple[str, Callable[[], str]]]:
         """Work for one pass: up to max_parallel ready tasks, as (task_id, callable) for the Service (modo --once)."""
         return [(c.tid, c.job) for c in self.candidates()[: self.lane.max_parallel]]
+
+    BLOCK_INTENTOS = 3
+
+    def _block_pendiente(self) -> dict:
+        if not hasattr(self, "_block_pend"):
+            self._block_pend: dict[str, tuple[str, str]] = {}
+        return self._block_pend
+
+    def _bloquear(self, tid: str, kind: str, reason: str) -> bool:
+        """`hermes block` con reintento: un timeout puede haber bloqueado ya la tarjeta (se mira el estado) o no (se
+        repite). Así un needs_input no se queda en running para siempre."""
+        for _ in range(self.BLOCK_INTENTOS):
+            if self.hermes.block(tid, kind, reason):
+                return True
+            try:
+                if (self.hermes.show(tid) or {}).get("task", {}).get("status") in ("blocked", "triage"):
+                    return True
+            except Exception as exc:
+                log.info("%s: estado tras el fallo de block no leído: %s", tid, exc)
+        return False
+
+    def _conciliar_bloqueos(self) -> None:
+        """Bloqueos que no se pudieron hacer en la pasada anterior: se reintentan antes de reclamar nada."""
+        for tid, (kind, reason) in list(self._block_pendiente().items()):
+            if self._bloquear(tid, kind, reason):
+                del self._block_pendiente()[tid]
+                log.info("%s: bloqueo (%s) conciliado", tid, kind)
 
     def _dependency_hold(self, tid: str) -> bool:
         """«Esperar a…» de Oscar (deps.WAIT_PREFIX): la tarjeta no se reclama mientras la dependencia siga pendiente.
@@ -341,9 +369,11 @@ class LaneRunner:
         if for_oscar:  # también a la tarjeta: renotify y /decisiones lo recuperan del motivo del bloqueo
             reason = f"{reason}\n{FOR_OSCAR_PREFIX} {' '.join(str(for_oscar).split())}"
         log.warning("%s bloqueada (%s): %s", tid, kind, reason)
-        blocked = self.hermes.block(tid, kind, fit_reason(reason))
+        blocked = self._bloquear(tid, kind, fit_reason(reason))
         if not blocked:
-            log.error("no se pudo bloquear %s (%s) en el kanban: la tarea sigue en running", tid, kind)
+            log.error("no se pudo bloquear %s (%s) en el kanban: la tarea sigue en running; se concilia en la "
+                      "pasada siguiente", tid, kind)
+            self._block_pendiente()[tid] = (kind, fit_reason(reason))
         task = task or self._active.get(tid)
         retries = getattr(self._decisions, "retries", None)  # Reintentar pulsado en Telegram: decir cómo salió
         verdict = retries.verdict(tid, reason) if (retries and blocked and kind != "needs_input") else None

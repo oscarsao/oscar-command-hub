@@ -178,3 +178,25 @@ def test_command_unknown_project_explains_usage(tmp_path):
     cc, desk, bot = command_center(tmp_path, integ)
     command(desk, "/al_dia marte")
     assert bot.sent[-1]["text"].startswith("No conozco «marte»")
+
+
+# --- F1-14: el hub (sin lote) no ofrece un botón que luego se niega; el bloque no sale dos veces ------------
+
+def test_sin_lote_no_ofrece_integrar_todo_sino_fusionar_por_pr(tmp_path):
+    integ, _ = make([pr(1), pr(2)], approved={tid(1), tid(2)})
+    integ.settings.policies["claude-oscarhq"] = SimpleNamespace(deploy="none", batch="")
+    cc, desk, bot = command_center(tmp_path, integ)
+    command(desk, "/al_dia oscarhq dev")
+    ficha = next(m for m in bot.sent if m.get("markup"))
+    labels = texts(ficha["markup"])
+    assert not any("Integrar todo" in t for t in labels)
+    assert len(labels) == 2 and all(t.startswith("🔀 Fusionar #") for t in labels)
+
+
+def test_al_dia_no_repite_el_bloque_ya_enviado_con_botones(tmp_path):
+    integ, _ = make([pr(1)], approved={tid(1)})
+    cc, desk, bot = command_center(tmp_path, integ)
+    command(desk, "/al_dia oscarhq dev")
+    con_botones = next(m for m in bot.sent if m.get("markup"))
+    final = [e["text"] for e in bot.edits if "terminado" in e["text"]][-1]
+    assert "📁 oscarhq" in con_botones["text"] and "📁 oscarhq" not in final

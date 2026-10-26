@@ -49,7 +49,7 @@ def configure(cfg: dict | None) -> None:
             LIMITS[k] = v
 # Marca de cada carril (segunda línea del aviso). Un carril sin marca muestra solo su nombre.
 BRANDS = {"claude-migrateam": "MigraTeam", "claude-oscarhq": "Píldora", "claude-scraper": "Píldora",
-          "claude-nextjobs": "NextJobs"}
+          "claude-nextjobs": "NextJobs", "claude-hub": "Hub"}  # Hub: D9, Ángel decide también las tarjetas del hub
 OASP_MODES = ("Fast-Track", "Spec-Lite", "Pitch", "CTO-360")
 PIE_TEXTO_LIBRE = "(o escríbeme aquí la respuesta)"  # formato único de aviso (t_211c9902 A3); lo reexporta formato_aviso
 # Paso de la cadena (peticiones.TOTAL_PASOS: petición · tarjeta · carril · PR · integración · despliegue) por estado

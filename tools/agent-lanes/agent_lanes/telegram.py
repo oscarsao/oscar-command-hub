@@ -84,7 +84,8 @@ def _protect_collaborator_dms(notifier: "TelegramNotifier", env: dict, people=No
     notifier.owner_id = str(owner)
     people = _people(env) if people is None else people
     # F1-09 (D4-A): los operadores con todas las marcas (María) no pasan por collab_view; deciden con los mismos
-    # botones que Oscar (tema 🎯 Decisiones o su DM). Los acotados por marca (Ángel) siguen filtrados (D9 pendiente).
+    # botones que Oscar (tema 🎯 Decisiones o su DM). Los acotados por marca (Ángel) siguen filtrados; solo las copias de aprobación de
+    # su marca (canal_avisos._copias_equipo, D9) salen con `trusted=True` y botones.
     notifier.operator_chats = people.operadores_todas_marcas()
     notifier.collab_chats = people.collaborator_ids() - notifier.operator_chats
     notifier.collab_view = collab_view

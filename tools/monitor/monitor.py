@@ -66,7 +66,9 @@ LIST_FAIL = "no se pudieron listar tareas"
 LIST_FAIL_AFTER = 600  # s de fallos seguidos listando tareas (hermes/WinError) antes de abrir ALTA
 RETRY_TASKS = ("Resumen diario Hermes", "Auditor diario carriles")  # tareas programadas a relanzar si fallaron
 LIVE_LAG_AFTER = 30 * 60  # s con el checkout vivo por detrás de origin/main antes de avisar
-RUNNER_DEAD_SECS = 300  # s seguidos con el runner sin aparecer «VIVO» antes de avisar (Oscar, 23-10)
+RUNNER_AUTO_SECS = 900  # el «parado» que dura menos se da por transitorio: sin «Qué hacer» y un solo «resuelto»
+RAM_ALTA_PCT = 85  # a partir de aquí se dice que la causa es la RAM
+RUNNER_DEAD_SECS = 300 # s seguidos con el runner sin aparecer «VIVO» antes de avisar (Oscar, 23-10)
 LIST_FAIL_GAP = 240  # s sin fallos nuevos = recuperado (el runner lista cada ~60 s)
 
 
@@ -233,23 +235,34 @@ class Monitor:
 
     # --- alertas --------------------------------------------------------------------------------------
     def condition(self, key: str, active: bool, text: str, fix: str, *, min_hits: int = 3, every: float = 1800,
-                  level: str = "ALTA", min_secs: float = 0) -> None:
+                  level: str = "ALTA", min_secs: float = 0, auto_secs: float = 0, cause=None) -> None:
         """Estado persistente (runner/Hermes/servicio caído): alerta solo si dura `min_hits` lecturas seguidas y, si se
         da, al menos `min_secs` segundos, con qué hacer, y avisa cuando se resuelve. 28-09: un reinicio de 20 s del
-        runner mandó "NO está vivo" sin más."""
+        runner mandó "NO está vivo" sin más.
+        `auto_secs` (F1-14): condición que suele resolverse sola (hermes lento por RAM). Antes de ese tiempo el aviso
+        no manda al Programador de tareas; si se resuelve antes, el «resuelto» sale como mucho una vez por `every`
+        (parado y resuelto en bucle cada pocos minutos eran ruido). `cause`: texto o función con la causa probable."""
         conds = self.__dict__.setdefault("_conds", {})
         c = conds.setdefault(key, {"hits": 0, "since": 0.0, "alerted": False})
+        causa = (cause() if callable(cause) else cause) if cause else ""
         if active:
             c["hits"] += 1
             c["since"] = c["since"] or time.time()
             if c["hits"] >= min_hits and time.time() - c["since"] >= min_secs:
-                self.alert(level, f"{text}\n👉 Qué hacer: {fix}", key, every=every)
+                pronto = auto_secs and time.time() - c["since"] < auto_secs
+                cuerpo = f"{text}\n🔎 Causa probable: {causa}." if causa else text
+                cuerpo += (f"\nSuele resolverse solo; si pasa de {round(auto_secs / 60)} min te digo qué hacer."
+                           if pronto else f"\n👉 Qué hacer: {fix}")
+                self.alert(level, cuerpo, key, every=every)
                 c["alerted"] = True
             return
         if c["alerted"]:
             mins = max(1, round((time.time() - c["since"]) / 60))
-            self._seen.pop(key, None)
-            self.alert("RESUELTO", f"✅ Resuelto: {text.split(chr(10))[0]} (duró ~{mins} min)", key + "-ok", every=0)
+            rapido = auto_secs and time.time() - c["since"] < auto_secs
+            if not rapido:
+                self._seen.pop(key, None)
+            fin = f"✅ Resuelto: {text.split(chr(10))[0]} (duró ~{mins} min" + (f"; {causa}" if causa else "") + ")"
+            self.alert("RESUELTO", fin, key + "-ok", every=every if rapido else 0)
         conds[key] = {"hits": 0, "since": 0.0, "alerted": False}
 
     @staticmethod
@@ -529,11 +542,21 @@ class Monitor:
                        "no se pierde nada).",
                        "en el PC: Programador de tareas → "
                        "'agent-lanes runner' → Ejecutar. /salud (bot de Trabajos) te dice el estado.",
-                       min_secs=RUNNER_DEAD_SECS)
+                       min_secs=RUNNER_DEAD_SECS, auto_secs=RUNNER_AUTO_SECS, cause=self._causa_runner)
         self.condition("orphan", "huérfano" in self.lanes_text,
                        "Hay un worker funcionando sin runner que lo vigile.",
                        "normalmente se resuelve solo al terminar la tarea; si pasa de 30 min, avísame en la "
                        "sesión de Claude Code o mira /salud.", min_hits=4)
+
+    def _causa_runner(self) -> str:
+        """Por qué `lanes.py status` no ve el runner: con RAM al límite Hermes tarda en contestar."""
+        try:
+            ram = round(psutil.virtual_memory().percent)
+        except Exception:
+            ram = 0
+        if ram >= RAM_ALTA_PCT:
+            return f"RAM alta ({ram} %): hermes responde lento"
+        return "hermes lento al contestar (el runner puede seguir vivo)"
 
     def refresh_health(self) -> None:
         """Solo el servicio headless consulta (cada 5 min) y deja el resultado en .state/health.json; la ventana lo

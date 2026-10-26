@@ -95,12 +95,19 @@ def wait_comment(parent: str) -> str:
     return f"{WAIT_PREFIX} {parent}: Oscar decidió esperar; el runner no la reclama hasta que {parent} esté hecha o fusionada"
 
 
+def release_comment(parents: list[str]) -> str:
+    """🔓 Liberar: misma marca que la resolución automática, así el runner no la anuncia otra vez."""
+    return f"{WAIT_RESOLVED_PREFIX} {', '.join(parents)}: liberada a mano por Oscar desde Telegram; la tarjeta vuelve al carril"
+
+
 def declared_waits(show: dict | None) -> list[str]:
     """Ids de las tarjetas a las que Oscar mandó esperar (comentarios `ESPERA-A t_x`), sin repetir."""
     out: list[str] = []
     for c in (show or {}).get("comments") or []:
         body = (c.get("body") or "").strip()
-        if body.startswith(WAIT_PREFIX + " "):
+        if body.startswith(WAIT_RESOLVED_PREFIX):  # resuelta o liberada a mano: las esperas anteriores ya no valen
+            out = []
+        elif body.startswith(WAIT_PREFIX + " "):
             found = _WAIT_ID_RE.search(body)
             if found and found.group(0) not in out:
                 out.append(found.group(0))
