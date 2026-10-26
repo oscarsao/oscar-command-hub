@@ -1902,7 +1902,35 @@ class Integrator:
             if st.get("lane") == lane.name and st.get("status") == "merged" \
                     and re.fullmatch(r"[0-9a-f]{40}", st.get("merge_sha") or ""):
                 out.append((tid, st))
-        return out
+        return self._sin_servir(lane, out)
+
+    def _sin_servir(self, lane, merged: list[tuple[str, dict]]) -> list[tuple[str, dict]]:
+        """Quita las fusiones que el servidor YA sirve (despliegue hecho fuera del runner): el estado local solo sabe
+        lo que el runner desplegó. Mismo criterio que /salud: `commit_sha` de /health, igual al merge o posterior.
+        Sin /health configurado o sin respuesta no se filtra nada (se avisa como siempre)."""
+        policy = self.settings.policies.get(lane.name) if merged else None
+        if not policy or not policy.health_url or not policy.health_commit_key:
+            return merged
+        try:
+            code, body = self._http_get(policy.health_url)
+            data = json.loads(body or "{}") if code == 200 else {}
+        except Exception as exc:
+            log.info("%s: /health no leído para conciliar lo desplegado: %s", lane.name, exc)
+            return merged
+        served = str(data.get(policy.health_commit_key) or "").lower()
+        if data.get("status") != "healthy" or not re.fullmatch(r"[0-9a-f]{40}", served):
+            return merged
+        pendientes = []
+        for tid, st in merged:
+            sha = str(st.get("merge_sha") or "").lower()
+            if sha == served or self._is_ancestor(lane, sha, served):
+                try:
+                    self._save(tid, status="deployed", deployed_sha=served)
+                except Exception as exc:
+                    log.warning("%s: no se pudo anotar el despliegue externo: %s", tid, exc)
+                continue
+            pendientes.append((tid, st))
+        return pendientes
 
     def _deploy_fallo(self, tid: str, sha: str, motivo: str) -> None:
         """Deja constancia del último fallo de despliegue (lo lee /al_dia para ofrecer «🛠 Resolver»). Nunca lanza."""

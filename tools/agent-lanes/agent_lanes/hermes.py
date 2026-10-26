@@ -512,6 +512,12 @@ class HermesCLI:
             return False
         return self._call("link", parent_id, child_id).returncode == 0
 
+    def unlink(self, parent_id: str, child_id: str) -> bool:
+        """Quita la dependencia padre -> hija (`kanban unlink`); lo contrario de `link`."""
+        if not (_TID_RE.match(parent_id or "") and _TID_RE.match(child_id or "")):
+            return False
+        return self._call("unlink", parent_id, child_id).returncode == 0
+
     def requeue_triage(self, task_id: str, author: str = OSCAR_AUTHOR, *, python: Path = HERMES_PYTHON) -> str | None:
         """Saca de `triage` una tarea que Hermes aparcó por bloquearse dos veces por lo mismo (block_loop_detected;
         desde ahí `unblock` falla): specify_triage_task con la API de Hermes en su venv, sin tocar título ni cuerpo.

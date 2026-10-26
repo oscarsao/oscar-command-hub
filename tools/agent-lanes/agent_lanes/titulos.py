@@ -98,3 +98,12 @@ def warn_title(title: str | None) -> list[str]:
     if found:
         log.warning("título de tarjeta mal formado (%s): %s", "; ".join(found), (title or "")[:80])
     return found
+
+
+def etiqueta(tid: str, titulo: str | None = None, largo: int = 40) -> str:
+    """«t_xxxx · Qué corto (/tarea t_xxxx)»: un id suelto no le dice nada a Oscar. Sin título conocido queda el id con
+    su enlace a la ficha. El «[Proyecto]» y el «· paso» del formato fijo sobran en una lista."""
+    que = (parse(titulo).get("que") or (titulo or "")).strip()
+    if len(que) > largo:
+        que = que[:largo - 1].rstrip() + "…"
+    return f"{tid} · {que} (/tarea {tid})" if que else f"{tid} (/tarea {tid})"
