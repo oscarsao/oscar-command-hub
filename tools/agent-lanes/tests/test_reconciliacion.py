@@ -203,6 +203,116 @@ def test_registro_rechaza_sin_autor_o_id_o_datos(tmp_path):
 def test_cli_tarjeta(tmp_path, monkeypatch):
     monkeypatch.setattr(reconcile, "AUDIT_PATH", tmp_path / "a.jsonl")
     h, out = FakeHermes({"t_aaaaaaaa": {"status": "ready"}}), []
-    code = reconcile.main(["comentar", "t_aaaaaaaa", "--autor", "oscar-e2", "visto", "con", "Oscar"],
-                          hermes_for=lambda b: h, out=out.append)
+    code = reconcile.main(["comentar", "t_aaaaaaaa", "--autor", "oscar-e2", "--solicitante", "oscar", "visto", "con",
+                           "Oscar"], hermes_for=lambda b: h, out=out.append, people=_people(tmp_path))
     assert code == 0 and h.calls[0][2].endswith("visto con Oscar") and "registrado" in out[0]
+
+
+# --- F1-07 (P06): `tarjeta` exige --solicitante con veto de marca ---------------------------------------------
+
+PEOPLE_YAML = """people:
+  angel:
+    name: Angel
+    user_id: 200000002
+    role: coo
+    brands: [Píldora, Signal]
+    operador: true
+  ingerber:
+    name: Ingerber
+    user_id: 200000003
+    role: marketing
+    brands: [Píldora]
+"""
+
+
+def _people(tmp_path):
+    from agent_lanes.people import load_people
+    f = tmp_path / "people.yaml"
+    f.write_text(PEOPLE_YAML, encoding="utf-8")
+    return load_people("100000001", f)
+
+
+def test_tarjeta_sin_solicitante_no_arranca(tmp_path):
+    import pytest
+    with pytest.raises(SystemExit):
+        reconcile.main(["archivar", "t_aaaaaaaa", "--autor", "x"], hermes_for=lambda b: None, out=print)
+
+
+def test_tarjeta_archivar_con_angel_sobre_migrateam_se_rechaza(tmp_path, monkeypatch):
+    monkeypatch.setattr(reconcile, "AUDIT_PATH", tmp_path / "a.jsonl")
+    cards = {"t_aaaaaaaa": {"status": "ready"}}
+    h, out = FakeHermes(cards), []
+    show = h.show
+    h.show = lambda tid: {**show(tid), "task": {**show(tid)["task"], "assignee": "claude-migrateam"}}
+    code = reconcile.main(["archivar", "t_aaaaaaaa", "--autor", "hermes", "--solicitante", "200000002",
+                           "--board", "migrateam"], hermes_for=lambda b: h, out=out.append, people=_people(tmp_path))
+    assert code != 0 and "veto de marca" in out[0] and cards["t_aaaaaaaa"]["status"] == "ready"
+    # sobre su marca sí puede
+    h.show = lambda tid: {**show(tid), "task": {**show(tid)["task"], "assignee": "claude-oscarhq"}}
+    code = reconcile.main(["archivar", "t_aaaaaaaa", "--autor", "hermes", "--solicitante", "angel",
+                           "--board", "oscarhq"], hermes_for=lambda b: h, out=out.append, people=_people(tmp_path))
+    assert code == 0 and cards["t_aaaaaaaa"]["status"] == "archived"
+
+
+def test_tarjeta_no_operador_o_desconocido_se_rechaza(tmp_path):
+    h, out = FakeHermes({"t_aaaaaaaa": {"status": "ready"}}), []
+    for who in ("ingerber", "999999999"):
+        assert reconcile.main(["resuelta", "t_aaaaaaaa", "--autor", "x", "--solicitante", who],
+                              hermes_for=lambda b: h, out=out.append, people=_people(tmp_path)) == 2
+    assert not [c for c in h.calls if c[0] == "complete"]
+
+
+# --- F1-05: fusiones de consola, scheduled y «Cierra: t_x» ---------------------------------------------------
+
+def _with_unblock(h):
+    def unblock(tid):
+        h.calls.append(("unblock", tid))
+        h.cards[tid]["status"] = "ready"
+        return True
+    h.unblock = unblock
+    return h
+
+
+def test_scheduled_con_pr_fusionado_queda_done(tmp_path):
+    cards = {"t_aaaaaaaa": {"status": "scheduled", "title": "Aparcada"}}
+    merged = {**pr(9, branch="fix/avisos", body="Cierra: t_aaaaaaaa"), "mergeCommit": {"oid": "a" * 40}}
+    rec, h, sent, _ = make(tmp_path, cards, [merged])
+    _with_unblock(h)
+    assert rec.close_from_prs() == ["t_aaaaaaaa"]
+    names = [c[0] for c in h.calls]
+    assert names.index("unblock") < names.index("complete") and cards["t_aaaaaaaa"]["status"] == "done"
+    integ = [c for c in h.calls if c[0] == "comment" and c[2].startswith("INTEGRADO ")]
+    assert integ == [("comment", "t_aaaaaaaa", f"INTEGRADO {'a' * 40} · PR http://pr/9", "lane-integrator")]
+
+
+def test_fusion_de_consola_no_duplica_integrado(tmp_path):
+    cards = {"t_aaaaaaaa": {"status": "review", "comments": [
+        {"author": "lane-integrator", "body": "INTEGRADO " + "b" * 40 + " · PR http://pr/9"}]}}
+    merged = {**pr(9, branch="lane/t_aaaaaaaa"), "mergeCommit": {"oid": "b" * 40}}
+    rec, h, _, _ = make(tmp_path, cards, [merged])
+    rec.close_from_prs()
+    assert not [c for c in h.calls if c[0] == "comment" and c[2].startswith("INTEGRADO ")]
+    assert cards["t_aaaaaaaa"]["status"] == "done"
+
+
+def test_pr_de_consola_sin_cierra_avisa_una_vez(tmp_path):
+    prs = [pr(11, "OPEN", branch="feat/hub-f1", body="sin tarjeta"), pr(12, "OPEN", branch="fix/x", body="Cierra: t_aaaaaaaa"),
+           pr(13, "OPEN", branch="angel/cosa")]
+    rec, _, sent, _ = make(tmp_path, {"t_aaaaaaaa": {"status": "ready"}}, prs)
+    rec.close_from_prs()
+    rec.close_from_prs()
+    assert len(sent) == 1 and "PR #11" in sent[0][0] and "Cierra: t_" in sent[0][0]
+
+
+def test_pr_sin_cierra_va_al_resumen_diario_si_esta_instalado(tmp_path):
+    from agent_lanes import resumen_carriles
+    diario = resumen_carriles.DiarioInfo(lambda t: True, tmp_path / "resumen.json")
+    resumen_carriles.instalar(diario)
+    try:
+        rec, _, sent, _ = make(tmp_path, {}, [pr(11, "OPEN", branch="fix/x", body="")])
+        rec.close_from_prs()
+        assert sent == []
+        data = json.loads((tmp_path / "resumen.json").read_text(encoding="utf-8"))
+        assert data["eventos"][0]["tipo"] == "pr_sin_cierra" and "PR #11" in data["eventos"][0]["texto"]
+    finally:
+        resumen_carriles.instalar(None)

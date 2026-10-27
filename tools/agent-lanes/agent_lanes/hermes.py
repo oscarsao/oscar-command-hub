@@ -71,18 +71,68 @@ ANSWER_PREFIX = "Respuesta de Oscar:"
 HERMES_AUTHOR = "default"
 HERMES_ANSWER_PREFIX = "RESPUESTA-OSCAR:"
 HERMES_ANSWER_AUTHORS = frozenset({HERMES_AUTHOR, OSCAR_AUTHOR})  # lista blanca, nunca una lista negra
+# P07 (F1-07, transitorio hasta F2): lo que escribe Hermes (`default`) debe decir QUIÉN responde y con qué id de
+# Telegram: `RESPUESTA-MARIA (id=123456789): texto`. El id tiene que ser de Oscar o de un operador de people.yaml y
+# casar con el nombre. `RESPUESTA-OSCAR:` sin id solo vale escrito por el bot de carriles (`oscar-telegram`), que ya
+# comprobó quién pulsó. Cualquier otra forma no desbloquea nada.
+HERMES_ID_ANSWER_RE = re.compile(r"^RESPUESTA-([A-Za-zÁÉÍÓÚÑÜáéíóúñü]+)\s*\(id=(\d{5,15})\)\s*:(.*)$", re.S)
+_answer_people = None  # People para validar el id (perezoso; los tests lo sustituyen con set_answer_people)
+
+
+def set_answer_people(people) -> None:
+    global _answer_people
+    _answer_people = people
+
+
+def _people_for_answers():
+    global _answer_people
+    if _answer_people is None:
+        import os
+        from .decisions import OWNER_TELEGRAM_ID  # import tardío: decisions importa este módulo
+        from .people import load_people
+        _answer_people = load_people(os.environ.get("OWNER_TELEGRAM_ID") or OWNER_TELEGRAM_ID)
+    return _answer_people
+
+
+def _plain(name: str) -> str:
+    import unicodedata
+    return "".join(ch for ch in unicodedata.normalize("NFKD", name or "") if not unicodedata.combining(ch)).casefold()
+
+
+def answer_identity(comment: dict | None) -> tuple[str, str, str] | None:
+    """(nombre, user_id, texto) de un `RESPUESTA-<PERSONA> (id=…)` de Hermes válido, o None."""
+    c = comment or {}
+    body = c.get("body")
+    if c.get("author") != HERMES_AUTHOR or not isinstance(body, str):
+        return None
+    m = HERMES_ID_ANSWER_RE.match(body)
+    if not m or not m.group(3).strip():
+        return None
+    try:
+        person = _people_for_answers().lookup(m.group(2))
+    except Exception:
+        return None
+    if person is None or not (person.is_owner or person.operador):
+        return None
+    if _plain(m.group(1)) not in {_plain(person.key), _plain(person.name)}:
+        return None  # el nombre no es el de ese id: no se fía
+    return person.name, person.user_id, m.group(3).strip()
 
 
 def hermes_answer_text(comment: dict | None) -> str | None:
-    """Texto de la respuesta si `comment` es un `RESPUESTA-OSCAR: …` válido (autor permitido, prefijo exacto al
-    principio del cuerpo y texto no vacío detrás). None en cualquier otro caso."""
+    """Texto de la respuesta si `comment` es válido: `RESPUESTA-OSCAR: …` del bot de carriles (oscar-telegram) o
+    `RESPUESTA-<PERSONA> (id=…): …` de Hermes con un id que casa con people.yaml (P07). None en cualquier otro caso:
+    un `RESPUESTA-OSCAR:` de Hermes sin id ya no desbloquea (no dice quién respondió)."""
     c = comment or {}
     if c.get("author") not in HERMES_ANSWER_AUTHORS:
         return None
     body = c.get("body")
-    if not isinstance(body, str) or not body.startswith(HERMES_ANSWER_PREFIX):
+    if not isinstance(body, str):
         return None
-    return body[len(HERMES_ANSWER_PREFIX):].strip() or None
+    if c.get("author") == OSCAR_AUTHOR and body.startswith(HERMES_ANSWER_PREFIX):
+        return body[len(HERMES_ANSWER_PREFIX):].strip() or None
+    who = answer_identity(c)
+    return who[2] if who else None
 
 
 def _ts(value) -> float | None:
@@ -179,9 +229,11 @@ def find_answered(show: dict | None, questions) -> list[tuple[str, str]] | None:
 
 
 def coordinator_notes_from(show: dict | None) -> list[str]:
-    """Últimos comentarios del coordinador en la tarjeta (sin los `RESPUESTA-OSCAR:`, que ya van como respuestas)."""
+    """Últimos comentarios del coordinador en la tarjeta (sin los `RESPUESTA-…`: los válidos ya van como respuestas y
+    los que no se pudieron validar (P07: sin id o con un id que no casa) no se le enseñan al worker como nota)."""
     notes = [" ".join((c.get("body") or "").split())[:600] for c in (show or {}).get("comments") or []
-             if c.get("author") in COORDINATOR_AUTHORS and hermes_answer_text(c) is None and (c.get("body") or "").strip()]
+             if c.get("author") in COORDINATOR_AUTHORS and (c.get("body") or "").strip()
+             and not (c.get("body") or "").lstrip().upper().startswith("RESPUESTA-")]
     return notes[-COORDINATOR_NOTES_MAX:]
 
 
@@ -314,7 +366,39 @@ class HermesError(RuntimeError):
     pass
 
 
-class HermesCLI:
+def preparar_tarjeta(board: str, title: str, body: str, assignee: str) -> tuple[str, str]:
+    """(cuerpo, assignee) de una tarjeta nueva, igual en todos los backends del kanban (F2-02): aviso de título,
+    enrutado de [Telegram] al carril claude-telegram y marca «Tamaño: GRANDE»."""
+    titulos.warn_title(title)  # aviso en el log si no sigue «[Proyecto] Qué · paso»; nunca bloquea
+    # Enrutado automático (22-10): [Telegram] / bots de Telegram -> claude-telegram, si trabaja en este tablero.
+    routed = telegram_lane.ruta(assignee, title, body)
+    if routed != assignee and board == telegram_lane.board_destino():
+        body, assignee = telegram_lane.con_repo(body, assignee), routed
+    body = grandes.marcar(title, body)  # tarea grande -> «Tamaño: GRANDE» en el cuerpo (hueco grande del runner)
+    return body, assignee
+
+
+class KanbanComun:
+    """Lecturas derivadas de `show` que comparten todos los backends del kanban (hermes, supabase)."""
+
+    def review_feedback(self, task_id: str) -> list[str]:
+        """Change requests left by the review lane, oldest first (empty for a first run)."""
+        comments = self.show(task_id).get("comments") or []
+        return [c["body"] for c in comments if c.get("author") == REVIEW_AUTHOR]
+
+    def oscar_answers(self, task_id: str) -> list[str]:
+        """Oscar's answers to the worker's questions (Telegram buttons / free reply / RESPUESTA-OSCAR vía Hermes),
+        oldest first."""
+        return oscar_answers_from(self.show(task_id))
+
+    def answered_for(self, task_id: str, questions) -> list[tuple[str, str]] | None:
+        return find_answered(self.show(task_id), questions)
+
+    def coordinator_notes(self, task_id: str) -> list[str]:
+        return coordinator_notes_from(self.show(task_id))
+
+
+class HermesCLI(KanbanComun):
     def __init__(self, board: str, exe: Path = HERMES_EXE, runner=_proc.run, author: str = "agent-lanes",
                  sleep=time.sleep, backoff: tuple[float, ...] = READONLY_BACKOFF,
                  timeout_backoff: tuple[float, ...] | None = None):
@@ -381,16 +465,18 @@ class HermesCLI:
     def list_ready(self, assignee: str) -> list[dict]:
         return self.list_status(assignee, "ready")
 
+    def list_all(self, archived: bool = False) -> list[dict]:
+        """Todas las tarjetas del tablero (con `archived`, también las archivadas): auditor y resumen diario."""
+        cp = self._call("list", "--json", *(["--archived"] if archived else []))
+        if cp.returncode != 0:
+            raise HermesError(f"list failed: {(cp.stderr or '').strip()[:300]}")
+        return json.loads(cp.stdout or "[]")
+
     def create(self, title: str, body: str, assignee: str, *, priority: int | None = None, key: str | None = None,
                created_by: str | None = None, parents: list[str] | None = None) -> str:
         """Crea una tarjeta y devuelve su id. --body-file: un cuerpo que empieza por "- " no se toma como flag.
         `parents` = ids del mismo tablero de los que depende (un --parent por id)."""
-        titulos.warn_title(title)  # aviso en el log si no sigue «[Proyecto] Qué · paso»; nunca bloquea
-        # Enrutado automático (22-10): [Telegram] / bots de Telegram -> claude-telegram, si trabaja en este tablero.
-        routed = telegram_lane.ruta(assignee, title, body)
-        if routed != assignee and self.board == telegram_lane.board_destino():
-            body, assignee = telegram_lane.con_repo(body, assignee), routed
-        body = grandes.marcar(title, body)  # tarea grande -> «Tamaño: GRANDE» en el cuerpo (hueco grande del runner)
+        body, assignee = preparar_tarjeta(getattr(self, "board", None), title, body, assignee)
         fd, tmp = tempfile.mkstemp(prefix="tarjeta-", suffix=".md")
         try:
             with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as fh:
@@ -429,22 +515,6 @@ class HermesCLI:
             raise HermesError(f"show {task_id} failed: {cp.stderr.strip()[:300]}")
         return json.loads(cp.stdout)
 
-    def review_feedback(self, task_id: str) -> list[str]:
-        """Change requests left by the review lane, oldest first (empty for a first run)."""
-        comments = self.show(task_id).get("comments") or []
-        return [c["body"] for c in comments if c.get("author") == REVIEW_AUTHOR]
-
-    def oscar_answers(self, task_id: str) -> list[str]:
-        """Oscar's answers to the worker's questions (Telegram buttons / free reply / RESPUESTA-OSCAR vía Hermes),
-        oldest first."""
-        return oscar_answers_from(self.show(task_id))
-
-    def answered_for(self, task_id: str, questions) -> list[tuple[str, str]] | None:
-        return find_answered(self.show(task_id), questions)
-
-    def coordinator_notes(self, task_id: str) -> list[str]:
-        return coordinator_notes_from(self.show(task_id))
-
     def assign(self, task_id: str, profile: str) -> bool:
         return self._call("assign", task_id, profile).returncode == 0
 
@@ -459,6 +529,12 @@ class HermesCLI:
         if not (_TID_RE.match(parent_id or "") and _TID_RE.match(child_id or "")):
             return False
         return self._call("link", parent_id, child_id).returncode == 0
+
+    def unlink(self, parent_id: str, child_id: str) -> bool:
+        """Quita la dependencia padre -> hija (`kanban unlink`); lo contrario de `link`."""
+        if not (_TID_RE.match(parent_id or "") and _TID_RE.match(child_id or "")):
+            return False
+        return self._call("unlink", parent_id, child_id).returncode == 0
 
     def requeue_triage(self, task_id: str, author: str = OSCAR_AUTHOR, *, python: Path = HERMES_PYTHON) -> str | None:
         """Saca de `triage` una tarea que Hermes aparcó por bloquearse dos veces por lo mismo (block_loop_detected;

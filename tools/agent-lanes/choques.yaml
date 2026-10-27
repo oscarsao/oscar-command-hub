@@ -7,6 +7,8 @@ fuentes:
   ramas_lane: false           # 25-10 (Oscar): false. Había 171 ramas sin fusionar en oscar-hq (muchas de tarjetas cerradas) y >1.000 avisos en 2 días
   pr: false                   # 25-10 (Oscar): false; solo se avisa de choques entre tarjetas activas (decisiones reales)
   ramas_personas: false       # 25-10 (Oscar): false, mismo motivo; las ramas con PR abierto siguen entrando por «pr»
+  pr_tarjetas: true           # F1-05 (D30-A ampliado): PR abiertos ligados a una tarjeta viva (rama lane/<id> o «Cierra: t_x»,
+                              # también fix/* y feat/* de consola), aunque la tarjeta ya esté en review/done
 ramas_personas_dias: 14       # antigüedad máxima del último commit de una rama de persona
 estados: [ready, todo, running, blocked]
 nivel: modulo                 # archivo = solo si comparten un fichero; modulo = también si comparten carpeta

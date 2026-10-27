@@ -61,6 +61,20 @@ def verify(lane: Lane, task_id: str, cwd: str, result: dict, runner=_proc.run) -
         if hits:
             reasons.append(f"toca rutas vetadas en este carril: {', '.join(hits[:10])}")
 
+    if remote_sha and not reasons:
+        # F1-07 (S-07): lo empujado pasa el secret-scan del integrador frente a la base; si hay un posible secreto la
+        # tarea no sigue (bloqueada con archivo:línea y la regla, nunca el valor). Falla cerrado si no se puede leer.
+        from .integrator import scan_secrets  # import tardío: integrator importa este módulo
+        diff = _git(cwd, "diff", "--no-color", "--no-ext-diff", "--no-renames", f"{lane.base_ref}...{remote_sha}",
+                    runner=runner)
+        if diff.returncode != 0:
+            reasons.append("no se pudo revisar si la rama lleva secretos (git diff falló)")
+        else:
+            hits = scan_secrets(diff.stdout or "")
+            if hits:
+                reasons.append("posible secreto en la rama empujada: "
+                               + ", ".join(f"{p}:{n} ({r})" for p, n, r in hits[:5]))
+
     test_exit = None
     if reasons or not lane.test_cmd:
         # Never run test_cmd (it executes code from the worktree) on a branch that already failed the checks.

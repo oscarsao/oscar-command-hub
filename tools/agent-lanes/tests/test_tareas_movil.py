@@ -192,7 +192,11 @@ def test_card_buttons_for_every_state(tmp_path):
     for i, (tid, labels) in enumerate(expected.items()):
         command(desk, f"/tarea {tid}", uid=i + 1)
         got = [b["text"] for row in bot.sent[-1]["markup"]["inline_keyboard"] for b in row]
-        assert got == labels, tid
+        propios = [t for t in labels if t != "🗂 Tarjeta"]
+        assert got[:len(propios)] == propios and got[-1] == "🗂 Tarjeta", tid
+        # botonera estándar (F1-14): ningún estado sin Responder, Integrador, Dar por hecha y Archivar
+        assert {"✍️ Responder", "🧑‍💻 Integrador", "✅ Dar por hecha", "➕ Más"} <= set(got), tid
+        assert any("Archivar" in t or "Pausar" in t for t in got), tid
 
 
 def test_priority_button_raises_and_restores_the_keyboard(tmp_path):

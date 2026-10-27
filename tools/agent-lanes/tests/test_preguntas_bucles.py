@@ -49,7 +49,8 @@ def test_find_answered_requires_every_question_to_be_answered():
 def test_coordinator_notes_exclude_hermes_answers_and_workers():
     show = {"comments": [
         {"author": "coordinador", "body": "NO vuelvas a preguntar por pytest-asyncio: ya está instalado."},
-        {"author": "default", "body": "RESPUESTA-OSCAR: sí"},
+        {"author": "default", "body": "RESPUESTA-OSCAR (id=100000001): sí"},
+        {"author": "default", "body": "RESPUESTA-OSCAR: sin id (P07: no vale y tampoco es nota)"},
         {"author": "agent-lanes", "body": "LANE claim"},
         {"author": "default", "body": "Oscar decide: usa mocks."}]}
     assert coordinator_notes_from(show) == ["NO vuelvas a preguntar por pytest-asyncio: ya está instalado.",

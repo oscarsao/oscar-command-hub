@@ -81,7 +81,10 @@ INT_MIGRATION_APPLIED = "int_mig_applied"  # ✅ Migración aplicada (ficha fusi
 INT_APPLY = "int_apply"  # claude-hub: [🔁 Aplicar (reinicio ordenado)] tras fusionar
 INT_BATCH_MERGE = "int_batch_merge"  # [🔀 Fusionar lote] (política con `batch: daily`, ver batch.py)
 INT_BATCH_FIX, INT_BATCH_REBASE, INT_BATCH_SKIP = "int_batch_fix", "int_batch_rebase", "int_batch_skip"  # rama fuera del lote
-BATCH_EXCLUDED_ACTIONS = (INT_BATCH_FIX, INT_BATCH_REBASE, INT_BATCH_SKIP)
+# Rama que GitHub no pudo actualizar con la base (update-branch con conflicto, F1-05): además de [🔁 Crear tarjeta de
+# rebase] (INT_BATCH_REBASE), [🧑‍💻 Lo resuelvo en consola] y [🗑 Descartar PR].
+INT_BATCH_CONSOLE, INT_BATCH_DISCARD = "int_batch_console", "int_batch_discard"
+BATCH_EXCLUDED_ACTIONS = (INT_BATCH_FIX, INT_BATCH_REBASE, INT_BATCH_SKIP, INT_BATCH_CONSOLE, INT_BATCH_DISCARD)
 INT_BATCH_BUILD = "int_batch_build"  # [🔀 Fusionar lote] del aviso diario «N PR esperando lote»: monta el lote ya
 INT_ACTIONS = (INT_MERGE, INT_DEPLOY, INT_MERGE_DEPLOY, INT_MIGRATION_APPLIED, INT_APPLY, INT_BATCH_MERGE,
                INT_BATCH_BUILD, *BATCH_EXCLUDED_ACTIONS)
@@ -757,6 +760,12 @@ class Integrator:
                 st = self._state(tid)
             if not self.dry_run:
                 self._warn_stale_batch(lane, task, number, url, pr, st)
+            else:  # F1-05: en seco se dice si el lote la actualizaría con la base (update-branch) o ya está al día
+                cand = {"tid": tid, "pr": number, "head_sha": pr["headRefOid"], "title": task.get("title") or tid}
+                with self._lock:
+                    for c in self.batches._update_branches(lane, self.links.repo_slug(lane), [cand], []):
+                        self._out(f"[dry-run] {tid} · PR #{number}: "
+                                  + (c.get("update_note") or f"al día con {lane.base}"))
             return "dry-run:batch_pending" if self.dry_run else "batch_pending"
         if st.get("head_sha") == pr["headRefOid"] and st.get("status") in ("failed", "offered", "merging"):
             # Gates ya hechos sobre esta cabeza; se repiten al pulsar si la base se movió. Un `failed` SÍ se reevalúa
@@ -1893,7 +1902,35 @@ class Integrator:
             if st.get("lane") == lane.name and st.get("status") == "merged" \
                     and re.fullmatch(r"[0-9a-f]{40}", st.get("merge_sha") or ""):
                 out.append((tid, st))
-        return out
+        return self._sin_servir(lane, out)
+
+    def _sin_servir(self, lane, merged: list[tuple[str, dict]]) -> list[tuple[str, dict]]:
+        """Quita las fusiones que el servidor YA sirve (despliegue hecho fuera del runner): el estado local solo sabe
+        lo que el runner desplegó. Mismo criterio que /salud: `commit_sha` de /health, igual al merge o posterior.
+        Sin /health configurado o sin respuesta no se filtra nada (se avisa como siempre)."""
+        policy = self.settings.policies.get(lane.name) if merged else None
+        if not policy or not policy.health_url or not policy.health_commit_key:
+            return merged
+        try:
+            code, body = self._http_get(policy.health_url)
+            data = json.loads(body or "{}") if code == 200 else {}
+        except Exception as exc:
+            log.info("%s: /health no leído para conciliar lo desplegado: %s", lane.name, exc)
+            return merged
+        served = str(data.get(policy.health_commit_key) or "").lower()
+        if data.get("status") != "healthy" or not re.fullmatch(r"[0-9a-f]{40}", served):
+            return merged
+        pendientes = []
+        for tid, st in merged:
+            sha = str(st.get("merge_sha") or "").lower()
+            if sha == served or self._is_ancestor(lane, sha, served):
+                try:
+                    self._save(tid, status="deployed", deployed_sha=served)
+                except Exception as exc:
+                    log.warning("%s: no se pudo anotar el despliegue externo: %s", tid, exc)
+                continue
+            pendientes.append((tid, st))
+        return pendientes
 
     def _deploy_fallo(self, tid: str, sha: str, motivo: str) -> None:
         """Deja constancia del último fallo de despliegue (lo lee /al_dia para ofrecer «🛠 Resolver»). Nunca lanza."""
@@ -2224,6 +2261,7 @@ def _cli_integrator() -> "Integrator":
     from .config import load_env, load_lanes, load_telegram_settings
     from .decisions import CALLBACKS_DIR, OWNER_TELEGRAM_ID, CallbackStore, DecisionDesk
     from .hermes import HermesCLI
+    from .kanban_api import backend_for
     from .notices import LinkBuilder
     from .runner import MESSAGES_DIR
     from .telegram import notifier_from_env
@@ -2233,7 +2271,7 @@ def _cli_integrator() -> "Integrator":
     env, tg, lanes = load_env(), load_telegram_settings(), load_lanes()
     settings = load_integrator_settings(env=env, lane_filter=False)
     cache: dict[str, HermesCLI] = {}
-    hermes_for = lambda board: cache.setdefault(board, HermesCLI(board, author=COORDINATOR_AUTHOR))  # noqa: E731
+    hermes_for = lambda board: cache.setdefault(board, backend_for(board, author=COORDINATOR_AUTHOR))  # noqa: E731
     links = LinkBuilder(env.get("KANBAN_BASE_URL") or tg["kanban_base_url"])
     notifier, lanes_bot = notifier_from_env(env, tg)
     desk = None
@@ -2247,6 +2285,7 @@ def _cli_integrator() -> "Integrator":
 def main(argv: list[str] | None = None) -> int:
     from .config import load_env, load_lanes, load_telegram_settings
     from .hermes import HermesCLI
+    from .kanban_api import backend_for
     from .notices import LinkBuilder
 
     for stream in (sys.stdout, sys.stderr):
@@ -2262,7 +2301,7 @@ def main(argv: list[str] | None = None) -> int:
     settings = load_integrator_settings(env=load_env())
     cache: dict[str, HermesCLI] = {}
     links = LinkBuilder(load_telegram_settings()["kanban_base_url"])
-    integ = Integrator(settings, lanes, hermes_for=lambda b: cache.setdefault(b, HermesCLI(b)), links=links,
+    integ = Integrator(settings, lanes, hermes_for=lambda b: cache.setdefault(b, backend_for(b)), links=links,
                        dry_run=True)
     if args.batch:
         lane, policy = lanes[args.lane], settings.policies.get(args.lane) or Policy(lane=args.lane)

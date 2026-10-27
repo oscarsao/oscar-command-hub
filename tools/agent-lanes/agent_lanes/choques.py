@@ -21,6 +21,10 @@ tarjetas activas con rama lane/<id> empujada; el PR se lee aunque `pr` esté apa
 frena es la prevención al lanzar). Las ramas de carril o de persona sueltas solo entran si `fuentes` las activa. Antes de cada barrido
 se hace `git fetch --prune <remote>` (`fetch`), para ver ramas nuevas sin esperar a que alguien las traiga.
 
+Fuente `pr_tarjetas` (F1-05, D30-A ampliado): PR abiertos cuya rama o «Cierra: t_x» los liga a una tarjeta VIVA
+(`estados`, o running/review/done con el PR aún abierto), incluidas las ramas `fix/*`/`feat/*` de la consola. La
+unidad es la tarjeta con la zona de la rama del PR. Con `pr: false` el resto de PR sueltos sigue sin contar.
+
 Botones (23-10): TODO aviso lleva teclado. Entre dos tarjetas, los de fusion.py (fusionar/encadenar/…); siempre
 [🙈 Ignorar este par] (no vuelve a avisar de ese par, sea cual sea la clase, hasta `recordar_dias`), un
 [🔇 Silenciar <rama>] por cada rama sin tarjeta (lista editable en `.state/choques_silenciadas.json`; deja de contar en
@@ -61,7 +65,8 @@ PATRONES = (
     (r"renombr", r"borra|elimin"),
     (r"mueve|mover|trasl", r"deja en su sitio|no mover"),
 )
-FUENTES = ("tarjetas", "ramas_lane", "pr", "ramas_personas")
+FUENTES = ("tarjetas", "ramas_lane", "pr", "ramas_personas", "pr_tarjetas")
+VIVAS_CON_PR = ("running", "review", "done")  # tarjetas que siguen vivas mientras su PR esté abierto
 CLASES = ("aditivo", "temprano", "compatible", "conflicto", "revisar")
 
 
@@ -223,7 +228,8 @@ class Git:
         return {x.strip().replace("\\", "/").lower() for x in out.splitlines() if x.strip()} if rc == 0 else None
 
     def prs(self, repo: str) -> list[dict]:
-        rc, out = self._out(["pr", "list", "--state", "open", "--json", "number,headRefName,title,author,url", "--limit", "50"],
+        rc, out = self._out(["pr", "list", "--state", "open", "--json", "number,headRefName,title,author,url,body",
+                             "--limit", "50"],
                             repo, cmd="gh")
         try:
             data = json.loads(out) if rc == 0 else []
@@ -320,15 +326,18 @@ def _etiq(tid: str, titulo: str) -> str:
 
 
 def unidades_repo(repo: str, remote: str, base: str, tarjetas: list[dict], git: Git, ajustes: Ajustes,
-                  ahora: float, silenciadas=frozenset()) -> list[Unidad]:
+                  ahora: float, silenciadas=frozenset(), buscar=None) -> list[Unidad]:
     """Unidades abiertas de un repo con su zona. `tarjetas`: dicts de Hermes ya filtrados a este repo. Las ramas de
-    `silenciadas` (botón «Silenciar rama») no cuentan: ni como unidad propia ni como zona de su tarjeta."""
+    `silenciadas` (botón «Silenciar rama») no cuentan: ni como unidad propia ni como zona de su tarjeta.
+    `buscar(tid)` -> dict de la tarjeta (con `status`) o None: para las tarjetas que solo se conocen por su PR."""
     sol = _solapes_aj(ajustes)
     ramas = {r: (ts, autor) for r, ts, autor in git.ramas_remotas(repo, remote, base)}
-    # PR abiertos: con fuente `pr` crean unidades y reactivan ramas cerradas; con solo tarjetas (25-10) se leen igual,
-    # pero solo para marcar qué tarjeta ya tiene PR (lo que pide el aviso `temprano`).
-    prs_abiertos = {p["headRefName"]: p for p in git.prs(repo)} if ("pr" in ajustes.fuentes or ajustes.temprano) else {}
-    prs = prs_abiertos if "pr" in ajustes.fuentes else {}
+    pr_vivos = "pr_tarjetas" in ajustes.fuentes
+    # PR abiertos: con fuente `pr`/`pr_tarjetas` crean unidades y reactivan ramas cerradas; con solo tarjetas (25-10)
+    # se leen igual, pero solo para marcar qué tarjeta ya tiene PR (lo que pide el aviso `temprano`).
+    usa_prs = "pr" in ajustes.fuentes or pr_vivos
+    prs_abiertos = {p["headRefName"]: p for p in git.prs(repo)} if (usa_prs or ajustes.temprano) else {}
+    prs = prs_abiertos if usa_prs else {}
     cerradas = getattr(git, "ramas_cerradas", lambda _r: set())(repo) - set(prs)  # un PR nuevo abierto la reactiva
     ramas = {r: v for r, v in ramas.items() if r not in cerradas and r not in silenciadas}
     unidades: dict[str, Unidad] = {}
@@ -357,6 +366,31 @@ def unidades_repo(repo: str, remote: str, base: str, tarjetas: list[dict], git: 
                 con_rama(u, f"lane/{tid}")
                 u.texto = texto
             unidades[tid] = u
+    if pr_vivos:
+        from .reconcile import pr_refs  # import tardío: reconcile no depende de choques
+        conocidas = {str(t.get("id") or ""): t for t in tarjetas}
+        for rama, p in sorted(prs.items()):
+            if rama in usadas or rama in silenciadas or rama not in ramas:
+                continue
+            for tid in pr_refs(p):
+                t = conocidas.get(tid)
+                if t is None and buscar is not None:
+                    try:
+                        t = buscar(tid)
+                    except Exception as exc:
+                        log.debug("choques: %s no leída: %s", tid, exc)
+                        t = None
+                if not t or (tid not in conocidas and str(t.get("status") or "") not in VIVAS_CON_PR):
+                    continue
+                u = unidades.get(tid)
+                if u is None:
+                    texto = f"{t.get('title') or ''}\n{t.get('body') or ''}"
+                    u = Unidad(tid, _etiq(tid, t.get("title") or ""), texto=texto, dueno=str(t.get("assignee") or ""),
+                               origen="tarjeta", board=str(t.get("_board") or ""), lane=str(t.get("assignee") or ""))
+                    unidades[tid] = u
+                if not u.rama:
+                    con_rama(u, rama)
+                break
     for rama, (ts, autor) in sorted(ramas.items()):
         if rama in usadas:
             continue
@@ -404,12 +438,28 @@ def detectar(lanes: dict, hermes_for, git: Git, ajustes: Ajustes | None = None, 
                 if key in repos and t.get("id") and (board, t["id"]) not in vistos:
                     vistos.add((board, t["id"]))
                     repos[key][3].append({**t, "_board": board})
+    cache: dict[str, dict | None] = {}
+
+    def buscar(tid: str) -> dict | None:
+        """Tarjeta ligada a un PR abierto que no está en `estados` (p. ej. done con el PR sin fusionar)."""
+        if tid not in cache:
+            cache[tid] = None
+            for board in boards:
+                try:
+                    task = (hermes_for(board).show(tid) or {}).get("task") or {}
+                except Exception:
+                    continue
+                if task.get("id") or task.get("status"):
+                    cache[tid] = {**task, "id": tid, "_board": board}
+                    break
+        return cache[tid]
+
     out: list[Choque] = []
     for repo, remote, base, tarjetas in repos.values():
         try:
             if ajustes.fetch:
                 getattr(git, "fetch", lambda _r, _m: False)(repo, remote)
-            us = unidades_repo(repo, remote, base, tarjetas, git, ajustes, ahora, silenciadas)
+            us = unidades_repo(repo, remote, base, tarjetas, git, ajustes, ahora, silenciadas, buscar=buscar)
             slug = slugs.get(solapes._norm_repo(repo), "")
             for u in us:
                 if u.pr and not u.url and slug:
@@ -422,7 +472,7 @@ def detectar(lanes: dict, hermes_for, git: Git, ajustes: Ajustes | None = None, 
                         continue  # dos tarjetas solo de texto: ya las avisa solapes.py
                     clase, comun = clasificar(a, b, repo, remote, git, ajustes)
                     if clase == "aditivo":
-                        log.info("choques: %s y %s avanzan en paralelo (aditivo)", a.uid, b.uid)
+                        log.debug("choques: %s y %s avanzan en paralelo (aditivo)", a.uid, b.uid)  # F1-06: era INFO
                         continue
                     out.append(Choque(solapes._norm_repo(repo), clase, a, b, comun, propuesta(clase, a, b)))
         except Exception as exc:

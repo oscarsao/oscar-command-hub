@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import argparse
 import html
-import json
 import logging
 import re
 import sys
@@ -26,6 +25,7 @@ if __package__ in (None, ""):  # ejecutado como script: agent-lanes/ al path par
 from agent_lanes.notices import (BOARD_BRANDS, BRANDS, DECISION_TAGS, card_url, decision_since,  # noqa: E402,F401
                                  is_decision_card, money, truncate)
 from agent_lanes.notices import OSCAR_ASSIGNEE as OSCAR  # noqa: E402
+from agent_lanes.hermes import HermesError  # noqa: E402
 
 log = logging.getLogger("brief_diario")
 
@@ -274,12 +274,11 @@ def collect(hermes_for, boards=BOARDS, lane_names: set[str] = frozenset(), now: 
     now = time.time() if now is None else now
     lists: dict[str, list[dict]] = {}
     for b in boards:
-        cp = hermes_for(b)._call("list", "--json")
-        if cp.returncode != 0:
-            log.warning("list del board %s falló: %s", b, (cp.stderr or "")[:200])
+        try:
+            lists[b] = hermes_for(b).list_all()
+        except (HermesError, ValueError) as exc:
+            log.warning("list del board %s falló: %s", b, str(exc)[:200])
             lists[b] = []
-            continue
-        lists[b] = json.loads(cp.stdout or "[]")
     items = [{"board": b, "task": t, "detail": None} for b, ts in lists.items() for t in ts]
     todo = [it for it in items if needs_detail(it["task"], lane_names, now)]
 
@@ -322,10 +321,11 @@ def build(now: float | None = None, *, prueba: bool = False, hermes_for=None, br
     from agent_lanes import bandeja
     from agent_lanes.config import load_env, load_lanes, load_telegram_settings
     from agent_lanes.hermes import HermesCLI
+    from agent_lanes.kanban_api import backend_for
     now = time.time() if now is None else now
     if hermes_for is None:
         cache: dict[str, HermesCLI] = {}
-        hermes_for = lambda b: cache.setdefault(b, HermesCLI(b))  # noqa: E731
+        hermes_for = lambda b: cache.setdefault(b, backend_for(b))  # noqa: E731
     lane_names = {n for n, l in load_lanes().items() if l.kind == "implement"}
     items, lists = collect(hermes_for, lane_names=lane_names, now=now)
     base = load_env().get("KANBAN_BASE_URL") or load_telegram_settings()["kanban_base_url"]

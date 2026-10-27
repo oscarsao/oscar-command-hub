@@ -1,6 +1,5 @@
 """Resumen diario (brief/brief_diario.py): clasificación, render, límites y enlaces."""
 import re
-import subprocess
 from datetime import datetime
 
 from brief.brief_diario import (MAX_LINES, TEXT_MAX, ListsHermes, brand, classify, collect, n_lines, render,
@@ -139,9 +138,8 @@ class FakeHermes:
     def __init__(self, tasks):
         self.tasks, self.shown = tasks, []
 
-    def _call(self, *args):
-        import json
-        return subprocess.CompletedProcess(args, 0, json.dumps(self.tasks), "")
+    def list_all(self, archived=False):
+        return list(self.tasks)
 
     def show(self, tid):
         self.shown.append(tid)

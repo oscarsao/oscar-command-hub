@@ -172,6 +172,22 @@ def load_runner_settings(path: Path | None = None) -> dict:
                            **(_load(path).get("runner") or {})})
 
 
+def kanban_backend(env: dict | None = None, path: Path | None = None, env_file: Path | None = None) -> str:
+    """Backend del kanban (F2-02): `KANBAN_BACKEND` del entorno (o de `env`) > el de `.env` del hub >
+    `runner.kanban_backend` de lanes.yaml > `hermes` (la CLI de Hermes de siempre). Lo valida y fija
+    kanban_api.backend_name (una vez por proceso)."""
+    import os
+    value = str((env if env is not None else os.environ).get("KANBAN_BACKEND") or "").strip().lower()
+    if not value:
+        value = str(load_env(env_file).get("KANBAN_BACKEND") or "").strip().lower()
+    if not value:
+        try:
+            value = str((_load(path).get("runner") or {}).get("kanban_backend") or "").strip().lower()
+        except (OSError, AttributeError):
+            value = ""
+    return value or "hermes"
+
+
 def load_notice_limits(path: Path | None = None) -> dict:
     """Bloque `notices:` de lanes.yaml: topes de los avisos de Telegram (ver notices.LIMITS). Vacío = de fábrica."""
     from .ajustes_hub import aplicar_topes
@@ -191,3 +207,43 @@ def load_env(path: Path | None = None) -> dict[str, str]:
         k, v = line.split("=", 1)
         env[k.strip()] = v.strip().strip("\"'")
     return env
+
+
+def ohq_api_url(env: dict | None = None, path: Path | None = None) -> str:
+    """URL de la API de Oscar HQ (F1-02): la de `.env`/entorno (OHQ_API_URL) manda; sin ella, la de `ohq.api_url` de
+    lanes.yaml (config de confianza, no es un secreto). Vacío = sin URL (sync_usuarios y la vigilancia del equipo
+    quedan apagados). Sin OHQ_API_KEY siguen apagados igual: la clave nunca tiene valor por defecto."""
+    value = str((env or {}).get("OHQ_API_URL") or "").strip()
+    if value:
+        return value
+    try:
+        cfg = _load(path).get("ohq") or {}
+    except Exception:
+        return ""
+    return str(cfg.get("api_url") or "").strip() if isinstance(cfg, dict) else ""
+
+
+def _chats_de(cfg) -> set[str]:
+    """Chats de un bloque {chat, ...} o de una lista de ellos (los thread no cuentan para la allowlist)."""
+    items = cfg if isinstance(cfg, list) else [cfg]
+    return {str(c["chat"]) for c in items if isinstance(c, dict) and c.get("chat")}
+
+
+def chats_de_confianza(path: Path | None = None) -> set[str]:
+    """Chats que lanes.yaml ya usa como destino (temas de carril, final_only, Integración, 🎯 Decisiones, panel del hub,
+    👥 Equipo, Atención). Derivan la allowlist de Origen-Telegram (F1-02) para no repetirlos a mano en
+    TELEGRAM_ALLOWED_CHATS. Un lanes.yaml ilegible da el conjunto vacío (se queda lo del .env)."""
+    try:
+        data = _load(path)
+    except Exception:
+        return set()
+    tg = data.get("telegram") or {}
+    out = set()
+    for lane in (data.get("lanes") or {}).values():
+        if isinstance(lane, dict):
+            out |= _chats_de(lane.get("telegram"))
+    out |= _chats_de(tg.get("final_only") or [])
+    out |= _chats_de((tg.get("destinos") or {}).get("decisiones"))
+    for key in ("integration_telegram", "hub_panel", "equipo_telegram", "attention_telegram"):
+        out |= _chats_de(data.get(key))
+    return out

@@ -219,8 +219,10 @@ def listo_para_aprobar(lane: Lane, show: dict, branch_state=_git_branch_state, o
     if (meta.get("review") or {}).get("status") != "approve":
         return None
     comments = show.get("comments") or []
-    if any((c.get("body") or "").startswith(APPROVED_PREFIX) and c.get("author") == OSCAR_AUTHOR for c in comments):
-        return None
+    from . import aprobaciones
+    if any((c.get("body") or "").startswith(APPROVED_PREFIX) and c.get("author") == OSCAR_AUTHOR
+           and aprobaciones.aprobado(tid, aprobaciones.pr_de_comentario(c.get("body"))) for c in comments):
+        return None  # P08: aprobada solo con el registro local; un comentario suelto sigue esperando a Oscar
     if any((c.get("body") or "").startswith(INTEGRATED_PREFIX + " ") for c in comments):  # no "INTEGRADOR:"
         return None
     exists, merged = branch_state(lane, tid, meta.get("head_sha"))
@@ -499,6 +501,7 @@ def main(argv: list[str]) -> int:
     from .config import load_env, load_lanes, load_telegram_settings
     from .decisions import CALLBACKS_DIR, OWNER_TELEGRAM_ID, CallbackStore, DecisionDesk
     from .hermes import HermesCLI
+    from .kanban_api import backend_for
     from .notices import LinkBuilder
     from .runner import MESSAGES_DIR
     from .telegram import notifier_from_env
@@ -509,7 +512,7 @@ def main(argv: list[str]) -> int:
     if not (lanes_bot and notifier.enabled):
         raise SystemExit("renotify necesita CARRILES_BOT_TOKEN y TELEGRAM_CHAT_ID en agent-lanes/.env")
     cache: dict[str, HermesCLI] = {}
-    hermes_for = lambda board: cache.setdefault(board, HermesCLI(board))
+    hermes_for = lambda board: cache.setdefault(board, backend_for(board))
     links = LinkBuilder(env.get("KANBAN_BASE_URL") or tg_settings["kanban_base_url"])
     desk = DecisionDesk(notifier, CallbackStore(CALLBACKS_DIR), lanes=lanes, hermes_for=hermes_for, links=links,
                         owner_id=env.get("OWNER_TELEGRAM_ID") or OWNER_TELEGRAM_ID)

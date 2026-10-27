@@ -358,3 +358,35 @@ def test_temprano_con_solo_tarjetas_no_llama_a_gh_si_esta_apagado():
     g = FakeGit({"lane/t_1": (NOW, "x", [CMD])})
     g.prs = lambda repo: (_ for _ in ()).throw(AssertionError("gh pr list no debería llamarse"))
     run(g, [card("t_1", "uno")], _solo_tarjetas(temprano=False))
+
+
+# --- F1-05 (D30-A ampliado): PR de tarjetas vivas, también fix/* y feat/* -------------------------------------
+
+class BoardShow(Board):
+    def show(self, tid):
+        c = next((c for c in self.cards if c["id"] == tid), None)
+        return {"task": c} if c else {}
+
+
+def test_pr_de_consola_ligado_a_tarjeta_done_cuenta_frente_a_tarjeta_activa():
+    cards = [card("t_aaaaaaaa", "Ola 1 consola", status="done"), card("t_bbbbbbbb", "Carril", status="running")]
+    g = FakeGit({"feat/ola-1": (NOW, "oscar", [CMD]), "lane/t_bbbbbbbb": (NOW, "w", [CMD]),
+                 "feat/suelta": (NOW, "x", [CMD])},
+                prs=[{"number": 21, "headRefName": "feat/ola-1", "title": "Ola 1", "body": "Cierra: t_aaaaaaaa",
+                      "url": "u21"},
+                     {"number": 22, "headRefName": "feat/suelta", "title": "sin tarjeta", "body": ""}],
+                reales={frozenset(("feat/ola-1", "lane/t_bbbbbbbb")): True})
+    aj = Ajustes(fuentes=("tarjetas", "pr_tarjetas"), estados=("running",))
+    [c] = detectar(LANES, lambda b: BoardShow(cards), g, aj, ahora=NOW)
+    assert c.clase == "conflicto" and {c.a.uid, c.b.uid} == {"t_aaaaaaaa", "t_bbbbbbbb"}
+    ola = c.a if c.a.uid == "t_aaaaaaaa" else c.b
+    assert ola.rama == "feat/ola-1" and ola.pr == 21
+
+
+def test_pr_ligado_a_tarjeta_archivada_no_cuenta():
+    cards = [card("t_aaaaaaaa", "vieja", status="archived"), card("t_bbbbbbbb", "Carril", status="running")]
+    g = FakeGit({"fix/x": (NOW, "o", [CMD]), "lane/t_bbbbbbbb": (NOW, "w", [CMD])},
+                prs=[{"number": 5, "headRefName": "fix/x", "title": "x", "body": "Cierra: t_aaaaaaaa"}],
+                reales={frozenset(("fix/x", "lane/t_bbbbbbbb")): True})
+    aj = Ajustes(fuentes=("tarjetas", "pr_tarjetas"), estados=("running",))
+    assert detectar(LANES, lambda b: BoardShow(cards), g, aj, ahora=NOW) == []

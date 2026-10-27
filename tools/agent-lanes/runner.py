@@ -12,9 +12,9 @@ import logging
 import sys
 import threading
 import time
-from logging.handlers import RotatingFileHandler
+from logging.handlers import TimedRotatingFileHandler
 
-from agent_lanes import canal_avisos, ciego, consola, drain, notices
+from agent_lanes import canal_avisos, ciego, consola, doctor_config, drain, notices, resumen_carriles
 from agent_lanes.bandeja import load as load_bandeja
 from agent_lanes.board_guard import BoardGuardTicker
 from agent_lanes.choques import ChoquesTicker
@@ -40,6 +40,8 @@ from agent_lanes.reconcile import ReconcileTicker, Reconciler, gh_prs
 from agent_lanes.aviso import REMIND_HOURS, StuckWatcher
 from agent_lanes.git_ops import GitOps, github_slug_problem
 from agent_lanes.hermes import HermesCLI
+from agent_lanes.kanban_api import backend_for
+from agent_lanes.kanban_api import backend_name as kanban_backend_name
 from agent_lanes.integration import IntegrationRoute
 from agent_lanes.integrator import build_integrator, load_integrator_settings
 from agent_lanes.promote import Promoter, load_promote_configs
@@ -53,6 +55,12 @@ from agent_lanes.verify import verify
 from agent_lanes.worker import ClaudeWorker
 
 LOCK = ROOT / ".state" / "runner.lock"
+LOG_DAYS = 14  # F1-06 (DISP-12): un fichero por día y 14 días de historia (antes 2 MB x 3 = ~14 h)
+
+
+def log_handler(path) -> TimedRotatingFileHandler:
+    """runner.log rota a medianoche y guarda LOG_DAYS días (runner.log.AAAA-MM-DD)."""
+    return TimedRotatingFileHandler(path, when="midnight", backupCount=LOG_DAYS, encoding="utf-8", delay=True)
 TG_OFFSET = ROOT / ".state" / "tg_offset"      # offset de getUpdates del bot de carriles
 REMINDERS_STATE = ROOT / ".state" / "reminders.json"  # franjas 13:00/18:00 ya enviadas
 STUCK_STATE = ROOT / ".state" / "stuck_avisos.json"  # avisos de 🧊 atascadas ya enviados (tarjeta:estado:ronda)
@@ -94,7 +102,7 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
     handlers = [logging.StreamHandler()]
     if args.log_file:
-        handlers = [RotatingFileHandler(args.log_file, maxBytes=2_000_000, backupCount=3, encoding="utf-8")]
+        handlers = [log_handler(args.log_file)]
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(threadName)s %(message)s",
                         handlers=handlers)
     log = logging.getLogger("agent_lanes")
@@ -106,8 +114,9 @@ def main(argv: list[str] | None = None) -> int:
     hermes_cache: dict[str, HermesCLI] = {}
 
     def hermes_for(board: str) -> HermesCLI:
-        return hermes_cache.setdefault(board, HermesCLI(board))
+        return hermes_cache.setdefault(board, backend_for(board))
 
+    log.info("kanban: backend=%s", kanban_backend_name())  # el humo del corte F2-07 mira esta línea
     problems = hermes_for(next(l.board for l in all_lanes.values() if l.board)).check_contract()
     if problems:
         log.error("Contrato de la CLI de hermes ROTO; el runner no arranca:\n  - %s", "\n  - ".join(problems))
@@ -147,6 +156,8 @@ def main(argv: list[str] | None = None) -> int:
         decisions.team_notice = tg_settings.get("team_notice") or None
         # DECISIÓN / INFORMATIVO / URGENTE (canal_avisos.py): sin telegram.destinos.decisiones, todo como antes.
         decisions.canal = canal_avisos.para_desk(decisions, tg_settings["decisiones"])
+        # Siembra del tema (F1-03): al arrancar y a las 9:00 con lo de lo_tuyo; en su hilo (1 s entre mensajes).
+        decisions.canal.sembrador, decisions.canal.run_async = commands.semillas, True
         if tg_settings["decisiones"]:
             log.info("tema 🎯 Decisiones activo: %s/%s", *tg_settings["decisiones"])
         decisions.collab = CollabIntake(notify, load_people(owner), hermes_for=hermes_for, state_path=COLLAB_STATE)
@@ -193,6 +204,18 @@ def main(argv: list[str] | None = None) -> int:
     # Tema de Integración (integration_telegram): la tarjeta done con ✅ Aprobar va allí aunque el integrador esté apagado.
     integration = (IntegrationRoute(tg_settings["integration"], load_integrator_settings(env=env, lane_filter=False).policies)
                    if tg_settings.get("integration") else None)
+    diario = None
+    if decisions and not args.once:  # resumen diario de avisos INFO (F1-04): un mensaje al día al DM de Oscar
+        owner_dm = env.get("OWNER_TELEGRAM_ID") or OWNER_TELEGRAM_ID
+        diario = resumen_carriles.DiarioInfo(
+            lambda text: bool(notify.send_to(owner_dm, None, text, html=False, silent=True)),
+            ROOT / ".state" / "resumen_info.json")
+        resumen_carriles.instalar(diario)
+    if not args.once:  # doctor-config (F1-02): una vez al arrancar, al log y al tema de Integración; nunca tumba nada
+        doctor_config.publicar_al_arrancar(
+            (lambda text: notify.send_to(*integration.target, text, html=False, silent=True))
+            if integration and notify.enabled else (lambda text: None),
+            anotar=resumen_carriles.anotar if diario else None)
     for name, lane in selected.items():
         if lane.kind == "review":
             runners.append(ReviewRunner(lane, all_lanes, hermes_for=hermes_for, git=git, reviewer=ClaudeReviewer(),
@@ -366,6 +389,12 @@ def main(argv: list[str] | None = None) -> int:
                     log.info("decisiones en cola reintentadas: %d", retried)
             except Exception as exc:
                 log.warning("reintento de decisiones en cola falló: %s", exc)
+        if diario:
+            try:
+                if diario.tick():
+                    log.info("resumen diario de avisos INFO enviado")
+            except Exception as exc:
+                log.warning("resumen diario INFO falló: %s", exc)
         if hub_panel:
             hub_panel.tick()  # nunca lanza; lee el kanban como mucho cada min_seconds y solo edita si cambia
         if args.once:  # una pasada con barrera: la plaza reservada también se atiende y se espera

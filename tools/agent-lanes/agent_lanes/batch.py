@@ -39,7 +39,8 @@ from .ajustes_hub import valor
 from .atascos import pr_branch_card_body
 from .falta import CONFLICT, OTHER, classify, plain_reason
 from .integration import header, phase_for, repo_name, risk_of
-from .integrator import (INT_BATCH_FIX, INT_BATCH_MERGE, INT_BATCH_REBASE, INT_BATCH_SKIP, INTEGRATED_PREFIX,
+from .integrator import (INT_BATCH_CONSOLE, INT_BATCH_DISCARD, INT_BATCH_FIX, INT_BATCH_MERGE, INT_BATCH_REBASE,
+                         INT_BATCH_SKIP, INTEGRATED_PREFIX,
                          MERGE_RETRY_WAITS, NEEDS_MIGRATION, PR_URL_RE, TID_RE, GateResult, Policy, alembic_heads,
                          safe_env)
 from .notices import TEXT_MAX, status_line, truncate
@@ -53,6 +54,29 @@ BATCH_BRANCH_RE = re.compile(r"release/lote-[a-z0-9]+(?:-[a-z0-9]+)*-\d{4}-\d{2}
 OPEN_STATUSES = ("offered", "stale")  # lote con PR abierto pendiente del botón
 EXCLUDED_TITLE_MAX = 80  # por defecto; el vigente se edita con /ajustes (lotes.titulo_excluido_max)
 EXPLAIN_BUTTON = {"text": "💬 Explícame más", "action": "explain"}  # = decisions.EXPLAIN (sin importar decisions aquí)
+GATE_OUTPUT_MAX = 4000  # caracteres finales de la salida de un gate fallido que se guardan en el JSON del lote
+UPDATE_WAITS = (2, 3, 5, 5, 10, 15)  # s de espera a que GitHub cambie la cabeza tras update-branch
+INTEGRATOR_PROFILE = "oscar-e2"  # = reconcile.INTEGRATOR_PROFILE: perfil del integrador (consola) en el kanban
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+_FAIL_RE = re.compile(r"^\s*(?:FAIL|×|✗)\s+(\S.*?)(?:\s+\d+(?:\.\d+)?\s*m?s)?\s*$")
+_TS_RE = re.compile(r"^\s*(\S+?)(?:\(\d+,\d+\))?:?\s+error\s+(TS\d+):")
+
+
+def failure_signatures(output: str) -> set[str]:
+    """Fallos identificables de una salida de vitest/tsc: «FAIL archivo > test» y «archivo error TSnnnn».
+    Sirve para comparar el lote con la base (D25-A): solo cuentan los fallos NUEVOS. Vacío = no se reconoce nada
+    (y entonces el gate se juzga como siempre, estricto)."""
+    out: set[str] = set()
+    for raw in (output or "").splitlines():
+        line = _ANSI_RE.sub("", raw).rstrip()
+        m = _TS_RE.match(line)
+        if m:
+            out.add(f"{m.group(1).replace(chr(92), '/')} {m.group(2)}")
+            continue
+        m = _FAIL_RE.match(line)
+        if m:
+            out.add(re.sub(r"\s+", " ", m.group(1).replace(chr(92), "/")).strip())
+    return out
 
 
 def brand_of(policy: Policy) -> str:
@@ -279,19 +303,91 @@ class BatchPlanner:
             self._supersede(lane, slug, b)
         excluded: list[dict] = []
         cands = self._validate(lane, slug, self._candidates(lane), excluded)
-        if not cands:
-            return f"No hay nada aprobado esperando lote de {brand}."
+        if cands:
+            with i._lock:  # F1-05: ramas detrás de la base -> update-branch (GitHub) antes de montar
+                cands = self._update_branches(lane, slug, cands, excluded)
         day = self.clock().strftime("%Y-%m-%d")
+        if not cands:
+            if excluded:  # p. ej. todas chocan con la base al actualizarlas: cada una lleva su aviso con botones
+                bid = f"{brand}-{day}"
+                for x in excluded:
+                    self._note_excluded(lane, x, bid)
+                    self._notice_excluded(lane, x, bid, lane.base, None)
+            return f"No hay nada aprobado esperando lote de {brand}."
         bid, branch = self._new_id(lane, policy, day)
         with i._lock:  # worktrees temporales y fetch: una operación git a la vez
             build = self._build(lane, policy, cands, excluded, bid, branch)
         if not build["ok"]:
+            # FL-05: el motivo y la salida del gate que falla quedan en el JSON del lote (antes solo en el log)
+            self._save(bid, lane=lane.name, brand=brand, date=day, branch=branch, status="failed",
+                       base_sha=build["base_sha"], reasons=build["reasons"], gate_failures=build["gate_failures"],
+                       excluded=[{k: x.get(k) for k in ("tid", "pr", "title", "reason")} for x in build["excluded"]])
             for x in build["excluded"]:
                 self._note_excluded(lane, x, bid)
                 self._notice_excluded(lane, x, bid, branch, None)
             return (f"El lote de {brand} no se pudo montar: " + "; ".join(build["reasons"])) if build["reasons"] \
                 else f"El lote de {brand} quedó vacío: ninguna rama pasó los gates."
         return self._publish(lane, policy, slug, bid, branch, day, build)
+
+    def _update_branches(self, lane, slug: str, cands: list[dict], excluded: list[dict]) -> list[dict]:
+        """F1-05 (A§4j): cada rama aprobada que va DETRÁS de la base se actualiza en GitHub con `update-branch`
+        (`expected_head_sha` = la cabeza aprobada: si alguien empujó después, GitHub lo rechaza). La cabeza nueva la
+        hizo GitHub con la base, no un tercero: la aprobación de Oscar pasa a ella (rebind_approval). Si GitHub
+        no puede (conflicto), la rama queda fuera con [🔁 Crear tarjeta de rebase] [🧑‍💻 Lo resuelvo en consola]
+        [🗑 Descartar PR] en 🎯 Decisiones. Un fallo de red o de git no frena el lote: se prueba como estaba."""
+        i, remote, base = self.i, lane.remote, lane.base
+        refs = [f"+refs/pull/{c['pr']}/head:refs/integrator/pr-{c['pr']}" for c in cands]
+        cp = i._git(lane.repo, "fetch", remote, f"+refs/heads/{base}:refs/remotes/{remote}/{base}", *refs)
+        if cp.returncode != 0:
+            log.warning("update-branch: git fetch falló: %s", (cp.stderr or "").strip()[:300])
+            return cands
+        out: list[dict] = []
+        for c in cands:
+            ref = f"refs/integrator/pr-{c['pr']}"
+            if (i._git(lane.repo, "rev-parse", ref).stdout or "").strip() != c["head_sha"]:
+                out.append(c)  # _build lo excluye con su motivo («cambió mientras se montaba el lote»)
+                continue
+            rc = i._git(lane.repo, "merge-base", "--is-ancestor", f"{remote}/{base}", ref).returncode
+            if rc != 1:  # 0 = ya contiene la base; otro = no se sabe: se prueba como está
+                out.append(c)
+                continue
+            if i.dry_run:
+                out.append({**c, "update_note": f"detrás de {base}: se actualizaría con {base} (update-branch)"})
+                continue
+            cp = i._gh("api", "-X", "PUT", f"repos/{slug}/pulls/{c['pr']}/update-branch",
+                       "-f", f"expected_head_sha={c['head_sha']}")
+            err = ((cp.stderr or "") + " " + (cp.stdout or "")).lower()
+            if cp.returncode == 0:
+                new = self._wait_new_head(slug, c)
+                if not new:
+                    excluded.append({**c, "reason": f"GitHub aún no ha terminado de actualizarla con {base}; "
+                                                    "entra en el siguiente lote"})
+                    continue
+                i.rebind_approval(c["tid"], new)
+                i._save(c["tid"], head_sha=new, autoresolve_head=new)
+                i._comment(lane, c["tid"], f"INTEGRADOR: PR #{c['pr']} actualizada con {base} (update-branch) · "
+                                           f"{new[:12]}; tu aprobación se conserva")
+                out.append({**c, "head_sha": new, "updated": True})
+            elif "conflict" in err:
+                excluded.append({**c, "update_conflict": True,
+                                 "reason": f"choca con {base}: GitHub no pudo actualizarla (update-branch)"})
+            elif "expected" in err or "head sha" in err:
+                excluded.append({**c, "reason": "cambió mientras se montaba el lote"})
+            else:
+                log.warning("update-branch PR #%s falló: %s", c["pr"], err.strip()[:300])
+                out.append(c)
+        return out
+
+    def _wait_new_head(self, slug: str, c: dict) -> str | None:
+        """update-branch es asíncrono: espera (UPDATE_WAITS) a que el PR tenga otra cabeza. None = no llegó."""
+        for wait in (0, *UPDATE_WAITS):
+            if wait:
+                self.i._sleep(wait)
+            pr = self.i._pr_view(slug, c["pr"]) or {}
+            sha = pr.get("headRefOid") or ""
+            if re.fullmatch(r"[0-9a-f]{40}", sha) and sha != c["head_sha"]:
+                return sha
+        return None
 
     def _supersede(self, lane, slug: str, b: dict) -> None:
         if not self.i.dry_run:
@@ -302,7 +398,8 @@ class BatchPlanner:
     def _build(self, lane, policy: Policy, cands: list[dict], excluded: list[dict], bid: str, branch: str) -> dict:
         i = self.i
         out = {"ok": False, "members": [], "excluded": list(excluded), "reasons": [], "passed": [], "files": [],
-               "migration": None, "sensitive": [], "base_sha": "", "head_sha": "", "branch": branch}
+               "migration": None, "sensitive": [], "base_sha": "", "head_sha": "", "branch": branch,
+               "gate_failures": [], "known_failures": 0}
         repo, remote, base = lane.repo, lane.remote, lane.base
         refs = [f"+refs/pull/{c['pr']}/head:refs/integrator/pr-{c['pr']}" for c in cands]
         cp = i._git(repo, "fetch", remote, f"+refs/heads/{base}:refs/remotes/{remote}/{base}", *refs)
@@ -328,6 +425,7 @@ class BatchPlanner:
             self._build_in(str(wt), wt, lane, policy, live, out)
         finally:
             i._remove_worktree(repo, wt)
+            out.pop("_base_failures", None)
         return out
 
     def _merge(self, w: str, sha: str) -> subprocess.CompletedProcess:
@@ -371,7 +469,7 @@ class BatchPlanner:
             members.append({**c, "files": res.changed_files})
         if not members:
             return
-        reasons = self._verify(w, lane, policy, self._files(w, base_sha, "HEAD", three=False))
+        reasons = self._verify(w, lane, policy, self._files(w, base_sha, "HEAD", three=False), out)
         if reasons and len(members) > 1:
             members, reasons = self._cull(w, wt, lane, policy, members, out, reasons)
         out["files"] = self._files(w, base_sha, "HEAD", three=False)
@@ -389,29 +487,65 @@ class BatchPlanner:
             out["migration"] = out["migration"] or "infra"
         out["passed"] = [f"sin conflictos con {lane.base}", "sin secretos"] + (["tests OK"] if lane.test_cmd else []) \
             + (["Alembic con un solo head"] if out["migration"] == "alembic" else []) \
-            + (["build/typecheck del frontend OK"] if self._frontend(policy, files) else [])
+            + ([] if not self._frontend(policy, files) else ["build/typecheck del frontend OK"]
+               if not out["known_failures"] else
+               [f"frontend sin fallos nuevos ({out['known_failures']} ya presentes en {lane.base})"])
         out["members"], out["ok"] = members, True
 
     def _frontend(self, policy: Policy, files: list[str]) -> bool:
         return bool(policy.batch_frontend_cmd and any(f.startswith(p) for p in policy.batch_frontend_paths
                                                       for f in files))
 
-    def _verify(self, w: str, lane, policy: Policy, files: list[str]) -> list[str]:
-        """test_cmd del carril y, si se tocó el frontend, su build/typecheck. Motivos en lenguaje llano ([] = OK)."""
+    def _verify(self, w: str, lane, policy: Policy, files: list[str], out: dict | None = None) -> list[str]:
+        """test_cmd del carril y, si se tocó el frontend, su build/typecheck. Motivos en lenguaje llano ([] = OK).
+        Frontend (D25-A): si falla, se compara con la base; si TODOS sus fallos ya están en la base, no cuenta (los
+        tests rojos de master no bloquean el lote). La salida de cada gate que falla va a `out["gate_failures"]`."""
         i, reasons = self.i, []
-        checks = [("los tests del carril fallan con el lote", render_test_cmd(lane))] if lane.test_cmd else []
+        checks = [("los tests del carril fallan con el lote", render_test_cmd(lane), False)] if lane.test_cmd else []
         if self._frontend(policy, files):
-            checks.append(("el build/typecheck del frontend falla con el lote", policy.batch_frontend_cmd))
-        for why, cmd in checks:
+            checks.append(("el build/typecheck del frontend falla con el lote", policy.batch_frontend_cmd, True))
+        for why, cmd, diff in checks:
             try:
                 t = i._exec(cmd, cwd=w, timeout=1800, shell=True, env=safe_env())
             except subprocess.TimeoutExpired:
                 reasons.append(why.replace("falla", "tarda más de 30 min").replace("fallan", "tardan más de 30 min"))
                 continue
-            if t.returncode != 0:
-                reasons.append(why)
-                log.warning("lote: %s (exit %s): %s", cmd[:80], t.returncode, ((t.stdout or "") + (t.stderr or ""))[-1500:])
+            if t.returncode == 0:
+                continue
+            text = (t.stdout or "") + (t.stderr or "")
+            if diff and out is not None:
+                mine = failure_signatures(text)
+                known = self._base_failures(w, cmd, out) if mine else None
+                if mine and known is not None and mine <= known:
+                    out["known_failures"] = max(out.get("known_failures") or 0, len(mine))
+                    log.info("lote: frontend con %d fallo(s) que ya están en la base: no cuentan", len(mine))
+                    continue
+                if mine and known:
+                    text = "Fallos nuevos frente a la base:\n" + "\n".join(sorted(mine - known)[:40]) + "\n\n" + text
+            reasons.append(why)
+            log.warning("lote: %s (exit %s): %s", cmd[:80], t.returncode, text[-1500:])
+            if out is not None:
+                out.setdefault("gate_failures", []).append({"gate": why, "cmd": cmd[:300], "exit": t.returncode,
+                                                            "salida": text[-GATE_OUTPUT_MAX:]})
         return reasons
+
+    def _base_failures(self, w: str, cmd: str, out: dict) -> set[str] | None:
+        """Firmas de fallo del mismo comando sobre la base del lote (una vez por lote). None = no se pudo saber."""
+        cache = out.setdefault("_base_failures", {})
+        if cmd in cache:
+            return cache[cmd]
+        i, head, base = self.i, self._head(w), out.get("base_sha") or ""
+        res: set[str] | None = None
+        if base and i._git(w, "reset", "--hard", base).returncode == 0:
+            try:
+                t = i._exec(cmd, cwd=w, timeout=1800, shell=True, env=safe_env())
+                res = set() if t.returncode == 0 else failure_signatures((t.stdout or "") + (t.stderr or ""))
+            except subprocess.TimeoutExpired:
+                res = None
+            finally:
+                i._git(w, "reset", "--hard", head)
+        cache[cmd] = res
+        return res
 
     def _cull(self, w: str, wt: Path, lane, policy: Policy, members: list[dict], out: dict, reasons: list[str]):
         """El lote combinado falla: cada rama se prueba sola sobre la base; la que falla sola sale del lote y se
@@ -423,7 +557,7 @@ class BatchPlanner:
             if self._merge(w, m["head_sha"]).returncode != 0:
                 self._abort(w)
                 continue
-            if self._verify(w, lane, policy, m["files"]):
+            if self._verify(w, lane, policy, m["files"], out):
                 bad.append(m)
         good = [m for m in members if m not in bad]
         for m in bad:
@@ -435,7 +569,8 @@ class BatchPlanner:
                 return [], ["no se pudo recomponer el lote tras apartar ramas"]
         if not good:
             return [], reasons
-        return good, (self._verify(w, lane, policy, self._files(w, base_sha, "HEAD", three=False)) if bad else reasons)
+        return good, (self._verify(w, lane, policy, self._files(w, base_sha, "HEAD", three=False), out) if bad
+                      else reasons)
 
     # --- publicación -----------------------------------------------------------------------------------
 
@@ -483,7 +618,8 @@ class BatchPlanner:
         self._save(bid, lane=lane.name, brand=brand, date=day, branch=branch, pr=number, pr_url=url, status="offered",
                    head_sha=build["head_sha"], base_sha=build["base_sha"], migration=build["migration"],
                    members=[{k: x[k] for k in ("tid", "pr", "url", "title", "head_sha")} for x in members],
-                   excluded=[{k: x[k] for k in ("tid", "pr", "title", "reason")} for x in excluded], rec=rec)
+                   excluded=[{k: x[k] for k in ("tid", "pr", "title", "reason")} for x in excluded], rec=rec,
+                   gate_failures=build.get("gate_failures") or [])
         for x in members:
             i._save(x["tid"], status="batch_included", batch=bid, batch_pr=number)
         for x in excluded:
@@ -526,10 +662,18 @@ class BatchPlanner:
             [{"text": "🔧 Arreglar", "action": INT_BATCH_FIX}] if kind != OTHER else [])
         spec = ([row] if row else []) + [[{"text": "⏭ Dejar para el siguiente lote", "action": INT_BATCH_SKIP}],
                                           [dict(EXPLAIN_BUTTON)]]
+        if x.get("update_conflict"):  # F1-05: GitHub no pudo traer la base a la rama
+            rec["update_conflict"] = True
+            spec = [[{"text": "🔁 Crear tarjeta de rebase", "action": INT_BATCH_REBASE}],
+                    [{"text": "🧑‍💻 Lo resuelvo en consola", "action": INT_BATCH_CONSOLE}],
+                    [{"text": "🗑 Descartar PR", "action": INT_BATCH_DISCARD}], [dict(EXPLAIN_BUTTON)]]
         markup = i.desk.store.issue(rec, spec)[1]
         offer = ("Puedes " + ("rebasarla sobre el lote" if kind == CONFLICT else "arreglarla")
                  + " con una tarjeta nueva o dejarla para el siguiente lote.") if row else \
             "Puedes dejarla para el siguiente lote."
+        if x.get("update_conflict"):
+            offer = (f"GitHub no pudo traer {lane.base} a la rama. Elige: tarjeta de rebase para {lane.name}, "
+                     "lo resuelves tú en consola, o descartar el PR.")
         text = (f"⏭ <b>Fuera del lote</b> · #{e(str(x['pr']))} · {e(truncate(x['title'], valor('lotes.titulo_excluido_max')))}\n"
                 f"Motivo: {e(plain)}.\n{offer}")
         i._publish(lane, {"id": x["tid"], "title": x["title"], "body": None}, text, markup,
@@ -545,6 +689,33 @@ class BatchPlanner:
 
         if action == INT_BATCH_SKIP:
             notify(f"⏭ #{pr} se queda en la cola: entrará en el siguiente lote (si ya no choca ni falla).")
+            return True
+        if action == INT_BATCH_CONSOLE:
+            body = (f"Origen: aviso «Fuera del lote» ({rec.get('batch_id')}) · GitHub no pudo actualizar la rama "
+                    f"lane/{tid} (PR #{pr}) con {lane.base}.\nRepo: {lane.repo} · base {lane.base}\n"
+                    f"Qué: resolver el conflicto en consola sobre lane/{tid} y empujar; después Oscar vuelve a aprobar "
+                    f"el PR #{pr}.\nCierra: {tid}")
+            try:
+                new = i.hermes_for(lane.board).create(
+                    f"[INTEGRADOR] Conflicto de #{pr} con {lane.base} · " + truncate(str(rec.get("title")), 40), body,
+                    INTEGRATOR_PROFILE, priority=8, key=f"lotefuera-consola-{rec.get('batch_id')}-{pr}",
+                    created_by="oscar")
+            except Exception as exc:
+                log.warning("%s: no se pudo crear la tarjeta del integrador: %s", tid, exc)
+                return False
+            i._comment(lane, tid, f"INTEGRADOR: PR #{pr} con conflicto al actualizar; lo resuelve la consola ({new})")
+            notify(f"🧑‍💻 Creada {new} para el integrador (consola). #{pr} sigue en la cola; tras el arreglo hay que "
+                   "volver a aprobarlo.")
+            return True
+        if action == INT_BATCH_DISCARD:
+            slug = i.links.repo_slug(lane) if i.links else None
+            cp = i._gh("pr", "close", str(pr), "--repo", slug, "--comment",
+                       "Descartado desde 🎯 Decisiones (no se pudo actualizar con la base).") if slug else None
+            if not cp or cp.returncode != 0:
+                return False
+            i._save(tid, status="batch_discarded")
+            i._comment(lane, tid, f"INTEGRADOR: PR #{pr} descartado desde 🎯 Decisiones (cerrado sin fusionar)")
+            notify(f"🗑 PR #{pr} cerrado sin fusionar. La tarjeta {tid} sigue en el kanban por si quieres retomarla.")
             return True
         rebase = action == INT_BATCH_REBASE
         branch, lote = f"lane/{tid}", rec.get("batch_branch") or lane.base
@@ -657,6 +828,9 @@ class BatchPlanner:
                           "head_sha": pr["headRefOid"], "at": 0})
         bid, branch = f"{brand_of(policy)}-dryrun", f"release/lote-{brand_of(policy)}-dryrun-0000-00-00"
         with i._lock:
+            for c in self._update_branches(lane, slug, cands, excluded) if slug and cands else ():
+                if c.get("update_note"):
+                    out(f"  ↻ #{c['pr']}: {c['update_note']}")
             build = self._build(lane, policy, cands, excluded, bid, branch)
         i._git(lane.repo, "branch", "-D", branch)
         out(f"[dry-run] lote {brand_of(policy)} sobre {lane.base} @ {build['base_sha'][:12]}: "

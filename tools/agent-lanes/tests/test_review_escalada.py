@@ -102,6 +102,8 @@ def test_aprobado_oscar_tras_escalar_no_se_reprocesa_aunque_cambie_la_cabeza(tmp
     h.meta = {**h.meta, "head_sha": "c" * 40}
     r2, h2, *_ = build(tmp_path)  # sin caché: relee y ve la aprobación
     h2.comments, h2.meta, h2.show_events = h.comments, h.meta, h.show_events
+    from agent_lanes import aprobaciones
+    aprobaciones.registrar(h2.tasks[0]["id"], 310)  # P08: el bot dejó el registro local al pulsar ✅ Aprobar
     assert r2.jobs() == []
     task = h2.tasks[0]
     from tests.test_phase2 import LANE as L
@@ -111,10 +113,16 @@ def test_aprobado_oscar_tras_escalar_no_se_reprocesa_aunque_cambie_la_cabeza(tmp
 def test_aprobacion_anterior_a_una_nueva_peticion_de_review_no_cuenta(tmp_path):
     from agent_lanes.hermes import OSCAR_AUTHOR
     from agent_lanes.review import aprobada_por_oscar
-    show = {"comments": [{"author": OSCAR_AUTHOR, "body": "APROBADO-OSCAR x", "created_at": 5}],
+    from agent_lanes import aprobaciones
+    show = {"task": {"id": "t_aaaaaaaa"},
+            "comments": [{"author": OSCAR_AUTHOR, "body": "APROBADO-OSCAR x · PR https://x/pull/4", "created_at": 5}],
             "events": [{"kind": "review_requested", "created_at": 9}]}
+    aprobaciones.registrar("t_aaaaaaaa", 4)
     assert not aprobada_por_oscar(show)
     show["events"] = [{"kind": "review_requested", "created_at": 1}]
     assert aprobada_por_oscar(show)
+    (aprobaciones.APPROVALS_DIR / "t_aaaaaaaa.json").unlink()
+    assert not aprobada_por_oscar(show)  # P08: sin registro local, el comentario solo no aprueba
+    aprobaciones.registrar("t_aaaaaaaa", 4)
     show["comments"][0]["author"] = "otro"
     assert not aprobada_por_oscar(show)

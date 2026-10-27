@@ -7,9 +7,8 @@ import subprocess
 
 import pytest
 
-from agent_lanes.config import Lane
 from agent_lanes.deps import ShowCache, TreeReader, child_bucket, family, tree_lines
-from agent_lanes.hermes import (HERMES_ANSWER_PREFIX, HermesCLI, hermes_answer_text, oscar_answers_from,
+from agent_lanes.hermes import (HermesCLI, hermes_answer_text, oscar_answers_from,
                                 pending_hermes_answer)
 from agent_lanes.hermes_answers import ANSWERED_VIA_HERMES, HermesAnswers
 from agent_lanes.integration import RISKS, render_ficha
@@ -36,9 +35,12 @@ def blocked(tid="t_aaaaaaa1", *, kind="needs_input", at=1000.0, comments=(), sta
 
 # --- 1. formato estricto --------------------------------------------------------------------------------
 
-@pytest.mark.parametrize("author", ["default", "oscar-telegram"])
-def test_strict_prefix_from_allowed_authors_is_an_answer(author):
-    assert hermes_answer_text(c("RESPUESTA-OSCAR: 1) Sí\n2) 19 €", author)) == "1) Sí\n2) 19 €"
+OK = "RESPUESTA-OSCAR (id=100000001):"  # P07: Hermes dice quién responde y con qué id (tests/conftest.py)
+
+
+@pytest.mark.parametrize("author,prefix", [("default", OK), ("oscar-telegram", "RESPUESTA-OSCAR:")])
+def test_strict_prefix_from_allowed_authors_is_an_answer(author, prefix):
+    assert hermes_answer_text(c(f"{prefix} 1) Sí\n2) 19 €", author)) == "1) Sí\n2) 19 €"
 
 
 @pytest.mark.parametrize("comment", [
@@ -56,6 +58,10 @@ def test_strict_prefix_from_allowed_authors_is_an_answer(author):
     c("RESPUESTA-OSCAR: sí", "lane-integrator"),        # integrador
     c("RESPUESTA-OSCAR: sí", None),
     c("RESPUESTA-OSCAR: sí", "Default"),
+    c("RESPUESTA-OSCAR: sí"),                           # P07: de Hermes sin id ya no vale
+    c("RESPUESTA-OSCAR (id=999999999): sí"),            # id que no es de nadie
+    c("RESPUESTA-MARIA (id=100000001): sí"),            # el nombre no casa con el id
+    c("RESPUESTA-OSCAR (id=100000001): sí", "oscar-telegram"),  # el bot usa su propio formato
     {"author": "default", "body": None},
 ])
 def test_anything_else_is_not_an_answer(comment):
@@ -63,39 +69,39 @@ def test_anything_else_is_not_an_answer(comment):
 
 
 def test_answer_must_be_strictly_after_the_last_needs_input_block():
-    ok = c("RESPUESTA-OSCAR: sí", at=1001)
+    ok = c(f"{OK} sí", at=1001)
     assert pending_hermes_answer(blocked(comments=[ok])) is ok
-    assert pending_hermes_answer(blocked(comments=[c("RESPUESTA-OSCAR: sí", at=1000)])) is None  # mismo instante
-    assert pending_hermes_answer(blocked(comments=[c("RESPUESTA-OSCAR: sí", at=999)])) is None   # ronda anterior
+    assert pending_hermes_answer(blocked(comments=[c(f"{OK} sí", at=1000)])) is None  # mismo instante
+    assert pending_hermes_answer(blocked(comments=[c(f"{OK} sí", at=999)])) is None   # ronda anterior
     assert pending_hermes_answer(blocked(kind="transient", comments=[ok])) is None
     assert pending_hermes_answer(blocked(status="ready", comments=[ok])) is None
     assert pending_hermes_answer(blocked(comments=[{**ok, "created_at": None}])) is None
 
 
 def test_answer_from_a_previous_round_does_not_unblock_a_new_block():
-    show = blocked(at=3000, comments=[c("RESPUESTA-OSCAR: sí", at=2000)])
+    show = blocked(at=3000, comments=[c(f"{OK} sí", at=2000)])
     show["events"].insert(0, {"kind": "blocked", "payload": {"kind": "needs_input"}, "created_at": 1000})
     assert pending_hermes_answer(show) is None
 
 
 def test_latest_valid_answer_wins_and_invalid_ones_are_skipped():
-    last = c("RESPUESTA-OSCAR: definitivo", at=1003)
-    show = blocked(comments=[c("RESPUESTA-OSCAR: primero", at=1001), last,
-                             c("RESPUESTA-OSCAR: yo mando", "agent-lanes", at=1004)])
+    last = c(f"{OK} definitivo", at=1003)
+    show = blocked(comments=[c(f"{OK} primero", at=1001), last,
+                             c(f"{OK} yo mando", "agent-lanes", at=1004)])
     assert pending_hermes_answer(show) is last
 
 
 def test_worker_receives_button_and_hermes_answers_in_order():
     show = blocked(comments=[c("Respuesta de Oscar: ¿A? → B", "oscar-telegram", 1001),
                              c("Oscar decide (28-09): C", "default", 1002),
-                             c("RESPUESTA-OSCAR: 1) Sí 2) 19 €", "default", 1003),
-                             c("RESPUESTA-OSCAR: truco", "agent-lanes", 1004)])
+                             c(f"{OK} 1) Sí 2) 19 €", "default", 1003),
+                             c(f"{OK} truco", "agent-lanes", 1004)])
     assert oscar_answers_from(show) == ["Respuesta de Oscar: ¿A? → B",
                                         "Respuesta de Oscar (vía Hermes): 1) Sí 2) 19 €"]
 
 
 def test_hermes_cli_oscar_answers_reach_the_worker_prompt():
-    show = blocked(comments=[c("RESPUESTA-OSCAR: publica el viernes", at=1001)])
+    show = blocked(comments=[c(f"{OK} publica el viernes", at=1001)])
 
     def run(args, **kw):
         return subprocess.CompletedProcess(args, 0, json.dumps(show), "")
@@ -118,7 +124,7 @@ def _asked(tmp_path, show):
 
 
 def test_watcher_unblocks_and_edits_every_copy_without_buttons(tmp_path):
-    show = blocked(comments=[c("RESPUESTA-OSCAR: sí, publica", at=1001)])
+    show = blocked(comments=[c(f"{OK} sí, publica", at=1001)])
     cc, desk, bot, h, messages = _asked(tmp_path, show)
     topic, dm = bot.sent
     assert dm["chat_id"] == str(OSCAR) and topic["markup"]
@@ -135,15 +141,15 @@ def test_watcher_unblocks_and_edits_every_copy_without_buttons(tmp_path):
 
 
 def test_watcher_ignores_invalid_or_stale_comments(tmp_path):
-    show = blocked(comments=[c("Oscar decide (28-09): sí", at=1001), c("RESPUESTA-OSCAR: sí", "lane-review", 1002),
-                             c("RESPUESTA-OSCAR: viejo", at=900)])
+    show = blocked(comments=[c("Oscar decide (28-09): sí", at=1001), c(f"{OK} sí", "lane-review", 1002),
+                             c(f"{OK} viejo", at=900)])
     cc, desk, bot, h, messages = _asked(tmp_path, show)
     assert HermesAnswers({MIG.name: MIG}, hermes_for=lambda b: h, desk=desk).tick() == []
     assert ("unblock", "t_aaaaaaa1") not in h.calls and bot.edits == []
 
 
 def test_watcher_retries_a_failed_unblock_and_works_without_the_lanes_bot(tmp_path):
-    show = blocked(comments=[c("RESPUESTA-OSCAR: sí", at=1001)])
+    show = blocked(comments=[c(f"{OK} sí", at=1001)])
     cc, desk, bot, h, messages = center(tmp_path, {"t_aaaaaaa1": show})
     real = h.unblock
     h.unblock = lambda tid: False
@@ -155,7 +161,7 @@ def test_watcher_retries_a_failed_unblock_and_works_without_the_lanes_bot(tmp_pa
 
 def test_answered_task_leaves_the_decisions_inbox_before_the_watcher_runs(tmp_path):
     other = needs("t_bbbbbbb2", "El worker necesita decisión:\n- ¿Otra?")
-    show = blocked(comments=[c("RESPUESTA-OSCAR: sí", at=1001)])
+    show = blocked(comments=[c(f"{OK} sí", at=1001)])
     cc, desk, bot, h, messages = center(tmp_path, {"t_aaaaaaa1": show, "t_bbbbbbb2": other})
     assert [p.tid for p in cc.pending_decisions()] == ["t_bbbbbbb2"]
 
@@ -253,7 +259,7 @@ def test_render_puts_escaped_tree_lines_before_the_links():
 
 def test_lane_notice_and_button_edit_keep_the_tree(tmp_path):
     from agent_lanes.runner import LaneRunner
-    show = blocked(comments=[c("RESPUESTA-OSCAR: sí", at=1001)])
+    show = blocked(comments=[c(f"{OK} sí", at=1001)])
     cc, desk, bot, h, messages = center(tmp_path, {"t_aaaaaaa1": show})
     tree = lambda board, tid, show=None, **kw: ["↳ 2 subtareas: ✅ 1 · ⏳ 1"] if board == "migrateam" else []  # noqa
     desk.tree = tree

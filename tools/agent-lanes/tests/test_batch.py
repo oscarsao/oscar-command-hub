@@ -38,6 +38,8 @@ class Gh:
     def __init__(self, origin: Path):
         self.origin, self.prs, self.log, self.created = origin, {}, [], []
         self.merge_rc = 0
+        self.update_mode = "ok"  # update-branch simulado: ok | conflict
+        self.updates: list[int] = []
 
     def add(self, n, tid, sha):
         self.prs[n] = {"number": n, "url": f"https://github.com/{SLUG}/pull/{n}", "state": "OPEN", "isDraft": False,
@@ -67,10 +69,30 @@ class Gh:
             if self.merge_rc == 0:
                 self.prs[n] = {**self.prs[n], "state": "MERGED", "mergeCommit": {"oid": "f" * 40}}
             return subprocess.CompletedProcess(args, self.merge_rc, "", "" if self.merge_rc == 0 else "boom")
+        if args[1] == "api" and "update-branch" in " ".join(args):
+            return self._update_branch(args)
         if args[1:3] == ["pr", "close"]:
             self.prs[int(args[3])]["state"] = "CLOSED"
             return subprocess.CompletedProcess(args, 0, "", "")
         raise AssertionError(args)
+
+    def _update_branch(self, args):
+        """PUT repos/<slug>/pulls/<n>/update-branch: fusiona main en la rama del PR en el origen (como GitHub)."""
+        n = int(next(a for a in args if "update-branch" in a).split("/")[-2])
+        expected = next(a for a in args if a.startswith("expected_head_sha=")).split("=", 1)[1]
+        self.updates.append(n)
+        if self.update_mode == "conflict":
+            return subprocess.CompletedProcess(args, 1, "", "gh: merge conflict between base and head (HTTP 422)")
+        pr = self.prs[n]
+        if expected != pr["headRefOid"]:
+            return subprocess.CompletedProcess(args, 1, "", "expected head sha didn't match current head ref (HTTP 422)")
+        main = sh(self.origin, "rev-parse", "refs/heads/main")
+        tree = sh(self.origin, "merge-tree", "--write-tree", main, pr["headRefOid"]).splitlines()[0]
+        new = sh(self.origin, "commit-tree", tree, "-p", pr["headRefOid"], "-p", main, "-m", "Merge main")
+        sh(self.origin, "update-ref", f"refs/heads/{pr['headRefName']}", new)
+        sh(self.origin, "update-ref", f"refs/pull/{n}/head", new)
+        self.prs[n] = {**pr, "headRefOid": new}
+        return subprocess.CompletedProcess(args, 0, "{}", "")
 
     def named(self, what):
         return [a for a in self.log if a[1:3] == ["pr", what]]
