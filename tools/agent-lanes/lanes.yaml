@@ -205,9 +205,9 @@ lanes:
     # Candado (28-09): el runner solo reclama si `git remote get-url origin` del repo es este owner/repo de GitHub.
     github: oscarsao/oscar-hq
     base: master
-    # 23-10 (Oscar): 2 plazas para Oscar HQ, cada una en su worktree lane/<id>. Dos tarjetas que citan supabase/migrations
-    # no corren a la vez (serialize_paths); el resto sí. La tarjeta grande va aparte (max_big), sin gastar estas dos.
-    max_parallel: 2
+    # 27-10 (Oscar): 4 plazas para Oscar HQ (antes 2, 23-10), cada una en su worktree lane/<id>. Dos tarjetas que citan
+    # supabase/migrations no corren a la vez (serialize_paths); el resto sí. La tarjeta grande va aparte (max_big).
+    max_parallel: 4
     serialize_paths: [supabase/migrations]
     # pytest de oscar-hq no es usable como gate hoy (test_api_health falla en master por entorno; tarjeta aparte).
     test_cmd: py -3.12 "{AGENT_LANES_DIR}/agent_lanes/checks.py" {BASE}
