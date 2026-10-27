@@ -20,7 +20,7 @@ BRANDS = {"claude-migrateam": "MigraTeam"}
 HINTS = {"claude-migrateam": ("migrateam",), "claude-hub": ("agent-lanes", "hermes")}
 CFG = {"duplicado_umbral": 0.6, "ventana_dias": 14}
 PEOPLE = People("1", [
-    Person("maria", "María", "5516823836", "coo", ("*",), frozenset(), True),
+    Person("maria", "María", "5000000001", "coo", ("*",), frozenset(), True),
     Person("angel", "Ángel", "777", "dev", ("Píldora",), frozenset()),
 ])
 
@@ -62,7 +62,7 @@ def test_origen_bien_formado_y_pidio():
 def test_sin_chat_usa_el_dm_de_la_persona():
     h = FakeH()
     run(h)
-    assert h.created[0][1].startswith("Origen-Telegram: chat=5516823836 thread=0\n")
+    assert h.created[0][1].startswith("Origen-Telegram: chat=5000000001 thread=0\n")
 
 
 def test_origen_no_numerico_se_rechaza():
@@ -131,7 +131,7 @@ def test_hermes_subscribe_y_respeta_modo_notify_al_limpiar():
 
 
 def test_ficha_muestra_quien_pidio():
-    body = nt.cuerpo("## Objetivo\nhacer algo", PEOPLE.lookup("5516823836"), "1", "0")
+    body = nt.cuerpo("## Objetivo\nhacer algo", PEOPLE.lookup("5000000001"), "1", "0")
     assert nt.pidio_de(body) == "María"
     assert "Pidió: María" in render("running", "t_1", "Título", "claude-hub", "en curso", body=body)
 
@@ -140,7 +140,7 @@ def test_reparar_origen_propone_sin_aplicar():
     mal = {"id": "t_9", "title": "x", "created_by": "maria", "body": "Origen-Telegram: María (DM)\n\ntexto"}
     con_chat = {"id": "t_8", "title": "y", "body": "Origen-Telegram: chat=-100 tema=5\n"}
     bien = {"id": "t_7", "title": "z", "body": "Origen-Telegram: chat=-100 thread=5\n"}
-    assert nt.proponer_origen(mal, PEOPLE) == "Origen-Telegram: chat=5516823836 thread=0"
+    assert nt.proponer_origen(mal, PEOPLE) == "Origen-Telegram: chat=5000000001 thread=0"
     assert nt.proponer_origen(con_chat, PEOPLE) == "Origen-Telegram: chat=-100 thread=5"
     assert nt.proponer_origen(bien, PEOPLE) is None
 

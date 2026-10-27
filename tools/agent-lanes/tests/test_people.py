@@ -16,7 +16,7 @@ def _write(tmp_path, text):
 def test_versioned_people_yaml_is_structurally_valid():
     """Valida la ESTRUCTURA del fichero versionado, no sus ids (Oscar los rellena a mano y esto no debe romper)."""
     import yaml
-    entries = yaml.safe_load(people.PEOPLE_FILE.read_text(encoding="utf-8"))["people"]
+    entries = yaml.safe_load(people.PEOPLE_EXAMPLE.read_text(encoding="utf-8"))["people"]
     assert entries
     for key, cfg in entries.items():
         assert cfg["role"] in ("coo", "cmo", "marketing", "dev"), key  # nunca owner ni desconocido
@@ -82,27 +82,50 @@ def test_missing_or_broken_file_fails_closed(tmp_path):
         assert len(ppl) == 0 and ppl.lookup(OWNER).is_owner and ppl.lookup(1) is None
 
 
-def test_default_path_points_to_versioned_file():
-    assert people.PEOPLE_FILE.name == "people.yaml" and people.PEOPLE_FILE.parent.name == "telegram"
-    assert people.PEOPLE_FILE.exists()
+def test_example_file_is_versioned_and_default_is_outside_repo_tracking():
+    assert people.PEOPLE_EXAMPLE.name == "people.example.yaml" and people.PEOPLE_EXAMPLE.exists()
+    assert people.PEOPLE_DEFAULT.name == "people.yaml" and people.PEOPLE_DEFAULT.parent.name == ".state"
+
+
+def test_people_file_resolves_env_var_then_default(monkeypatch, tmp_path):
+    monkeypatch.setenv(people.PEOPLE_ENV, str(tmp_path / "otro.yaml"))
+    assert people.people_file() == tmp_path / "otro.yaml"
+    monkeypatch.setenv(people.PEOPLE_ENV, "  ")
+    assert people.people_file() == people.PEOPLE_DEFAULT
+    monkeypatch.delenv(people.PEOPLE_ENV)
+    assert people.people_file() == people.PEOPLE_DEFAULT
+
+
+def test_load_people_reads_the_path_from_env(monkeypatch, tmp_path):
+    """El runner (load_people sin ruta) arranca leyendo el people.yaml de la ruta nueva."""
+    real = _write(tmp_path, "people:\n  zoe:\n    name: Zoe\n    user_id: '424242'\n    role: cmo\n")
+    monkeypatch.setenv(people.PEOPLE_ENV, str(real))
+    ppl = load_people(OWNER)
+    assert ppl.lookup("424242").name == "Zoe" and ppl.collaborator_ids() == {"424242"}
+
+
+def test_missing_real_file_fails_closed(monkeypatch, tmp_path):
+    monkeypatch.setenv(people.PEOPLE_ENV, str(tmp_path / "no-existe.yaml"))
+    ppl = load_people(OWNER)
+    assert len(ppl) == 0 and ppl.lookup(OWNER).is_owner  # solo Oscar; el ejemplo no se usa como respaldo
 
 
 def test_dev_entries_mauredy_angel_are_scoped_devs():
     """Mauredy (solo MigraTeam, sin id aún) y Angel (OscarHQ/Signal, con id y operador desde el OK final de Oscar del
     22-10): ACOTADOS por marca (`brands` limita lo que ejecutan; ver test_operador_marca.py)."""
     import yaml
-    entries = yaml.safe_load(people.PEOPLE_FILE.read_text(encoding="utf-8"))["people"]
+    entries = yaml.safe_load(people.PEOPLE_EXAMPLE.read_text(encoding="utf-8"))["people"]
     assert entries["mauredy"]["brands"] == ["MigraTeam"]
     assert "MigraTeam" not in entries["angel"]["brands"] and "Signal" in entries["angel"]["brands"]
     for key in ("mauredy", "angel"):
         assert entries[key]["role"] == "dev" and not entries[key].get("can")
     assert entries["mauredy"]["user_id"] is None and entries["mauredy"].get("operador") is True
-    assert entries["angel"]["user_id"] == "8770041085"
+    assert entries["angel"]["user_id"] == "5000000004"
     assert entries["angel"].get("operador") is True  # OK final de Oscar 22-10
     ppl = load_people(OWNER)
     assert not any(p.key == "mauredy" for p in ppl._by_id.values())  # sin id = ignorado
-    angel = ppl.lookup("8770041085")
-    assert angel.key == "angel" and angel.brands == ("Píldora", "Signal", "Hub") and ppl.es_operador("8770041085")
+    angel = ppl.lookup("5000000004")
+    assert angel.key == "angel" and angel.brands == ("Píldora", "Signal", "Hub") and ppl.es_operador("5000000004")
 
 
 def test_dev_role_has_no_carril_or_production_and_is_not_operator(tmp_path):

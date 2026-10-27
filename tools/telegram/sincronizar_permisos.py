@@ -31,10 +31,10 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent / "agent-lanes"))
 
 from agent_lanes.people import (  # noqa: E402
-    APROBAR_PRODUCCION, TODAS_LAS_MARCAS, People, Person, load_people,
+    APROBAR_PRODUCCION, TODAS_LAS_MARCAS, People, Person, load_people, people_file,
 )
 
-PEOPLE = HERE / "people.yaml"
+PEOPLE = people_file()  # el real, fuera del repo (AGENT_LANES_PEOPLE_FILE o tools/agent-lanes/.state/people.yaml)
 DEFAULT_OWNER = "6744452215"  # = agent_lanes.decisions.OWNER_TELEGRAM_ID (sin importar decisions: arrastra el bot)
 ENV_KEYS = ("TELEGRAM_ALLOWED_USERS", "TELEGRAM_GROUP_ALLOWED_USERS")
 MARK_START, MARK_END = "<!-- EQUIPO-PERMISOS:inicio -->", "<!-- EQUIPO-PERMISOS:fin -->"

@@ -14,22 +14,22 @@ from agent_lanes.people import load_people
 from tests.test_botones_tarjetas import BODY, card, comments_of, decisiones, setup
 from tests.test_commands import OSCAR, command, press
 
-MARIA, INGERBER = 5516823836, 8847860660
+MARIA, INGERBER = 5000000001, 5000000002
 
 YAML = """people:
   maria:
     name: María
-    user_id: "5516823836"
+    user_id: "5000000001"
     role: coo
     brands: ["*"]
     operador: true
   ingerber:
     name: Ingerber
-    user_id: "8847860660"
+    user_id: "5000000002"
     role: cmo
   andrea:
     name: Andrea
-    user_id: "8313932936"
+    user_id: "5000000003"
     role: marketing
     operador: "true"
 """
@@ -51,14 +51,14 @@ def test_es_operador_lee_el_yaml_y_exige_booleano_estricto(tmp_path):
     ppl = people(tmp_path)
     assert ppl.es_operador(OSCAR) and ppl.es_operador(MARIA)
     assert not ppl.es_operador(INGERBER)
-    assert not ppl.es_operador(8313932936)  # "true" entre comillas no vale
+    assert not ppl.es_operador(5000000003)  # "true" entre comillas no vale
     assert not ppl.es_operador(1)
 
 
 def test_el_yaml_real_solo_hace_operadora_a_maria():
     real = load_people(str(OSCAR))
     assert real.es_operador(MARIA) and real.es_operador(OSCAR)
-    assert not real.es_operador(INGERBER) and not real.es_operador(8313932936)
+    assert not real.es_operador(INGERBER) and not real.es_operador(5000000003)
 
 
 def test_maria_ejecuta_tareas_decisiones_y_aprobar(tmp_path):

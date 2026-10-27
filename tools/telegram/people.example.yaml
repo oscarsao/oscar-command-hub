@@ -1,6 +1,9 @@
+# EJEMPLO de people.yaml con ids FICTICIOS. El fichero real (con los ids de Telegram de verdad) NO se versiona: el repo
+# es público. Cópialo a tools/agent-lanes/.state/people.yaml (ruta por defecto, ignorada por git) o apunta a otra con
+# la variable de entorno AGENT_LANES_PEOPLE_FILE, y rellena los user_id reales allí.
+#
 # Personas del equipo que pueden escribir por DM al bot de carriles (@pildora_carriles_bot).
-# Decisiones de roles y permisos (D4-D10, 25-10): decisions/2026-10-25-personas-roles-permisos.md
-# UNA SOLA FUENTE de permisos (24-10, Oscar): tambien manda en Hermes (@oscarsaoBot). Tras editar este fichero:
+# UNA SOLA FUENTE de permisos (24-10, Oscar): tambien manda en Hermes (@oscarsaoBot). Tras editar el fichero real:
 #   py -3.12 tools/telegram/sincronizar_permisos.py --apply   (allowed users del .env y tabla de SOUL.md de Hermes)
 #   hermes gateway restart
 # Hermes solo contesta a Oscar y a quien tenga user_id aqui; sin user_id (null) no se le contesta.
@@ -21,9 +24,8 @@
 #     (fusionar a main/master, desplegar, migraciones, variables de entorno; ver specs/carril-integrador-telegram.md).
 #     Decisión de Oscar 22-10: Oscar (owner, implícito), María y Angel, en TODAS las marcas para este permiso (no
 #     depende de `brands`). Lo lee People.puede_aprobar_produccion; el resto de permisos del YAML se ignoran.
-#   - Tras rellenar un user_id (Oscar, a mano): la persona envia /start al bot. Ya NO hace falta copiarlo a
-#     TELEGRAM_ALLOWED_CHATS del .env: la allowlist del bot de carriles se deriva de este fichero + lanes.yaml (F1-02,
-#     agent_lanes/telegram.allowlist). NO anadirlo a generic_origins de lanes.yaml.
+#   - Tras rellenar un user_id (Oscar, a mano): anadirlo a TELEGRAM_ALLOWED_CHATS en tools/agent-lanes/.env para que
+#     los avisos vuelvan a su DM, y que la persona envie /start al bot. NO anadirlo a generic_origins de lanes.yaml.
 #   - brands: la primera marca decide el tablero de sus tarjetas (Pildora -> oscarhq, MigraTeam -> migrateam). Ademas
 #     limita lo que ejecuta un operador: solo actua (comandos, botones, aprobaciones, fusiones, despliegues) en esas
 #     marcas; "*" = todas (Maria). Sin "*" y sin marca clara en el destino, se rechaza. OscarHQ cuenta como Pildora.
@@ -32,7 +34,7 @@
 people:
   maria:
     name: María
-    user_id: "5516823836"   # María (socia/estrategia, acceso como Oscar salvo produccion); dado por Oscar 13-10
+    user_id: "5000000001"   # María (socia/estrategia, acceso como Oscar salvo produccion)
     role: coo
     brands: [Píldora, MigraTeam, "*"]   # "*" = opera en TODAS las marcas (la primera decide el tablero de sus ideas)
     can: []         # [carril] reservado; desactivado por defecto
@@ -40,14 +42,14 @@ people:
     permisos: [aprobar_produccion]  # OK con boton a produccion del carril integrador; decision de Oscar 22-10
   ingerber:
     name: Ingerber
-    user_id: "8847860660"   # Ingerber (CMO Pildora); confirmado por nombre en los registros 13-10
+    user_id: "5000000002"   # Ingerber (CMO Pildora)
     hermes: false   # 24-10 (Oscar): sin Hermes hasta tener un Hermes de equipo sin terminal ni ficheros
     role: cmo
     brands: [Píldora]
     can: []
   andrea:
     name: Andrea
-    user_id: "8313932936"   # Andrea (marketing, a prueba); dado por Oscar 13-10
+    user_id: "5000000003"   # Andrea (marketing, a prueba)
     hermes: false   # 24-10 (Oscar): sin Hermes hasta tener un Hermes de equipo sin terminal ni ficheros
     role: marketing
     brands: [Píldora]
@@ -61,7 +63,7 @@ people:
     operador: true  # acotado: solo actua en las marcas de `brands` (el codigo rechaza el resto); decision de Oscar 21-10
   angel:
     name: Angel
-    user_id: "8770041085"   # Angel (CTO OscarHQ + Signal); chat_id/DM dado por Oscar 21-10
+    user_id: "5000000004"   # Angel (CTO OscarHQ + Signal)
     role: dev
     brands: [Píldora, Signal, Hub]   # D9 (26-10): decide también el Hub. SIN MigraTeam; sin credenciales Railway/Supabase/Vercel
     can: []

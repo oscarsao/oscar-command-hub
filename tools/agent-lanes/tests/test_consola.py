@@ -11,7 +11,7 @@ from agent_lanes.decisions import FALTA, NOT_OWNER, PendingDecisions
 from agent_lanes.people import APROBAR_PRODUCCION, People, Person
 from tests.test_integrator import MERGE, OSCAR, FakeTg, World, buttons, make, tap
 
-MARIA, ANGEL, MAUREDY = 5516823836, 8770041085, 1111111111
+MARIA, ANGEL, MAUREDY = 5000000001, 5000000004, 1111111111
 
 
 class Tg(FakeTg):
