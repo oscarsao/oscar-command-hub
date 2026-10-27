@@ -12,7 +12,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from agent_lanes import hermes
-from agent_lanes.people import PEOPLE_FILE, load_people
+from agent_lanes.people import PEOPLE_EXAMPLE, load_people
 from agent_lanes.telegram import TelegramNotifier, _protect_collaborator_dms
 from tests.test_botones_tarjetas import BODY, card, comments_of, decisiones, setup
 from tests.test_commands import OSCAR, press
@@ -94,9 +94,10 @@ def test_aprobado_maria_eliminado():
     assert not hasattr(hermes, "APPROVED_PREFIXES") and not hasattr(hermes, "is_approval")
 
 
-def test_maria_puede_aprobar_con_el_people_yaml_real():
-    """Prueba del plan «can_approve(María)==True»: en el código es `puede_aprobar_produccion` (y `es_operador`)."""
-    real = load_people(OWNER, PEOPLE_FILE)
+def test_maria_puede_aprobar_con_el_people_yaml_versionado():
+    """Prueba del plan «can_approve(María)==True»: en el código es `puede_aprobar_produccion` (y `es_operador`).
+    El people.yaml real ya no está en el repo (t_6ea0d37c): se comprueba el ejemplo versionado, que tiene la misma forma."""
+    real = load_people(OWNER, PEOPLE_EXAMPLE)
     maria = next(p for p in real._by_id.values() if p.name == "María")
     assert real.es_operador(maria.user_id) and real.puede_aprobar_produccion(maria.user_id)
     assert maria.user_id in real.operadores_todas_marcas()
