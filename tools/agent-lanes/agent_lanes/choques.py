@@ -13,6 +13,14 @@ E1 SOLO AVISA a Oscar (una vez por conjunto + clase): no frena, no encola, no me
 (E4). Un fallo de git/`gh`/Hermes degrada a «sin información»: nunca lanza. Ajustes en `choques.yaml` (se relee en cada
 pasada; ausente o inválido = defaults de `Ajustes`). Spec: specs/choques-entre-tareas.md.
 
+Aviso temprano (24-10): la clase `temprano` salta ANTES de que haya conflicto: dos unidades que ya tocan los mismos
+ficheros (git las fusiona limpio hoy) y alguna con PR abierto. Con las fuentes del 25-10 (solo `tarjetas`) son dos
+tarjetas activas con rama lane/<id> empujada; el PR se lee aunque `pr` esté apagado como fuente. Es una DECISIÓN
+(tipo «choque» de canal_avisos: «¿cuál primero?»), con botones. Va primero la que ya tiene PR; el aviso solo pide
+[✅ Confirmar: X primero, la otra espera] (se anota en `.state/choques_orden.json`; no frena nada por sí mismo: lo que
+frena es la prevención al lanzar). Las ramas de carril o de persona sueltas solo entran si `fuentes` las activa. Antes de cada barrido
+se hace `git fetch --prune <remote>` (`fetch`), para ver ramas nuevas sin esperar a que alguien las traiga.
+
 Fuente `pr_tarjetas` (F1-05, D30-A ampliado): PR abiertos cuya rama o «Cierra: t_x» los liga a una tarjeta VIVA
 (`estados`, o running/review/done con el PR aún abierto), incluidas las ramas `fix/*`/`feat/*` de la consola. La
 unidad es la tarjeta con la zona de la rama del PR. Con `pr: false` el resto de PR sueltos sigue sin contar.
@@ -25,6 +33,7 @@ prevencion.py.
 """
 from __future__ import annotations
 
+import fnmatch
 import hashlib
 import json
 import logging
@@ -44,8 +53,10 @@ log = logging.getLogger("agent_lanes")
 SETTINGS_PATH = ROOT / "choques.yaml"
 SILENCIADAS_PATH = ROOT / ".state" / "choques_silenciadas.json"  # ["angel/fix", …]: ramas que no cuentan
 IGNORADOS_PATH = ROOT / ".state" / "choques_ignorados.json"      # {par(uid_a, uid_b): epoch del «Ignorar»}
+ORDEN_PATH = ROOT / ".state" / "choques_orden.json"              # {par: {"primero": uid, "cuando": epoch}}
 CHO_IGNORAR, CHO_SILENCIAR = "cho_ign", "cho_sil"
-CHO_ACTIONS = (CHO_IGNORAR, CHO_SILENCIAR)
+CHO_ORDEN = "cho_ord"
+CHO_ACTIONS = (CHO_IGNORAR, CHO_SILENCIAR, CHO_ORDEN)
 MAX_BOTONES_RAMA = 2
 MAX_ESTADO = 5000  # tope de seguridad; el olvido normal es por edad (Ajustes.recordar_dias), no por número
 MERGE_TREE_MIN = (2, 38)  # `merge-tree --write-tree` existe desde git 2.38
@@ -56,7 +67,7 @@ PATRONES = (
 )
 FUENTES = ("tarjetas", "ramas_lane", "pr", "ramas_personas", "pr_tarjetas")
 VIVAS_CON_PR = ("running", "review", "done")  # tarjetas que siguen vivas mientras su PR esté abierto
-CLASES = ("aditivo", "compatible", "conflicto", "revisar")
+CLASES = ("aditivo", "temprano", "compatible", "conflicto", "revisar")
 
 
 @dataclass(frozen=True)
@@ -72,6 +83,9 @@ class Ajustes:
     max_avisos: int = 6
     comparten_max: int = 5
     recordar_dias: int = 30         # un par ya avisado no se repite hasta pasados N días
+    temprano: bool = True             # aviso antes del conflicto: mismos ficheros y alguna rama con PR abierto
+    temprano_ignorar: tuple = ()      # patrones fnmatch de ficheros que no cuentan (*/changelog.md, *.lock…)
+    fetch: bool = True                # git fetch --prune del remote antes de cada barrido
     avisar_compatibles: bool = False  # «misma zona, compatibles» solo se registra; avisan conflicto y revisar
     patrones: tuple = PATRONES        # ((regex A, regex B), …) de `contradiccion.patrones`
     # Prevención al lanzar (prevencion.py). Sin YAML legible queda apagada: ante la duda, se lanza como siempre.
@@ -103,11 +117,14 @@ def load_ajustes(path: Path | str | None = None) -> Ajustes:
         out["minutos"] = float(m)
     if raw.get("nivel") in ("archivo", "modulo"):
         out["nivel"] = raw["nivel"]
-    for k in ("avisar_compatibles", "prevenir_al_lanzar", "prevenir_ramas_lane"):
+    for k in ("avisar_compatibles", "prevenir_al_lanzar", "prevenir_ramas_lane", "temprano", "fetch"):
         if isinstance(raw.get(k), bool):
             out[k] = raw[k]
     if raw.get("prevenir_nivel") in ("archivo", "modulo"):
         out["prevenir_nivel"] = raw["prevenir_nivel"]
+    ti = raw.get("temprano_ignorar")
+    if isinstance(ti, list) and all(isinstance(x, str) and x for x in ti):
+        out["temprano_ignorar"] = tuple(x.strip().replace("\\", "/").lower() for x in ti)
     pe = raw.get("prevenir_estados")
     if isinstance(pe, list) and pe and all(isinstance(x, str) and x for x in pe):
         out["prevenir_estados"] = tuple(pe)
@@ -202,6 +219,10 @@ class Git:
                 res.append((ref[len(remote) + 1:], int(ts) if ts.isdigit() else 0, autor.strip()))
         return res
 
+    def fetch(self, repo: str, remote: str) -> bool:
+        """`git fetch --prune`: solo toca refs/remotes. False si falla (se sigue con lo que haya)."""
+        return self._out(["fetch", "--prune", "--quiet", remote], repo)[0] == 0
+
     def ficheros(self, repo: str, remote: str, base: str, rama: str) -> set[str] | None:
         rc, out = self._out(["diff", "--name-only", f"{remote}/{base}...{remote}/{rama}"], repo)
         return {x.strip().replace("\\", "/").lower() for x in out.splitlines() if x.strip()} if rc == 0 else None
@@ -266,13 +287,30 @@ def clasificar(a: Unidad, b: Unidad, repo: str, remote: str, git: Git, ajustes: 
         if real is True:
             return "conflicto", comun
         if real is False:
-            return "aditivo", comun
+            temprano = _temprano(a, b, ajustes)
+            return ("temprano", temprano) if temprano else ("aditivo", comun)
     return "compatible", comun
 
 
+def _temprano(a: Unidad, b: Unidad, ajustes: Ajustes) -> list[str]:
+    """Ficheros EXACTOS que tocan las dos ramas cuando aún se fusionan limpias y alguna tiene PR abierto."""
+    if not ajustes.temprano or not (a.pr or b.pr):
+        return []
+    return [f for f in sorted(a.rutas & b.rutas)
+            if not any(fnmatch.fnmatch(f.lower(), p) for p in ajustes.temprano_ignorar)]
+
+
+def primero_y_despues(a: Unidad, b: Unidad) -> tuple[Unidad, Unidad]:
+    """Va primero la que ya tiene PR (con las dos, el PR más antiguo); luego la que ya tiene rama."""
+    peso = lambda u: (bool(u.pr), -u.pr, bool(u.rama))
+    return (b, a) if peso(b) > peso(a) else (a, b)
+
+
 def propuesta(clase: str, a: Unidad, b: Unidad) -> str:
-    peso = lambda u: (bool(u.pr), bool(u.rama))  # va primero la que ya tiene PR, luego la que ya tiene rama
-    primero, despues = (b, a) if peso(b) > peso(a) else (a, b)
+    primero, despues = primero_y_despues(a, b)
+    if clase == "temprano":
+        return (f"{primero.etiqueta} va primero (ya tiene PR); {despues.etiqueta} espera a que se integre y entonces "
+                f"se rebasa sobre la base nueva. Confirma el orden con el botón.")
     if clase == "conflicto":
         return (f"{primero.etiqueta} primero (ya tiene {'PR' if primero.pr else 'rama'}); {despues.etiqueta} espera a que se "
                 f"integre y se rehace sobre la base nueva, o se fusionan en una sola tarjeta.")
@@ -295,7 +333,11 @@ def unidades_repo(repo: str, remote: str, base: str, tarjetas: list[dict], git: 
     sol = _solapes_aj(ajustes)
     ramas = {r: (ts, autor) for r, ts, autor in git.ramas_remotas(repo, remote, base)}
     pr_vivos = "pr_tarjetas" in ajustes.fuentes
-    prs = {p["headRefName"]: p for p in git.prs(repo)} if ("pr" in ajustes.fuentes or pr_vivos) else {}
+    # PR abiertos: con fuente `pr`/`pr_tarjetas` crean unidades y reactivan ramas cerradas; con solo tarjetas (25-10)
+    # se leen igual, pero solo para marcar qué tarjeta ya tiene PR (lo que pide el aviso `temprano`).
+    usa_prs = "pr" in ajustes.fuentes or pr_vivos
+    prs_abiertos = {p["headRefName"]: p for p in git.prs(repo)} if (usa_prs or ajustes.temprano) else {}
+    prs = prs_abiertos if usa_prs else {}
     cerradas = getattr(git, "ramas_cerradas", lambda _r: set())(repo) - set(prs)  # un PR nuevo abierto la reactiva
     ramas = {r: v for r, v in ramas.items() if r not in cerradas and r not in silenciadas}
     unidades: dict[str, Unidad] = {}
@@ -306,10 +348,10 @@ def unidades_repo(repo: str, remote: str, base: str, tarjetas: list[dict], git: 
         if z is not None:
             u.rama, u.rutas = rama, z
         usadas.add(rama)
-        if rama in prs:
-            u.pr = int(prs[rama].get("number") or 0)
-            u.url = str(prs[rama].get("url") or "")
-            u.dueno = u.dueno or str((prs[rama].get("author") or {}).get("login") or "")
+        if rama in prs_abiertos:
+            u.pr = int(prs_abiertos[rama].get("number") or 0)
+            u.url = str(prs_abiertos[rama].get("url") or "")
+            u.dueno = u.dueno or str((prs_abiertos[rama].get("author") or {}).get("login") or "")
 
     if "tarjetas" in ajustes.fuentes:
         for t in tarjetas:
@@ -415,6 +457,8 @@ def detectar(lanes: dict, hermes_for, git: Git, ajustes: Ajustes | None = None, 
     out: list[Choque] = []
     for repo, remote, base, tarjetas in repos.values():
         try:
+            if ajustes.fetch:
+                getattr(git, "fetch", lambda _r, _m: False)(repo, remote)
             us = unidades_repo(repo, remote, base, tarjetas, git, ajustes, ahora, silenciadas, buscar=buscar)
             slug = slugs.get(solapes._norm_repo(repo), "")
             for u in us:
@@ -440,8 +484,8 @@ def clave(c: Choque) -> str:
     return c.clase + ":" + "|".join(sorted((c.a.uid, c.b.uid)))
 
 
-_ICONO = {"compatible": "🔗", "conflicto": "⛔", "revisar": "❓"}
-_TITULO = {"compatible": "misma zona, compatibles", "conflicto": "conflicto real de merge",
+_ICONO = {"temprano": "⏳", "compatible": "🔗", "conflicto": "⛔", "revisar": "❓"}
+_TITULO = {"temprano": "tocan los mismos ficheros (aún sin conflicto)", "compatible": "misma zona, compatibles", "conflicto": "conflicto real de merge",
            "revisar": "intención contradictoria"}
 
 
@@ -457,6 +501,8 @@ def aviso(c: Choque, ajustes: Ajustes | None = None) -> str:
         f"{_ICONO.get(c.clase, '🔀')} Choque entre tareas · {nombre}: {_TITULO.get(c.clase, c.clase)}",
         _linea(c.a), _linea(c.b),
         "Comparten: " + "; ".join(c.comparten[:ajustes.comparten_max]),
+        *(["Hoy git las fusiona limpio; si no se respeta el orden, el conflicto llegará cuando una se integre."]
+          if c.clase == "temprano" else []),
         "Propuesta: " + c.propuesta,
         ("Lo que esté en ready y choque no se lanza en paralelo (espera a la otra); el resto lo decides tú."
          if ajustes.prevenir_al_lanzar else "No se frena ni se encadena nada solo: decides tú.")])
@@ -490,10 +536,24 @@ def teclado(c: Choque) -> tuple[dict, list[list[dict]], list[list[dict]]]:
     rec.update(choque=True, par=par_uid(c), clase=c.clase, repo=c.repo, silenciables=silenciables,
                urls=[{"text": f"🔎 Ver PR #{n}", "url": u} for n, u in urls])
     spec = fusion.teclado_solape() if base else []
+    if c.clase == "temprano":
+        primero, despues = primero_y_despues(c.a, c.b)
+        rec.update(primero=primero.uid, despues=despues.uid)
+        ref = f"PR #{primero.pr}" if primero.pr else primero.uid
+        spec = [[{"text": f"✅ Confirmar: {ref} primero, la otra espera", "action": CHO_ORDEN}]] + spec
     fila = [{"text": "🙈 Ignorar este par", "action": CHO_IGNORAR}]
     fila += [{"text": f"🔇 Silenciar {r[:24]}", "action": CHO_SILENCIAR, "index": i} for i, r in enumerate(silenciables)]
     spec += [fila[:2]] + ([fila[2:]] if fila[2:] else [])
     return rec, spec, [[{"text": b["text"], "url": b["url"]} for b in rec["urls"]]] if rec["urls"] else []
+
+
+def load_orden(path: Path | str | None = None) -> dict:
+    """{par: {"primero": uid, "cuando": epoch}} de los órdenes confirmados. Ilegible = ninguno."""
+    try:
+        data = json.loads(Path(path or ORDEN_PATH).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return {str(k): v for k, v in data.items() if isinstance(v, dict)} if isinstance(data, dict) else {}
 
 
 def load_silenciadas(path: Path | str | None = None) -> set[str]:
@@ -528,13 +588,15 @@ class ChoquesTicker:
 
     def __init__(self, lanes: dict, hermes_for, *, send, state_path: Path, settings_path: Path | str | None = None,
                  git: Git | None = None, clock=time.monotonic, issue=None, wall=time.time,
-                 silenciadas_path: Path | None = None, ignorados_path: Path | None = None):
+                 silenciadas_path: Path | None = None, ignorados_path: Path | None = None,
+                 orden_path: Path | None = None):
         self.lanes, self.hermes_for, self.send = lanes, hermes_for, send
         self.state_path, self.settings_path, self.git, self._clock = state_path, settings_path, git or Git(), clock
         self._wall = wall  # reloj de pared para la caducidad de lo ya avisado (el de `clock` es monotónico)
         self.issue = issue  # CallbackStore.issue: con él, TODO aviso lleva botones y se llama `send(texto, markup)`
         self.silenciadas_path = Path(silenciadas_path or SILENCIADAS_PATH)
         self.ignorados_path = Path(ignorados_path or IGNORADOS_PATH)
+        self.orden_path = Path(orden_path or ORDEN_PATH)
         self._last: float | None = None
 
     def _enviar(self, c: Choque, ajustes: Ajustes) -> None:
@@ -564,6 +626,20 @@ class ChoquesTicker:
             dias = load_ajustes(self.settings_path).recordar_dias
             desk._edit_text(where, f"🙈 {par.replace('|', ' y ')}: ignorado ({who}); no se vuelve a avisar de este par en "
                                    f"{dias} días ni frena lanzamientos")
+            return True
+        if action == CHO_ORDEN:
+            par, primero = str(rec.get("par") or ""), str(rec.get("primero") or "")
+            if not par or not primero:
+                return False
+            data = load_orden(self.orden_path)
+            data[par] = {"primero": primero, "cuando": self._wall()}
+            try:
+                _write_json(self.orden_path, data)
+            except OSError as exc:
+                log.warning("choques: no se pudo guardar el orden confirmado: %s", exc)
+                return False
+            desk._edit_text(where, f"✅ {primero} va primero ({who}); la otra espera a que se integre y se rebasa "
+                                   "sobre la base nueva. El hub no la frena sola: avisa a quien la lleve")
             return True
         if action == CHO_SILENCIAR:
             try:

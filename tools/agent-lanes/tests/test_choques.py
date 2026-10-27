@@ -267,6 +267,99 @@ def test_load_ajustes_recordar_y_compatibles(tmp_path):
     assert a.recordar_dias == 7 and a.avisar_compatibles is True
 
 
+# --- aviso temprano (24-10): mismos ficheros, merge limpio, alguna rama con PR -----------------------------------------
+
+def _pr(n, rama):
+    return {"number": n, "headRefName": rama, "title": "t", "author": {"login": "oscarsao"}}
+
+
+def _temprano_git(prs, ficheros_b=(CMD,)):
+    return FakeGit({"feat/uno": (NOW, "Oscar", [CMD, "a/otro.py"]), "feat/dos": (NOW, "Oscar", list(ficheros_b))},
+                   prs=prs, reales={frozenset(("feat/uno", "feat/dos")): False})
+
+
+def test_temprano_avisa_antes_del_conflicto_y_va_primero_la_del_pr():
+    [c] = run(_temprano_git([_pr(280, "feat/uno")]))
+    assert c.clase == "temprano" and c.comparten == [CMD]
+    assert "feat/uno va primero (ya tiene PR)" in c.propuesta
+    assert "aún sin conflicto" in aviso(c)
+
+
+def test_temprano_sin_pr_no_avisa_y_ficheros_distintos_tampoco():
+    assert run(_temprano_git([])) == []
+    assert run(_temprano_git([_pr(1, "feat/uno")], ficheros_b=("z/otro_modulo.py",))) == []
+
+
+def test_temprano_con_dos_pr_va_primero_el_mas_antiguo():
+    [c] = run(_temprano_git([_pr(281, "feat/uno"), _pr(280, "feat/dos")]))
+    assert "feat/dos va primero" in c.propuesta
+
+
+def test_temprano_se_apaga_e_ignora_ficheros_por_yaml(tmp_path):
+    g = _temprano_git([_pr(1, "feat/uno")])
+    assert run(g, aj=Ajustes(temprano=False)) == []
+    assert run(g, aj=Ajustes(temprano_ignorar=("*/commands.py",))) == []
+    y = tmp_path / "c.yaml"
+    y.write_text("temprano: false\nfetch: false\ntemprano_ignorar: ['A/B.md']\n", encoding="utf-8")
+    aj = load_ajustes(y)
+    assert aj.temprano is False and aj.fetch is False and aj.temprano_ignorar == ("a/b.md",)
+
+
+def test_detectar_hace_fetch_por_repo_y_se_puede_apagar():
+    g = _temprano_git([])
+    llamadas = []
+    g.fetch = lambda repo, remote: llamadas.append((repo, remote)) or True
+    run(g)
+    assert llamadas == [(HUB, "origin")]
+    run(g, aj=Ajustes(fetch=False))
+    assert len(llamadas) == 1
+
+
+def test_git_fetch_real_con_runner_falso():
+    cmds = []
+
+    def runner(cmd, **kw):
+        cmds.append(cmd)
+        return SimpleNamespace(returncode=0, stdout="")
+
+    assert Git(runner=runner).fetch("/r", "origin") is True
+    assert cmds == [["git", "-C", "/r", "fetch", "--prune", "--quiet", "origin"]]
+    assert Git(runner=lambda *a, **k: 1 / 0).fetch("/r", "origin") is False
+
+
+def test_choques_yaml_trae_los_ajustes_tempranos():
+    aj = load_ajustes()
+    assert aj.temprano and aj.fetch
+
+
+# --- aviso temprano con las fuentes del 25-10 (solo tarjetas): el PR se lee aunque `pr` no sea fuente -------------------
+
+def _solo_tarjetas(**kw):
+    return Ajustes(fuentes=("tarjetas",), **kw)
+
+
+def test_temprano_con_solo_tarjetas_lee_el_pr_de_la_rama_lane():
+    g = FakeGit({"lane/t_1": (NOW, "x", [CMD]), "lane/t_2": (NOW, "y", [CMD])},
+                prs=[_pr(280, "lane/t_1")], reales={frozenset(("lane/t_1", "lane/t_2")): False})
+    cards = [card("t_1", "uno"), card("t_2", "dos")]
+    [c] = run(g, cards, _solo_tarjetas())
+    assert c.clase == "temprano" and "va primero (ya tiene PR)" in c.propuesta
+    assert (c.a.pr, c.b.pr) in ((280, 0), (0, 280))
+    assert run(g, cards, _solo_tarjetas(temprano=False)) == []
+
+
+def test_solo_tarjetas_no_crea_unidades_de_ramas_ni_pr_sueltos():
+    g = FakeGit({"lane/t_1": (NOW, "x", [CMD]), "feat/otra": (NOW, "y", [CMD])},
+                prs=[_pr(9, "feat/otra")], reales={frozenset(("lane/t_1", "feat/otra")): False})
+    assert run(g, [card("t_1", "uno")], _solo_tarjetas()) == []
+
+
+def test_temprano_con_solo_tarjetas_no_llama_a_gh_si_esta_apagado():
+    g = FakeGit({"lane/t_1": (NOW, "x", [CMD])})
+    g.prs = lambda repo: (_ for _ in ()).throw(AssertionError("gh pr list no debería llamarse"))
+    run(g, [card("t_1", "uno")], _solo_tarjetas(temprano=False))
+
+
 # --- F1-05 (D30-A ampliado): PR de tarjetas vivas, también fix/* y feat/* -------------------------------------
 
 class BoardShow(Board):
