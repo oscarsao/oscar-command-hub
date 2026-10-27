@@ -65,13 +65,22 @@ class ProdMixin:
 
     # --- prod: solo propone --------------------------------------------------------------------------------------------
 
+    def etiqueta(self, lane, tid: str) -> str:
+        """Id con título corto y enlace a la ficha (`titulos.etiqueta`). Sin poder leer la tarjeta, solo id + enlace."""
+        from .titulos import etiqueta
+        try:
+            titulo = ((self.i.hermes_for(lane.board).show(tid) or {}).get("task") or {}).get("title")
+        except Exception:
+            titulo = None
+        return etiqueta(tid, titulo)
+
     def pendientes_manuales(self, st) -> list[str]:
         from .integrator import pending_migration
         out = []
         for tid in st.sin_desplegar:
             mig = pending_migration(self.i._state(tid))
             if mig:
-                out.append(f"⏸ {tid}: {mig} pendiente → pedir al integrador (no se aplica desde aquí)")
+                out.append(f"⏸ {self.etiqueta(st.lane, tid)}: {mig} pendiente → pedir al integrador (no se aplica desde aquí)")
         return out
 
     def prod_plan(self, key: str, promotores=()) -> dict:
@@ -217,7 +226,7 @@ class ProdMixin:
             if hecho.get("develop_atras"):
                 partes.append(f"develop va {st.develop_atras} commit(s) por detrás de master (/promover {key})")
             if hecho.get("sin_desplegar"):
-                partes.append("fusionado sin desplegar: " + ", ".join(hecho["sin_desplegar"]))
+                partes.append("fusionado sin desplegar: " + ", ".join(self.etiqueta(lane, t) for t in hecho["sin_desplegar"]))
             nuevas.append((key, f"🔄 {key} se ha quedado atrás: " + "; ".join(partes) + ".",
                            {"kind": "al_dia", "lane": lane.name, "board": lane.board, "key": key,
                             "task_id": (st.prs[0].tid if st.prs else (st.sin_desplegar or [""])[0])}))

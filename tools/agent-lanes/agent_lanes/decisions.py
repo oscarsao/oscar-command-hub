@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Callable
 
 from . import bloqueos
+from . import botonera
 from . import consola
 from . import deps
 from . import proc as _proc
@@ -77,6 +78,7 @@ PR_FOOTER = "🤖 Generated with [Claude Code](https://claude.com/claude-code)"
 APPROVE, CHANGES, PARK, RETRY, OPTION, OTHER = "approve", "changes", "park", "retry", "option", "other"
 GUARD_SNOOZE = "guard_snooze"  # ⏳ Aplazar un bloqueo de guard escalado a Oscar: 24 h más en la cola del integrador
 TO_INTEGRADOR = "to_integrador"  # 🧑‍💻 Que lo resuelva el integrador: Oscar no puede actuar desde Telegram
+COLA_RESUELTA = "cola_resuelta"  # ✅ Ya está resuelta (cola del integrador, F1-03/FL-04): cierra la tarjeta con resumen
 UNTRIAGE = "untriage"      # 🧊 Sacar de triage: specify_triage_task sin reescribir la tarjeta (nunca unblock)
 WAIT = "wait"              # ⏸ Esperar a…: pide el id de la tarjeta y crea la dependencia real (kanban link)
 EXPLAIN = "explain"        # 💬 Explícame más: responde con una explicación llana; no consume el teclado
@@ -105,9 +107,20 @@ CARD_PARK = "card_park"       # 🗄 Aparcar: comentario + archive
 CARD_ASK = "card_ask"         # ✍️ Responder: force_reply; el texto es la respuesta
 CARD_VETO = "card_veto"       # ⛔ Vetar: la tarjeta reversible deja de ejecutarse sola (no consume el teclado)
 CARD_ACCEPT_ALL = "card_accept_all"  # ✅ Aceptar las recomendadas del lote de tarjetas de /decisiones
+CARD_INTEGRADOR = "card_integrador"  # 🧑‍💻 Integrador (tema 🎯 Decisiones, F1-03/FL-12): la tarjeta pasa al integrador
+HECHA = "hecha"            # ✅ Dar por hecha (botonera F1-14): pide el motivo (2.º toque) y cierra la tarjeta
+PARTIR = "partir"          # ✂️ Partir en dos: pide qué va a la 2.ª parte y crea esa tarjeta
+OTRO_CARRIL = "otro_carril"  # 🔀 Otro carril: menú de carriles del mismo tablero (no consume)
+OTRO_SET = "otro_set"      # elección del menú anterior: reasigna
+APLAZAR = "aplazar"        # ⏳ Aplazar: menú 1/3/7 días (no consume)
+APLAZAR_SET = "aplazar_set"  # elección de días: oculta la tarjeta ese tiempo
+MAS = "mas"                # ➕ Más: despliega los botones menos usados (no consume)
+VOLVER = "volver"          # ↩️ Volver / ✖ No: repone el teclado original (no consume)
+LIBERAR = "liberar"        # 🔓 Liberar: quita la espera de «Esperar a…» y reanuda la tarjeta
+MENU_ACTIONS = (OTRO_CARRIL, APLAZAR, MAS, VOLVER)   # cambian el teclado sin gastarlo
 SNOOZE_DAYS = 7
 BUTTON_OPTION_MAX = 22  # caracteres del texto de la opción en su botón ("A · Aprobar el PR")
-REPLY_ACTIONS = (CHANGES, OTHER, CARD_ASK, PEDIR_ASK, WAIT, "eq_resp", "eq_rech")  # piden texto con force_reply
+REPLY_ACTIONS = (CHANGES, OTHER, CARD_ASK, PEDIR_ASK, WAIT, HECHA, PARTIR, "eq_resp", "eq_rech")  # piden texto con force_reply
 EQUIPO_KIND = "equipo"  # botones del tema 👥 Equipo (vigilancia.py, t_04fe996e)
 EXPLAIN_BUTTON = {"text": "💬 Explícame más", "action": EXPLAIN}
 DEFAULT_OPTION_LABELS = ("✅ Sí, adelante", "❌ No")  # botones de una pregunta sin opciones (DEFAULT_OPTIONS)
@@ -169,7 +182,7 @@ def keyboard_spec(state: str, *, block_kind: str | None = None, questions=None,
         return [[{"text": "✅ Aprobar", "action": APPROVE}, {"text": "🔁 Pedir cambios", "action": CHANGES}, park]]
     if state == "blocked" and block_kind == "console_escalated":  # 2 h en la cola del integrador sin resolverse
         return [[{"text": "🧑‍💻 Que lo resuelva el integrador", "action": TO_INTEGRADOR}],
-                [{"text": "⏳ Aplazar", "action": GUARD_SNOOZE}]]
+                [{"text": "✅ Ya está resuelta", "action": COLA_RESUELTA}, {"text": "⏳ Aplazar", "action": GUARD_SNOOZE}]]
     if state == "blocked" and block_kind in ("config", "console"):  # reintentar no arregla la config ni el guard: solo aparcar
         return [[park], [{"text": "🧑‍💻 Que lo resuelva el integrador", "action": TO_INTEGRADOR}]]
     if state == "blocked" and block_kind in ("transient", "estructural"):
@@ -186,6 +199,13 @@ def keyboard_spec(state: str, *, block_kind: str | None = None, questions=None,
         return [[{"text": "🧊 Sacar de triage", "action": UNTRIAGE}, {"text": "⏸ Esperar a…", "action": WAIT}],
                 [{"text": "✍️ Responder", "action": OTHER}, {"text": "🗄 Archivar", "action": PARK}]]
     return None
+
+
+def seed_card_keyboard_spec() -> list[list[dict]]:
+    """Botones de una tarjeta de Oscar sembrada en el tema 🎯 Decisiones (F1-03, FL-12): Hecho / Aparcar 7 días /
+    Integrador / Archivar. Mismas acciones que /decisiones (CARD_*) salvo «Integrador», que es nueva."""
+    return [[{"text": "✅ Hecho", "action": CARD_DONE}, {"text": f"⏳ Aparcar {SNOOZE_DAYS} d", "action": CARD_SNOOZE}],
+            [{"text": "🧑‍💻 Integrador", "action": CARD_INTEGRADOR}, {"text": "🗄 Archivar", "action": CARD_PARK}]]
 
 
 def card_keyboard_spec(n_options: int, recommended: int | None, options=None, veto: bool = False) -> list[list[dict]]:
@@ -345,7 +365,8 @@ class CallbackStore:
             for b in row:
                 data = f"{token}:{len(buttons)}"
                 assert len(data.encode()) <= CALLBACK_DATA_MAX
-                buttons.append({"action": b["action"], "index": b.get("index"), "text": b["text"]})
+                buttons.append({"action": b["action"], "index": b.get("index"), "text": b["text"],
+                                **{k: b[k] for k in ("confirmar", "dias", "valor") if b.get(k)}})
                 out.append({"text": b["text"], "callback_data": data})
             rows.append(out)
         self._write(self.root / f"{token}.json", {**rec, "buttons": buttons, "rows": [len(r) for r in rows],
@@ -642,14 +663,22 @@ class DecisionDesk:
 
     def markup(self, state: str, *, task: dict, lane, block_kind: str | None = None, questions=None,
                summary: str | None = None, changed_files=None, for_oscar: str | None = None,
-               yes_no: bool = True, q_index: int = 0) -> dict | None:
-        """`yes_no=False`: escalada de review (sin [✅ Sí, adelante] [❌ No] por defecto). `q_index`: pregunta en curso
+               yes_no: bool = True, q_index: int = 0, ficha: bool = False,
+               recomendada: str | None = None) -> dict | None:
+        """`ficha`: es la ficha de /tarea (no un aviso): lleva la botonera estándar de F1-14 (botonera.yaml).
+        `yes_no=False`: escalada de review (sin [✅ Sí, adelante] [❌ No] por defecto). `q_index`: pregunta en curso
         (las anteriores ya están respondidas en el kanban; ver renotify._plan_blocked)."""
         qs = with_default_options(questions, yes_no)
         q_index = _clamp(q_index, qs)
         spec = keyboard_spec(state, block_kind=block_kind, questions=questions, yes_no=yes_no,
                              ops=getattr(lane, "kind", "") == "ops", index=q_index,
                              retried=bool(self.retries.get(task["id"])))
+        estado = botonera.estado_de("triage" if state == "stuck" else state) if ficha else None
+        if estado:
+            if self.retries.get(task["id"]):  # bloqueo repetido: Reintentar no ayuda, no se ofrece
+                spec = [[b for b in row if b["action"] != RETRY] for row in spec or []]
+                spec = [row for row in spec if row]
+            spec = botonera.con_mas(spec or [], estado, recomendada=recomendada)
         if not spec:
             return None
         # ✍️ responde SOLO la pregunta en curso (antes, con varias, valía para "todas las preguntas" y Oscar no lo
@@ -989,6 +1018,14 @@ class DecisionDesk:
             answer(cq.get("id"), "Vetada: no se aplicará sola")
             self._spawn(lambda: self._veto(token, rec, where))
             return
+        if button["action"] in MENU_ACTIONS:  # menús de la botonera: solo cambian el teclado, no gastan el botón
+            answer(cq.get("id"), "Un momento")
+            self._spawn(lambda: self._menu(token, rec, button, where))
+            return
+        if button.get("confirmar") and button["action"] not in REPLY_ACTIONS:  # irreversible: 1.er toque pide confirmar
+            answer(cq.get("id"), "¿Seguro? Pulsa «Sí» para confirmar")
+            self._spawn(lambda: self._confirmar(token, rec, button, where))
+            return
         if button["action"] in REPLY_ACTIONS:
             answer(cq.get("id"), "Responde al mensaje que te envío")
             self._spawn(lambda: self._ask(token, rec, button, where))
@@ -1001,35 +1038,10 @@ class DecisionDesk:
             self._spawn(self._en_nombre_de(actor, lambda: consola.pedir(self, token, rec, button, where)))
             return
         answer(cq.get("id"), "Hecho, lo aplico")
-        sello = self._sellar(actor, where)
-        self._spawn(self._con_sello(sello, self._en_nombre_de(actor, lambda: self._safe(token, rec, where,
+        self._spawn(self._en_nombre_de(actor, lambda: self._safe(token, rec, where,
                                                                  lambda: self._act(rec, button, where),
                                                                  replay={"kind": "act", "button": button,
-                                                                         "actor": actor}))))
-
-    def _sellar(self, actor, where: dict) -> str | None:
-        """Si el aviso tiene copias en el DM de otro operador: les quita los botones ya (nadie decide dos veces) y
-        devuelve «decidido por María 10:32» para el estado final. None = sin copias (todo como siempre)."""
-        copias = getattr(self.notifier, "tiene_copias", None)
-        if not (copias and copias(where["chat_id"], where["message_id"])):
-            return None
-        try:
-            self.notifier.edit_markup(where["chat_id"], where["message_id"], None)
-        except Exception as exc:
-            log.info("no se pudieron retirar los botones de las copias: %s", exc)
-        return f"decidido por {self.operador_nombre(actor) or 'Oscar'} {self._now():%H:%M}"
-
-    def _con_sello(self, sello: str | None, fn: Callable[[], None]) -> Callable[[], None]:
-        if not sello:
-            return fn
-
-        def run() -> None:
-            self._tl.sello = sello
-            try:
-                fn()
-            finally:
-                self._tl.sello = None
-        return run
+                                                                         "actor": actor})))
 
     def _reply(self, msg: dict) -> bool:
         """Respuesta de Oscar a un force_reply: pedir cambios o respuesta libre. True si había una pendiente."""
@@ -1318,8 +1330,16 @@ class DecisionDesk:
             return bool(panel) and panel.on_button(action, rec, where, self)
         if action == TO_INTEGRADOR:
             return self._to_integrador(rec, where)
+        if action == OTRO_SET:
+            return self._otro_carril(rec, where, button.get("valor"))
+        if action == APLAZAR_SET:
+            return self._aplazar(rec, where, button.get("index"))
+        if action == LIBERAR:
+            return self._liberar(rec, where)
         if action == GUARD_SNOOZE:
             return self._guard_snooze(rec, where)
+        if action == COLA_RESUELTA:
+            return self._cola_resuelta(rec, where)
         if action.startswith("promo_"):  # 🚀 Promover MigraTeam: Revisado / Sí, promover (promote.py)
             if action == "promo_start":
                 if not self.promoter:
@@ -1412,6 +1432,13 @@ class DecisionDesk:
             self._edit(rec, where, "blocked", "no se pudo guardar la respuesta en la tarjeta")
             return False
 
+        if action == CARD_INTEGRADOR:
+            if not h.assign(tid, INTEGRATOR_PROFILE):
+                self._edit(rec, where, None, "no se pudo pasar al integrador (mira la tarjeta)")
+                return False
+            note(f"Pasada al integrador ({INTEGRATOR_PROFILE}) por {self._who()} desde el tema 🎯 Decisiones")
+            self._edit(rec, where, None, f"🧑‍💻 la tiene el integrador ({INTEGRATOR_PROFILE})")
+            return True
         if action == CARD_SNOOZE:
             until = self.snoozes.add(tid, SNOOZE_DAYS)
             label = datetime.fromtimestamp(until).strftime("%d/%m")
@@ -1690,14 +1717,23 @@ class DecisionDesk:
             self._edit(rec, where, "blocked", "no se pudo abrir el PR; detalle en el log")
             return False
         number, url = pr
+        # D9: la identidad de quien aprueba (Oscar, María o Ángel) queda en auditoria.jsonl, también si el comentario falla
+        consola.auditar(self, "aprobar", (where or {}).get("user_id"), rec, "aprobar", pr=number)
         stamp = self._now().strftime("%Y-%m-%d %H:%M")
         if not self._hermes(rec).comment(tid, f"APROBADO-OSCAR {stamp} · PR {url}{self._by()}", author=OSCAR_AUTHOR):
             log.warning("%s: PR %s abierto pero no se pudo comentar la aprobación en la tarjeta", tid, url)
+        recorded = False
         if self.integrator:  # registro local PR + commit aprobado: lo único de lo que se fía el Integrador
             try:
-                self.integrator.record_approval(lane, tid, number)
+                recorded = bool(self.integrator.record_approval(lane, tid, number))
             except Exception as exc:
                 log.warning("%s: no se pudo registrar la aprobación para el integrador: %s", tid, exc)
+        if not recorded:  # P08: review/renotify solo creen el registro local; sin integrador, el mínimo
+            from . import aprobaciones
+            try:
+                aprobaciones.registrar(tid, number, by=self._who())
+            except Exception as exc:
+                log.warning("%s: no se pudo guardar el registro local de la aprobación: %s", tid, exc)
         # Nunca se fusiona aquí: el merge es del carril Integrador. Si el carril no tiene política en el integrador
         # automático, [🔀 Integrar] (dos toques) crea la tarjeta para el integrador en vez de esperar a la consola.
         markup = None
@@ -1706,7 +1742,7 @@ class DecisionDesk:
             markup = self.store.issue({**{k: v for k, v in rec.items() if k not in ("buttons", "rows", "created")},
                                        "kind": "approved_pr", "pr_number": number, "pr_url": url},
                                       [[consola.boton(consola.CS_INTEGRAR)]])[1]
-        self._edit(rec, where, "approved", f"✅ aprobada · PR #{number}", extra_links=[(f"PR #{number}", url)],
+        self._edit(rec, where, "approved", f"✅ aprobada · PR #{number} · Decidido por {self._who()}", extra_links=[(f"PR #{number}", url)],
                    markup=markup)
         return True
 
@@ -1784,10 +1820,51 @@ class DecisionDesk:
         h.comment(tid, f"Aparcada por {self._who()}", author=OSCAR_AUTHOR)
         return True
 
+    def _ya_resuelta(self, rec: dict, where: dict) -> bool:
+        """FL-14: un botón de bloqueo/consola de un aviso viejo no actúa sobre una tarjeta que ya no está bloqueada.
+        Relee el estado; si es otro (done, archivada, en curso…) edita el mensaje («ya resuelta») y devuelve True.
+        Sin poder leerla (fakes, CLI caída) se sigue como antes: la acción de Hermes decide."""
+        h = self._hermes(rec)
+        if not hasattr(h, "show"):
+            return False
+        try:
+            status = ((h.show(rec["task_id"]) or {}).get("task") or {}).get("status")
+        except Exception:
+            return False
+        if not status or status in ("blocked", "triage"):
+            return False
+        self._edit(rec, where, None, f"✅ ya resuelta (ahora en {status}); no hago nada")
+        return True
+
+    def _cola_resuelta(self, rec: dict, where: dict) -> bool:
+        """✅ Ya está resuelta (cola del integrador, FL-04): el integrador ya respondió en un comentario; se cierra la
+        tarjeta con un resumen y sale de la cola. Una tarjeta que ya no está bloqueada solo se edita (FL-14)."""
+        tid, h = rec["task_id"], self._hermes(rec)
+        queue = getattr(self, "guard_queue", None)
+        if self._ya_resuelta(rec, where):
+            if queue is not None:
+                queue.remove(tid)
+            return True
+        result = f"Resuelta por {self._who()} desde Telegram (cola del integrador: ya estaba respondida)"
+        meta = {"decided_by": OSCAR_AUTHOR, "via": "cola_integrador"}
+        ok, err = h.complete(tid, result, meta)
+        if not ok and hasattr(h, "requeue_triage") and h.requeue_triage(tid):  # Hermes no completa desde triage
+            ok, err = h.complete(tid, result, meta)
+        if not ok:
+            log.warning("%s: no se pudo cerrar desde la cola del integrador: %s", tid, err)
+            self._edit(rec, where, "blocked", "no se pudo cerrar la tarjeta (mira el panel)")
+            return False
+        if queue is not None:
+            queue.remove(tid)
+        self._edit(rec, where, None, f"✅ cerrada por {self._who()}; sale de la cola del integrador")
+        return True
+
     def _to_integrador(self, rec: dict, where: dict) -> bool:
         """Lo que Oscar no puede hacer desde Telegram (consola, guard, config) pasa al integrador: la tarjeta se
         reasigna a su perfil y queda dicho en ella quién la tiene."""
         tid, h = rec["task_id"], self._hermes(rec)
+        if self._ya_resuelta(rec, where):  # FL-14: aviso viejo sobre una tarjeta ya cerrada
+            return True
         if not h.assign(tid, INTEGRATOR_PROFILE):
             self._edit(rec, where, "blocked", "no se pudo pasar al integrador (¿la tarea está en curso?)")
             return False
@@ -1796,9 +1873,146 @@ class DecisionDesk:
         self._edit(rec, where, "parked", f"🧑‍💻 la tiene el integrador ({INTEGRATOR_PROFILE}); queda en su tarjeta")
         return True
 
+    # --- botonera estándar de las fichas (F1-14) ---------------------------------------------------------
+
+    @staticmethod
+    def _base(rec: dict) -> dict:
+        return {k: v for k, v in rec.items() if k not in ("buttons", "rows", "created")}
+
+    def _menu(self, token: str, rec: dict, button: dict, where: dict) -> None:
+        """➕ Más / 🔀 Otro carril / ⏳ Aplazar / ↩️ Volver: cambian el teclado del mensaje; el original sigue vivo."""
+        action = button["action"]
+        volver = {"text": "↩️ Volver", "action": VOLVER}
+        if action == VOLVER:
+            orig = self.store.get(rec.get("volver") or "")
+            if orig:
+                self.notifier.edit_markup(where["chat_id"], where["message_id"], self.store.markup(rec["volver"], orig))
+            return
+        if action == MAS:
+            spec = [r for r in botonera.spec_de_registro(rec) if not any(b["action"] == MAS for b in r)]
+            spec += botonera.filas_mas()
+        elif action == OTRO_CARRIL:
+            lanes = [n for n, ln in (self.lanes or {}).items()
+                     if getattr(ln, "kind", "") == "implement" and getattr(ln, "board", None) == rec.get("board")
+                     and n != rec.get("lane")]
+            spec = [[{"text": f"🔀 {n}", "action": OTRO_SET, "valor": n}] for n in sorted(lanes)] + [[volver]]
+        else:  # APLAZAR
+            dias = botonera.cargar()["botones"]["aplazar"]["opciones_dias"]
+            spec = [[{"text": f"{d} d", "action": APLAZAR_SET, "index": d} for d in dias], [volver]]
+        _t, markup = self.store.issue({**self._base(rec), "volver": token}, spec)
+        self.notifier.edit_markup(where["chat_id"], where["message_id"], markup)
+
+    def _confirmar(self, token: str, rec: dict, button: dict, where: dict) -> None:
+        """2.º toque de las acciones irreversibles: [✅ Sí] [✖ No] en el mismo mensaje."""
+        sin_estrella = button["text"].replace(botonera.ESTRELLA, "")
+        spec = [[{"text": f"✅ Sí: {sin_estrella}", "action": button["action"], "index": button.get("index")},
+                 {"text": "✖ No", "action": VOLVER}]]
+        _t, markup = self.store.issue({**self._base(rec), "volver": token}, spec)
+        self.notifier.edit_markup(where["chat_id"], where["message_id"], markup)
+
+    @staticmethod
+    def _status(h, tid: str) -> str | None:
+        try:
+            return (h.show(tid).get("task") or {}).get("status")
+        except Exception:
+            return None
+
+    def _hecha(self, rec: dict, where: dict, motivo: str) -> bool:
+        """✅ Dar por hecha: el motivo queda en la tarjeta y se cierra. Idempotente (ya cerrada: no hace nada)."""
+        tid, h = rec["task_id"], self._hermes(rec)
+        if self._status(h, tid) in ("done", "archived"):
+            self._edit(rec, where, None, "✅ ya estaba cerrada; no hago nada")
+            return True
+        motivo = (motivo or "").strip()
+        h.comment(tid, f"Dada por hecha por {self._who()} desde Telegram. Motivo: {motivo}"[:3000], author=OSCAR_AUTHOR)
+        result = f"Dada por hecha por {self._who()} desde Telegram: {motivo}"[:1500]
+        meta = {"decided_by": OSCAR_AUTHOR, "via": "botonera"}
+        ok, err = h.complete(tid, result, meta)
+        if not ok and hasattr(h, "requeue_triage") and h.requeue_triage(tid):  # Hermes no completa desde triage
+            ok, err = h.complete(tid, result, meta)
+        if not ok:
+            log.warning("%s: no se pudo dar por hecha: %s", tid, err)
+            self._edit(rec, where, "blocked", "no se pudo cerrar la tarjeta (mira el panel)")
+            return False
+        self.retries.clear(tid)
+        self._edit(rec, where, None, f"✅ dada por hecha: {truncate(motivo, 150)}")
+        return True
+
+    def _partir(self, rec: dict, where: dict, texto: str) -> bool:
+        """✂️ Partir en dos: crea la 2.ª tarjeta (mismo carril) con lo que Oscar describe; la original conserva el resto."""
+        tid, h = rec["task_id"], self._hermes(rec)
+        texto = (texto or "").strip()
+        title = rec.get("title") or tid
+        body = (f"Segunda parte de {tid} («{title}»), partida por {self._who()} desde Telegram.\n\n"
+                f"Qué va en esta tarjeta:\n{texto}\n\n{tid} conserva el resto.")
+        try:
+            new = h.create(f"{title} · parte 2", body, rec.get("lane") or "")
+        except Exception as exc:
+            log.warning("%s: no se pudo partir: %s", tid, exc)
+            self._edit(rec, where, "blocked", f"no se pudo crear la segunda tarjeta: {truncate(str(exc), 120)}")
+            return False
+        h.comment(tid, f"PARTIDA: lo siguiente pasa a {new} y NO va en esta tarjeta: {texto}"[:3000], author=OSCAR_AUTHOR)
+        self._trace(h, tid)
+        if self._status(h, tid) in ("blocked", "triage"):
+            self._resume(h, tid)
+        self._edit(rec, where, None, f"✂️ partida: la segunda parte es {new}; {tid} sigue con el resto")
+        return True
+
+    def _otro_carril(self, rec: dict, where: dict, lane_name) -> bool:
+        """🔀 Otro carril: reasigna la tarjeta a un carril de implementación del mismo tablero y la reanuda."""
+        tid, h = rec["task_id"], self._hermes(rec)
+        lane = (self.lanes or {}).get(lane_name or "")
+        if lane is None or getattr(lane, "kind", "") != "implement" or getattr(lane, "board", None) != rec.get("board"):
+            self._edit(rec, where, "blocked", "ese carril no vale para esta tarjeta")
+            return False
+        if not h.assign(tid, lane.name):
+            self._edit(rec, where, "blocked", "no se pudo cambiar de carril (¿la tarea está en curso?)")
+            return False
+        h.comment(tid, f"Pasada al carril {lane.name} por {self._who()} desde Telegram", author=OSCAR_AUTHOR)
+        self._trace(h, tid)
+        if self._status(h, tid) in ("blocked", "triage"):
+            self._resume(h, tid)
+        self._edit(rec, where, None, f"🔀 ahora la lleva {lane.name}")
+        return True
+
+    def _aplazar(self, rec: dict, where: dict, dias) -> bool:
+        """⏳ Aplazar 1/3/7 días: se oculta de /decisiones y de los recordatorios hasta entonces."""
+        tid, h = rec["task_id"], self._hermes(rec)
+        if dias not in botonera.cargar()["botones"]["aplazar"]["opciones_dias"]:
+            return False
+        until = self.snoozes.add(tid, dias)
+        label = datetime.fromtimestamp(until).strftime("%d/%m")
+        h.comment(tid, f"APLAZADA-OSCAR hasta {label} ({dias} d, desde Telegram){self._by()}", author=OSCAR_AUTHOR)
+        self._edit(rec, where, None, f"⏳ aplazada hasta el {label}")
+        return True
+
+    def _liberar(self, rec: dict, where: dict) -> bool:
+        """🔓 Liberar: quita la espera de «Esperar a…» (enlace + marca) y la reanuda. No se repite: sin esperas
+        vigentes solo lo dice."""
+        tid, h = rec["task_id"], self._hermes(rec)
+        try:
+            show = h.show(tid) or {}
+        except Exception:
+            show = {}
+        esperas = deps.declared_waits(show)
+        if not esperas:
+            self._edit(rec, where, None, "🔓 ya no esperaba a nadie; no hago nada")
+            return True
+        for parent in esperas:
+            if hasattr(h, "unlink") and not h.unlink(parent, tid):
+                log.info("%s: no se pudo quitar el enlace con %s; queda la marca de liberada", tid, parent)
+        h.comment(tid, deps.release_comment(esperas), author=OSCAR_AUTHOR)
+        self._trace(h, tid)
+        if (show.get("task") or {}).get("status") in ("blocked", "triage"):
+            self._resume(h, tid)
+        self._edit(rec, where, None, f"🔓 liberada: ya no espera a {', '.join(esperas)}")
+        return True
+
     def _guard_snooze(self, rec: dict, where: dict) -> bool:
         """⏳ Aplazar: la tarjeta sigue en la cola del integrador y no vuelve a Oscar hasta dentro de 24 h."""
         queue = getattr(self, "guard_queue", None)  # la pone CommandCenter.guard_router (guard_route.GuardQueue)
+        if self._ya_resuelta(rec, where):  # FL-14
+            return True
         if queue is None or not queue.snooze(rec["task_id"]):
             self._edit(rec, where, "blocked", "no se pudo aplazar: ya no está en la cola del integrador")
             return False
@@ -1947,6 +2161,11 @@ class DecisionDesk:
             prompt = rec.get("prompt") or "Tu respuesta:"
         elif button["action"] == CHANGES:
             prompt = f"¿Qué cambio pides para {tid}?"
+        elif button["action"] == HECHA:
+            prompt = f"¿Por qué das por hecha {tid}? Escribe el motivo (queda anotado en la tarjeta y la cierra)."
+        elif button["action"] == PARTIR:
+            prompt = (f"¿Qué parte de {tid} pasa a una segunda tarjeta? Descríbela: se crea con ese texto y {tid} "
+                      "conserva el resto.")
         elif button["action"] == WAIT:
             prompt = f"¿A qué tarjeta espera {tid}? Escribe su id (t_xxxxxxxx). No se reclamará hasta que esté hecha o fusionada."
         else:
@@ -1985,6 +2204,10 @@ class DecisionDesk:
         tid, h = rec["task_id"], self._hermes(rec)
         if button["action"] == WAIT:
             return self._wait_for(rec, where, text)
+        if button["action"] == HECHA:
+            return self._hecha(rec, where, text)
+        if button["action"] == PARTIR:
+            return self._partir(rec, where, text)
         if button["action"] == OTHER:
             if (rec.get("n_questions") or 1) > 1 and not rec.get("other_label"):  # en secuencia: la pregunta en curso
                 return self._answer_step(rec, where, text)[0]
@@ -2010,8 +2233,6 @@ class DecisionDesk:
         if keep_text:  # solo devolver los botones
             self.notifier.edit_markup(where["chat_id"], where["message_id"], markup)
             return
-        if status and (sello := getattr(self._tl, "sello", None)):  # copia en el DM de otro operador: quién y cuándo
-            status = f"{status} · {sello}"
         if rec.get("group") or rec.get("accept_all") or self._free(rec):  # grupo / cabecera / selector: texto propio
             self._edit_text(where, status or "")
             return

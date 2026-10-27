@@ -188,12 +188,13 @@ def main(argv: list[str]) -> int:
     import argparse
     from .config import load_lanes
     from .hermes import HermesCLI
+    from .kanban_api import backend_for
     ap = argparse.ArgumentParser(prog="lanes.py doctor-boards",
                                  description="tarjetas abiertas en un tablero que su carril no lee")
     ap.add_argument("--apply", action="store_true", help="recolocarlas (sin esto, solo informa)")
     args = ap.parse_args(argv)
     cache: dict[str, HermesCLI] = {}
-    outcomes = run_guard(load_lanes(), lambda b: cache.setdefault(b, HermesCLI(b, author="doctor-boards")),
+    outcomes = run_guard(load_lanes(), lambda b: cache.setdefault(b, backend_for(b, author="doctor-boards")),
                          apply=args.apply)
     print(format_outcomes(outcomes) if outcomes else "Todas las tarjetas abiertas están en el tablero de su carril.")
     return 0

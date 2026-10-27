@@ -118,8 +118,9 @@ class People:
         return person.is_owner or (person.operador and APROBAR_PRODUCCION in person.permisos)
 
     def operadores_todas_marcas(self) -> set[str]:
-        """DM de los operadores (no Oscar) con `"*"`: reciben copia de TODAS las decisiones que van al DM de Oscar.
-        Los acotados por marca no: el aviso no dice a qué marca apunta y fallaría cerrado."""
+        """Operadores (no Oscar) con `"*"` (María): su DM no pasa por el filtro de colaboradores (F1-09, D4-A) y
+        ven los avisos y botones completos, como Oscar. Los acotados por marca siguen filtrados: el aviso no siempre
+        dice a qué marca apunta y el filtro falla cerrado."""
         return {p.user_id for p in self._by_id.values() if p.operador and TODAS_LAS_MARCAS in p.brands}
 
     def collaborator_ids(self) -> set[str]:

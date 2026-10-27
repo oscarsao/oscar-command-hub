@@ -3,6 +3,9 @@
 Runner que consume las tarjetas `ready` del kanban de Hermes asignadas a un carril (`assignee` = nombre del carril),
 lanza un `claude -p` acotado por hooks y deja el resultado en `review` para que lo valide Oscar.
 Contrato y arquitectura: `decisions/2026-09-27-arquitectura-carriles.md`. Configuración: `lanes.yaml`.
+Plan vigente del hub (v2, 25-10): `decisions/2026-10-25-arquitectura-hub-v2.md`; personas y permisos: `decisions/2026-10-25-personas-roles-permisos.md`.
+
+Skills versionadas frente a las instaladas: `py -3.12 skills_sync.py --check` (solo lectura; sale 1 si alguna de `~/.claude/skills` difiere del hub). `tests/test_readme_lanes.py` falla si este README deja de coincidir con `lanes.yaml` (carriles, alias, `max_workers`, `max_parallel`).
 
 Sincronizar usuarios de Oscar HQ (integrador): `python -m agent_lanes.sync_usuarios plan [--desde-fichero f.json]
 [--env-file .env] [--escribir]` lee las filas pendientes de `ohq_user_external_changes` (API de Oscar HQ: `OHQ_API_URL`,
@@ -16,8 +19,7 @@ una entrada de people.yaml la deja sin acceso.
 | Assignee | Para qué | Resultado |
 |---|---|---|
 | `claude-<repo>` (`claude-oscarhq`, `claude-migrateam`, `claude-scraper`, `claude-nextjobs`) | Código de ESE repo: bugfix, feature, spec, docs versionados | Rama `lane/<id>` empujada, `test_cmd` del carril, carril `review` y PR con [✅ Aprobar] |
-| `claude-hub` | El propio sistema (`oscar-command-hub`: agent-lanes, monitor, bot de Telegram): arreglos pedidos desde Telegram sin abrir Claude Code | Rama `lane/<id>` sobre `main`, suite de agent-lanes, `review`, ficha ⚙️ SISTEMA; tras fusionar, [🔁 Aplicar] |
-| `claude-telegram` | Mejoras continuas de los bots de Telegram (carriles `@pildora_carriles_bot` y Avisos `@PildoraD_BOT`). **Plaza reservada** (`reserved_slots: 1`, fuera de `max_workers`) y dos repos: la tarjeta elige con `Repo: hub\|oscar-hq` (lista blanca `repos:`). Un título `[Telegram]` o citar los bots la enruta aquí (`clasificador.yaml`, `telegram:`) | Como `claude-hub` / `claude-oscarhq` según el repo; review sí, integrador aún no (sin política en `integrator.lanes`) |
+| `claude-hub` (alias `claude-telegram`) | El propio sistema (`oscar-command-hub`: agent-lanes, monitor, bots de Telegram de carriles `@pildora_carriles_bot` y Avisos `@PildoraD_BOT`): arreglos pedidos desde Telegram sin abrir Claude Code. Desde el 23-10 «Hub y Telegram» es un solo carril; `claude-telegram` es solo un alias (no se emite). **Plaza reservada** (`reserved_slots`, fuera de `max_workers`) y dos repos: la tarjeta elige con `Repo: hub\|oscar-hq` (lista blanca `repos:`). Un título `[Telegram]` o citar los bots la enruta aquí (`clasificador.yaml`) | Rama `lane/<id>` sobre `main` (u `master` de oscar-hq), suite de agent-lanes, `review`, ficha ⚙️ SISTEMA e integrador; tras fusionar, [🔁 Aplicar] |
 | `claude-ops` | Trabajo operativo sin repo: inventariar o copiar carpetas (vault/buzón del disco E:), leer calendario, Drive o ClickUp y proponer cambios, preparar accesos, planes e informes | Carpeta `C:/Users/oscar/dev/_lanes/ops/<id>` con evidencias; siempre a `review` con [✅ Validar / 🔁 Pedir cambios] |
 | `oscar` | Lo que exige a Oscar: firmar, pagar, decisiones de negocio, credenciales, ejecutar una acción externa ya aprobada (v1), cualquier cosa en producción | Lo hace Oscar (también es donde acaba el botón 🗄 Aparcar) |
 
@@ -92,26 +94,29 @@ cada acción aprobada en `next_steps` ("APROBADA, pendiente de ejecución") y la
 Requiere preguntas con `action_id` en el schema y un tipo de botón nuevo; hasta entonces v1 termina en propuesta.
 
 ## Responder desde Hermes
-Oscar puede contestar a Hermes (en su DM) la pregunta de un carril en vez de pulsar los botones del bot de Trabajos.
-Para que el runner lo tome como respuesta, Hermes la apunta en la tarjeta con **este formato exacto** y con su perfil
-`default`:
+Oscar (o un operador de people.yaml) puede contestar a Hermes la pregunta de un carril en vez de pulsar los botones
+del bot de Trabajos. Para que el runner lo tome como respuesta, Hermes la apunta en la tarjeta con **este formato
+exacto**, con su perfil `default`, el nombre de quien responde y su id de Telegram (F1-07, P07):
 
 ```
-hermes kanban --board <tablero> comment <t_id> --author default "RESPUESTA-OSCAR: <respuesta>"
+hermes kanban --board <tablero> comment <t_id> --author default "RESPUESTA-<PERSONA> (id=<telegram_id>): <respuesta>"
 ```
 
 Con varias preguntas, una línea por pregunta, numeradas en el orden del aviso:
 
 ```
-RESPUESTA-OSCAR: 1) Sí, adelante
+RESPUESTA-OSCAR (id=<telegram_id>): 1) Sí, adelante
 2) 19 €
 ```
 
 Reglas (el runner no interpreta nada más):
-- El cuerpo **empieza** por `RESPUESTA-OSCAR:` (mayúsculas, con guion y dos puntos, sin nada delante) y lleva texto
-  detrás. No cuentan `Respuesta de Oscar: …`, `Oscar decide (28-09): …` ni resúmenes libres.
-- Autor: solo `default` (Hermes) u `oscar-telegram`. Lo escrito por los workers (`agent-lanes`, `lane-*`) o por el
-  integrador (`lane-integrator`) se ignora aunque lleve el prefijo.
+- El cuerpo **empieza** por `RESPUESTA-<PERSONA> (id=<n>):` y lleva texto detrás. El id tiene que ser el de Oscar o el
+  de un operador de people.yaml y el nombre tiene que ser el suyo (clave o nombre, sin tildes ni mayúsculas que
+  importen). Sin id, con un id desconocido o con un nombre que no casa, no desbloquea nada y tampoco llega al worker
+  como nota. No cuentan `Respuesta de Oscar: …`, `Oscar decide (28-09): …` ni resúmenes libres.
+- `RESPUESTA-OSCAR: …` sin id solo vale escrito por el bot de carriles (`oscar-telegram`), que ya comprobó quién pulsó.
+  Lo escrito por los workers (`agent-lanes`, `lane-*`) o por el integrador (`lane-integrator`) se ignora siempre.
+- Transitorio hasta F2: allí las respuestas llevan la identidad real de quien escribe (hub.task_comments).
 - Solo vale si es **posterior al último bloqueo** needs_input de la tarea. Una respuesta de una ronda anterior no
   responde la pregunta nueva: si el worker vuelve a preguntar, hay que escribir otro `RESPUESTA-OSCAR:`.
 - Una respuesta por tarea bloqueada. Si Oscar ya respondió con botones, no hace falta (y la tarea ya no estará
@@ -162,7 +167,7 @@ sesión con Oscar. El monitor y el bot de Telegram (Python) sí entran.
      programada, que la relanza el Programador de tareas). El estado `APLICADO` se registra antes de lanzarlo.
   2. El avance del checkout raíz a `main` (fast-forward tras el merge) es parte de ese restart/deploy de HEAD; el
      integrador nunca hace pull en el checkout raíz.
-  3. El coordinador añade `claude-hub` a `INTEGRATOR_LANES` en `agent-lanes/.env`.
+  3. `claude-hub` ya está en `INTEGRATOR_LANES` de `agent-lanes/.env` (auditoría del 25-10).
 
 ## Auditor diario (`auditor.py`)
 
@@ -266,11 +271,12 @@ cambia; cualquier cola, orden o escalada que se escriba aquí debe respetarla.
   DM de Oscar (ni comando ni /sesion abierta) se contesta con haiku sin herramientas y tope de coste, alimentado con
   /falta y /estado; solo informa. `telegram.team_notice` en lanes.yaml (apagado) hace que el bot conteste en un grupo
   «esto lo lleva el asistente del equipo» cuando le escriben a él.
-- max_workers: `lanes.yaml` `runner.max_workers` = 3 (decisión de Oscar, 21-oct; era 2, se sube para medir la RAM). El argumento `--max-workers` PISA el
+- max_workers: `lanes.yaml` `runner.max_workers` = 4 (el 21-oct Oscar lo subió de 2 a 3 para medir la RAM; hoy vale 4). El argumento `--max-workers` PISA el
   yaml, y la tarea instalada se registró con `-MaxWorkers 2` en su línea de comandos (dos fuentes de verdad). Para que
   mande solo el yaml: reinstalar el servicio SIN `-MaxWorkers` (`instalar_servicio.sh` ya no lo pasa; lo hace Oscar, los
   `.ps1` quedan fuera del alcance de los workers) y reiniciar el runner. El log de arranque
-  (`runner: carriles=… max_workers=N`) dice el valor real. `max_parallel` por carril sigue en 1 (un repo, un worker).
+  (`runner: carriles=… max_workers=N`) dice el valor real. `max_parallel` por carril: 1 por defecto (`defaults`); 2 en
+  `claude-oscarhq` y `claude-hub`; 1 en `claude-ops`.
 
 ## Guarda de tablero (ADR-036)
 `hermes kanban create` sin `--board` cae en `default`, y cada carril solo lee el tablero de su `board:` en `lanes.yaml`.
@@ -365,3 +371,22 @@ ficha por tarjeta de carril parada más de 24 h en ready sin worker, blocked, tr
 `t_xxxxxxxx · título · estado · hace N d H h` con [🔁 Reintentar] [🛠 Integrador] [🗄 Archivar]. No entran las `running`,
 las `scheduled` ni las asignadas a personas (solo se leen las de un carril). Sin paradas no manda nada. También sale una
 línea «Paradas» en /salud. Hora, umbral de horas y nº de fichas se editan con /ajustes (grupo Atascos).
+
+## Backend del kanban (`KANBAN_BACKEND`, F2-02/F2-03 del plan del hub)
+
+Todo el hub crea su cliente del kanban con `kanban_api.backend_for(board, author=...)`, nunca con `HermesCLI(...)`.
+- `hermes` (por defecto, sin cambios): la CLI de Hermes sobre su SQLite.
+- `supabase`: tablas `hub.*` en Postgres con el rol `hub_core`; conexión en `HUB_DB_DSN` (entorno o `.env`, nunca en
+  el repo). Esquema esperado: `tests/fixtures/hub_schema_f2.sql` (la migración real es F2-01 en oscar-hq);
+  `check_contract()` lo comprueba al arrancar el runner.
+- Selector: `KANBAN_BACKEND` del entorno > `KANBAN_BACKEND` del `.env` del hub > `runner.kanban_backend` de lanes.yaml >
+  `hermes`. Se resuelve una vez por proceso (rige al reiniciar) y el runner lo escribe al arrancar: `kanban: backend=…`.
+  Vuelta atrás = una variable y un reinicio.
+
+`tools/kanban_migrar.py` (F2-03): `copiar` (copia coherente en solo lectura), `recuentos`, `importar [--seco]`,
+`comparar`, `exportar`/`volver` (hub.* -> SQLite con el esquema exacto de Hermes, en una carpeta nueva fuera de la de
+Hermes) y `exportar --espejo --retener 14` (espejo nocturno). Solo imprime recuentos agregados e ids.
+
+Pruebas con Postgres: `HUB_TEST_DSN` a una BD desechable (p. ej. `docker run --rm -p 127.0.0.1:55432:5432
+-e POSTGRES_PASSWORD=... postgres:16-alpine`); sin ella se saltan. Con `KANBAN_COPIA_DIR` (copia local, nunca la carpeta
+de Hermes) se repiten la ida y vuelta y el contrato entre backends con datos reales.

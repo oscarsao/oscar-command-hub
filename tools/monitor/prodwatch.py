@@ -116,6 +116,31 @@ class ProdWatch:
             self._save_seen(seen)
         return new
 
+    def estado_vigilancias(self) -> list[str]:
+        """Una entrada por vigilancia con su estado (F1-02, DISP-06/CF-05): solo NOMBRES de lo que falta, nunca valores.
+        La registra el monitor al arrancar para que una vigilancia apagada no pase desapercibida."""
+        out = []
+        token_env = self.vercel.get("token_env") or ""
+        if not self.vercel:
+            out.append("Vercel: sin configurar (monitor_alerts.vercel)")
+        elif not self.vercel.get("projects") or not read_env(token_env, self.env_files):
+            out.append(f"Vercel: desactivado (falta {token_env or 'monitor_alerts.vercel.token_env'})")
+        else:
+            out.append(f"Vercel: activo ({len(self.vercel['projects'])} proyectos)")
+        n_health = sum(1 for lane, p in self.policies.items() if p.get("health_url") and lane not in self.skip_health
+                       and p.get("health_url") not in self.skip_urls)
+        out.append(f"health_url: {n_health} activos")
+        for lane, p in self.policies.items():
+            if not p.get("dokploy_url"):
+                continue
+            faltan = [k for k in ("dokploy_application_id",) if not p.get(k)]
+            token_name = p.get("dokploy_token_env") or ""
+            if not token_name or not read_env(token_name, self.env_files):
+                faltan.append(token_name or "dokploy_token_env")
+            name = lane.removeprefix("claude-")
+            out.append(f"Dokploy {name}: " + (f"desactivado (falta {', '.join(faltan)})" if faltan else "activo"))
+        return out
+
     # --- servidor (health_url + Dokploy) ----------------------------------------------------------------
     def server_checks(self) -> list[tuple[str, bool, str, str]]:
         """[(clave, activa, texto, qué hacer)] para Monitor.condition. Las claves empiezan por `health-`."""

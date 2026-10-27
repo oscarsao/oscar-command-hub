@@ -1,5 +1,8 @@
 # Decisión 2026-09-27: organización de Telegram (2 marcas, colaboradores, 2 bots)
 
+> **Sustituido en personas y permisos** por `2026-10-25-personas-roles-permisos.md` (p. ej. María ya aprueba
+> producción con el botón y es operadora con todas las marcas). Lo demás queda como registro histórico.
+
 Decidido por Oscar en la sesión de diseño con Claude. Complementa `2026-09-27-arquitectura-carriles.md`.
 
 ## Principios

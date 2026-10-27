@@ -1,6 +1,6 @@
 # Skills: inventario y propuesta (22-10-2026)
 
-**Estado (22-10, OK de Oscar con botones):** las 5 de esta carpeta (`desplegar-dokploy`, `integrar-lote`, `barrido-carriles`, `tarjeta-carril`, `migracion-supabase`) están **instaladas** en `~/.claude/skills/<nombre>/` del PC de Oscar. Esta carpeta `skills/` es la fuente versionada: si se edita aquí, volver a copiar a `~/.claude/skills/`.
+**Estado (22-10, OK de Oscar con botones):** las 5 de esta carpeta (`desplegar-dokploy`, `integrar-lote`, `barrido-carriles`, `tarjeta-carril`, `migracion-supabase`) están **instaladas** en `~/.claude/skills/<nombre>/` del PC de Oscar. Esta carpeta `skills/` es la fuente versionada: si se edita aquí, volver a copiar a `~/.claude/skills/`. Para ver si alguna instalada se ha quedado vieja: `py -3.12 tools/agent-lanes/skills_sync.py --check` (solo lee; compara también `tools/agent-lanes/skills/`). El 25-10 marca `tomar-tarea` como distinta (CF-15): copiarla requiere OK de Oscar.
 
 **Carriles:** los workers de agent-lanes son sesiones `claude -p` del mismo usuario de Windows, así que cargan las skills de usuario (`~/.claude/skills`) igual que las sesiones interactivas: no hace falta copiarlas a cada repo. Para que en modo `-p` puedan invocarlas sin permiso interactivo, `lanes.yaml` (defaults.allowed_tools) incluye `Skill(integrar-lote)` y `Skill(tarjeta-carril)`. El guard de cada carril sigue mandando: un worker nunca fusiona a main/master ni despliega aunque la skill lo describa (esos pasos son del integrador).
 

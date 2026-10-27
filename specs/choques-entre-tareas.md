@@ -57,6 +57,14 @@ Aditivo en paralelo (ficheros distintos; y mismo fichero con merge-tree limpio) 
 - `merge-tree --write-tree` requiere git ≥ 2.38: comprobar versión; si es menor, cae a «comparar ficheros» (conservador: mismo fichero = `compatible`).
 - Predicción por LLM apagada por defecto.
 
+## Aviso temprano (t_b0f9840c, 24-10)
+Pieza de «detectar antes»; comparte motor con E1 (no hay segundo detector).
+- **Qué**: clase `temprano` en `choques.clasificar`: dos ramas con ficheros EXACTOS en común, `merge-tree` limpio hoy y alguna con PR abierto. Con las fuentes vigentes desde el 25-10 (`choques.yaml`: solo `tarjetas`) compara tarjetas activas con rama `lane/<id>` empujada de los repos de los carriles de código (hub, oscar-hq, migrateam, scraper, nextjobs); el PR abierto se lee aunque `pr: false` (solo para marcar cuál va primero). Ramas de carril o de persona sueltas entrarían solo si se reactivan `ramas_lane` / `ramas_personas` (con `ramas_personas_dias`). Es una DECISIÓN en el canal de avisos (tipo `choque`): con `destinos.decisiones` va al tema 🎯 Decisiones con sus botones.
+- **Cuándo**: en el barrido de `choques.minutos` (10). Una rama se ve en cuanto está empujada y tiene diff; antes no hay ficheros que comparar.
+- **Coste**: un `git fetch --prune <remote>` por repo y barrido (solo toca `refs/remotes`), más lo que ya hacía (`branch --no-merged`, un `diff --name-only` y un `gh pr list` por repo, un `merge-tree` por par con zona común). Con 10 min son ~6 fetch/h por repo; `fetch: false` lo apaga. Un fallo de fetch no corta el barrido.
+- **Decisión de serie**: va primero la que tiene PR (con dos PR, el más antiguo). El aviso solo pide [✅ Confirmar: PR #n primero, la otra espera]; se anota en `.state/choques_orden.json`. No frena ni encadena nada por sí mismo (el freno de tarjetas `ready` sigue siendo `prevencion.py`).
+- **Ruido**: ficheros que todo el mundo toca (changelog, `*.d.ts` generados…) se excluyen con `temprano_ignorar` en `choques.yaml`; `temprano: false` lo apaga. Un aviso por par (clave `temprano:a|b`); si luego llega el conflicto real, sale como `conflicto`.
+
 ## Pendiente de Oscar
 - OK a este corte y a empezar por E1.
 - Que t_89163bdb (mapeo persona→grupo) y t_8125ad1d (dependencias) estén disponibles antes de E2/E3; si no, E2 usa `personas:` en yaml.

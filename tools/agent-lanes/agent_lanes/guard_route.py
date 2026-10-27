@@ -130,9 +130,28 @@ class GuardRouter:
     `to_integrator(p, entry)` / `to_oscar(p, entry)` devuelven True si el aviso salió (si no, se reintenta)."""
 
     def __init__(self, collect: Callable[[], list], to_integrator: Callable, to_oscar: Callable, queue: GuardQueue, *,
-                 hours: float | None = None, now: Callable[[], float] = time.time):
+                 hours: float | None = None, now: Callable[[], float] = time.time, remind_hours: float | None = None,
+                 remind: Callable | None = None):
         self.collect, self.to_integrator, self.to_oscar = collect, to_integrator, to_oscar
         self.queue, self.hours, self._now = queue, hours, now
+        # Recordatorio a las 24 h (F1-03, FL-04): `recordar_horas` de workflows.yaml; `remind` = cómo (por defecto el
+        # mismo aviso con botones a Oscar). Una vez al día por tarjeta, respetando el ⏳ Aplazar (snooze_until).
+        self.remind_hours_cfg, self.remind = remind_hours, remind or to_oscar
+
+    def remind_hours(self) -> float:
+        if self.remind_hours_cfg is not None:
+            return float(self.remind_hours_cfg)
+        from .workflows import load_ajustes
+        return float(load_ajustes().recordar_horas)
+
+    def _toca_recordar(self, entry: dict, now: float) -> bool:
+        from .cola_integrador import escalado
+        if not entry.get("escalated_at") or now < float(entry.get("snooze_until") or 0):
+            return False
+        horas = (now - float(entry.get("queued_at") or now)) / 3600
+        recordar = self.remind_hours()
+        return (escalado(horas, self.window_hours(), recordar) == "recordar_24h"
+                and now - float(entry.get("reminded_at") or 0) >= recordar * 3600)
 
     def window_hours(self) -> float:
         """Horas hasta escalar a Oscar: la fijada al construir (tests) o el ajuste vigente (recarga en caliente)."""
@@ -164,6 +183,10 @@ class GuardRouter:
                     if self.to_oscar(p, entry):
                         self.queue.update(tid, escalated_at=now)
                         done.append(f"oscar {tid}")
+                elif self._toca_recordar(entry, now):
+                    if self.remind(p, entry):
+                        self.queue.update(tid, reminded_at=now)
+                        done.append(f"recordar {tid}")
             except Exception as exc:
                 log.warning("%s: aviso de la cola del integrador falló: %s", tid, exc)
         return done

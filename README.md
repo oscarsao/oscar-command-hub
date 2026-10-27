@@ -1,6 +1,6 @@
 # Oscar Command Hub — Cerebro integral de gestión
 
-**Un solo lugar accesible desde cualquier agente** (Hermes, Claude Code, Codex, OpenCode) para
+**Un solo lugar accesible desde cualquier agente** (Hermes, Claude Code; Codex está en pausa desde el 27-09) para
 tener el mapa de proyectos, empresas, decisiones y situaciones de Oscar.
 
 ## Para cualquier agente que conecte
@@ -24,6 +24,8 @@ tener el mapa de proyectos, empresas, decisiones y situaciones de Oscar.
 - El trabajo delegable va en tarjetas del kanban de Hermes con un carril asignado; lo ejecuta
   `tools/agent-lanes` (worktree + rama `lane/<id>` + verificación + review). Hermes coordina, no implementa.
 - Detalle: `decisions/2026-09-27-arquitectura-carriles.md`. La Sesión Maestra está archivada en `archive/`.
+- **Plan vigente del hub (25-10):** `decisions/2026-10-25-arquitectura-hub-v2.md`; personas y permisos:
+  `decisions/2026-10-25-personas-roles-permisos.md`.
 
 ## Convención de flujo (adaptada del CLAUDE.md de Claude)
 

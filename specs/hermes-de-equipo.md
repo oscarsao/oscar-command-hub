@@ -1,3 +1,9 @@
+> **Sustituida (25-10-2026, D4-A del plan del hub, F1-09): Avisos es el asistente del equipo.** El equipo pide
+> y decide por Avisos (@PildoraD_BOT) y por el tema 🎯 Decisiones; no se crea un bot de Hermes de equipo con esta
+> spec. Qué Hermes tiene cada persona (y con qué herramientas) se decide en
+> `decisions/2026-10-25-arquitectura-hub-v2.md` y `decisions/2026-10-25-personas-roles-permisos.md`. Se conserva
+> como registro de las opciones que se estudiaron.
+
 # Hermes de equipo (t_f77fc36c) · Spec-Lite · pendiente del OK de Oscar
 
 **Problema.** Hermes (@oscarsaoBot) tiene terminal y ficheros del PC de Oscar y no se puede limitar por persona en Telegram.
