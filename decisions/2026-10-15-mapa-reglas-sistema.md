@@ -26,9 +26,9 @@ Fuente única **[OBJETIVO ya en marcha]**: tabla `ohq_people` (Supabase Oscar HQ
 | Persona | telegram_id | Rol | Marca por defecto | Tope diario |
 |---|---|---|---|---|
 | Oscar | 6744452215 | fundador | MigraTeam (ver nota) | 20 USD |
-| María | 5516823836 | COO | ninguna (ambas) | 3 USD |
-| Andrea | 8313932936 | marketing | ninguna (el bot pregunta si no es obvia por el tema) | 5 USD |
-| Ingerber | 8847860660 | CMO | Píldora (`pildora_digital_inbound`) | 10 USD |
+| María | (en people.yaml real) | COO | ninguna (ambas) | 3 USD |
+| Andrea | (en people.yaml real) | marketing | ninguna (el bot pregunta si no es obvia por el tema) | 5 USD |
+| Ingerber | (en people.yaml real) | CMO | Píldora (`pildora_digital_inbound`) | 10 USD |
 
 - Decisiones del 15-10: María = **COO** (se corrigió `ohq_people`, que decía «gestión»); Andrea = **sin marca por defecto**.
 - Nota: la marca por defecto de Oscar (MigraTeam) viene de la semilla de P+D; no se ha vuelto a confirmar.

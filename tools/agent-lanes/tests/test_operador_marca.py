@@ -14,12 +14,12 @@ from agent_lanes.people import load_people, norm_marca
 from tests.test_botones_tarjetas import setup
 from tests.test_commands import OSCAR, command, press
 
-MARIA, MAUREDY, ANGEL = 5516823836, 7000000001, 7000000002
+MARIA, MAUREDY, ANGEL = 5000000001, 7000000001, 7000000002
 
 YAML = """people:
   maria:
     name: María
-    user_id: "5516823836"
+    user_id: "5000000001"
     role: coo
     brands: [Píldora, MigraTeam, "*"]
     operador: true
@@ -74,7 +74,7 @@ def test_el_yaml_real_deja_a_maria_en_todo_y_acota_a_mauredy_y_angel():
     assert all(real.puede_en(MARIA, m) for m in ("MigraTeam", "Píldora", "NextJobs", None))
     # Mauredy y Angel siguen sin user_id (null): no existen hasta que Oscar lo rellene, pero ya salen acotados.
     import yaml
-    raw = yaml.safe_load(Path(__file__).resolve().parents[2].joinpath("telegram", "people.yaml")
+    raw = yaml.safe_load(Path(__file__).resolve().parents[2].joinpath("telegram", "people.example.yaml")
                          .read_text(encoding="utf-8"))["people"]
     assert raw["maria"]["brands"][-1] == "*" and raw["maria"]["brands"][0] == "Píldora"  # el tablero de sus ideas no cambia
     assert raw["mauredy"]["operador"] is True and raw["mauredy"]["brands"] == ["MigraTeam"]

@@ -12,7 +12,7 @@ from agent_lanes.people import Person, People
 from agent_lanes.vigilancia_botones import EquipoBotones
 from tests.test_decisions import LANE, FakeTG
 
-OSCAR, ANDREA, MARIA = "6744452215", "8313932936", "5516823836"
+OSCAR, ANDREA, MARIA = "6744452215", "5000000003", "5000000001"
 MADRID = vg.MADRID
 
 
@@ -268,7 +268,7 @@ def test_ignorar_7_dias_y_vuelve_despues(tmp_path):
 def test_permisos_que_no_cuadran_en_el_primer_parte(tmp_path):
     m = arrancado(tmp_path, ts(8))
     m.ohq = {"personas": [{"telegram_id": int(ANDREA), "nombre": "Andrea", "activo": False},
-                          {"telegram_id": 8770041085, "nombre": "Angel", "activo": True},
+                          {"telegram_id": 5000000004, "nombre": "Angel", "activo": True},
                           {"telegram_id": int(OSCAR), "nombre": "Oscar", "activo": True}]}
     m.tick(ts(9, 1))
     head = m.sent[0]["text"]
@@ -421,7 +421,7 @@ def test_idea_esperando_a_oscar_conserva_los_botones_de_decision(tmp_path):
 def test_operador_acotado_por_marca_no_puede_con_los_botones_mezclados(tmp_path):
     from tests import test_free_text as ft
     desk, tg, _h, _messages = ft._setup(tmp_path)
-    angel = "8770041085"
+    angel = "5000000004"
     desk.people = People(OSCAR, [Person("angel", "Angel", angel, "dev", ("Píldora",), operador=True)])
     calls = []
     desk.commands = SimpleNamespace(equipo_choice=lambda *a: calls.append(a) or True)
