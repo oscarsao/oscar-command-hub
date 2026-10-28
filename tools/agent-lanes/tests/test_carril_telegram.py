@@ -134,7 +134,7 @@ def test_sin_carriles_reservados_no_hay_hilo_de_fondo():
 
 
 def test_max_workers_real_no_cuenta_la_plaza_reservada():
-    assert load_runner_settings()["max_workers"] == 4  # la plaza es aparte: 4 generales + 1 reservada
+    assert load_runner_settings()["max_workers"] == 6  # la plaza es aparte: 6 generales + 1 reservada
 
 
 # --- repo por tarjeta ---------------------------------------------------------------------------------------------

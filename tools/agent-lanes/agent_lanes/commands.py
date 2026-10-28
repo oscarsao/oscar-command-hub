@@ -66,6 +66,7 @@ from typing import Callable
 from urllib.parse import urlsplit
 
 from . import agrupar as _agrupar
+from . import ayuda as _ayuda
 from . import botonera as _bt
 from . import deps
 from . import bandeja as _bandeja
@@ -91,10 +92,10 @@ log = logging.getLogger("agent_lanes")
 URGENT_EVERY = 120  # s mínimos entre pasadas del aviso inmediato de bloqueos de prioridad alta
 
 COMMANDS = (
-    ("ajustes", "Ajustes del hub con botones: avisos, atascos, lotes y carriles"),
+    ("ajustes", "Ajustes del hub con botones"),
     ("hoy", "Resumen del día (el de las 8:00) ahora"),
     ("integrador", "Estado del integrador, PR de sesiones interactivas y bloqueos de guard"),
-    ("encolar", "Encola un PR de una sesión interactiva para tu OK: /encolar <repo> <PR>"),
+    ("encolar", "Encola el PR de una sesión interactiva: /encolar <repo> <PR>"),
     ("decisiones", "Bandeja de decisiones pendientes con botones"),
     ("atencion", "Todo lo que espera a Oscar, con botones para resolverlo aquí"),
     ("aprobar", "Tareas listas para integrar"),
@@ -102,12 +103,12 @@ COMMANDS = (
     ("cola", "Qué corre y qué sigue en cada carril, por prioridad: /cola [marca]"),
     ("prioridad", "Sube o baja una tarea en la cola: /prioridad t_xxx <0-99|sube|baja>"),
     ("tarea", "Ficha de una tarea con sus botones: /tarea t_xxx"),
-    ("preparar", "Claude redacta contexto y 3 opciones de una tarjeta de decisión: /preparar t_xxx | todas"),
+    ("preparar", "Claude prepara las opciones de una decisión: /preparar t_xxx | todas"),
     ("hazlo", "Crea una tarea pequeña (carril según el texto): /hazlo <texto>"),
     ("pedir", "Pide algo con tipo (bug o feature) y preguntas: /pedir <texto>"),
     ("estado", "En curso, esperando a Oscar y pendiente de desplegar: /estado [marca]"),
     ("falta", "Qué frena una salida, con el siguiente paso arriba: /falta [marca]"),
-    ("desplegar", "Despliega lo fusionado de un proyecto, con doble confirmación: /desplegar oscarhq"),
+    ("desplegar", "Despliega lo fusionado, con doble confirmación: /desplegar oscarhq"),
     ("promover", "Promover MigraTeam a producción (doble confirmación): /promover migrateam"),
     ("lote", "Montar ya el lote de un proyecto: /lote migrateam|oscarhq"),
     ("al_dia", "Poner al día ramas, ver lo listo e integrarlo (dev): /al_dia [proyecto|todos] [dev]"),
@@ -117,9 +118,9 @@ COMMANDS = (
     ("avisos", "Apaga o enciende los avisos de «listo para revisar»: /avisos off [1h|3h|mañana|siempre] · /avisos on"),
     ("silenciar", "Calla una alerta del monitor un tiempo: /silenciar <clave> <horas>"),
     ("sesion", "Correcciones agrupadas: /sesion [nombre] abre; fin | cancelar | estado"),
-    ("flujo", "Una petición -> cadena de hasta 8 tarjetas (se crean al pulsar): /flujo <texto>"),
-    ("pendiente", "Lo tuyo en UN mensaje: preguntas, PR por aprobar, cola del integrador y tarjetas, con botones"),
-    ("personal", "Propone sacar tu backlog personal del kanban de carriles (confirmas con botones)"),
+    ("flujo", "Una petición → hasta 8 tarjetas encadenadas: /flujo <texto>"),
+    ("pendiente", "Lo tuyo en UN mensaje, con botones: preguntas, PR y tarjetas"),
+    ("personal", "Saca tu backlog personal del kanban (confirmas con botones)"),
     ("agrupar", "Propone fusionar, encadenar o juntar tarjetas abiertas: /agrupar [proyecto|todo]"),
     ("workflow", "Trabajo largo: plan y coste, nada se crea hasta aprobar: /workflow <texto>"),
     ("pendientes", "Tus pendientes (pasos «tuyo» y «decidir») con botones"),
@@ -216,11 +217,12 @@ def scope_brand(chat_id, thread_id, lanes: dict, generic_origins=()) -> str | No
 
 
 def register_commands(notifier) -> list[str]:
-    """setMyCommands (descripciones en español) en los tres scopes. Devuelve los scopes registrados."""
+    """setMyCommands (descripciones en español) en los tres scopes, cada uno con su lista (los grupos sin los solo-DM,
+    /ayuda en todos). Devuelve los scopes registrados."""
     ok = []
     for scope in COMMAND_SCOPES:
         try:
-            if notifier.set_my_commands(list(COMMANDS), scope):
+            if notifier.set_my_commands(_ayuda.comandos_de_ambito(COMMANDS, scope), scope):
                 ok.append(scope)
         except Exception as exc:
             log.warning("setMyCommands %s falló: %s", scope, exc)
@@ -452,7 +454,7 @@ class CommandCenter:
 
     @staticmethod
     def help_text() -> str:
-        return ("Comandos del bot de trabajos:\n" + "\n".join(f"/{c} · {d}" for c, d in COMMANDS)
+        return (_ayuda.texto_ayuda(COMMANDS, SOLO_TODAS_LAS_MARCAS, _ayuda.load_config()["docs_url"])
                 + "\n\nDónde contesta cada bot:"
                 + "\n· Trabajos (yo): a los /comandos y a las respuestas (reply) a mis mensajes. En grupo no leo el "
                   "texto suelto."
@@ -460,14 +462,11 @@ class CommandCenter:
                   "(tema 406) y Desarrollo (tema 71); en el resto de temas, menciónalo."
                 + "\n· Un /comando de Hermes (/new, /status…) escríbelo como /comando@oscarsaoBot; los míos, como "
                   "/comando@pildora_carriles_bot."
-                + "\n· Para pedir una tarea: /hazlo <texto> en cualquier tema, o escríbeme en privado."
-                + "\n\nCon /hazlo la tarea se crea ya, con prioridad alta y tope de 15 minutos; te aviso al terminar."
-                + "\nCon /sesion abres una sesión: lo que escribas aquí se acumula y /sesion fin lo agrupa en UNA tarjeta."
-                + "\n/desplegar pide dos toques (🚀 y ✅ Sí); /promover también pide doble confirmación."
-                + "\n\nSi me escribes en texto libre: una pregunta se responde con datos reales (sin crear nada); un "
-                  "trabajo pequeño lleva 2-4 preguntas con botones y luego se crea (⚡ Créala ya salta las preguntas); "
-                  "uno largo te propone /workflow (plan y coste; nada se crea hasta aprobar); lo de producción, SQL "
-                  "u otro repo va al integrador.")
+                + "\n\n/hazlo crea la tarea ya (prioridad alta, tope 15 min). /desplegar pide dos toques (🚀 y ✅ Sí); "
+                  "/promover, doble confirmación."
+                + "\nSi me escribes en texto libre (solo en privado): una pregunta se responde con datos reales; un "
+                  "trabajo pequeño lleva preguntas con botones y se crea; uno largo propone /workflow; producción, "
+                  "SQL u otro repo va al integrador.")
 
     # --- datos ----------------------------------------------------------------------------------------
 
@@ -2281,6 +2280,30 @@ class CommandCenter:
     def triaje_config(self) -> dict:
         return self._triaje_cfg if self._triaje_cfg is not None else triaje.load_config()
 
+    def _sugerir(self, where, msg: dict, text: str) -> None:
+        """Si el texto pide algo que un comando ya hace, una línea «💡 Eso ya lo hace /x» (reglas de sugerencias.yaml,
+        sin LLM). Un aviso por comando y chat cada `enfriamiento_s`; un operador acotado por marca no recibe sugerencias
+        de comandos que no podría usar. Nunca rompe el texto libre."""
+        try:
+            cfg = _ayuda.load_config()
+            actor = (msg.get("from") or {}).get("id")
+            restringido = getattr(self.desk, "restringido", None)
+            acotado = bool(restringido and restringido(actor))
+            sug = _ayuda.sugerir(text, cfg, permitido=lambda c: c in dict(COMMANDS)
+                                 and not (acotado and c in SOLO_TODAS_LAS_MARCAS))
+            if not sug:
+                return
+            ahora, clave = self._now(), (str(where[0]), sug["comando"])
+            vistos = getattr(self, "_sugeridos", None)
+            if vistos is None:
+                vistos = self._sugeridos = {}
+            if ahora - vistos.get(clave, -1e12) < cfg["enfriamiento_s"]:
+                return
+            vistos[clave] = ahora
+            self._send(where, _ayuda.texto_sugerencia(sug, dict(COMMANDS).get(sug["comando"])), html=False)
+        except Exception as exc:
+            log.warning("sugerencia de comando falló: %s", type(exc).__name__)
+
     def free_text(self, msg: dict) -> bool:
         """Texto libre del dueño en su DM (ni comando, ni /sesion abierta). Con el triaje activo se clasifica antes de
         nada: CONSULTA responde con el estado real (sin tarjeta); lo demás pregunta/propone y solo crea tras tus botones.
@@ -2291,6 +2314,7 @@ class CommandCenter:
         if not text or not (self._asker or triaging):
             return False
         where = self._where(msg)
+        self._sugerir(where, msg, text)
         if not self._ask_lock.acquire(blocking=False):
             self._send(where, "Sigo con tu pregunta anterior; dame un momento.", html=False)
             return True

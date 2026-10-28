@@ -1,0 +1,70 @@
+# Sugerencias del bot de carriles (agent_lanes/ayuda.py): cuando el texto libre del DM contiene alguna de estas frases
+# (sin tildes ni mayúsculas, palabras completas), el bot añade «💡 Eso ya lo hace /comando». Reglas fijas, sin LLM.
+# Se relee en cada texto: editable en caliente. La primera regla que encaja gana.
+activo: true
+enfriamiento_s: 600        # un mismo comando se sugiere como mucho una vez cada 10 min por chat
+docs_url: "https://github.com/oscarsao/oscar-command-hub/blob/main/docs/bots/comandos.md"
+reglas:
+  - comando: pendiente
+    palabras: ["que tengo pendiente", "lo mio", "que me toca", "mis pendientes", "que tengo que hacer"]
+    ejemplo: "/pendiente"
+  - comando: decisiones
+    palabras: ["decisiones pendientes", "que hay que decidir", "que tengo que decidir", "preguntas de los workers"]
+    ejemplo: "/decisiones"
+  - comando: aprobar
+    palabras: ["que puedo aprobar", "pr por aprobar", "listo para integrar", "listas para integrar", "que aprobar"]
+    ejemplo: "/aprobar"
+  - comando: falta
+    palabras: ["que falta", "que frena", "que bloquea la salida", "para poder salir", "para salir"]
+    ejemplo: "/falta migrateam"
+  - comando: desplegar
+    palabras: ["despliega", "desplegar", "publica en produccion", "subir a produccion"]
+    ejemplo: "/desplegar oscarhq (pide dos confirmaciones)"
+  - comando: lote
+    palabras: ["monta el lote", "montar el lote", "junta las ramas"]
+    ejemplo: "/lote migrateam"
+  - comando: salud
+    palabras: ["esta caido", "no responde el runner", "el runner esta parado", "estado del servidor", "esta vivo"]
+    ejemplo: "/salud"
+  - comando: ram
+    palabras: ["cuanta ram", "uso de ram", "uso de memoria", "va lento el pc", "memoria del pc"]
+    ejemplo: "/ram"
+  - comando: hoy
+    palabras: ["resumen del dia", "resumen de hoy", "que paso hoy", "el resumen de las 8"]
+    ejemplo: "/hoy"
+  - comando: cola
+    palabras: ["que sigue en la cola", "en cola", "que corre ahora", "que se esta haciendo", "que esta corriendo"]
+    ejemplo: "/cola migrateam"
+  - comando: tareas
+    palabras: ["lista de tareas", "que tareas hay", "tareas en curso", "tareas abiertas"]
+    ejemplo: "/tareas pildora"
+  - comando: estado
+    palabras: ["como va", "como vamos", "en que estamos", "estado de migrateam", "estado de nextjobs"]
+    ejemplo: "/estado migrateam"
+  - comando: prioridad
+    palabras: ["sube la prioridad", "baja la prioridad", "ponla la primera", "que se haga antes"]
+    ejemplo: "/prioridad t_xxxxxxxx sube"
+  - comando: hazlo
+    palabras: ["crea una tarea", "creame una tarea", "crea una tarjeta", "apunta una tarea"]
+    ejemplo: "/hazlo revisar el aviso de despliegue"
+  - comando: sesion
+    palabras: ["tengo varias correcciones", "lista de correcciones", "te voy dictando", "varios cambios pequenos"]
+    ejemplo: "/sesion web, y luego tus puntos uno a uno y /sesion fin"
+  - comando: flujo
+    palabras: ["divide esto en tarjetas", "en varias tarjetas", "tarjetas encadenadas", "plan en tarjetas"]
+    ejemplo: "/flujo <lo que quieres conseguir>"
+  - comando: workflow
+    palabras: ["trabajo largo", "tarea larga", "cuanto costaria", "plan y coste"]
+    ejemplo: "/workflow <texto>"
+  - comando: agrupar
+    palabras: ["tarjetas duplicadas", "tarjetas repetidas", "agrupa las tarjetas", "fusiona tarjetas"]
+    ejemplo: "/agrupar todo"
+  - comando: personal
+    palabras: ["tarjetas personales", "mi backlog personal", "cosas mias del kanban"]
+    ejemplo: "/personal"
+  - comando: silenciar
+    palabras: ["silencia la alerta", "calla la alerta", "callar la alerta", "no quiero esa alerta"]
+    ejemplo: "/silenciar <clave> 2"
+  - comando: avisos
+    palabras: ["no me avises", "quita los avisos", "apaga los avisos", "tantos avisos"]
+    ejemplo: "/avisos off 3h"
