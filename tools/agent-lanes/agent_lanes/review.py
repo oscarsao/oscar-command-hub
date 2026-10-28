@@ -35,6 +35,8 @@ READ_ONLY_TOOLS = ("Read", "Grep", "Glob", "Bash(git diff:*)", "Bash(git log:*)"
                    "Bash(git status:*)")
 WRITE_TOOLS = ("Edit", "Write", "MultiEdit", "NotebookEdit")
 APPROVED_PREFIX = "APROBADO-OSCAR"  # = integrator.APPROVED_PREFIX / decisions._approve
+COMPLETE_INTENTOS = 3  # intentos de `hermes kanban complete` antes de aparcar la tarjeta por fallo transitorio
+COMPLETE_ESPERA = 10  # s; espera creciente: 10 s antes del 2.º intento, 20 s antes del 3.º
 RECHEQUEO_ESCALADA = 120  # s entre relecturas de una tarjeta escalada (¿cabeza nueva? ¿aprobada?) al elegir trabajo
 SIN_COMMITS = "la rama no tiene commits sobre la base; empuja el trabajo"
 
@@ -112,8 +114,10 @@ class ReviewRunner:
     def __init__(self, review_lane: Lane, lanes: dict[str, Lane], *, hermes_for: Callable[[str], object], git,
                  reviewer, verifier, notify, clock: Callable[[], float] = time.monotonic,
                  messages: MessageStore | None = None, links: Callable | None = None, decisions=None,
-                 integration=None, tree: Callable | None = None, state_dir: Path | str | None = None):
+                 integration=None, tree: Callable | None = None, state_dir: Path | str | None = None,
+                 sleep: Callable[[float], None] = time.sleep):
         self.lane = review_lane
+        self._sleep = sleep
         # Tareas en review que NO se pudieron bloquear (h.block solo mueve running/ready): se recuerda la cabeza ya
         # avisada para no reprocesarlas ni repetir la alerta en cada vuelta. state_dir=None: solo en memoria.
         self._unblockable: dict[str, str] = {}
@@ -309,6 +313,25 @@ class ReviewRunner:
         self.notify("changes", task, status_line("la rama no tiene commits sobre la base", "vuelve al carril"))
         return "changes:sin_commits"
 
+    def _complete_con_reintentos(self, h, tid: str, result: str, metadata: dict) -> tuple[bool, str]:
+        """`complete` con hasta COMPLETE_INTENTOS intentos y espera creciente: un timeout de hermes (120 s) no debe
+        aparcar la tarjeta (t_104416af, 2 h en review). Antes de cada intento se relee la tarjeta: si el complete
+        anterior sí llegó a aplicarse (done/archived), no hay nada que hacer."""
+        err = ""
+        for intento in range(COMPLETE_INTENTOS):
+            if intento:
+                self._sleep(COMPLETE_ESPERA * intento)
+                if (cerrada := self._cerrada(h, tid)):
+                    log.info("%s: complete reintentado y la tarjeta ya está %s", tid, cerrada)
+                    return True, ""
+            ok, err = h.complete(tid, result, metadata)
+            if ok:
+                return True, ""
+            log.warning("%s: complete rechazado (intento %d/%d): %s", tid, intento + 1, COMPLETE_INTENTOS, err)
+        if self._cerrada(h, tid):
+            return True, ""
+        return False, err
+
     @staticmethod
     def _cerrada(h, tid: str) -> str | None:
         """Estado `done`/`archived` si la tarjeta ya está cerrada (se relee del kanban); None si no, o si no se lee."""
@@ -382,7 +405,8 @@ class ReviewRunner:
             metadata = {**meta, "review": {"status": "approve", "summary": verdict.get("summary"),
                                            "findings": verdict.get("findings"), "session_id": session_id,
                                            "cost_usd": outcome.cost_usd}}
-            ok, err = h.complete(tid, f"Aprobada por revisión: {verdict.get('summary', '')}"[:1500], metadata)
+            ok, err = self._complete_con_reintentos(h, tid, f"Aprobada por revisión: {verdict.get('summary', '')}"[:1500],
+                                                    metadata)
             if not ok:
                 return self._block(h, task, "transient", f"complete rechazado: {err}",
                                    public="el kanban rechazó el cierre")
