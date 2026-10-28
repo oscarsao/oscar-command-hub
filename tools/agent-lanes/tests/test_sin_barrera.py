@@ -230,7 +230,7 @@ def test_marcar_deja_la_senal_en_el_cuerpo_una_sola_vez():
 
 def test_lanes_yaml_oscarhq_dos_plazas_y_hueco_grande():
     lanes = load_lanes()
-    assert lanes["claude-oscarhq"].max_parallel == 2 and "supabase/migrations" in lanes["claude-oscarhq"].serialize_paths
+    assert lanes["claude-oscarhq"].max_parallel == 4 and "supabase/migrations" in lanes["claude-oscarhq"].serialize_paths
     assert all(lane.max_big >= 1 for lane in lanes.values())
     assert grandes.touches({"body": "toca supabase/migrations/2026.sql"}, lanes["claude-oscarhq"].serialize_paths)
 
