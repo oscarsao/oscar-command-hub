@@ -73,6 +73,7 @@ class Person:
     operador: bool = False  # people.yaml `operador: true`: mismo acceso que Oscar en el bot (comandos, botones, aprobaciones)
     permisos: frozenset = field(default_factory=frozenset)  # people.yaml `permisos:` (solo los de PERMISOS_YAML)
     hermes: bool = True  # people.yaml `hermes: false` (estricto): Hermes no le contesta; el bot de carriles le avisa
+    solo_menciones: str = ""  # people.yaml `solo_menciones: true` + `mencion: "@usuario"`: solo recibe avisos que la mencionan
 
     def can(self, cap: str) -> bool:
         return cap in self.caps
@@ -104,6 +105,11 @@ class People:
         """Persona de people.yaml con `hermes: false`. Oscar y los desconocidos (no están en el YAML) nunca."""
         person = self.lookup(user_id)
         return bool(person and not person.is_owner and not person.hermes)
+
+    def filtros_menciones(self) -> dict[str, str]:
+        """{user_id: "@usuario"} de quien pidió `solo_menciones: true`. Sin `mencion` válida no hay filtro (por defecto,
+        todo como hoy: no se silencia a nadie por un YAML a medias)."""
+        return {p.user_id: p.solo_menciones for p in self._by_id.values() if p.solo_menciones}
 
     def restringido(self, user_id) -> bool:
         """True si es un operador acotado por marca (ni Oscar ni quien tenga `"*"`)."""
@@ -191,6 +197,8 @@ def load_people(owner_id: str, path: Path | str | None = None) -> People:
             cfg.get("brands"), (list, tuple)) else ()
         pedidos = cfg.get("permisos") if isinstance(cfg.get("permisos"), list) else []
         permisos = frozenset(str(x) for x in pedidos) & PERMISOS_YAML
+        mencion = _clean(cfg.get("mencion")).lstrip("@")
+        solo = f"@{mencion}" if cfg.get("solo_menciones") is True and mencion else ""
         persons.append(Person(_clean(key), _clean(cfg.get("name") or key) or _clean(key), uid, role, brands, caps,
-                              cfg.get("operador") is True, permisos, cfg.get("hermes") is not False))
+                              cfg.get("operador") is True, permisos, cfg.get("hermes") is not False, solo))
     return People(owner_id, persons)

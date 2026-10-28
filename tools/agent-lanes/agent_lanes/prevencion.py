@@ -43,7 +43,8 @@ MARCA = "CHOQUE-AL-LANZAR"
 LIBERADA = "CHOQUE-LIBERADA"
 AUTHOR = "agent-lanes"
 STATE_PATH = ROOT / ".state" / "choques_prevencion.json"  # {tid: {"con": uid, "desde": epoch, "caducada": bool}}
-ACTIVOS = ("running", "ready", "blocked", "review")  # estados cuya rama lane/<id> sigue contando
+ESCALADAS_DIR = ROOT / ".state" / "review-blocked"  # lo escribe ReviewRunner._remember_unblockable
+ACTIVOS =("running", "ready", "blocked", "review")  # estados cuya rama lane/<id> sigue contando
 HERMES_TTL = 30.0  # s: listas running/review compartidas entre carriles (el planificador despierta a menudo)
 
 
@@ -88,8 +89,9 @@ class Prevencion:
     def __init__(self, lanes: dict, hermes_for, *, git=None, settings_path: Path | str | None = None,
                  silenciadas_path: Path | None = None, ignorados_path: Path | None = None,
                  descartes_path: Path | None = None, state_path: Path | None = None,
-                 wall=time.time, clock=time.monotonic):
+                 wall=time.time, clock=time.monotonic, escaladas_dir: Path | None = None):
         self.lanes, self.hermes_for = lanes, hermes_for
+        self.escaladas_dir = Path(escaladas_dir or ESCALADAS_DIR)
         self.git = _GitCache(git or choques.Git(), clock)
         self.settings_path = settings_path
         self.silenciadas_path, self.ignorados_path = silenciadas_path, ignorados_path
@@ -119,13 +121,20 @@ class Prevencion:
         except OSError as exc:
             log.info("prevención: estado no guardado: %s", exc)
 
+    def _escalada(self, tid: str) -> bool:
+        """¿El carril review la dejó aparcada/escalada (`review-blocked/<id>.json`)? Sin worker vivo: no frena."""
+        try:
+            return (self.escaladas_dir / f"{tid}.json").exists()
+        except OSError:
+            return False
+
     # --- lo que ya está en marcha en un repo ---------------------------------------------------------------------
 
     def _ocupadas(self, eff, aj: choques.Ajustes, ready_ids: set[str], ahora: float) -> tuple[list, set[str]]:
         """(unidades en marcha del repo, ramas remotas vivas). Tarjetas en `prevenir_estados` y ramas lane/*."""
         key = solapes._norm_repo(eff.repo)
         remote = getattr(eff, "remote", "origin") or "origin"
-        tarjetas, vistos = [], set()
+        tarjetas, vistos, escaladas = [], set(), set()
         activas: set[str] | None = set()  # ids en ACTIVOS de cualquier tablero; None = algún estado no se pudo leer
         boards = list(dict.fromkeys(getattr(l, "board", "") for l in self.lanes.values()
                                     if getattr(l, "board", "") and getattr(l, "kind", "") == "implement"))
@@ -150,7 +159,10 @@ class Prevencion:
                     continue
                 for t in tasks:
                     tid = t.get("id")
-                    lane = telegram_lane.lane_de_tarjeta(self.lanes, t) if tid else None
+                    if status == "review" and tid and self._escalada(str(tid)):
+                        escaladas.add(str(tid))  # aparcada en review sin worker vivo: no ocupa la zona (28-10)
+                        continue
+                    lane =telegram_lane.lane_de_tarjeta(self.lanes, t) if tid else None
                     if lane is None or solapes._norm_repo(getattr(lane, "repo", "")) != key or tid in vistos:
                         continue
                     vistos.add(tid)
@@ -169,6 +181,8 @@ class Prevencion:
                 if u.rama[len("lane/"):] in ready_ids:  # rama de un intento anterior de otra ready: la ordena la pasada
                     continue
                 if u.rama not in prs:  # con PR abierto siempre cuenta (también la de una tarjeta done, caso #116)
+                    if u.rama[len("lane/"):] in escaladas:
+                        continue
                     if activas is not None:
                         if u.rama[len("lane/"):] not in activas:  # tarjeta done/archived (o ajena): no frena
                             continue

@@ -105,6 +105,7 @@ CARD_DONE = "card_done"       # ✅ Hecho (tarjeta sin opciones)
 CARD_SNOOZE = "card_snooze"   # ⏳ Aplazar 7 d: comentario + oculta de /decisiones y recordatorios 7 días
 CARD_PARK = "card_park"       # 🗄 Aparcar: comentario + archive
 CARD_ASK = "card_ask"         # ✍️ Responder: force_reply; el texto es la respuesta
+QUITAR = "quitar_aviso"       # 🗑 Quitar aviso: borra el mensaje pulsado (o lo deja marcado si Telegram no deja); no consume
 CARD_VETO = "card_veto"       # ⛔ Vetar: la tarjeta reversible deja de ejecutarse sola (no consume el teclado)
 CARD_ACCEPT_ALL = "card_accept_all"  # ✅ Aceptar las recomendadas del lote de tarjetas de /decisiones
 CARD_INTEGRADOR = "card_integrador"  # 🧑‍💻 Integrador (tema 🎯 Decisiones, F1-03/FL-12): la tarjeta pasa al integrador
@@ -123,6 +124,7 @@ BUTTON_OPTION_MAX = 22  # caracteres del texto de la opción en su botón ("A ·
 REPLY_ACTIONS = (CHANGES, OTHER, CARD_ASK, PEDIR_ASK, WAIT, HECHA, PARTIR, "eq_resp", "eq_rech")  # piden texto con force_reply
 EQUIPO_KIND = "equipo"  # botones del tema 👥 Equipo (vigilancia.py, t_04fe996e)
 EXPLAIN_BUTTON = {"text": "💬 Explícame más", "action": EXPLAIN}
+QUITAR_BUTTON = {"text": "🗑 Quitar aviso", "action": QUITAR}
 DEFAULT_OPTION_LABELS = ("✅ Sí, adelante", "❌ No")  # botones de una pregunta sin opciones (DEFAULT_OPTIONS)
 ALL_LABEL = "todas las preguntas"  # ✍️ de una escalada de review (= hermes.LEGACY_ALL_LABELS)
 TEAM_NOTICE_TEXT = "Esto lo lleva el asistente del equipo: escríbele a él. Yo solo gestiono los trabajos de los carriles."
@@ -143,7 +145,17 @@ def detail_text(show: dict, cfg: dict) -> str:
     return truncate("\n\n".join(parts), maximo)
 
 
-def keyboard_spec(state: str, *, block_kind: str | None = None, questions=None,
+def con_quitar(rows):
+    """Añade la fila [🗑 Quitar aviso] a un teclado (None = aviso sin botones: se queda igual)."""
+    return None if rows is None else [*rows, [dict(QUITAR_BUTTON)]]
+
+
+def keyboard_spec(state: str, **kw) -> list[list[dict]] | None:
+    """Teclado de un aviso de tarea (ver `_keyboard_spec`) más el botón 🗑 Quitar aviso."""
+    return con_quitar(_keyboard_spec(state, **kw))
+
+
+def _keyboard_spec(state: str, *, block_kind: str | None = None, questions=None,
                   yes_no: bool = True, ops: bool = False, index: int = 0,
                   accept_card: bool = True, retried: bool = False) -> list[list[dict]] | None:
     """Botones por estado: filas de {text, action, index}. None = aviso sin botones (en curso, en review...).
@@ -202,6 +214,10 @@ def keyboard_spec(state: str, *, block_kind: str | None = None, questions=None,
 
 
 def seed_card_keyboard_spec() -> list[list[dict]]:
+    return con_quitar(_seed_card_keyboard_spec())
+
+
+def _seed_card_keyboard_spec() -> list[list[dict]]:
     """Botones de una tarjeta de Oscar sembrada en el tema 🎯 Decisiones (F1-03, FL-12): Hecho / Aparcar 7 días /
     Integrador / Archivar. Mismas acciones que /decisiones (CARD_*) salvo «Integrador», que es nueva."""
     return [[{"text": "✅ Hecho", "action": CARD_DONE}, {"text": f"⏳ Aparcar {SNOOZE_DAYS} d", "action": CARD_SNOOZE}],
@@ -209,6 +225,10 @@ def seed_card_keyboard_spec() -> list[list[dict]]:
 
 
 def card_keyboard_spec(n_options: int, recommended: int | None, options=None, veto: bool = False) -> list[list[dict]]:
+    return con_quitar(_card_keyboard_spec(n_options, recommended, options, veto))
+
+
+def _card_keyboard_spec(n_options: int, recommended: int | None, options=None, veto: bool = False) -> list[list[dict]]:
     """Botones de una tarjeta de decisión. Con opciones: un botón por opción con su texto corto ("A · Aprobar el PR";
     sin los textos, solo la letra), la recomendada, aplazar y aparcar (+ ⛔ Vetar si la tarjeta es reversible y corre
     el plazo de veto). La respuesta libre ("A, pero con X") es ✍️ Responder. Sin opciones: botones genéricos."""
@@ -1013,6 +1033,9 @@ class DecisionDesk:
         if button["action"] == DETAIL:  # tampoco consume
             answer(cq.get("id"), "Te paso el detalle")
             self._spawn(lambda: self._detail(rec, where))
+            return
+        if button["action"] == QUITAR:  # tampoco consume: quitar un mensaje no decide nada
+            self._quitar(cq.get("id"), where)
             return
         if button["action"] == CARD_VETO:  # tampoco consume: solo apaga la ejecución automática
             answer(cq.get("id"), "Vetada: no se aplicará sola")
@@ -2137,6 +2160,26 @@ class DecisionDesk:
                                   reply_to=where.get("message_id"))
         except Exception as exc:
             log.warning("%s: no se pudo enviar la explicación: %s", rec.get("task_id"), exc)
+
+    def _quitar(self, callback_id, where: dict) -> None:
+        """🗑 Quitar aviso: borra el mensaje pulsado. Si Telegram no deja (pasaron 48 h, falta permiso) lo deja marcado
+        y sin botones; si tampoco puede, lo dice en una alerta visible en vez de no hacer nada."""
+        answer = self.notifier.answer_callback
+        try:
+            done = bool(self.notifier.delete(where["chat_id"], where["message_id"]))
+        except Exception as exc:
+            log.info("no se pudo borrar el mensaje %s: %s", where.get("message_id"), exc)
+            done = False
+        if done:
+            answer(callback_id, "Aviso quitado")
+            return
+        try:
+            done = bool(self.notifier.edit(where["chat_id"], where["message_id"], "🗑 Aviso quitado", html=False))
+        except Exception as exc:
+            log.info("no se pudo marcar el mensaje %s como quitado: %s", where.get("message_id"), exc)
+            done = False
+        answer(callback_id, "Aviso quitado (no pude borrarlo, lo dejo marcado)" if done
+               else "No pude quitar el aviso: bórralo a mano (Telegram no me deja)", alert=not done)
 
     def _detail(self, rec: dict, where: dict) -> None:
         """🔎 Más detalle: motivo técnico del último bloqueo y últimos comentarios de la tarjeta, en el propio chat."""

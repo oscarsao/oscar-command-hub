@@ -193,7 +193,8 @@ def test_decisiones_lists_stuck_tasks_with_reason_and_retry(tmp_path):
     assert "atascada en triage · bloqueada 2 veces seguidas · verificación mecánica fallida" in first["text"]
     assert "test_cmd" not in first["text"]  # nada técnico a Telegram
     assert "pregunta repetida: ¿Borro la tabla vieja?" in second["text"]
-    assert texts(first["markup"]) == ["🧊 Sacar de triage", "⏸ Esperar a…", "✍️ Responder", "🗄 Archivar"]
+    assert texts(first["markup"]) == ["🧊 Sacar de triage", "⏸ Esperar a…", "✍️ Responder", "🗄 Archivar",
+                                      "🗑 Quitar aviso"]
     assert messages.all_messages("t_eeeeeee5")  # copia registrada: decidir aquí edita las demás
 
 

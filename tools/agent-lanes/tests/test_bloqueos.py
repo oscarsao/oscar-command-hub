@@ -79,7 +79,7 @@ def test_botones_por_clase():
     estructural = _actions(keyboard_spec("blocked", block_kind="estructural"))
     assert RETRY not in estructural and TO_INTEGRADOR in estructural and PARK in estructural and DETAIL in estructural
     transitorio = _actions(keyboard_spec("blocked", block_kind="transient"))
-    assert transitorio == [RETRY, PARK, DETAIL]
+    assert transitorio == [RETRY, PARK, DETAIL, "quitar_aviso"]
     retried = _actions(keyboard_spec("blocked", block_kind="transient", retried=True))
     assert retried[:3] == [RETRY, PARK, DETAIL] and "other" in retried
     assert "other" not in _actions(keyboard_spec("blocked", block_kind="estructural", retried=True))
