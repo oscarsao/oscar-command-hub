@@ -428,15 +428,25 @@ class ReviewRunner:
         return "changes"
 
 
-def sweep_done(lane: Lane, h, git) -> list[str]:
-    """Remove worktree + local branch of done tasks (approved by the review lane or by Oscar)."""
+REINTENTO_LIMPIEZA = 6 * 3600  # s entre intentos de limpiar la misma tarjeta tras un fallo (1.386 líneas de log, 28-10)
+_limpieza_fallida: dict[str, float] = {}  # tid -> instante del último intento fallido
+
+
+def sweep_done(lane: Lane, h, git, clock: Callable[[], float] = time.monotonic) -> list[str]:
+    """Remove worktree + local branch of done tasks (approved by the review lane or by Oscar). Una limpieza fallida
+    no se reintenta hasta pasadas REINTENTO_LIMPIEZA s: una línea de log por intento, no por pasada."""
     cleaned = []
     for task in h.list_status(lane.name, "done"):
         if (Path(lane.worktree_root) / f"lane-{task['id']}").exists():
+            ultimo = _limpieza_fallida.get(task["id"])
+            if ultimo is not None and clock() - ultimo < REINTENTO_LIMPIEZA:
+                continue
             ok, msg = git.cleanup(lane, task["id"])
             if ok:
+                _limpieza_fallida.pop(task["id"], None)
                 cleaned.append(task["id"])
             else:
+                _limpieza_fallida[task["id"]] = clock()
                 log.warning("%s: limpieza pendiente: %s", task["id"], msg)
                 resumen_carriles.anotar("limpieza", f"{task['id']}: {msg}", clave=task["id"])  # F1-04: 1 vez al día
     return cleaned

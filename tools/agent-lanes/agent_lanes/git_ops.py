@@ -3,7 +3,11 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import shutil
+import stat
 import subprocess
+import sys
 
 from . import pnpm_setup
 from . import proc as _proc
@@ -16,6 +20,25 @@ log = logging.getLogger("agent_lanes")
 
 class GitError(RuntimeError):
     pass
+
+
+def _norm(p) -> str:
+    return os.path.normcase(os.path.realpath(str(p)))
+
+
+def _borrar_arbol(path: Path) -> tuple[bool, str]:
+    """rmtree que quita el solo-lectura (node_modules/.git de pnpm en Windows) y reintenta."""
+    def _quita_solo_lectura(func, p, _exc):
+        os.chmod(p, stat.S_IWRITE)
+        func(p)
+    try:
+        if sys.version_info >= (3, 12):
+            shutil.rmtree(path, onexc=_quita_solo_lectura)
+        else:
+            shutil.rmtree(path, onerror=_quita_solo_lectura)
+    except OSError as exc:
+        return False, f"carpeta huérfana no borrada: {str(exc)[:200]}"
+    return (False, "carpeta huérfana no borrada del todo") if path.exists() else (True, "borrada")
 
 
 class GitOps:
@@ -150,6 +173,24 @@ class GitOps:
         parts = (out or "").split()
         return parts[0] if parts else None
 
+    def _huerfana(self, lane: Lane, path: Path) -> bool:
+        """Carpeta `lane-t_<id>` dentro de `_lanes/` (la raíz de worktrees del carril) que `git worktree list` ya no
+        conoce: lo que deja pnpm (dashboard/, node_modules) tras quitar el worktree. Ante cualquier duda, False."""
+        if path.name[:len("lane-t_")] != "lane-t_" or path.parent.name != "_lanes":
+            return False
+        if _norm(path.parent) != _norm(lane.worktree_root):
+            return False
+        try:
+            cp = self._run(["git", "-C", lane.repo, "worktree", "list", "--porcelain"], capture_output=True, text=True,
+                           encoding="utf-8", errors="replace", timeout=60)
+        except Exception:
+            return False
+        if cp.returncode != 0:
+            return False
+        conocidos = {_norm(line[len("worktree "):].strip()) for line in (cp.stdout or "").splitlines()
+                     if line.startswith("worktree ")}
+        return _norm(path) not in conocidos
+
     def cleanup(self, lane: Lane, task_id: str) -> tuple[bool, str]:
         """Solo para tareas en done. `worktree remove`; si falla por archivos sin commitear/sin seguimiento y el
         HEAD del worktree es exactamente el commit de la rama remota (el trabajo está en el remoto), se registra en
@@ -157,6 +198,11 @@ class GitOps:
         La rama local se borra solo si el remoto tiene su mismo commit; la remota se conserva hasta el merge."""
         branch = f"lane/{task_id}"
         path = Path(lane.worktree_root) / f"lane-{task_id}"
+        if path.exists() and self._huerfana(lane, path):
+            ok, msg = _borrar_arbol(path)
+            if not ok:
+                return False, msg
+            log.info("%s: carpeta huérfana %s borrada (git ya no la conoce como worktree)", task_id, path)
         if path.exists():
             cp = self._run(["git", "-C", lane.repo, "worktree", "remove", str(path)], capture_output=True, text=True,
                            encoding="utf-8", errors="replace", timeout=300)
