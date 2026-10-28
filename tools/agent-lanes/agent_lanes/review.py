@@ -378,6 +378,9 @@ class ReviewRunner:
             self._heads[tid] = str(meta.get("head_sha") or "")
             if self._already_escalated(tid, self._heads[tid]):
                 return "blocked:already_escalated"  # misma cabeza ya avisada y sin poder bloquearse: no se repite
+            if (path := self._unblockable_path(tid)) and path.exists():  # cabeza nueva: la escalada vieja ya no vale
+                path.unlink(missing_ok=True)
+            self._unblockable.pop(tid, None)
             if not meta:
                 return self._block(h, task, "transient", "review sin metadata de implementación (branch/head_sha)",
                                    public="falta la metadata de implementación")
