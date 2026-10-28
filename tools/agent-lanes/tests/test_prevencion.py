@@ -90,6 +90,19 @@ def test_tambien_frena_contra_review(tmp_path):
     assert prev(tmp_path, b).filtrar(LANE, ready(b), b) == []
 
 
+def test_review_escalada_sin_worker_vivo_no_frena(tmp_path):
+    b = Board([card("t_00000001", CMD, "review"), card("t_00000002", CMD)])
+    p = prev(tmp_path, b)
+    p.escaladas_dir = tmp_path / "rb"
+    (tmp_path / "rb").mkdir()
+    assert p.filtrar(LANE, ready(b), b) == []                       # en review normal sigue frenando
+    (tmp_path / "rb" / "t_00000001.json").write_text('{"head_sha": "a"}')  # el carril review la aparcó
+    assert ids(p.filtrar(LANE, ready(b), b)) == ["t_00000002"]
+    (tmp_path / "rb" / "t_00000001.json").unlink()                  # cabeza nueva: vuelve a contar
+    b.cards[1]["status"] = "ready"
+    assert ids(p.filtrar(LANE, ready(b), b)) == []
+
+
 def test_mismo_modulo_distinto_fichero_no_frena(tmp_path):
     b = Board([card("t_00000001", CMD, "running"), card("t_00000002", DEC)])
     assert ids(prev(tmp_path, b).filtrar(LANE, ready(b), b)) == ["t_00000002"]
