@@ -9,19 +9,24 @@ coinciden con el de Oscar -> la persona simplemente no existe (recibe el rechazo
 declara en el YAML: su id es OWNER_TELEGRAM_ID (decisions.py), que se pasa a `load_people`.
 
 Las capacidades por rol son CONSTANTES de código. El YAML solo puede activar `carril` y solo para `coo`; la
-capacidad `produccion` es exclusiva del owner y no sale nunca del YAML. Aparte, `operador: true` (booleano
-estricto) da a la persona el MISMO acceso que Oscar al bot de carriles (comandos, botones y aprobaciones; decisión de
-Oscar 19-10): se evalúa con `People.es_operador`, no con las capacidades.
+capacidad `produccion` es exclusiva del owner y no sale nunca del YAML.
 
-Un operador solo actúa en las marcas de su `brands` (`People.puede_en`): `"*"` = todas (María). Sin `"*"`, con una
-marca distinta o con un destino sin marca conocida se rechaza (falla cerrado). Oscar siempre puede.
+Quién aprueba, integra y despliega NO está en el YAML (decisión de Oscar 28-10): se configura en el panel de Oscar HQ y
+se lee de GET /api/equipo/permisos (X-API-Key de servicio, OHQ_API_KEY), con caché de 60 s. Respuesta esperada:
+  {"personas": [{"telegram_id": "123", "permisos": {"MigraTeam": ["desarrollo.aprobar", "desarrollo.publicar"]}}]}
+(la marca "*" = todas). `desarrollo.aprobar` de una marca = operar y aprobar en ella (`People.es_operador`,
+`People.puede_en`); `desarrollo.publicar` = fusionar y desplegar (`People.puede_aprobar_produccion`). Falla CERRADO:
+si HQ no responde, no hay clave o la persona no está enlazada, solo actúa Oscar (OWNER_TELEGRAM_ID). Oscar siempre puede.
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
+import time
 import unicodedata
-from dataclasses import dataclass, field
+import urllib.request
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 import yaml
@@ -40,7 +45,8 @@ def people_file() -> Path:
 
 CONSULTA, ESTADO, IDEA, CONTENIDO, CARRIL, PRODUCCION = "consulta", "estado", "idea", "contenido", "carril", "produccion"
 APROBAR_PRODUCCION = "aprobar_produccion"
-PERMISOS_YAML = frozenset({APROBAR_PRODUCCION})  # lo único que `permisos:` del YAML puede conceder
+PERM_APROBAR, PERM_PUBLICAR = "desarrollo.aprobar", "desarrollo.publicar"  # permisos de Oscar HQ (panel de equipo)
+HQ_CACHE_S = 60
 TODAS_LAS_MARCAS = "*"
 _ALIAS_MARCA = {"oscarhq": "pildora"}  # OscarHQ es la marca Píldora para el control de acceso
 
@@ -70,8 +76,8 @@ class Person:
     role: str
     brands: tuple = ()
     caps: frozenset = field(default_factory=frozenset)
-    operador: bool = False  # people.yaml `operador: true`: mismo acceso que Oscar en el bot (comandos, botones, aprobaciones)
-    permisos: frozenset = field(default_factory=frozenset)  # people.yaml `permisos:` (solo los de PERMISOS_YAML)
+    operador: bool = False  # lo rellena People.lookup desde Oscar HQ (algún desarrollo.aprobar); no viene del YAML
+    permisos: frozenset = field(default_factory=frozenset)  # idem: {APROBAR_PRODUCCION} si tiene algún desarrollo.publicar
     hermes: bool = True  # people.yaml `hermes: false` (estricto): Hermes no le contesta; el bot de carriles le avisa
 
     def can(self, cap: str) -> bool:
@@ -82,18 +88,83 @@ class Person:
         return self.role == "owner"
 
 
+def _http_hq(url: str, clave: str):
+    req = urllib.request.Request(url, headers={"X-API-Key": clave})
+    with urllib.request.urlopen(req, timeout=5) as r:  # noqa: S310 (URL de configuración, no de usuario)
+        return json.loads(r.read() or b"{}")
+
+
+def hq_desde_entorno(env=None, http=_http_hq):
+    """Proveedor de permisos de Oscar HQ: callable sin argumentos -> JSON de /api/equipo/permisos. Sin OHQ_API_URL u
+    OHQ_API_KEY devuelve None (fallo cerrado). La clave solo se lee del entorno; nunca se escribe."""
+    def _leer():
+        from .config import load_env, ohq_api_url
+        e = {**load_env(), **os.environ} if env is None else env
+        base, clave = ohq_api_url(e), str(e.get("OHQ_API_KEY") or "")
+        if not base or not clave:
+            return None
+        return http(base.rstrip("/") + "/api/equipo/permisos", clave)
+    return _leer
+
+
+def _parsear_hq(data) -> dict:
+    """{user_id: {marca: frozenset(permisos)}}. Cualquier forma inesperada se descarta (fallo cerrado)."""
+    out: dict = {}
+    personas = data.get("personas") if isinstance(data, dict) else None
+    for ent in personas if isinstance(personas, list) else ():
+        if not isinstance(ent, dict):
+            continue
+        uid, perms = _user_id(ent.get("telegram_id")), ent.get("permisos")
+        if uid is None or not isinstance(perms, dict):
+            continue
+        out[uid] = {str(m): frozenset(str(x) for x in v) for m, v in perms.items() if isinstance(v, list)}
+    return out
+
+
 class People:
-    def __init__(self, owner_id: str, persons: list[Person] | None = None):
+    def __init__(self, owner_id: str, persons: list[Person] | None = None, hq=None, reloj=time.monotonic):
+        """`hq`: proveedor de permisos de Oscar HQ (`hq_desde_entorno`). Con `hq`, brands/operador/permisos de cada
+        Person salen SIEMPRE de HQ; sin `hq` (solo uso directo en tests) valen los de la propia Person."""
         self.owner_id = str(owner_id)
-        self._by_id = {p.user_id: p for p in persons or ()}
+        self._base = {p.user_id: p for p in persons or ()}  # identidades del YAML, sin permisos
         self.owner = Person("oscar", "Oscar", self.owner_id, "owner", (), BASE_CAPS["owner"])
+        self._hq, self._reloj = hq, reloj
+        self._snap: dict = {}
+        self._snap_t: float | None = None
+
+    def _permisos_hq(self, user_id) -> dict:
+        """Permisos de HQ de una persona {marca: frozenset}, con caché de 60 s. HQ caído o persona sin enlazar = {}."""
+        ahora = self._reloj()
+        if self._snap_t is None or ahora - self._snap_t >= HQ_CACHE_S:
+            try:
+                self._snap = _parsear_hq(self._hq())
+            except Exception as exc:  # fallo cerrado: nadie más que Oscar hasta la siguiente lectura
+                log.warning("Oscar HQ no dio los permisos del equipo (%s); solo Oscar actúa", type(exc).__name__)
+                self._snap = {}
+            self._snap_t = ahora
+        return self._snap.get(str(user_id), {})
+
+    def _con_permisos(self, person: Person) -> Person:
+        if self._hq is None:
+            return person
+        perms = self._permisos_hq(person.user_id)
+        aprobar = tuple(m for m, v in perms.items() if PERM_APROBAR in v)
+        publica = any(PERM_PUBLICAR in v for v in perms.values())
+        return replace(person, brands=aprobar, operador=bool(aprobar),
+                       permisos=frozenset({APROBAR_PRODUCCION}) if publica else frozenset())
+
+    @property
+    def _by_id(self) -> dict:
+        """Las personas del YAML con los permisos vigentes de HQ (lo que ven quienes recorren el equipo)."""
+        return {uid: self._con_permisos(p) for uid, p in self._base.items()}
 
     def lookup(self, user_id) -> Person | None:
         """Persona por user_id de Telegram (int o str). None = desconocida."""
         uid = str(user_id)
         if uid == self.owner_id:
             return self.owner
-        return self._by_id.get(uid)
+        base = self._base.get(uid)
+        return self._con_permisos(base) if base else None
 
     def es_operador(self, user_id) -> bool:
         """Oscar (owner) o una persona de people.yaml con `operador: true`. Única fuente de verdad del acceso al bot."""
@@ -122,13 +193,21 @@ class People:
         wanted = norm_marca(marca)
         return bool(wanted) and wanted in {norm_marca(b) for b in self.lookup(user_id).brands}
 
-    def puede_aprobar_produccion(self, user_id) -> bool:
-        """Oscar (owner) o quien tenga `permisos: [aprobar_produccion]`, en cualquier marca (decisión de Oscar 22-10).
-        Es aparte de `puede_en`: no depende de `brands`. Quien no es operador no aprueba aunque figure el permiso."""
+    def puede_aprobar_produccion(self, user_id, marca=None) -> bool:
+        """Fusionar y desplegar: Oscar o quien tenga `desarrollo.publicar` en Oscar HQ (en la `marca` dada o, sin ella,
+        en alguna; "*" vale para todas). Además debe ser operador (`desarrollo.aprobar`)."""
         person = self.lookup(user_id)
         if not person:
             return False
-        return person.is_owner or (person.operador and APROBAR_PRODUCCION in person.permisos)
+        if person.is_owner:
+            return True
+        if not person.operador:
+            return False
+        if self._hq is None or marca is None:
+            return APROBAR_PRODUCCION in person.permisos
+        quiero = norm_marca(marca)
+        return any(PERM_PUBLICAR in v and (m == TODAS_LAS_MARCAS or norm_marca(m) == quiero)
+                   for m, v in self._permisos_hq(user_id).items())
 
     def operadores_todas_marcas(self) -> set[str]:
         """Operadores (no Oscar) con `"*"` (María): su DM no pasa por el filtro de colaboradores (F1-09, D4-A) y
@@ -137,10 +216,10 @@ class People:
         return {p.user_id for p in self._by_id.values() if p.operador and TODAS_LAS_MARCAS in p.brands}
 
     def collaborator_ids(self) -> set[str]:
-        return set(self._by_id)
+        return set(self._base)
 
     def __len__(self) -> int:
-        return len(self._by_id)
+        return len(self._base)
 
 
 def _clean(value, limit: int = 40) -> str:
@@ -157,7 +236,9 @@ def _user_id(raw) -> str | None:
     return None
 
 
-def load_people(owner_id: str, path: Path | str | None = None) -> People:
+def load_people(owner_id: str, path: Path | str | None = None, hq=None) -> People:
+    """Identidades del YAML + permisos de Oscar HQ (`hq`; por defecto el del entorno, ver `hq_desde_entorno`)."""
+    hq = hq or hq_desde_entorno()
     p = Path(path) if path else people_file()
     try:
         data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
@@ -166,7 +247,7 @@ def load_people(owner_id: str, path: Path | str | None = None) -> People:
             raise ValueError("falta el mapa `people:`")
     except Exception as exc:  # fallo cerrado: nadie más que Oscar
         log.warning("people.yaml no se pudo leer en %s (%s); solo Oscar tiene acceso", p, type(exc).__name__)
-        return People(owner_id)
+        return People(owner_id, hq=hq)
     persons: list[Person] = []
     seen = {str(owner_id)}
     for key, cfg in entries.items():
@@ -187,10 +268,6 @@ def load_people(owner_id: str, path: Path | str | None = None) -> People:
         seen.add(uid)
         asked = cfg.get("can") if isinstance(cfg.get("can"), list) else []
         caps = BASE_CAPS[role] | (frozenset(str(c) for c in asked) & OPTIONAL_CAPS.get(role, frozenset()))
-        brands = tuple(_clean(b) for b in (cfg.get("brands") or ()) if _clean(b)) if isinstance(
-            cfg.get("brands"), (list, tuple)) else ()
-        pedidos = cfg.get("permisos") if isinstance(cfg.get("permisos"), list) else []
-        permisos = frozenset(str(x) for x in pedidos) & PERMISOS_YAML
-        persons.append(Person(_clean(key), _clean(cfg.get("name") or key) or _clean(key), uid, role, brands, caps,
-                              cfg.get("operador") is True, permisos, cfg.get("hermes") is not False))
-    return People(owner_id, persons)
+        persons.append(Person(_clean(key), _clean(cfg.get("name") or key) or _clean(key), uid, role, (), caps,
+                              hermes=cfg.get("hermes") is not False))
+    return People(owner_id, persons, hq=hq)

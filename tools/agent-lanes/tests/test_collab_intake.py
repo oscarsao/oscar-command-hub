@@ -67,19 +67,19 @@ class FakeHermes:
 def _yaml(tmp_path, can):
     p = tmp_path / "p.yaml"
     p.write_text(f"""people:
-  maria: {{name: María, user_id: {MARIA}, role: coo, brands: [Píldora, MigraTeam], can: [{', '.join(can)}]}}
-  ingerber: {{name: Ingerber, user_id: {INGERBER}, role: cmo, brands: [Píldora]}}
-  andrea: {{name: Andrea, user_id: {ANDREA}, role: marketing, brands: [MigraTeam]}}
+  maria: {{name: María, user_id: {MARIA}, role: coo, can: [{', '.join(can)}]}}
+  ingerber: {{name: Ingerber, user_id: {INGERBER}, role: cmo}}
+  andrea: {{name: Andrea, user_id: {ANDREA}, role: marketing}}
   pendiente: {{name: Nadie, user_id: null, role: cmo}}
 """, encoding="utf-8")
     return p
 
 
 class Env:
-    def __init__(self, tmp_path, *, can=()):
+    def __init__(self, tmp_path, *, can=(), hq=None):
         tmp_path.mkdir(parents=True, exist_ok=True)
         self.tg, self.h, self.boards, self.t = FakeTG(), FakeHermes(), [], [1000.0]
-        self.people = load_people(OSCAR, _yaml(tmp_path, can))
+        self.people = load_people(OSCAR, _yaml(tmp_path, can), hq=hq)
         self.collab = CollabIntake(self.tg, self.people, hermes_for=self._hermes, state_path=tmp_path / "rej.json",
                                    now=lambda: self.t[0])
         self.desk = DecisionDesk(self.tg, CallbackStore(tmp_path / "cb"), lanes={}, hermes_for=self._hermes,
@@ -109,17 +109,21 @@ def test_dm_from_known_person_creates_idea_card_assigned_to_oscar(env):
     (card,) = env.h.created
     assert card["assignee"] == "oscar" and card["key"] == f"tg-dm:{INGERBER}:7"
     assert card["title"] == "[IDEA de Ingerber] Hacer un carrusel sobre el arraigo"
-    assert env.boards == ["oscarhq"]
+    assert env.boards == ["default"]  # sin permisos de desarrollo en HQ no hay marca: tablero por defecto
     lines = card["body"].split("\n")
     assert lines[0] == f"Origen-Telegram: chat={INGERBER} thread=0"
     assert "Para Oscar:" in card["body"] and "> Hacer un carrusel sobre el arraigo\n> Con tres ideas" in card["body"]
     reply = env.tg.sent[-1]
     assert reply["chat"] == str(INGERBER) and reply["html"] is False and reply["trusted"] is True
     assert reply["text"].startswith(f"Apuntado {card['id']}, lo revisa Oscar")
-    assert f"{PANEL_URL}?board=oscarhq#{card['id']}" in reply["text"]
+    assert f"{PANEL_URL}?board=default#{card['id']}" in reply["text"]
 
 
-def test_board_follows_first_brand(env):
+def test_board_follows_first_brand(tmp_path):
+    hq = lambda: {"personas": [  # noqa: E731
+        {"telegram_id": str(ANDREA), "permisos": {"MigraTeam": ["desarrollo.aprobar"]}},
+        {"telegram_id": str(MARIA), "permisos": {"Píldora": ["desarrollo.aprobar"]}}]}
+    env = Env(tmp_path / "hq", hq=hq)
     env.dm(ANDREA, "idea de MigraTeam")
     env.dm(MARIA, "idea de maría", mid=2)
     assert env.boards == ["migrateam", "oscarhq"]

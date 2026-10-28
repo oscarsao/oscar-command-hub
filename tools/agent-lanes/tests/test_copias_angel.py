@@ -18,17 +18,15 @@ YAML = f"""people:
     name: Ángel
     user_id: "{ANGEL}"
     role: dev
-    brands: [Píldora, Signal, Hub]
-    operador: true
-    permisos: [aprobar_produccion]
   maria:
     name: María
     user_id: "{MARIA}"
     role: coo
-    brands: ["*"]
-    operador: true
-    permisos: [aprobar_produccion]
 """
+_TODO = ["desarrollo.aprobar", "desarrollo.publicar"]
+HQ = {"personas": [  # permisos de Oscar HQ (GET /api/equipo/permisos)
+    {"telegram_id": ANGEL, "permisos": {m: _TODO for m in ("Píldora", "Signal", "Hub")}},
+    {"telegram_id": MARIA, "permisos": {"*": _TODO}}]}
 KB = {"inline_keyboard": [[{"text": "✅ Aprobar", "callback_data": "tokApr123:0"}]]}
 
 
@@ -36,7 +34,7 @@ def _people(tmp_path):
     tmp_path.mkdir(parents=True, exist_ok=True)
     p = tmp_path / "people.yaml"
     p.write_text(YAML, encoding="utf-8")
-    return load_people(OWNER, p)
+    return load_people(OWNER, p, hq=lambda: HQ)
 
 
 def _aprobacion(tmp_path, lane):

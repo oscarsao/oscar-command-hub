@@ -21,21 +21,20 @@ YAML = """people:
     name: María
     user_id: "5000000001"
     role: coo
-    brands: [Píldora, MigraTeam, "*"]
-    operador: true
   mauredy:
     name: Mauredy
     user_id: "7000000001"
     role: dev
-    brands: [MigraTeam]
-    operador: true
   angel:
     name: Angel
     user_id: "7000000002"
     role: dev
-    brands: [OscarHQ, Signal]
-    operador: true
 """
+APR = ["desarrollo.aprobar"]
+HQ = {"personas": [  # permisos de Oscar HQ
+    {"telegram_id": "5000000001", "permisos": {"*": APR}},
+    {"telegram_id": "7000000001", "permisos": {"MigraTeam": APR}},
+    {"telegram_id": "7000000002", "permisos": {"OscarHQ": APR, "Signal": APR}}]}
 
 REC_MIGRATEAM = {"task_id": "t_a0000001", "board": "migrateam", "lane": "claude-migrateam"}
 REC_OSCARHQ = {"task_id": "t_a0000002", "board": "oscarhq", "lane": "claude-oscarhq"}
@@ -47,7 +46,7 @@ REC_SIN_MARCA = {"task_id": "bandeja", "board": "", "lane": ""}
 def ppl(tmp_path):
     p = Path(tmp_path) / "people.yaml"
     p.write_text(YAML, encoding="utf-8")
-    return load_people(str(OSCAR), p)
+    return load_people(str(OSCAR), p, hq=lambda: HQ)
 
 
 def test_puede_en_cruza_la_marca_con_brands(tmp_path):
@@ -61,25 +60,20 @@ def test_puede_en_cruza_la_marca_con_brands(tmp_path):
     assert norm_marca("OscarHQ") == norm_marca("Píldora") == norm_marca(" PILDORA ")
 
 
-def test_operador_sin_brands_no_puede_en_ninguna(tmp_path):
+def test_sin_permisos_en_hq_no_es_operador_ni_puede_en_ninguna(tmp_path):
     p = Path(tmp_path) / "p.yaml"
-    p.write_text('people:\n  x:\n    name: X\n    user_id: "8000000001"\n    role: dev\n    operador: true\n',
-                 encoding="utf-8")
-    g = load_people(str(OSCAR), p)
-    assert g.es_operador(8000000001) and not g.puede_en(8000000001, "MigraTeam")
+    p.write_text('people:\n  x:\n    name: X\n    user_id: "8000000001"\n    role: dev\n', encoding="utf-8")
+    g = load_people(str(OSCAR), p, hq=lambda: {"personas": [{"telegram_id": "8000000001", "permisos": {
+        "MigraTeam": ["desarrollo.publicar"]}}]})  # publicar sin aprobar no hace operador
+    assert not g.es_operador(8000000001) and not g.puede_en(8000000001, "MigraTeam")
 
 
-def test_el_yaml_real_deja_a_maria_en_todo_y_acota_a_mauredy_y_angel():
-    real = load_people(str(OSCAR))
-    assert all(real.puede_en(MARIA, m) for m in ("MigraTeam", "Píldora", "NextJobs", None))
-    # Mauredy y Angel siguen sin user_id (null): no existen hasta que Oscar lo rellene, pero ya salen acotados.
+def test_el_ejemplo_solo_lleva_identidades():
     import yaml
     raw = yaml.safe_load(Path(__file__).resolve().parents[2].joinpath("telegram", "people.example.yaml")
                          .read_text(encoding="utf-8"))["people"]
-    assert raw["maria"]["brands"][-1] == "*" and raw["maria"]["brands"][0] == "Píldora"  # el tablero de sus ideas no cambia
-    assert raw["mauredy"]["operador"] is True and raw["mauredy"]["brands"] == ["MigraTeam"]
-    assert raw["angel"]["operador"] is True and raw["angel"]["brands"] == ["Píldora", "Signal", "Hub"]
-    assert not raw["ingerber"].get("operador") and not raw["andrea"].get("operador")
+    for key, cfg in raw.items():
+        assert not ({"operador", "permisos", "brands"} & set(cfg)), key
 
 
 def desk_con(tmp_path):

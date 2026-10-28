@@ -82,7 +82,7 @@ def _puede(p: Person) -> str:
 
 def _aprueba(p: Person) -> str:
     if p.is_owner or (p.operador and APROBAR_PRODUCCION in p.permisos):
-        return "sí (todas las marcas)"
+        return "sí (según los permisos de Oscar HQ)" if not p.is_owner else "sí (todas las marcas)"
     return "no"
 
 

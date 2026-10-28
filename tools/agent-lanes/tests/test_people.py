@@ -37,7 +37,7 @@ def test_valid_entries_and_str_normalisation(tmp_path):
     p = _write(tmp_path, "people:\n  ingerber: {name: Ingerber, user_id: 111, role: cmo, brands: [Píldora]}\n"
                          "  andrea: {user_id: '222', role: marketing}\n")
     ppl = load_people(OWNER, p)
-    assert ppl.lookup(111).name == "Ingerber" and ppl.lookup("111").brands == ("Píldora",)
+    assert ppl.lookup(111).name == "Ingerber" and ppl.lookup("111").brands == ()  # las marcas salen de Oscar HQ
     assert ppl.lookup(222).role == "marketing" and ppl.lookup(333) is None
 
 
@@ -115,14 +115,11 @@ def test_dev_entries_mauredy_angel_are_scoped_devs():
     22-10): ACOTADOS por marca (`brands` limita lo que ejecutan; ver test_operador_marca.py)."""
     import yaml
     entries = yaml.safe_load(people.PEOPLE_EXAMPLE.read_text(encoding="utf-8"))["people"]
-    assert entries["mauredy"]["brands"] == ["MigraTeam"]
-    assert "MigraTeam" not in entries["angel"]["brands"] and "Signal" in entries["angel"]["brands"]
     for key in ("mauredy", "angel"):
         assert entries[key]["role"] == "dev" and not entries[key].get("can")
-    assert entries["mauredy"]["user_id"] is None and entries["mauredy"].get("operador") is True
+    assert entries["mauredy"]["user_id"] is None
     assert entries["angel"]["user_id"] == "5000000004"
-    assert entries["angel"].get("operador") is True  # OK final de Oscar 22-10
-    ppl = load_people(OWNER)
+    ppl = load_people(OWNER)  # permisos de HQ: los del stub de conftest (Angel: Píldora, Signal, Hub)
     assert not any(p.key == "mauredy" for p in ppl._by_id.values())  # sin id = ignorado
     angel = ppl.lookup("5000000004")
     assert angel.key == "angel" and angel.brands == ("Píldora", "Signal", "Hub") and ppl.es_operador("5000000004")
@@ -133,4 +130,4 @@ def test_dev_role_has_no_carril_or_production_and_is_not_operator(tmp_path):
     ppl = load_people(OWNER, p)
     person = ppl.lookup("111")
     assert person.role == "dev" and not person.can(CARRIL) and not person.can(PRODUCCION)
-    assert not ppl.es_operador("111") and person.brands == ("MigraTeam",)
+    assert not ppl.es_operador("111") and person.brands == ()  # `brands` del YAML ya no se lee

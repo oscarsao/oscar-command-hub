@@ -16,6 +16,19 @@ def _ajustes_aislados(tmp_path):
 def _people_de_ejemplo(monkeypatch):
     """Los tests nunca leen el people.yaml real (ids de personas, fuera del repo): usan el ejemplo con ids ficticios."""
     monkeypatch.setenv(people.PEOPLE_ENV, str(people.PEOPLE_EXAMPLE))
+    # Nunca se llama a Oscar HQ de verdad: los permisos del equipo son los que tenía el ejemplo antes del 28-10.
+    monkeypatch.setattr(people, "hq_desde_entorno", lambda *a, **k: hq_de_ejemplo)
+
+
+HQ_EJEMPLO = {"personas": [
+    {"telegram_id": "5000000001", "permisos": {"*": ["desarrollo.aprobar", "desarrollo.publicar"]}},  # María
+    {"telegram_id": "5000000004", "permisos": {m: ["desarrollo.aprobar", "desarrollo.publicar"]  # Angel
+                                               for m in ("Píldora", "Signal", "Hub")}},
+]}
+
+
+def hq_de_ejemplo():
+    return HQ_EJEMPLO
 
 
 @pytest.fixture(autouse=True)

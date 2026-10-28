@@ -215,21 +215,20 @@ PEOPLE_YAML = """people:
     name: Angel
     user_id: 200000002
     role: coo
-    brands: [Píldora, Signal]
-    operador: true
   ingerber:
     name: Ingerber
     user_id: 200000003
     role: marketing
-    brands: [Píldora]
 """
+HQ = {"personas": [{"telegram_id": "200000002", "permisos": {"Píldora": ["desarrollo.aprobar"],
+                                                              "Signal": ["desarrollo.aprobar"]}}]}
 
 
 def _people(tmp_path):
     from agent_lanes.people import load_people
     f = tmp_path / "people.yaml"
     f.write_text(PEOPLE_YAML, encoding="utf-8")
-    return load_people("100000001", f)
+    return load_people("100000001", f, hq=lambda: HQ)
 
 
 def test_tarjeta_sin_solicitante_no_arranca(tmp_path):
@@ -251,7 +250,7 @@ def test_tarjeta_archivar_con_angel_sobre_migrateam_se_rechaza(tmp_path, monkeyp
     h.show = lambda tid: {**show(tid), "task": {**show(tid)["task"], "assignee": "claude-oscarhq"}}
     code = reconcile.main(["archivar", "t_aaaaaaaa", "--autor", "hermes", "--solicitante", "angel",
                            "--board", "oscarhq"], hermes_for=lambda b: h, out=out.append, people=_people(tmp_path))
-    assert code == 0 and cards["t_aaaaaaaa"]["status"] == "archived"
+    assert code == 0 and cards["t_aaaaaaaa"]["status"] == "archived", out
 
 
 def test_tarjeta_no_operador_o_desconocido_se_rechaza(tmp_path):
