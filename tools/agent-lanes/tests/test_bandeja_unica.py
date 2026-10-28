@@ -225,7 +225,8 @@ def test_question_without_options_gets_yes_no_buttons_and_the_answer_goes_back(t
     _ask(_runner(desk, bot, messages, hermes=h), "t_aaaaaaa1", TOPIC_BODY,
          questions=["¿Doy luz verde para implementar la spec tal cual?"])
     topic = bot.sent[0]
-    assert texts(topic["markup"]) == ["✅ Sí, adelante", "❌ No", "✍️ Otra respuesta", "🗄 Aparcar", "💬 Explícame más"]
+    assert texts(topic["markup"]) == ["✅ Sí, adelante", "❌ No", "✍️ Otra respuesta", "🗄 Aparcar", "💬 Explícame más",
+                                      "🗑 Quitar aviso"]
     press(desk, topic, 0)
     assert h.calls[:2] == [("comment", "t_aaaaaaa1",
                             f"{ANSWER_PREFIX} ¿Doy luz verde para implementar la spec tal cual? → Sí, adelante",
@@ -352,7 +353,7 @@ def test_role_requires_options_and_explains_for_oscar():
 
 # --- G. escaladas de review: sin Sí/No por defecto (28-09) --------------------------------------------------
 
-REVIEW_KB = ["✍️ Otra respuesta", "🗄 Aparcar", "💬 Explícame más"]
+REVIEW_KB = ["✍️ Otra respuesta", "🗄 Aparcar", "💬 Explícame más", "🗑 Quitar aviso"]
 
 
 def test_review_escalation_has_no_default_yes_no(tmp_path):

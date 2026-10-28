@@ -83,5 +83,5 @@ def test_config_failure_blocks_without_retry_button():
 
 def test_keyboard_config_has_only_park():
     rows = keyboard_spec("blocked", block_kind="config")
-    assert [b["action"] for row in rows for b in row] == ["park", "to_integrador"]  # Oscar no puede arreglar la config
+    assert [b["action"] for row in rows for b in row] == ["park", "to_integrador", "quitar_aviso"]  # Oscar no puede arreglar la config
     assert any(b["action"] == "retry" for row in keyboard_spec("blocked", block_kind="transient") for b in row)

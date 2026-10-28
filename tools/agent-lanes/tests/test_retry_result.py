@@ -36,7 +36,8 @@ def test_same_block_after_retry_says_same_reason_and_offers_responder(tmp_path):
     h.shows[TID]["events"] = []
     msg = rerun_block(desk, bot, messages, h, reason + "\nPara Oscar: algo llano")
     assert "el reintento no funcionó: sigue atascada por el mismo motivo" in msg["text"]
-    assert texts(msg["markup"]) == ["🔄 Reintentar", "🗄 Aparcar", "🔎 Más detalle", "✍️ Responder"]
+    assert texts(msg["markup"]) == ["🔄 Reintentar", "🗄 Aparcar", "🔎 Más detalle", "✍️ Responder",
+                                    "🗑 Quitar aviso"]
 
 
 def test_different_block_after_retry_says_other_reason(tmp_path):
@@ -50,7 +51,7 @@ def test_block_without_previous_retry_has_no_verdict_nor_responder(tmp_path):
     cc, desk, bot, h, messages = triage_center(tmp_path, {})
     msg = rerun_block(desk, bot, messages, h, "worker status=failed")
     assert "reintento" not in msg["text"]
-    assert texts(msg["markup"]) == ["🔄 Reintentar", "🗄 Aparcar", "🔎 Más detalle"]
+    assert texts(msg["markup"]) == ["🔄 Reintentar", "🗄 Aparcar", "🔎 Más detalle", "🗑 Quitar aviso"]
 
 
 def test_retry_marks_expire_after_a_day(tmp_path):
