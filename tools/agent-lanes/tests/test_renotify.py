@@ -114,7 +114,8 @@ def test_needs_input_is_resent_with_buttons_and_questions_from_the_block_reason(
     assert "Pregunta 1/3" in msg["text"] and "• ¿Opción A o B para los códigos? (A recomendada)" in msg["text"]
     assert "¿Añadir el code I-797?" not in msg["text"] and "¿Apruebas la spec?" not in msg["text"]
     # preguntas sin opciones: [✅ Sí, adelante] [❌ No] por defecto
-    assert texts(msg["markup"]) == ["✅ Sí, adelante", "❌ No", "✍️ Otra respuesta", "🗄 Aparcar", "💬 Explícame más"]
+    assert texts(msg["markup"]) == ["✅ Sí, adelante", "❌ No", "✍️ Otra respuesta", "🗄 Aparcar", "💬 Explícame más",
+                                    "🗑 Quitar aviso"]
     assert msg["lane_target"] == ("-1003530490339", "230") and msg["silent"] is False
     # nunca se edita ni se borra el mensaje del bot de Hermes; el almacén apunta al mensaje nuevo
     assert bot.edits == [] and bot.deleted == []
@@ -133,7 +134,8 @@ def test_options_written_by_the_runner_become_option_buttons(tmp_path):
     reason = "El worker necesita decisión:\n- ¿Qué BD? [1) SQLite / 2) Postgres (recomendada)]"
     r, bot, *_ = make(tmp_path, {"t_1": blocked_show("t_1", "needs_input", reason)})
     r.run()
-    assert texts(bot.sent[0]["markup"]) == ["A", "B", "⭐ Recomendada", "✍️ Otra", "🗄 Aparcar", "💬 Explícame más"]
+    assert texts(bot.sent[0]["markup"]) == ["A", "B", "⭐ Recomendada", "✍️ Otra", "🗄 Aparcar", "💬 Explícame más",
+                                                  "🗑 Quitar aviso"]
     assert "   A) SQLite" in bot.sent[0]["text"] and "   B) Postgres ⭐" in bot.sent[0]["text"]
     assert "• ¿Qué BD?" in bot.sent[0]["text"]
 
@@ -146,7 +148,8 @@ def test_dict_reprs_left_by_the_old_runner_become_option_buttons(tmp_path):
     assert qs[1]["question"] == "¿Umbral?" and qs[1]["options"] == []
     r, bot, *_ = make(tmp_path, {"t_1": blocked_show("t_1", "needs_input", reason)})
     r.run()
-    assert texts(bot.sent[0]["markup"]) == ["A", "B", "⭐ Recomendada", "✍️ Otra", "🗄 Aparcar", "💬 Explícame más"]
+    assert texts(bot.sent[0]["markup"]) == ["A", "B", "⭐ Recomendada", "✍️ Otra", "🗄 Aparcar", "💬 Explícame más",
+                                                  "🗑 Quitar aviso"]
     assert "• ¿Apruebas este diseño?" in bot.sent[0]["text"] and "'options'" not in bot.sent[0]["text"]
 
 
@@ -154,7 +157,8 @@ def test_questions_in_run_metadata_win_over_the_reason_text(tmp_path):
     meta = {"questions": [{"question": "¿X o Y?", "options": ["X", "Y"], "recommended": 0}]}
     r, bot, *_ = make(tmp_path, {"t_1": blocked_show("t_1", "needs_input", NEEDS, meta=meta)})
     r.run()
-    assert texts(bot.sent[0]["markup"]) == ["A", "B", "⭐ Recomendada", "✍️ Otra", "🗄 Aparcar", "💬 Explícame más"]
+    assert texts(bot.sent[0]["markup"]) == ["A", "B", "⭐ Recomendada", "✍️ Otra", "🗄 Aparcar", "💬 Explícame más",
+                                                  "🗑 Quitar aviso"]
 
 
 def test_review_escalation_keeps_its_public_line(tmp_path):
@@ -183,7 +187,7 @@ def test_structural_block_is_resent_with_real_reason_and_without_retry(tmp_path)
     msg = bot.sent[0]
     assert "el push de la rama no llegó a GitHub" in msg["text"] and "C:\\" not in msg["text"]
     assert "integrador" in msg["text"]
-    assert texts(msg["markup"]) == ["🧑‍💻 Que lo resuelva el integrador", "🗄 Aparcar", "🔎 Más detalle"]
+    assert texts(msg["markup"]) == ["🧑‍💻 Que lo resuelva el integrador", "🗄 Aparcar", "🔎 Más detalle", "🗑 Quitar aviso"]
 
 
 def test_transient_is_resent_with_retry_and_park_and_no_technical_detail(tmp_path):
@@ -196,7 +200,7 @@ def test_transient_is_resent_with_retry_and_park_and_no_technical_detail(tmp_pat
     assert "bloqueada · el worker se quedó sin tiempo o sin presupuesto" in msg["text"]  # motivo real (bloqueos.yaml)
     assert "Falta: reintentar" in msg["text"] and "detalle en la tarjeta" in msg["text"]
     assert "session_id" not in msg["text"] and "C:\\" not in msg["text"]
-    assert texts(msg["markup"]) == ["🔄 Reintentar", "🗄 Aparcar", "🔎 Más detalle"]
+    assert texts(msg["markup"]) == ["🔄 Reintentar", "🗄 Aparcar", "🔎 Más detalle", "🗑 Quitar aviso"]
     assert msg["lane_target"] is None  # LANE de tests sin destino: default del .env
 
 
@@ -223,7 +227,7 @@ def test_done_approved_by_review_gets_approve_changes_park(tmp_path):
     msg = bot.sent[0]
     assert msg["text"].startswith("✅ t_d")
     assert "review aprobada · 2 archivos · tests OK · 1,6 $ · lista para merge" in msg["text"]
-    assert texts(msg["markup"]) == ["✅ Aprobar", "🔁 Pedir cambios", "🗄 Aparcar"]
+    assert texts(msg["markup"]) == ["✅ Aprobar", "🔁 Pedir cambios", "🗄 Aparcar", "🗑 Quitar aviso"]
     rec = json.loads(next((tmp_path / "callbacks").glob("*.json")).read_text(encoding="utf-8"))
     assert rec["summary"] == "Revisión OK: spec clara" and rec["lane"] == "claude-oscarhq"
     assert rec["changed_files"] == ["docs/specs/x.md", "a.py"]

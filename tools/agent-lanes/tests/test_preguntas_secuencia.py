@@ -113,7 +113,8 @@ def test_three_questions_answered_with_buttons_in_sequence_unblock_only_at_the_e
     for e in (e_topic, e_dm):
         assert "Pregunta 2/3" in e["text"] and "• ¿Precio?" in e["text"] and "¿Publicar ya?" not in e["text"]
         assert "💬 1ª: No" in e["text"]
-        assert texts(e["markup"]) == ["A", "B", "⭐ Recomendada", "✍️ Otra", "🗄 Aparcar", "💬 Explícame más"]
+        assert texts(e["markup"]) == ["A", "B", "⭐ Recomendada", "✍️ Otra", "🗄 Aparcar", "💬 Explícame más",
+                                        "🗑 Quitar aviso"]
 
     press(desk, as_msg(e_dm), 1, cid="q2")  # 2ª desde el DM: 19 €
     e_topic, e_dm = last_edits(bot)

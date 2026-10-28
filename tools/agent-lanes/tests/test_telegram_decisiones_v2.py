@@ -26,8 +26,10 @@ def test_options_are_written_in_the_message_and_buttons_are_generic(tmp_path):
     rec, norec = _card(bot, "t_aaaaaaa1"), _card(bot, "t_bbbbbbb2")
     assert "• ¿Publicar ya?\n   A) Sí ⭐\n   B) No" in rec["text"]
     assert "• ¿Qué despacho primero?\n   A) Mosquera\n   B) Otro" in norec["text"] and "⭐" not in norec["text"]
-    assert texts(rec["markup"]) == ["A", "B", "⭐ Recomendada", "✍️ Otra", "🗄 Aparcar", "💬 Explícame más"]
-    assert texts(norec["markup"]) == ["A", "B", "✍️ Otra", "🗄 Aparcar", "💬 Explícame más"]  # sin recomendada
+    assert texts(rec["markup"]) == ["A", "B", "⭐ Recomendada", "✍️ Otra", "🗄 Aparcar", "💬 Explícame más",
+                                    "🗑 Quitar aviso"]
+    assert texts(norec["markup"]) == ["A", "B", "✍️ Otra", "🗄 Aparcar", "💬 Explícame más",
+                                      "🗑 Quitar aviso"]  # sin recomendada
 
     press(desk, rec, 2)  # ⭐ Recomendada: se registra el TEXTO de la opción, no la letra
     assert h.calls[0] == ("comment", "t_aaaaaaa1", f"{ANSWER_PREFIX} ¿Publicar ya? → Sí", OSCAR_AUTHOR)
@@ -40,7 +42,7 @@ def test_options_are_written_in_the_message_and_buttons_are_generic(tmp_path):
 def test_accept_all_recommended_answers_every_pending_question_of_the_card(tmp_path):
     cc, desk, bot, h, messages, _ = setup(tmp_path, {"t_aaaaaaa1": needs("t_aaaaaaa1", Q_TWO)})
     topic, dm = ask(desk, bot, messages, h, questions=renotify.parse_questions(Q_TWO))
-    assert texts(topic["markup"])[-1] == ACCEPT
+    assert texts(topic["markup"])[-2] == ACCEPT  # lo último es 🗑 Quitar aviso
     press(desk, topic, texts(topic["markup"]).index(ACCEPT))
     assert [c[2] for c in h.calls if c[0] == "comment"] == [f"{ANSWER_PREFIX} ¿Publicar ya? → Sí",
                                                              f"{ANSWER_PREFIX} ¿Precio? → 19 €"]

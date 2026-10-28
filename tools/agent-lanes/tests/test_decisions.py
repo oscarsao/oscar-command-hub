@@ -13,7 +13,7 @@ import pytest
 
 from agent_lanes import notices, telegram
 from agent_lanes.config import ROOT, Lane
-from agent_lanes.decisions import (APPROVE, CHANGES, EXPLAIN, NOT_OWNER, OPTION, OTHER, PARK, RETRY, CallbackStore,
+from agent_lanes.decisions import (APPROVE, CHANGES, EXPLAIN, NOT_OWNER, OPTION, OTHER, PARK, QUITAR, RETRY, CallbackStore,
                                    DecisionDesk, UpdatePoller, keyboard_spec)
 from agent_lanes.git_ops import GitOps
 from agent_lanes.hermes import OSCAR_AUTHOR, REVIEW_AUTHOR, HermesCLI
@@ -117,13 +117,14 @@ def _actions(spec):
 
 
 def test_keyboard_per_state():
-    assert _actions(keyboard_spec("done")) == [[APPROVE, CHANGES, PARK]]
-    assert _actions(keyboard_spec("blocked", block_kind="transient")) == [[RETRY, PARK], ["detail"]]
+    assert _actions(keyboard_spec("done")) == [[APPROVE, CHANGES, PARK], [QUITAR]]
+    assert _actions(keyboard_spec("blocked", block_kind="transient")) == [[RETRY, PARK], ["detail"], [QUITAR]]
     for state, kind in (("running", None), ("review", None), ("changes", None), ("blocked", "needs_input"),
                         ("blocked", "capability")):
         assert keyboard_spec(state, block_kind=kind) is None
     # Sin opciones: [✅ Sí, adelante] [❌ No] por defecto (28-09), y siempre [💬 Explícame más].
-    assert _actions(keyboard_spec("needs_input", questions=["¿libre?"])) == [[OPTION, OPTION], [OTHER, PARK], [EXPLAIN]]
+    assert _actions(keyboard_spec("needs_input", questions=["¿libre?"])) == [[OPTION, OPTION], [OTHER, PARK], [EXPLAIN],
+                                                                                               [QUITAR]]
 
 
 def test_needs_input_buttons_only_for_first_question_with_star():
@@ -134,7 +135,7 @@ def test_needs_input_buttons_only_for_first_question_with_star():
     assert [b["text"] for b in spec[0]] == ["A", "B", "C"] and [b["index"] for b in spec[0]] == [0, 1, 2]
     assert [(b["text"], b["action"], b.get("index")) for b in spec[1]] == [("⭐ Recomendada", OPTION, 1),
                                                                          ("✍️ Otra", OTHER, None)]
-    assert _actions(spec)[2] == [PARK, EXPLAIN] and len(spec) == 3  # la 2ª sin recomendada: sin "aceptar todas"
+    assert _actions(spec)[2] == [PARK, EXPLAIN] and len(spec) == 4 # la 2ª sin recomendada: sin "aceptar todas"
 
 
 def test_questions_are_normalised_retrocompatibly():
@@ -166,7 +167,7 @@ def test_callback_data_is_short_and_persisted_without_the_text(tmp_path):
     q = {"question": "¿Qué opción " + "larga " * 40 + "?", "options": ["ó" * 40, "b", "c", "d"], "recommended": 0}
     markup = desk.markup("needs_input", task={"id": "t_1", "title": "T", "body": BODY}, lane=LANE, questions=[q])
     datas = [b["callback_data"] for row in markup["inline_keyboard"] for b in row]
-    assert len(datas) == 8 and all(len(d.encode()) <= 64 for d in datas)
+    assert len(datas) == 9 and all(len(d.encode()) <= 64 for d in datas)
     assert all("ó" not in d for d in datas)
     token = datas[0].split(":")[0]
     assert len({d.split(":")[0] for d in datas}) == 1
@@ -396,7 +397,7 @@ def test_several_questions_go_in_sequence_on_the_same_card(tmp_path):
     assert "💬 1ª: Supabase" in edit["text"] and "Pregunta 2/2" in edit["text"] and "• ¿Y la cola?" in edit["text"]
     step = edit["markup"]
     assert [b["text"] for row in step["inline_keyboard"] for b in row] == [
-        "✅ Sí, adelante", "❌ No", "✍️ Otra respuesta", "🗄 Aparcar", "💬 Explícame más"]
+        "✅ Sí, adelante", "❌ No", "✍️ Otra respuesta", "🗄 Aparcar", "💬 Explícame más", "🗑 Quitar aviso"]
     _press(desk, step, 2, cid="cq2")  # ✍️ en la 2ª
     _reply(desk, 501, "Redis")
     assert h.calls[1:] == [("comment", "t_1", "Respuesta de Oscar: ¿Y la cola? → Redis", OSCAR_AUTHOR),
@@ -499,7 +500,7 @@ def test_runner_needs_input_alert_carries_buttons_when_desk_is_active(tmp_path):
     LaneRunner(LANE, hermes=h, git=FakeGit(), worker=FakeWorker([out]), verifier=FakeVerifier(), notify=n,
                decisions=desk).run_once()
     texts = [b["text"] for row in n.markups[-1]["inline_keyboard"] for b in row]
-    assert texts == ["A", "B", "⭐ Recomendada", "✍️ Otra", "🗄 Aparcar", "💬 Explícame más"]
+    assert texts == ["A", "B", "⭐ Recomendada", "✍️ Otra", "🗄 Aparcar", "💬 Explícame más", "🗑 Quitar aviso"]
     assert "responde con un botón" in n.msgs[-1]
     block = [c for c in h.calls if c[0] == "block"][0]
     assert "¿A o B? [1) A / 2) B (recomendada)]" in block[3]  # la tarjeta ve las opciones (dicts no rompen)
@@ -542,7 +543,7 @@ def test_review_approved_notice_has_decision_buttons(tmp_path):
                  reviewer=FakeReviewer([verdict("approve")]), verifier=FakeVerifier(), notify=n,
                  decisions=desk).run_once()
     texts = [b["text"] for row in n.markups[-1]["inline_keyboard"] for b in row]
-    assert texts == ["✅ Aprobar", "🔁 Pedir cambios", "🗄 Aparcar"]
+    assert texts == ["✅ Aprobar", "🔁 Pedir cambios", "🗄 Aparcar", "🗑 Quitar aviso"]
     rec = json.loads(next((tmp_path / "cb").glob("*.json")).read_text(encoding="utf-8"))
     assert rec["changed_files"] == ["specs/a.md"] and rec["summary"]
 

@@ -69,7 +69,7 @@ def test_card_with_options_has_letter_buttons_recommended_snooze_and_park(tmp_pa
     msg = bot.sent[-1]
     assert "<b>B)</b> 19 euros" in msg["text"] and "⭐ Recomendada: B" in msg["text"] and "Contexto:" in msg["text"]
     assert texts(msg["markup"]) == ["A · 9 euros", "B · 19 euros", "C · Gratis un año", "✅ La recomendada (B)",
-                                    "⏳ Aplazar 7 d", "🗄 Aparcar", "✍️ Responder"]
+                                    "⏳ Aplazar 7 d", "🗄 Aparcar", "✍️ Responder", "🗑 Quitar aviso"]
 
 
 def test_pressing_an_option_records_the_answer_completes_and_is_idempotent(tmp_path):
@@ -129,7 +129,7 @@ def test_card_without_options_has_generic_buttons_and_done_completes(tmp_path):
     decisiones(desk)
     msg = bot.sent[-1]
     assert "pide /preparar t_d0000001" in msg["text"]
-    assert texts(msg["markup"]) == ["✅ Hecho", "⏳ Aplazar 7 d", "🗄 Aparcar", "✍️ Responder"]
+    assert texts(msg["markup"]) == ["✅ Hecho", "⏳ Aplazar 7 d", "🗄 Aparcar", "✍️ Responder", "🗑 Quitar aviso"]
     press(desk, msg, 0)
     assert comments_of(h, "comment")[0][2] == "RESPUESTA-OSCAR: Hecho" and len(comments_of(h, "complete")) == 1
 

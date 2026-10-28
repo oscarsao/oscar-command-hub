@@ -115,3 +115,35 @@ def test_filtro_descarta_avisos_sin_mencion_y_deja_pasar_los_demas(monkeypatch):
     assert n.send_to("555", None, "aviso general") is None and sent == []
     assert n.send_to("555", None, "Te toca, @Ana_Dev") is not None and len(sent) == 1
     assert n.send_to("999", None, "aviso general") is not None and len(sent) == 2  # otra persona: como hoy
+
+
+# --- extremo a extremo: teclado -> callback -> borrar --------------------------------------------------
+
+def _pulsar_quitar(tmp_path, spec):
+    from agent_lanes.decisions import CallbackStore
+    store = CallbackStore(tmp_path / "cb")
+    token, markup = store.issue({"task_id": "t_1"}, spec)
+    botones = [b for fila in markup["inline_keyboard"] for b in fila]
+    quitar = [b for b in botones if "Quitar aviso" in b["text"]]
+    assert len(quitar) == 1  # el botón existe una sola vez
+    assert store.get(token)["buttons"][int(quitar[0]["callback_data"].split(":")[1])]["action"] == decisions.QUITAR
+    tg = Tg()
+    d = decisions.DecisionDesk(tg, store, lanes={}, hermes_for=lambda b: None, owner_id="1",
+                               spawn=lambda fn: fn(), messages=MessageStore(tmp_path / "msgs"))
+    d._callback({"id": "cq", "from": {"id": 1}, "data": quitar[0]["callback_data"],
+                 "message": {"chat": {"id": -1}, "message_thread_id": 5, "message_id": 77}})
+    return tg
+
+
+def test_extremo_a_extremo_el_aviso_de_tarea_se_quita(tmp_path):
+    tg = _pulsar_quitar(tmp_path, decisions.keyboard_spec("done"))
+    assert tg.deleted == [77] and tg.answers == [("Aviso quitado", False)]
+
+
+def test_extremo_a_extremo_la_tarjeta_de_decision_se_quita(tmp_path):
+    tg = _pulsar_quitar(tmp_path, decisions.card_keyboard_spec(2, 0, ["uno", "dos"]))
+    assert tg.deleted == [77] and tg.answers == [("Aviso quitado", False)]
+
+
+def test_avisos_sin_botones_siguen_sin_botones():
+    assert decisions.keyboard_spec("running") is None

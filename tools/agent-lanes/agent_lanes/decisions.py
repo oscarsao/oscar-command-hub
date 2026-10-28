@@ -145,7 +145,17 @@ def detail_text(show: dict, cfg: dict) -> str:
     return truncate("\n\n".join(parts), maximo)
 
 
-def keyboard_spec(state: str, *, block_kind: str | None = None, questions=None,
+def con_quitar(rows):
+    """Añade la fila [🗑 Quitar aviso] a un teclado (None = aviso sin botones: se queda igual)."""
+    return None if rows is None else [*rows, [dict(QUITAR_BUTTON)]]
+
+
+def keyboard_spec(state: str, **kw) -> list[list[dict]] | None:
+    """Teclado de un aviso de tarea (ver `_keyboard_spec`) más el botón 🗑 Quitar aviso."""
+    return con_quitar(_keyboard_spec(state, **kw))
+
+
+def _keyboard_spec(state: str, *, block_kind: str | None = None, questions=None,
                   yes_no: bool = True, ops: bool = False, index: int = 0,
                   accept_card: bool = True, retried: bool = False) -> list[list[dict]] | None:
     """Botones por estado: filas de {text, action, index}. None = aviso sin botones (en curso, en review...).
@@ -204,6 +214,10 @@ def keyboard_spec(state: str, *, block_kind: str | None = None, questions=None,
 
 
 def seed_card_keyboard_spec() -> list[list[dict]]:
+    return con_quitar(_seed_card_keyboard_spec())
+
+
+def _seed_card_keyboard_spec() -> list[list[dict]]:
     """Botones de una tarjeta de Oscar sembrada en el tema 🎯 Decisiones (F1-03, FL-12): Hecho / Aparcar 7 días /
     Integrador / Archivar. Mismas acciones que /decisiones (CARD_*) salvo «Integrador», que es nueva."""
     return [[{"text": "✅ Hecho", "action": CARD_DONE}, {"text": f"⏳ Aparcar {SNOOZE_DAYS} d", "action": CARD_SNOOZE}],
@@ -211,6 +225,10 @@ def seed_card_keyboard_spec() -> list[list[dict]]:
 
 
 def card_keyboard_spec(n_options: int, recommended: int | None, options=None, veto: bool = False) -> list[list[dict]]:
+    return con_quitar(_card_keyboard_spec(n_options, recommended, options, veto))
+
+
+def _card_keyboard_spec(n_options: int, recommended: int | None, options=None, veto: bool = False) -> list[list[dict]]:
     """Botones de una tarjeta de decisión. Con opciones: un botón por opción con su texto corto ("A · Aprobar el PR";
     sin los textos, solo la letra), la recomendada, aplazar y aparcar (+ ⛔ Vetar si la tarjeta es reversible y corre
     el plazo de veto). La respuesta libre ("A, pero con X") es ✍️ Responder. Sin opciones: botones genéricos."""
