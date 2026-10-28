@@ -121,6 +121,7 @@ def test_needs_input_is_resent_with_buttons_and_questions_from_the_block_reason(
     stored = messages.get("t_c3")
     assert stored.pop("token") == msg["markup"]["inline_keyboard"][0][0]["callback_data"].split(":")[0]
     stored.pop("sig"), stored.pop("sig_at")  # firma antiduplicados del aviso
+    assert stored.pop("was_alert") is True  # marca de aviso: el siguiente no lo borra
     assert stored == {"chat_id": "-1003530490339", "thread_id": "230", "message_id": 1001, "bot": "999"}
     [cb] = list((tmp_path / "callbacks").glob("*.json"))
     rec = json.loads(cb.read_text(encoding="utf-8"))

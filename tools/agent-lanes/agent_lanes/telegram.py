@@ -89,6 +89,7 @@ def _protect_collaborator_dms(notifier: "TelegramNotifier", env: dict, people=No
     notifier.operator_chats = people.operadores_todas_marcas()
     notifier.collab_chats = people.collaborator_ids() - notifier.operator_chats
     notifier.collab_view = collab_view
+    notifier.solo_menciones = people.filtros_menciones()
 
 
 RETRY_AFTER_MAX = 10  # s: más espera que esto bloquearía la pasada; se reintenta igual tras el tope
@@ -127,6 +128,7 @@ class TelegramNotifier:
         self.collab_view = None
         self.operator_chats: set[str] = set()  # operadores con todas las marcas: fuera del filtro de colaboradores
         self.owner_id: str | None = None
+        self.solo_menciones: dict[str, str] = {}  # {chat_id: "@usuario"}: ese DM solo recibe avisos que lo mencionan
         self.sleep = time.sleep  # inyectable en tests (espera del reintento ante 429)
 
     def _is_collab_chat(self, chat_id) -> bool:
@@ -202,6 +204,9 @@ class TelegramNotifier:
         """Envío a un chat/hilo concreto (el del mensaje que Oscar acaba de pulsar): sin allowlist."""
         if not self._token or not chat_id:
             return None
+        quiere = self.solo_menciones.get(str(chat_id))
+        if quiere and quiere.casefold() not in text.casefold():
+            return None  # `solo_menciones`: este aviso no la menciona
         text, html, reply_markup = self._for_collab(chat_id, text, html, reply_markup, trusted)
         payload = {"chat_id": chat_id, "text": text[:TEXT_LIMIT], "disable_web_page_preview": True}
         if html:
