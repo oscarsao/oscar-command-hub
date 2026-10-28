@@ -9,8 +9,8 @@ import runner  # noqa: E402
 from agent_lanes.config import load_lanes, load_runner_settings  # noqa: E402
 
 
-def test_lanes_yaml_real_pide_cuatro_workers():
-    assert load_runner_settings()["max_workers"] == 4
+def test_lanes_yaml_real_pide_seis_workers():
+    assert load_runner_settings()["max_workers"] == 6  # Oscar 27-10: PC con 32 GB
 
 
 def test_max_workers_se_lee_del_yaml(tmp_path):
