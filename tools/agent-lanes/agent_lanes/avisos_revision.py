@@ -36,7 +36,11 @@ log = logging.getLogger("agent_lanes")
 
 STATE_PATH = ROOT / ".state" / "avisos_revision.json"
 AV_1H, AV_3H, AV_MANANA, AV_TAREA, AV_ON = "av_1h", "av_3h", "av_manana", "av_tarea", "av_on"
-AV_ACTIONS = (AV_1H, AV_3H, AV_MANANA, AV_TAREA, AV_ON)
+AV_LOTE = "av_lote"
+AV_ACTIONS = (AV_1H, AV_3H, AV_MANANA, AV_TAREA, AV_ON, AV_LOTE)
+ENVIADAS_MAX = 400
+ENVIADAS_DIAS = 14
+SEVERIDADES_GRAVES = ("blocker", "major", "critical")
 ESTADOS = ("done", "review")  # done = lista para merge (carril review); review = pendiente de validar (carril ops)
 LINEA_MAX = 220
 TEXTO_MAX = 3800
@@ -50,12 +54,31 @@ def instalar(instancia: "AvisosRevision | None") -> None:
     ACTIVO = instancia
 
 
-def interceptar(state: str, task: dict, status: str, alert: bool, *, summary=None, for_oscar=None) -> bool:
-    """Devuelve el `alert` efectivo: False si el aviso lo recoge el resumen agrupado; el original si no aplica."""
+def bajo_riesgo(files, findings, titulo: str = "", policy=None) -> bool:
+    """¿Se puede aprobar en lote? Solo si hay datos (archivos y hallazgos conocidos), ningún hallazgo blocker/major/
+    critical, el carril no despliega a producción ni es el del propio sistema, y ni los archivos ni el título tocan
+    lo que lista `avisos.lote_rutas_riesgo` (entorno, pagos, datos de cliente, migraciones, deploy…)."""
+    if files is None or findings is None:
+        return False
+    if any(str(f.get("severity") if isinstance(f, dict) else f).lower() in SEVERIDADES_GRAVES for f in findings):
+        return False
+    from .integration import RISKS, risk_of, risks_from_files
+    if risk_of(policy).emoji in (RISKS["production"].emoji, RISKS["system"].emoji) or risks_from_files(policy, files):
+        return False
+    pajar = [str(f).lower() for f in files] + [str(titulo or "").lower()]
+    return not any(str(c).lower() in t for c in valor("avisos.lote_rutas_riesgo") for t in pajar)
+
+
+def interceptar(state: str, task: dict, status: str, alert: bool, *, summary=None, for_oscar=None, lane=None,
+                changed_files=None, findings=None, policy=None) -> bool:
+    """Devuelve el `alert` efectivo: False si el aviso lo recoge el resumen agrupado; el original si no aplica.
+    `lane`/`changed_files`/`findings`/`policy`: solo de la tarjeta done del carril review; deciden si entra en el lote."""
     if not alert or ACTIVO is None or state not in ESTADOS:
         return alert
     try:
-        ACTIVO.registrar(task, for_oscar or summary or status)
+        bajo = (state == "done" and lane is not None and getattr(lane, "kind", "") != "ops"
+                and bajo_riesgo(changed_files, findings, (task or {}).get("title"), policy))
+        ACTIVO.registrar(task, for_oscar or summary or status, lane=getattr(lane, "name", None), bajo=bool(bajo))
         return False
     except Exception as exc:  # un fallo del resumen nunca debe tragarse el aviso
         log.warning("avisos_revision: no se pudo recoger %s: %s", (task or {}).get("id"), exc)
@@ -109,7 +132,8 @@ class AvisosRevision:
         raw = raw if isinstance(raw, dict) else {}
         return {"silencio": raw.get("silencio") if isinstance(raw.get("silencio"), dict) else {},
                 "mudas": [t for t in raw.get("mudas") or () if isinstance(t, str)],
-                "pendientes": [p for p in raw.get("pendientes") or () if isinstance(p, dict) and p.get("tid")]}
+                "pendientes": [p for p in raw.get("pendientes") or () if isinstance(p, dict) and p.get("tid")],
+                "enviadas": [p for p in raw.get("enviadas") or () if isinstance(p, dict) and p.get("tid")]}
 
     def _save(self, data: dict) -> None:
         self.state_path.parent.mkdir(parents=True, exist_ok=True)
@@ -160,7 +184,7 @@ class AvisosRevision:
 
     # --- recogida y emisión --------------------------------------------------------------------------
 
-    def registrar(self, task: dict, resumen: str) -> None:
+    def registrar(self, task: dict, resumen: str, lane: str | None = None, bajo: bool = False) -> None:
         tid = task.get("id")
         with self._lock:
             data = self._load()
@@ -168,10 +192,10 @@ class AvisosRevision:
                 return
             ret = bool(self.silenciado_hasta(data))
             rec = {"tid": tid, "titulo": _limpio(task.get("title")), "resumen": _limpio(resumen),
-                   "desde": self.clock(), "ret": ret}
+                   "desde": self.clock(), "ret": ret, "lane": lane, "bajo": bajo}
             for p in data["pendientes"]:
                 if p["tid"] == tid:  # misma tarjeta otra vez (renotify): se actualiza, conserva su antigüedad
-                    p.update(titulo=rec["titulo"], resumen=rec["resumen"], ret=p.get("ret") or ret)
+                    p.update(titulo=rec["titulo"], resumen=rec["resumen"], ret=p.get("ret") or ret, lane=lane, bajo=bajo)
                     break
             else:
                 data["pendientes"].append(rec)
@@ -190,11 +214,12 @@ class AvisosRevision:
                 return []
             data["pendientes"] = []  # antes de enviar: sin bucles si Telegram falla
             self._save(data)
+            lotes = self._lotes(pend, data)
         tids = [p["tid"] for p in pend]
-        texto = self._texto(pend)
+        texto = self._texto(pend, lotes)
         try:
             # send_to devuelve None sin lanzar si falta token o chat: también es «no enviado» (no perder el aviso)
-            if self.send(texto, self._teclado({"tids": tids, "texto": texto})) is None:
+            if self.send(texto, self._teclado({"tids": tids, "texto": texto, "lotes": lotes})) is None:
                 raise RuntimeError("send devolvió None")
         except Exception as exc:
             log.warning("avisos_revision: resumen no enviado, vuelve a pendientes: %s", exc)
@@ -204,16 +229,38 @@ class AvisosRevision:
                 actual["pendientes"] = pend + [p for p in actual["pendientes"] if p["tid"] not in vistos]
                 self._save(actual)
             return []
+        with self._lock:  # lo enviado de bajo riesgo sigue siendo candidato al lote de los próximos resúmenes
+            actual = self._load()
+            vistos = {p["tid"] for p in pend}
+            corte = self.clock() - ENVIADAS_DIAS * 86400
+            previas = [p for p in actual["enviadas"] if p["tid"] not in vistos and float(p.get("desde") or 0) >= corte]
+            actual["enviadas"] = (previas + [p for p in pend if p.get("bajo") and p.get("lane")])[-ENVIADAS_MAX:]
+            self._save(actual)
         return tids
 
+    def _lotes(self, pend: list[dict], data: dict) -> list[dict]:
+        """Por carril con al menos `avisos.lote_aprobar_min` tarjetas de bajo riesgo sin decidir (las de este resumen y
+        las de resúmenes anteriores) y alguna en este resumen: [{lane, tids}]."""
+        minimo = max(1, int(valor("avisos.lote_aprobar_min")))
+        nuevas = {p["tid"] for p in pend}
+        por_carril: dict[str, dict[str, None]] = {}
+        for p in [*data["enviadas"], *pend]:
+            if p.get("bajo") and p.get("lane") and p["tid"] not in data["mudas"]:
+                por_carril.setdefault(p["lane"], {})[p["tid"]] = None
+        return [{"lane": lane, "tids": list(tids)} for lane, tids in por_carril.items()
+                if len(tids) >= minimo and nuevas & set(tids)]
+
     @staticmethod
-    def _texto(pend: list[dict]) -> str:
+    def _texto(pend: list[dict], lotes: list[dict] | None = None) -> str:
         n = len(pend)
         lineas = [f"📋 {n} tarjeta{'s' if n != 1 else ''} lista{'s' if n != 1 else ''} para revisar:"]
         for p in pend:
             resumen = f" · {p['resumen']}" if p.get("resumen") else ""
             lineas.append("• " + truncate(f"{p['tid']} · {p.get('titulo') or ''}{resumen}", LINEA_MAX))
         lineas.append("Cada una tiene su ficha con ✅ Aprobar (/aprobar) · detalle en /tareas")
+        for lote in lotes or ():
+            lineas.append(f"✅ {len(lote['tids'])} de {lote['lane']} son de bajo riesgo (review aprobada, sin hallazgos "
+                          "graves, sin producción, pagos, entorno ni datos de cliente): puedes aprobarlas de una vez.")
         out = "\n".join(lineas)
         return out if len(out) <= TEXTO_MAX else truncate(out, TEXTO_MAX)
 
@@ -222,6 +269,12 @@ class AvisosRevision:
             return None
         spec = [[{"text": "🔕 1 h", "action": AV_1H}, {"text": "🔕 3 h", "action": AV_3H},
                  {"text": "🔕 Hasta mañana", "action": AV_MANANA}]]
+        lotes = rec.get("lotes") or []
+        for i, lote in enumerate(lotes):
+            n = len([t for t in lote["tids"] if t not in mudas])
+            if n:
+                carril = f" · {lote['lane']}" if len(lotes) > 1 else ""
+                spec.append([{"text": f"✅ Aprobar todas las de bajo riesgo ({n}){carril}", "action": AV_LOTE, "index": i}])
         for i, tid in enumerate(rec["tids"][:TARJETAS_CON_BOTON]):
             if tid not in mudas:
                 spec.append([{"text": f"🙈 No avisar de {tid}", "action": AV_TAREA, "index": i}])
@@ -247,9 +300,82 @@ class AvisosRevision:
             self.mutear(tids[index])
             mudas = tuple(self._load()["mudas"])
             nota = "\n".join(f"🙈 {t}: no vuelvo a avisar de ella" for t in tids if t in mudas)
-            self._editar(desk, where, f"{texto}\n\n{nota}", self._teclado({"tids": tids, "texto": texto}, mudas=mudas))
+            self._editar(desk, where, f"{texto}\n\n{nota}",
+                         self._teclado({"tids": tids, "texto": texto, "lotes": rec.get("lotes") or []}, mudas=mudas))
             return True
+        if action == AV_LOTE:
+            lotes = rec.get("lotes") or []
+            if not isinstance(index, int) or not 0 <= index < len(lotes):
+                return False
+            return self._aprobar_lote(lotes, index, rec, where, desk)
         return False
+
+    def _elegible(self, show: dict, lane, policy) -> str | None:
+        """Motivo por el que una tarjeta ya NO puede entrar en el lote (se vuelve a comprobar al pulsar); None = entra."""
+        from .review import aprobada_por_oscar, implementation_metadata
+        task = (show or {}).get("task") or {}
+        if task.get("status") != "done":
+            return "ya no está lista"
+        if aprobada_por_oscar(show):
+            return "ya aprobada"
+        meta = implementation_metadata(show)
+        review = meta.get("review") or {}
+        if review.get("status") != "approve":
+            return "sin review aprobada"
+        if not bajo_riesgo(meta.get("changed_files"), review.get("findings"), task.get("title"), policy):
+            return "no es de bajo riesgo"
+        return None
+
+    def _aprobar_lote(self, lotes: list[dict], index: int, rec: dict, where: dict | None, desk) -> bool:
+        """Aprueba una a una (misma ruta que ✅ Aprobar) las tarjetas del lote que SIGUEN siendo de bajo riesgo:
+        la elegibilidad se recalcula con el kanban, no se fía del resumen. Nunca fusiona (eso es del integrador)."""
+        from .review import implementation_metadata
+        lote = lotes[index]
+        lane = desk.lanes.get(lote["lane"])
+        if lane is None or getattr(lane, "kind", "") == "ops":
+            return False
+        policies = getattr(getattr(desk.integrator, "settings", None), "policies", None) or {}
+        policy, h = policies.get(lane.name), desk.hermes_for(lane.board)
+        mudas = set(self._load()["mudas"])
+        hechas, saltadas, fallidas = [], [], []
+        for tid in lote["tids"]:
+            if tid in mudas:
+                continue
+            try:
+                show = h.show(tid)
+                if self._elegible(show, lane, policy):
+                    saltadas.append(tid)
+                    continue
+                meta = implementation_metadata(show)
+                m = {"task_id": tid, "board": lane.board, "lane": lane.name, "title": (show["task"].get("title") or ""),
+                     "body": "", "changed_files": list(meta.get("changed_files") or [])[:50], "lote": True,
+                     "lote_actor": (where or {}).get("user_id")}
+                ok = desk._approve(m, None)
+            except Exception as exc:
+                log.warning("avisos_revision: lote %s: no se pudo aprobar %s: %s", lote["lane"], tid, exc)
+                ok = False
+            if ok:
+                desk._retire(m)
+                hechas.append(tid)
+            elif tid not in saltadas:
+                fallidas.append(tid)
+        with self._lock:  # decididas o ya no elegibles: no cuentan para futuros lotes
+            data = self._load()
+            fuera = set(hechas) | set(saltadas)
+            data["enviadas"] = [p for p in data["enviadas"] if p["tid"] not in fuera]
+            self._save(data)
+        partes = [f"✅ Lote de {lane.name}: {len(hechas)} aprobada{'s' if len(hechas) != 1 else ''}"
+                  + (f" ({', '.join(hechas)})" if hechas else "")]
+        if saltadas:
+            partes.append(f"fuera del lote (cambió su estado o su riesgo): {', '.join(saltadas)}")
+        if fallidas:
+            partes.append(f"fallaron, apruébalas con su ficha: {', '.join(fallidas)}")
+        restantes = [x for i, x in enumerate(lotes) if i != index]
+        texto = rec.get("texto") or ""
+        self._editar(desk, where, f"{texto}\n\n" + " · ".join(partes),
+                     self._teclado({"tids": list(rec.get("tids") or ()), "texto": texto, "lotes": restantes},
+                                   mudas=tuple(mudas)))
+        return bool(hechas) or not fallidas
 
     def _reactivar(self, rec: dict) -> dict | None:
         if not self.issue:

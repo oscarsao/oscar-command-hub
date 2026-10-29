@@ -174,6 +174,7 @@ class Pending:
     guard: bool = False  # bloqueo por LIMITACION-GUARD: va a la cola del integrador (guard_route), no a Oscar
     need: str | None = None  # qué hace falta (guard): el detalle del worker, ya sin el marcador
     ronda: str = ""  # identifica la ronda del aviso (stuck: instante del block_loop_detected); clave de dedup
+    findings: list | None = None  # hallazgos de la review aprobada (done): deciden si entra en el lote de bajo riesgo
 
     def pending_questions(self) -> list[dict]:
         return [q for i, q in enumerate(self.questions) if i not in self.answered]
@@ -383,7 +384,7 @@ class Renotifier:
                              money(cost), "lista para merge")
         return Pending(tid, lane, "done", task, status, changed_files=changed,
                        summary=review.get("summary") or meta.get("summary"), since=task.get("completed_at"),
-                       for_oscar=meta.get("for_oscar"))
+                       for_oscar=meta.get("for_oscar"), findings=review.get("findings"))
 
     # --- envío --------------------------------------------------------------------------------------
 
@@ -477,7 +478,8 @@ class Renotifier:
                                   verifier=None, notify=self.notifier, messages=self.messages, links=self.links,
                                   decisions=self.desk, integration=self.integration, tree=self.tree)
                 rr.notify("done", {**p.task, "assignee": p.lane.name}, p.status, alert=True,
-                          changed_files=p.changed_files, buttons=True, summary=p.summary, for_oscar=p.for_oscar)
+                          changed_files=p.changed_files, buttons=True, summary=p.summary, for_oscar=p.for_oscar,
+                          findings=p.findings)
             else:
                 lr = LaneRunner(p.lane, hermes=self.hermes_for(p.lane.board), git=None, worker=None, verifier=None,
                                 notify=self.notifier, messages=self.messages, links=self.links, decisions=self.desk,
