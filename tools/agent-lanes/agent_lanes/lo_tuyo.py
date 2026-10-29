@@ -47,6 +47,7 @@ class Ajustes:
     max_lineas: int = 20          # ítems con línea y botón; el resto se cuenta en «N más»
     max_texto: int = 3500         # tope de caracteres (el límite de Telegram es 4096)
     aprobar_max_dias: float = 14  # antigüedad máxima de un «Aprobar»: más viejo se da por olvidado/integrado y no cuenta
+    timeout_segundos: float = 20  # tiempo máximo para reunir la bandeja: lo que no llega se avisa y se responde parcial
 
 
 def load_ajustes(path: Path | str | None = None) -> Ajustes:
@@ -67,7 +68,7 @@ def load_ajustes(path: Path | str | None = None) -> Ajustes:
             out[f.name] = float(v)
         elif f.name == "max_lineas" and v >= 1:
             out[f.name] = min(int(v), 40)   # un teclado de Telegram admite 100 botones; 40 sigue siendo legible
-        elif f.name == "aprobar_max_dias" and v > 0:
+        elif f.name in ("aprobar_max_dias", "timeout_segundos") and v > 0:
             out[f.name] = float(v)
         elif f.name == "max_texto" and v >= 500:
             out[f.name] = min(int(v), 3900)
@@ -252,11 +253,46 @@ def _linea(n: int, it: dict, now: float) -> str:
     return f"{n}. {verbo(it).split(' ')[0]} {it['tid']} · {truncate(it['title'], 55)}{extra}{cuando}"
 
 
-def render(items: list[dict], aj: Ajustes, now: float, scope: str = "") -> tuple[str, list[dict]]:
-    """(texto, ítems mostrados en el orden de las líneas numeradas). Sin nada: «Nada pendiente de ti 🎉»."""
+def recoger(fuentes, timeout: float) -> tuple[list[dict], list[str]]:
+    """(ítems, nombres de las fuentes que no llegaron a tiempo). Cada fuente `(nombre, fn)` corre en su hilo; pasado
+    `timeout` (segundos, en total) se responde con lo que haya. Una fuente que falla no vacía la bandeja."""
+    import logging
+    import threading
+    import time
+    resultados: dict[str, list[dict]] = {}
+
+    def correr(nombre, fn):
+        try:
+            resultados[nombre] = fn()
+        except Exception as exc:
+            logging.getLogger(__name__).warning("/pendiente: %s no leído: %s", nombre, exc)
+            resultados[nombre] = []
+
+    hilos = [(n, threading.Thread(target=correr, args=(n, fn), daemon=True)) for n, fn in fuentes]
+    for _, h in hilos:
+        h.start()
+    limite = time.monotonic() + timeout
+    for _, h in hilos:
+        h.join(max(0.0, limite - time.monotonic()))
+    lentas = [n for n, h in hilos if h.is_alive()]
+    return [it for n, _ in hilos for it in resultados.get(n, [])], lentas
+
+
+def render(items: list[dict], aj: Ajustes, now: float, scope: str = "", lentas: list[str] | None = None
+           ) -> tuple[str, list[dict]]:
+    """(texto, ítems mostrados en el orden de las líneas numeradas). Sin nada: «Nada pendiente de ti 🎉». `lentas`:
+    fuentes que no respondieron a tiempo; el aviso de lista parcial va al final."""
+    texto, shown = _render(items, aj, now, scope, bool(lentas))
+    if lentas:
+        texto += (f"\n\n⏱ Respuesta parcial: no llegó a tiempo {', '.join(lentas)} (Hermes va lento). "
+                  "Repite /pendiente en un minuto.")
+    return texto, shown
+
+
+def _render(items: list[dict], aj: Ajustes, now: float, scope: str, parcial: bool) -> tuple[str, list[dict]]:
     items = ordenar(items, aj, now)
     if not items:
-        return f"Nada pendiente de ti{scope} 🎉", []
+        return (f"Sin nada visible{scope} de momento" if parcial else f"Nada pendiente de ti{scope} 🎉"), []
     shown = items[:aj.max_lineas]
     lines = [f"🙋 Lo tuyo{scope} · {len(items)} pendiente{'s' if len(items) != 1 else ''}"]
     n = 0
@@ -285,8 +321,11 @@ def cli(argv: list[str], lanes: dict, hermes_for, state_dir: Path | str, now: fl
     args = ap.parse_args(argv)
     now = time.time() if now is None else now
     aj = load_ajustes()
-    found = de_kanban(lanes, hermes_for, aj=aj, now=now) +de_state(state_dir, lambda lane: getattr(lanes.get(lane), "board", ""))
-    text, shown = render(found, aj, now)
+    found, lentas = recoger((("kanban", lambda: de_kanban(lanes, hermes_for, aj=aj, now=now)),
+                             ("estado de los carriles",
+                              lambda: de_state(state_dir, lambda lane: getattr(lanes.get(lane), "board", "")))),
+                            aj.timeout_segundos)
+    text, shown = render(found, aj, now, lentas=lentas)
     if not args.json:
         print(text + ("\n\nPara actuar: /pendiente en el bot de carriles (botones) o /tarea <id>." if shown else ""))
         return 0

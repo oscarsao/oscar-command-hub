@@ -51,9 +51,13 @@ Por eso, en un grupo, escribe siempre `/comando@pildora_carriles_bot` (el menú 
 ### ✅ Decidir y aprobar
 | Comando | Qué es y para qué sirve | Ejemplo |
 |---|---|---|
-| `/pendiente` | **«Lo tuyo» en un solo mensaje**: preguntas, PR por aprobar, tarjetas tuyas, con un botón por línea | `/pendiente` |
-| `/decisiones` | Bandeja de preguntas de los workers, con [✅ Aceptar todo lo recomendado] y una tarjeta por tarea | `/decisiones` |
-| `/atencion` | Todo lo que espera a Oscar con botones para resolverlo ahí mismo | `/atencion` |
+| `/pendiente [filtro]` | **Bandeja única**. Sin filtro (o `todo`): «Lo tuyo» en un solo mensaje, con un botón por línea. Filtros: `decisiones`, `atencion`, `estado [marca]`, `falta [marca]`. Si Hermes va lento responde en 20 s con lo que haya y un aviso «⏱ Respuesta parcial» | `/pendiente falta migrateam` |
+| `/decisiones` | Atajo de `/pendiente decisiones`: preguntas de los workers, con [✅ Aceptar todo lo recomendado] y una tarjeta por tarea | `/decisiones` |
+| `/atencion` | Atajo de `/pendiente atencion`: todo lo que espera a Oscar con botones, sin recorte | `/atencion` |
+
+`/estado` y `/falta` (arriba) son también atajos de `/pendiente estado` y `/pendiente falta`: mismo texto, sin lógica
+duplicada. El tiempo máximo se cambia en `tools/agent-lanes/lo_tuyo.yaml` (`timeout_segundos`); `lanes.py pendiente`
+(Hermes) lo respeta igual.
 | `/pendientes` | Tus pasos «tuyo» y «decidir» con botones | `/pendientes` |
 | `/aprobar` | Tareas listas para integrar: [✅ Aprobar] [🔁 Pedir cambios] [🗄 Aparcar] | `/aprobar` |
 | `/preparar t_xxx \| todas` | Claude redacta el contexto y 3 opciones de una tarjeta de decisión | `/preparar t_3d4a9c10` |

@@ -4,3 +4,4 @@ urgente_horas: 24       # horas esperándote (pregunta, PR por aprobar, PR de se
 max_lineas: 20          # líneas con botón; el resto se cuenta en «N más»
 aprobar_max_dias: 14    # un «✅ Aprobar» más viejo que esto no cuenta (se da por olvidado o ya integrado)
 max_texto: 3500        # tope de caracteres del mensaje (Telegram admite 4096)
+timeout_segundos: 20   # tiempo máximo para reunir la bandeja; si Hermes va lento se responde parcial con aviso

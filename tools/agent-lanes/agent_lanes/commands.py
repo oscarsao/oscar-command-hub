@@ -14,9 +14,12 @@ también como /cmd@<bot>. Un /cmd@otro_bot (p. ej. el de Hermes) se ignora.
     /tarea t_xxx         ficha de la tarea con los botones de su estado
     /hazlo <texto>       crea una tarea pequeña (prioridad alta, tope 15 min): marca y carril salen del texto; con
                          duda, botones para elegir carril. El resultado vuelve a donde lo pediste
-    /pendiente           «Lo tuyo» en UN mensaje agrupado por prioridad: preguntas, PR por aprobar, cola del integrador,
-                         PR de sesiones, tarjetas tuyas y pasos del integrador, con un botón por línea que abre su
-                         ficha (lo_tuyo.py; `lanes.py pendiente` es la misma lista para Hermes)
+    /pendiente [filtro]  bandeja única. Sin filtro: «Lo tuyo» en UN mensaje agrupado por prioridad (preguntas, PR por
+                         aprobar, cola del integrador, PR de sesiones, tarjetas tuyas y pasos del integrador), con un
+                         botón por línea que abre su ficha (lo_tuyo.py; `lanes.py pendiente` es la misma lista para
+                         Hermes). Filtros: decisiones | atencion | estado [marca] | falta [marca]; /decisiones,
+                         /atencion, /estado y /falta son atajos que llaman aquí. Tiempo máximo `timeout_segundos`
+                         (lo_tuyo.yaml, 20 s): si Hermes va lento, respuesta parcial con aviso
     /personal            propone mover tus tarjetas personales (no son decisiones de carril) al board `personal`;
                          no mueve nada hasta pulsar [✅ Mover] (personal.py, personal.yaml)
     /agrupar [proyecto|todo]  propone grupos de tarjetas abiertas (duplicadas, mismo fichero, misma decisión, lote) con
@@ -119,7 +122,7 @@ COMMANDS = (
     ("silenciar", "Calla una alerta del monitor un tiempo: /silenciar <clave> <horas>"),
     ("sesion", "Correcciones agrupadas: /sesion [nombre] abre; fin | cancelar | estado"),
     ("flujo", "Una petición → hasta 8 tarjetas encadenadas: /flujo <texto>"),
-    ("pendiente", "Lo tuyo en UN mensaje, con botones: preguntas, PR y tarjetas"),
+    ("pendiente", "Bandeja única con botones: /pendiente [todo|decisiones|atencion|estado|falta]"),
     ("personal", "Saca tu backlog personal del kanban (confirmas con botones)"),
     ("agrupar", "Propone fusionar, encadenar o juntar tarjetas abiertas: /agrupar [proyecto|todo]"),
     ("workflow", "Trabajo largo: plan y coste, nada se crea hasta aprobar: /workflow <texto>"),
@@ -139,7 +142,8 @@ HERMES_COMMANDS = frozenset((
     "update", "platforms", "commands", "profile", "insights", "skills", "cron", "reload", "debug", "restart",
     "history", "save", "rollback", "fast", "tools", "toolsets", "paste", "image", "stats", "context", "clear"))
 # Comandos que tardan (leen el kanban): se contesta al momento «Un momento…» y se edita con el resultado.
-SLOW_COMMANDS = ("tareas", "aprobar", "atencion")
+SLOW_COMMANDS = ("tareas", "aprobar", "atencion", "pendiente")
+FILTROS_PENDIENTE = ("todo", "decisiones", "atencion", "estado", "falta")  # /pendiente <filtro> [marca]
 MOMENTO = "⏳ Un momento…"
 NOT_OWNER = ("Este comando es solo para operadores. Pide a Oscar o a María que lo haga, o escribe tu petición en "
              "texto libre y se la paso")
@@ -925,6 +929,10 @@ class CommandCenter:
     # --- /decisiones ----------------------------------------------------------------------------------
 
     def cmd_decisiones(self, where, args: str, brand: str | None, show_all: bool = False) -> None:
+        """Atajo de `/pendiente decisiones` (o `atencion` con `show_all`)."""
+        self.cmd_pendiente(where, ("atencion " if show_all else "decisiones ") + args, brand)
+
+    def _vista_decisiones(self, where, args: str, brand: str | None, show_all: bool = False) -> None:
         """Las TOP_DECISIONS más importantes, cada una en su mensaje con botones, y "N más · ver todas". Importancia
         (decide Oscar): primero las que bloquean agentes (preguntas y 🧊 atascadas, la más antigua antes), luego las
         tarjetas de decisión por antigüedad. Con ≤5 en total, o con `show_all`, la bandeja completa de siempre."""
@@ -953,8 +961,8 @@ class CommandCenter:
             self._send(where, self.untagged_line(untagged))
 
     def cmd_atencion(self, where, args: str, brand: str | None) -> None:
-        """Todo lo que espera a Oscar (preguntas, 🧊 atascadas y tarjetas de decisión) con sus botones, sin recorte."""
-        self.cmd_decisiones(where, args, brand, show_all=True)
+        """Atajo de `/pendiente atencion`: preguntas, 🧊 atascadas y tarjetas de decisión con botones, sin recorte."""
+        self.cmd_pendiente(where, "atencion " + args, brand)
 
     # --- vistas por paso del título (titulos.py): fuera de la cola de Telegram ------------------------------------
 
@@ -1032,8 +1040,11 @@ class CommandCenter:
 
     # --- /pendiente: bandeja única «Lo tuyo» (lo_tuyo.py) ----------------------------------------------------------
 
-    def lo_tuyo_items(self, brand: str | None = None) -> list[dict]:
-        """Todo lo que espera a Oscar, de las fuentes de siempre. Una fuente que falla no vacía la bandeja."""
+    def lo_tuyo_items(self, brand: str | None = None, timeout: float | None = None) -> tuple[list[dict], list[str]]:
+        """(ítems, fuentes lentas): todo lo que espera a Oscar, de las fuentes de siempre. Una fuente que falla no vacía
+        la bandeja y una que pasa de `timeout` segundos (default de lo_tuyo.yaml) se deja fuera y se avisa."""
+        if timeout is None:
+            timeout = _lo_tuyo.load_ajustes(getattr(self, "lo_tuyo_settings", None)).timeout_segundos
         def board_of(lane):
             return getattr(self.lanes.get(lane), "board", "")
 
@@ -1057,19 +1068,29 @@ class CommandCenter:
                    ("validaciones de ops", lambda: [] if brand else _lo_tuyo.de_validar_ops(self.lanes, self.hermes_for)),
                    ("cola del integrador", cola), ("PR de sesiones", externos), ("tarjetas tuyas", tuyo),
                    ("estado del integrador", lambda: [] if brand else _lo_tuyo.de_estado(self.estado_integrador())))
-        out: list[dict] = []
-        for name, fn in fuentes:
-            try:
-                out += fn()
-            except Exception as exc:
-                log.warning("/pendiente: %s no leído: %s", name, exc)
-        return out
+        return _lo_tuyo.recoger(fuentes, timeout)
 
     def cmd_pendiente(self, where, args: str, brand: str | None) -> None:
-        """UN mensaje con todo lo tuyo agrupado por prioridad y un botón por línea (cada botón abre la ficha de siempre)."""
-        aj = _lo_tuyo.load_ajustes(getattr(self, "lo_tuyo_settings", None))
-        text, shown = _lo_tuyo.render(self.lo_tuyo_items(brand), aj, self._now(), f" · {brand}" if brand else "")
-        self._send(where, text, html=False, markup=self._lo_tuyo_markup(shown))
+        """Bandeja única. `/pendiente [todo|decisiones|atencion|estado|falta] [marca]`: sin filtro, «Lo tuyo» en UN mensaje
+        agrupado por prioridad con un botón por línea; los demás filtros son las vistas de siempre (/decisiones,
+        /atencion, /estado y /falta son atajos que llaman aquí). Si Hermes va lento responde parcial, con aviso."""
+        filtro, _, resto = args.strip().partition(" ")
+        filtro = filtro.lower()
+        if filtro not in FILTROS_PENDIENTE:
+            filtro, resto = "todo", args.strip()
+        if filtro == "decisiones":
+            self._vista_decisiones(where, resto, brand)
+        elif filtro == "atencion":
+            self._vista_decisiones(where, resto, brand, show_all=True)
+        elif filtro == "estado":
+            self._vista_estado(where, resto, brand)
+        elif filtro == "falta":
+            self._vista_falta(where, resto, brand)
+        else:
+            aj = _lo_tuyo.load_ajustes(getattr(self, "lo_tuyo_settings", None))
+            items, lentas = self.lo_tuyo_items(brand, aj.timeout_segundos)
+            text, shown = _lo_tuyo.render(items, aj, self._now(), f" · {brand}" if brand else "", lentas)
+            self._send(where, text, html=False, markup=self._lo_tuyo_markup(shown))
 
     def _lo_tuyo_markup(self, shown: list[dict]) -> dict | None:
         """Un token por botón (cada uno de un solo uso e independiente), todos en el mismo teclado de dos columnas."""
@@ -1114,7 +1135,7 @@ class CommandCenter:
             return lambda: store.issue(rec, [[{"text": verbo, "action": action}]])[1]
 
         return [canal_avisos.semilla(it, markup_de(it), _lo_tuyo.verbo(it), now)
-                for it in _lo_tuyo.ordenar(self.lo_tuyo_items(None), aj, now)]
+                for it in _lo_tuyo.ordenar(self.lo_tuyo_items(None)[0], aj, now)]
 
     def lt_open(self, rec: dict, where: dict) -> bool:
         """Botón de una línea de /pendiente: la ficha de esa cosa, con los botones que le tocan hoy (siempre fresca)."""
@@ -2101,6 +2122,10 @@ class CommandCenter:
         return True
 
     def cmd_estado(self, where, args: str, brand: str | None) -> None:
+        """Atajo de `/pendiente estado [marca]`."""
+        self.cmd_pendiente(where, "estado " + args, brand)
+
+    def _vista_estado(self, where, args: str, brand: str | None) -> None:
         from .peticiones import PROYECTOS
         proyecto = next((p for p in PROYECTOS if args.strip().lower() == p.lower()), None)
         if (self.registro_peticiones() is not None and not args.strip()) or proyecto:
@@ -2252,6 +2277,10 @@ class CommandCenter:
         return text, self.desk.store.issue(rec, spec)[1]
 
     def cmd_falta(self, where, args: str, brand: str | None) -> None:
+        """Atajo de `/pendiente falta [marca]`."""
+        self.cmd_pendiente(where, "falta " + args, brand)
+
+    def _vista_falta(self, where, args: str, brand: str | None) -> None:
         if args:
             brand = BRAND_ARGS.get(args.split()[0].lower())
             if not brand:
