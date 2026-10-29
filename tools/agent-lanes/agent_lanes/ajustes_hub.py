@@ -30,6 +30,9 @@ GRUPOS = ("Avisos", "Atascos", "Lotes", "Carriles")
 AVANZADO = "Avanzado"
 HORA_RE = re.compile(r"(?:[01]\d|2[0-3]):[0-5]\d")
 PATH_RE = re.compile(r"[\w.\-]+(?:/[\w.\-]+)*")
+LOTE_RIESGO = (".env", "environment", "secret", "token", "credential", "stripe", "billing", "payment", "pago", "checkout",
+               "factur", "invoice", "cliente", "customer", "migration", "alembic", "supabase", "dockerfile", "docker-compose",
+               ".github", "railway", "vercel", "dokploy", "deploy", "produccion", "production", "auth")
 SOLO_ANADIR = ("docs/kb/CHANGELOG.md", "docs/kb/LEDGER_ESTATUS.md", "docs/kb/archivo/CHANGELOG.md", "CHANGELOG.md")
 
 
@@ -84,6 +87,13 @@ def _build() -> dict[str, Ajuste]:
         Ajuste("avisos.revision_ventana_horas", "Avisos", "Horas máximas hasta el resumen de tarjetas listas", 2.0,
                "float", "Si no se llena el lote, el resumen sale cuando la tarjeta más antigua cumple estas horas.", 0.25,
                24, (1, 2, 4, 8)),
+        Ajuste("avisos.lote_aprobar_min", "Avisos", "Tarjetas de bajo riesgo para ofrecer «Aprobar todas»", 5, "int",
+               "Con tantas tarjetas de bajo riesgo del mismo carril, el resumen ofrece aprobarlas de una vez.", 2, 50,
+               (3, 5, 8, 10)),
+        Ajuste("avisos.lote_rutas_riesgo", "Avisos", "Palabras que sacan una tarjeta del lote de bajo riesgo",
+               LOTE_RIESGO, "lista",
+               "Si una de estas palabras aparece en un archivo cambiado o en el título, la tarjeta se aprueba sola, no "
+               "en lote (entorno, pagos, datos de cliente, migraciones, deploy). Separadas por comas.", avanzado=True),
         Ajuste("avisos.estado_max_horas", "Avisos", "Horas tras las que el estado del integrador se da por viejo",
                None, "float", "Sin editar vale el de integrador_visibilidad.yaml (24).", 1, 168, (6, 12, 24, 48)),
         Ajuste("avisos.resumen_pasos", "Avisos", "Pasos del resumen corto del integrador", None, "int",

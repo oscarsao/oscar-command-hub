@@ -140,10 +140,18 @@ class ReviewRunner:
     def notify(self, state: str, task: dict, status: str, *, alert: bool = False,
                bullets: list[str] | None = None, changed_files=None, buttons: bool = False,
                block_kind: str | None = None, questions=None, summary: str | None = None,
-               for_oscar: str | None = None, yes_no: bool = True, test_exit=None, deps=None) -> None:
-        """Edita el mensaje único de la tarea (o envía uno nuevo si `alert`). `status` es texto público."""
+               for_oscar: str | None = None, yes_no: bool = True, test_exit=None, deps=None,
+               findings=None) -> None:
+        """Edita el mensaje único de la tarea (o envía uno nuevo si `alert`). `status` es texto público.
+        `findings`: hallazgos de la review aprobada (None = desconocidos: la tarjeta no entra en el lote de bajo riesgo)."""
         target = telegram_target(task.get("body"))
-        alert = avisos_revision.interceptar(state, task, status, alert, summary=summary, for_oscar=for_oscar)
+        try:
+            revisada = telegram_lane.lane_de_tarjeta(self.lanes, task)
+        except Exception:  # el aviso sigue su curso aunque no se resuelva el carril (el bucle de abajo lo reintenta)
+            revisada = None
+        politica = (self._integration.policies.get(revisada.name) if (self._integration and revisada) else None)
+        alert = avisos_revision.interceptar(state, task, status, alert, summary=summary, for_oscar=for_oscar,
+                                            lane=revisada, changed_files=changed_files, findings=findings, policy=politica)
         mirror = dm_mirror(self._decisions, target, alert, state)
         for attempt in (1, 2):  # un aviso que falla se reintenta UNA vez
             try:
@@ -424,7 +432,7 @@ class ReviewRunner:
                 None if cleaned else "limpieza local pendiente"), alert=True,
                 changed_files=meta.get("changed_files"), buttons=True,
                 summary=verdict.get("summary") or meta.get("summary"), for_oscar=meta.get("for_oscar"),
-                test_exit=check.test_exit, deps=self._deps(h, tid, show))
+                test_exit=check.test_exit, deps=self._deps(h, tid, show), findings=verdict.get("findings") or [])
             return "done"
 
         changes = verdict.get("required_changes") or [verdict.get("summary", "")]
