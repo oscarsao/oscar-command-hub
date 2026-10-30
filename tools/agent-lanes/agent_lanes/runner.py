@@ -12,7 +12,7 @@ import uuid
 from pathlib import Path
 from typing import Callable, NamedTuple
 
-from . import avisos_revision, bloqueos, canal_avisos, clasificador, grandes, holds, telegram_lane
+from . import avisos_revision, bloqueos, canal_avisos, clasificador, cuota, grandes, holds, telegram_lane
 from . import consulta as _consulta
 from . import deps
 from . import proc as _proc
@@ -122,8 +122,14 @@ class LaneRunner:
                  repo_guard: Callable[[Lane], str | None] | None = None,
                  kill: Callable[[int], None] = _proc.kill_tree,
                  created_at: Callable[[int], float | None] = _proc.created_at,
-                 lanes: dict | None = None, consultor: Callable | None = None, final_only=(), prevencion=None):
+                 lanes: dict | None = None, consultor: Callable | None = None, final_only=(), prevencion=None,
+                 cuota_path: Path | None = None, cuota_minutos: float = cuota.DEFAULT_MINUTOS,
+                 wall_clock: Callable[[], float] = time.time):
         self.lane = lane
+        # Pausa por cuota de Claude: .state/cuota.json junto al estado de las tareas; minutos si el error no trae la hora.
+        self._cuota_path = Path(cuota_path) if cuota_path else Path(state_dir).parent / "cuota.json"
+        self._cuota_minutos = cuota_minutos
+        self._wall = wall_clock
         # prevencion.Prevencion: una ready que choca con trabajo en marcha del mismo repo no se lanza en paralelo
         # (choques.yaml → prevenir_al_lanzar). None = sin prevención (tests, carriles sin repo).
         self._prevencion = prevencion
@@ -496,9 +502,11 @@ class LaneRunner:
                     conflict = self.git.sync_base(lane, cwd)
                     if conflict:
                         task = {**task, "merge_conflict": conflict}
+                task = self._model_fallback(tid, task)
                 outcome = self.worker.run(lane, task, cwd, session_id, timeout=max(60.0, deadline - self.clock()))
                 resumes = 0
-                while not outcome.ok and resumes < lane.max_resumes and deadline - self.clock() > 60:
+                while (not outcome.ok and not cuota.es_cuota(outcome.raw_error) and resumes < lane.max_resumes
+                       and deadline - self.clock() > 60):
                     resumes += 1
                     log.info("%s: resume %d tras %s", tid, resumes, outcome.subtype)
                     outcome = self.worker.resume(lane, cwd, session_id, timeout=max(60.0, deadline - self.clock()), task_id=tid)
@@ -509,6 +517,8 @@ class LaneRunner:
             except Exception as exc:
                 return self._block(tid, "transient", f"error del runner: {exc}", task, public="error del runner")
 
+            if not outcome.ok and cuota.es_cuota(outcome.raw_error):
+                return self._pausar_por_cuota(tid, task, outcome.raw_error)
             if not outcome.ok:
                 why = "max_runtime alcanzado" if deadline - self.clock() <= 60 else f"tras {resumes} resume(s)"
                 return self._block(tid, "transient",
@@ -570,6 +580,40 @@ class LaneRunner:
                 "en review", files_label(len(result.get("changed_files") or [])), test_label(check.test_exit),
                 money(outcome.cost_usd)), changed_files=result.get("changed_files"), for_oscar=result.get("for_oscar"))
             return "review"
+
+    def _pausar_por_cuota(self, tid: str, task: dict, raw_error: str | None) -> str:
+        """Cuota de Claude agotada: la tarea vuelve a ready (no es un bloqueo repetido ni gasta resumes), se anota la
+        pausa en cuota.json y el planificador no lanza más workers hasta la hora de reset. UN aviso por pausa."""
+        now = self._wall()
+        until = cuota.pausa_hasta(raw_error, now, self._cuota_minutos)
+        nueva = cuota.escribir(self._cuota_path, until, str(raw_error or ""), now)
+        reason = f"{cuota.MOTIVO_PREFIX} hasta {cuota.hora(until)}; la tarjeta vuelve a ready sola"
+        log.warning("%s: %s", tid, reason)
+        # Hermes no tiene «soltar»: block + unblock la deja en ready. El prefijo del motivo la distingue de un fallo real
+        # (ver _model_fallback) y la pausa impide que el runner la reclame de nuevo antes de la hora de reset.
+        if self._bloquear(tid, "transient", reason):
+            if not self.hermes.unblock(tid):
+                log.error("%s: no se pudo devolver a ready tras la pausa por cuota; queda bloqueada", tid)
+        if nueva:
+            self.notify("running", tid, task, status_line("en pausa", "se agotó la cuota de uso de Claude",
+                                                          f"se reanuda a las {cuota.hora(until)}"), alert=True)
+        return "cuota"
+
+    def _model_fallback(self, tid: str, task: dict) -> dict:
+        """Tarjeta `Tamaño: S` con model_small: si la tarjeta ya se bloqueó (transient) o falló antes con ese modelo, el
+        intento siguiente va con lane.model (`model_fallback` en la tarea; lo lee worker.choose_model). Las devoluciones
+        por cuota no cuentan. Sin poder leer el historial, se queda con el modelo barato."""
+        if not (getattr(self.lane, "model_small", "") and grandes.es_pequena(task)):
+            return task
+        try:
+            events = (self.hermes.show(tid) or {}).get("events") or []
+        except Exception as exc:
+            log.info("%s: historial para elegir modelo no leído: %s", tid, exc)
+            return task
+        fallos = [ev for ev in events if ev.get("kind") == "blocked"
+                  and (ev.get("payload") or {}).get("kind") == "transient"
+                  and not str((ev.get("payload") or {}).get("reason") or "").startswith(cuota.MOTIVO_PREFIX)]
+        return {**task, "model_fallback": True} if fallos else task
 
     def _clear_retry(self, tid: str) -> None:
         """La tarea llegó a review tras un Reintentar: el ciclo terminó y un bloqueo posterior ya no es "del reintento"."""

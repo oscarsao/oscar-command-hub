@@ -30,6 +30,9 @@ TRANSITORIO, ESTRUCTURAL, DESCONOCIDO = "transitorio", "estructural", "desconoci
 CLASES = (TRANSITORIO, ESTRUCTURAL)
 BUTTON_IDS = ("retry", "park", "integrador", "detalle")
 
+# Cuota/límite de uso de Claude (cuota.py reutiliza el regex para pausar el planificador hasta la hora de reset).
+CUOTA_REGEX = r"usage limit|hit your limit|limit reached|resets? (at|in) "
+
 DEFAULTS: dict = {
     # El primer patrón que casa gana (sin distinguir mayúsculas). `regex` se busca dentro del motivo técnico.
     "patrones": [
@@ -51,6 +54,9 @@ DEFAULTS: dict = {
         {"clase": TRANSITORIO, "regex": r"cannot lock ref|unable to create '.*\.lock'",
          "resumen": "git no pudo bloquear una referencia (dos carriles a la vez)",
          "que_falta": "nada: basta reintentar"},
+        {"clase": TRANSITORIO, "regex": CUOTA_REGEX,
+         "resumen": "se agotó la cuota de uso de Claude",
+         "que_falta": "nada: el carril se pausa solo y se reanuda a la hora de reset"},
         {"clase": TRANSITORIO, "regex": r"timed out|max_runtime|el worker no terminó|tiempo o presupuesto",
          "resumen": "el worker se quedó sin tiempo o sin presupuesto",
          "que_falta": "reintentar; si se repite, partir la tarea en otras más pequeñas"},
