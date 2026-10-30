@@ -27,6 +27,7 @@ from .worker import WorkerOutcome, render_settings, run_claude
 
 log = logging.getLogger("agent_lanes")
 
+LIMPIEZA_LOG_PATH = ROOT / ".state" / "limpieza_pendiente_log.json"  # {tid: "AAAA-MM-DD"} del último WARNING
 REVIEW_SCHEMA_PATH = ROOT / "contract" / "review.schema.json"
 REVIEW_SETTINGS = ROOT / "contract" / "reviewer-settings.json"
 CERRADAS = ("done", "archived")  # tarjetas que el carril de revisión no debe tocar
@@ -39,6 +40,27 @@ COMPLETE_INTENTOS = 3  # intentos de `hermes kanban complete` antes de aparcar l
 COMPLETE_ESPERA = 10  # s; espera creciente: 10 s antes del 2.º intento, 20 s antes del 3.º
 RECHEQUEO_ESCALADA = 120  # s entre relecturas de una tarjeta escalada (¿cabeza nueva? ¿aprobada?) al elegir trabajo
 SIN_COMMITS = "la rama no tiene commits sobre la base; empuja el trabajo"
+
+
+def log_limpieza_pendiente(tid: str, msg: str, *, hoy: str | None = None, path: Path | None = None) -> bool:
+    """WARNING «limpieza local pendiente» como mucho una vez por tarea y día (cada pasada lo repetía: 14.800 líneas en
+    5 días). True si se registró. La fecha vive en un fichero pequeño de .state; ilegible = se registra."""
+    hoy, path = hoy or time.strftime("%Y-%m-%d"), Path(path or LIMPIEZA_LOG_PATH)
+    try:
+        vistos = json.loads(path.read_text(encoding="utf-8"))
+        vistos = vistos if isinstance(vistos, dict) else {}
+    except (OSError, ValueError):
+        vistos = {}
+    if vistos.get(tid) == hoy:
+        return False
+    log.warning("%s: limpieza local pendiente: %s", tid, msg)
+    vistos[tid] = hoy
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(vistos, ensure_ascii=False), encoding="utf-8", newline="\n")
+    except OSError as exc:
+        log.info("limpieza pendiente: estado no guardado: %s", exc)
+    return True
 
 
 def aprobada_por_oscar(show: dict) -> bool:
@@ -423,7 +445,7 @@ class ReviewRunner:
                                    public="el kanban rechazó el cierre")
             cleaned, msg = self.git.cleanup(lane, tid)
             if not cleaned:  # detalle técnico solo al log y a la tarjeta
-                log.warning("%s: limpieza local pendiente: %s", tid, msg)
+                log_limpieza_pendiente(tid, msg)
                 h.comment(tid, f"Limpieza local pendiente: {msg}"[:1500])
             cost = sum(float(c or 0) for c in (meta.get("cost_usd"), outcome.cost_usd))
             self.notify("done", task, status_line(

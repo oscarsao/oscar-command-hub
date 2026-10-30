@@ -279,3 +279,15 @@ def test_si_hermes_no_lee_los_activos_vuelve_a_la_regla_de_antiguedad(tmp_path):
     g = FakeGit({"lane/t_0000000a": (NOW, "x", [CMD])})
     b = Media([card("t_0000000a", "otra cosa", "done"), card("t_00000002", CMD)])
     assert prev(tmp_path, b, g).filtrar(LANE, ready(b), b) == []                     # rama reciente: frena como antes
+
+
+def test_zona_declarada_dos_ready_sin_rama_no_salen_a_la_vez(tmp_path):
+    """«Zona:» sin ficheros con extensión: nivel «archivo» (por defecto) las trata igualmente como zona común."""
+    def tarjeta(tid, zona):
+        return {"id": tid, "assignee": "claude-hub", "status": "ready", "title": f"tarea {tid}",
+                "body": f"Mejorar la pantalla.\nzona: {zona}\nTamaño: S"}
+    b = Board([tarjeta("t_00000001", "dashboard/src/app/ideas"), tarjeta("t_00000002", "Dashboard/src/app/ideas/")])
+    assert ids(prev(tmp_path, b).filtrar(LANE, ready(b), b)) == ["t_00000001"]
+    assert "t_00000001" in b.notas("t_00000002", MARCA)[0]
+    b2 = Board([tarjeta("t_00000003", "dashboard/src/app/ideas"), tarjeta("t_00000004", "dashboard/src/app/otra")])
+    assert ids(prev(tmp_path, b2).filtrar(LANE, ready(b2), b2)) == ["t_00000003", "t_00000004"]

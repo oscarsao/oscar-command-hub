@@ -52,6 +52,8 @@ URL_RE = re.compile(r"https?://\S+")
 TOKEN_RE = re.compile(r"[\w.\-]+(?:/[\w.\-]+)*/?")
 # ruta absoluta: «c:/…», «~/…» o «/algo/otro…» (con al menos dos tramos), no pegada a otra palabra o ruta
 ABS_RE = re.compile(r"(?:(?<![\w.\-/])[a-z]:/|(?<![\w.\-/:])~/|(?<![\w.\-/:])/(?=[\w.\-]+/))[\w.\-/]*")
+ZONA_RE = re.compile(r"^[ \t>*-]*zona[ \t]*:[ \t]*(.+)$", re.IGNORECASE | re.MULTILINE)
+ZONA = "zona:"  # prefijo interno de las carpetas declaradas en «Zona:»: chocan por contener/ser contenidas, a cualquier nivel
 MAX_ESTADO = 500  # claves recordadas en el fichero de estado
 DESCARTES_PATH = ROOT / ".state" / "solapes_descartados.json"
 SOL_FUSIONAR, SOL_DISTINTAS, SOL_LUEGO = "sol_fusionar", "sol_distintas", "sol_luego"
@@ -115,11 +117,34 @@ def _norm_repo(path: str) -> str:
     return (path or "").replace("\\", "/").rstrip("/").lower()
 
 
+def _zona_declarada(texto: str, ajustes: Ajustes, base: str) -> set[str]:
+    """Rutas de las líneas «Zona: a/b, c.py» (sin distinguir mayúsculas). Un fichero va tal cual; lo demás se toma por
+    carpeta («dashboard/src/app/ideas» = «dashboard/src/app/ideas/») y, además, con el prefijo ZONA para que dos
+    tarjetas con la misma zona choquen aunque el nivel sea «archivo»."""
+    exts, out = set(ajustes.extensiones), set()
+    for linea in ZONA_RE.findall((texto or "").replace("\\", "/")):
+        for item in linea.split(","):
+            r = item.strip().strip("`'\"()[]").lower().removeprefix("./").lstrip("/")
+            if base and r.startswith(base + "/"):
+                r = r[len(base) + 1:]
+            partes = [p for p in r.split("/") if p]
+            if not partes or any(c.isspace() for c in r) or r.startswith(("http", "~")):
+                continue
+            ext = partes[-1].rsplit(".", 1)[-1] if "." in partes[-1] else ""
+            if ext in exts and len(partes[-1]) > len(ext) + 1:
+                out.add("/".join(partes))
+            else:
+                carpeta = "/".join(partes) + "/"
+                out.update({carpeta, ZONA + carpeta})
+    return out
+
+
 def extraer_rutas(texto: str, ajustes: Ajustes, repo: str = "") -> set[str]:
-    """Rutas (ficheros y carpetas con «/» final) mencionadas en un texto, normalizadas en minúsculas y con «/»."""
+    """Rutas (ficheros y carpetas con «/» final) mencionadas en un texto, normalizadas en minúsculas y con «/».
+    La línea «Zona:» de la tarjeta (contract/task-template.md) se lee primero y cuenta como zona de la tarjeta."""
     exts = set(ajustes.extensiones)
     base = re.sub(r"^[a-z]:/", "", _norm_repo(repo))  # el TOKEN_RE no recoge «c:»
-    out: set[str] = set()
+    out: set[str] = _zona_declarada(texto, ajustes, base)
 
     def _absoluta(m: re.Match) -> str:
         """Una ruta absoluta solo cuenta si está dentro del repo de la tarjeta (queda relativa); carpetas temporales,
@@ -173,9 +198,11 @@ def compartido(a: set[str], b: set[str], ajustes: Ajustes) -> list[str]:
         for y in sorted(b):
             if _casan_ficheros(x, y):
                 found.append(f"archivo {max(x, y, key=len)}")
+            elif x.startswith(ZONA) and y.startswith(ZONA) and (x.startswith(y) or y.startswith(x)):
+                found.append(f"zona {max(x, y, key=len)[len(ZONA):]}")  # una carpeta declarada contiene a la otra
     if ajustes.nivel == "modulo":
-        da = {c for c in map(_carpeta, a) if c}
-        db = {c for c in map(_carpeta, b) if c}
+        da = {c for c in map(_carpeta, a) if c and not c.startswith(ZONA)}
+        db = {c for c in map(_carpeta, b) if c and not c.startswith(ZONA)}
         for c in sorted(da & db):
             if len(c.split("/")) >= ajustes.modulo_min_profundidad:
                 found.append(f"carpeta {c}/")
