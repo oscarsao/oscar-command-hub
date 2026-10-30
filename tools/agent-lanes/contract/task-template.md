@@ -12,6 +12,11 @@
 ## Fuera de alcance
 - <Lo que NO se toca.>
 
+## Zona
+Zona: <rutas o módulos que tocará, separados por comas>
+Tamaño: S | M | L
+<Sirve para que el runner no lance a la vez dos tarjetas que tocan lo mismo (prevención de choques): ponla siempre, aunque la tarjeta aún no tenga rama. Tamaño ayuda a repartir carga.>
+
 ## Modo OASP
 Fast-Track | Spec-Lite | Pitch
 
