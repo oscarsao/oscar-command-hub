@@ -554,6 +554,24 @@ class LaneRunner:
             if ops:
                 return self._to_review_ops(tid, task, session_id, cwd, resumes, outcome, result)
 
+            if hasattr(self.git, "poner_al_dia"):
+                # P4: rama al día con origin/<base> antes de review; el conflicto real vuelve al carril con sus ficheros.
+                try:
+                    dia = self.git.poner_al_dia(lane, cwd, tid)
+                except Exception as exc:
+                    log.warning("%s: rama al día no comprobada: %s", tid, exc)
+                    dia = None
+                if dia and dia.estado == "conflicto":
+                    return self._block(tid, "transient", f"{dia.detalle}; ficheros en conflicto: "
+                                       + ", ".join(dia.ficheros or ["(no listados)"]) + ". Se resuelve en el carril "
+                                       "(merge, sin rebase ni force).", task,
+                                       public="la rama choca con la base: vuelve al carril")
+                if dia and dia.estado == "tests":
+                    return self._block(tid, "transient", dia.detalle, task,
+                                       public="los tests fallan tras poner la rama al día con la base")
+                if dia and dia.estado == "fusionada":
+                    result = {**result, "head_sha": dia.sha}
+                    log.info("%s: rama puesta al día con la base (%s)", tid, dia.sha[:10])
             metadata = {
                 "lane": lane.name, "session_id": session_id, "worktree": cwd, "resumes": resumes,
                 "cost_usd": outcome.cost_usd, "verified": True, "test_cmd": lane.test_cmd,

@@ -11,6 +11,7 @@ import sys
 
 from . import pnpm_setup
 from . import proc as _proc
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from .config import Lane
@@ -39,6 +40,15 @@ def _borrar_arbol(path: Path) -> tuple[bool, str]:
     except OSError as exc:
         return False, f"carpeta huérfana no borrada: {str(exc)[:200]}"
     return (False, "carpeta huérfana no borrada del todo") if path.exists() else (True, "borrada")
+
+
+@dataclass
+class AlDia:
+    """Resultado de `GitOps.poner_al_dia`: estado ∈ al_dia | fusionada | omitida | conflicto | tests."""
+    estado: str
+    ficheros: list[str] = field(default_factory=list)  # ficheros en conflicto (estado «conflicto»)
+    sha: str = ""  # HEAD nuevo, ya empujado (estado «fusionada»)
+    detalle: str = ""
 
 
 class GitOps:
@@ -102,6 +112,53 @@ class GitOps:
             return out[-600:]
         log.warning("sync_base %s: merge %s falló sin conflicto: %s", path, ref, out[-200:])
         return None
+
+    def poner_al_dia(self, lane: Lane, path: str, task_id: str) -> AlDia:
+        """P4: antes de pasar a review, la rama al día con <remote>/<base> si esta avanzó y la fusión es limpia.
+
+        Merge (nunca rebase ni force) y se repite el test_cmd del carril; si pasa se empuja la rama propia. Con conflicto
+        real NO se resuelve a ciegas: se devuelven los ficheros. Si los tests fallan se deshace el merge local. Cualquier
+        fallo de git (sin `merge-tree --write-tree`, red…) = «omitida»: la tarea sigue su camino como antes."""
+        from .verify import render_test_cmd  # import tardío: verify no depende de git_ops
+
+        ref, branch = f"{lane.remote}/{lane.base}", f"lane/{task_id}"
+
+        def git(*args, timeout=300):
+            return self._run(["git", "-C", path, *args], capture_output=True, text=True, encoding="utf-8",
+                             errors="replace", timeout=timeout)
+        try:
+            if git("fetch", lane.remote, lane.base).returncode != 0:
+                return AlDia("omitida", detalle="fetch falló")
+            atras = git("rev-list", "--count", f"HEAD..{ref}")
+            if atras.returncode != 0:
+                return AlDia("omitida", detalle="rev-list falló")
+            if atras.stdout.strip() in ("", "0"):
+                return AlDia("al_dia")
+            mt = git("merge-tree", "--write-tree", "--name-only", "--no-messages", "HEAD", ref)
+            if mt.returncode == 1:  # conflicto real: 1.ª línea = árbol, después los ficheros hasta la línea en blanco
+                lineas = mt.stdout.splitlines()[1:]
+                ficheros = [l.strip() for l in lineas[:lineas.index("")] if l.strip()] if "" in lineas                     else [l.strip() for l in lineas if l.strip()]
+                return AlDia("conflicto", ficheros=ficheros, detalle=f"{ref} choca con {branch}")
+            if mt.returncode != 0:
+                return AlDia("omitida", detalle=f"merge-tree no disponible: {mt.stderr.strip()[:150]}")
+            antes = git("rev-parse", "HEAD").stdout.strip()
+            if git("merge", "--no-edit", ref).returncode != 0:
+                git("merge", "--abort")
+                return AlDia("omitida", detalle="merge falló sin conflicto en merge-tree")
+            if lane.test_cmd:
+                t = self._run(render_test_cmd(lane), shell=True, cwd=path, capture_output=True, text=True,
+                              encoding="utf-8", errors="replace", timeout=1800)
+                if t.returncode != 0:
+                    git("reset", "--hard", antes)  # la rama propia vuelve a como estaba: nada fusionado a medias
+                    return AlDia("tests", detalle=f"test_cmd falló tras fusionar {ref} (exit {t.returncode}): "
+                                 f"{(t.stdout + t.stderr).strip()[-300:]}")
+            if git("push", lane.remote, f"HEAD:refs/heads/{branch}").returncode != 0:
+                git("reset", "--hard", antes)
+                return AlDia("omitida", detalle="push de la rama fusionada rechazado")
+            return AlDia("fusionada", sha=git("rev-parse", "HEAD").stdout.strip())
+        except (OSError, subprocess.SubprocessError, ValueError) as exc:
+            log.warning("poner_al_dia %s: %s", path, exc)
+            return AlDia("omitida", detalle=str(exc)[:150])
 
     def _fetch_remote_lane(self, lane: Lane, branch: str) -> bool:
         """True si <remote>/lane/<id> existe (y queda actualizada en refs/remotes)."""
