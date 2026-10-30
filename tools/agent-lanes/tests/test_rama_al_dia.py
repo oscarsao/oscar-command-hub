@@ -111,3 +111,16 @@ def test_runner_fusionada_pasa_a_review_con_el_sha_nuevo():
     res, h = _run({"estado": "fusionada", "sha": "b" * 40})
     assert res == {"t_1": "review"}
     assert [c for c in h.calls if c[0] == "review"][0][3]["head_sha"] == "b" * 40
+
+
+def test_limpieza_pendiente_se_registra_una_vez_por_tarea_y_dia(tmp_path, caplog):
+    from agent_lanes.review import log_limpieza_pendiente as lp
+    f = tmp_path / "l.json"
+    with caplog.at_level("WARNING", logger="agent_lanes"):
+        assert lp("t_1", "x", hoy="2026-10-30", path=f) is True
+        assert lp("t_1", "x", hoy="2026-10-30", path=f) is False   # misma tarea, mismo día
+        assert lp("t_2", "x", hoy="2026-10-30", path=f) is True    # otra tarea
+        assert lp("t_1", "x", hoy="2026-10-31", path=f) is True    # otro día
+    assert len([r for r in caplog.records if "limpieza local pendiente" in r.getMessage()]) == 3
+    f.write_text("{no json", encoding="utf-8")
+    assert lp("t_1", "x", hoy="2026-10-31", path=f) is True        # estado ilegible: se registra
