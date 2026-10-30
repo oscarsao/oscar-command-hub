@@ -60,9 +60,15 @@ def test_es_cuota_y_hora_de_reset():
     assert cuota.es_cuota(LIMITE) and not cuota.es_cuota("subtype=error_max_budget_usd")
     assert cuota.hora(cuota.pausa_hasta("resets 6pm", AHORA)) == "18:00"
     assert cuota.hora(cuota.pausa_hasta("usage limit, resets at 18:30", AHORA)) == "18:30"
-    assert cuota.hora(cuota.pausa_hasta("limit reached, resets 9am", AHORA)) == "09:00"  # ya pasó hoy: mañana
+    assert cuota.pausa_hasta("usage limit, resets 9am", AHORA) == AHORA + cuota.MAX_MINUTOS * 60  # mañana = 19 h: tope de 6 h
     assert cuota.pausa_hasta("resets in 2 hours", AHORA) == AHORA + 7200
     assert cuota.pausa_hasta("usage limit", AHORA, 45) == AHORA + 45 * 60  # sin hora legible: ahora + minutos
+
+
+def test_un_error_ajeno_a_la_cuota_no_pausa_el_planificador():
+    for texto in ("limit reached", "retry, resets in 3 hours", "API rate limit exceeded", "request limit reached for this key"):
+        assert not cuota.es_cuota(texto), texto
+    assert cuota.es_cuota("You've hit your limit") and cuota.es_cuota("usage limit")
 
 
 class FakeHermesCuota(FakeHermes):

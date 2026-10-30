@@ -18,6 +18,7 @@ log = logging.getLogger("agent_lanes")
 
 PATH = ROOT / ".state" / "cuota.json"
 DEFAULT_MINUTOS = 60
+MAX_MINUTOS = 360  # tope de una pausa: un error mal leído no puede parar el planificador un día entero
 MOTIVO_PREFIX = "pausa por cuota de Claude"  # motivo de la devolución a ready: no cuenta como fallo de la tarjeta
 _RESET_AT = re.compile(r"resets?\s+(?:at\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b", re.I)
 _RESET_IN = re.compile(r"resets?\s+in\s+(?:(\d+)\s*h\w*)?\s*(?:(\d+)\s*m\w*)?", re.I)
@@ -47,9 +48,11 @@ def _hora_reset(text: str, now: datetime) -> datetime | None:
 
 
 def pausa_hasta(raw_error: str | None, now: float, minutos: float = DEFAULT_MINUTOS) -> float:
-    """Epoch hasta el que se pausa: la hora de reset del mensaje (hora local) o, si no se lee, ahora + `minutos`."""
+    """Epoch hasta el que se pausa: la hora de reset del mensaje (hora local) o, si no se lee, ahora + `minutos`; nunca
+    más de MAX_MINUTOS."""
     reset = _hora_reset(str(raw_error or ""), datetime.fromtimestamp(now))
-    return reset.timestamp() if reset else now + minutos * 60
+    hasta = reset.timestamp() if reset else now + minutos * 60
+    return min(hasta, now + MAX_MINUTOS * 60)
 
 
 def vigente(path: Path = PATH, now: float | None = None) -> dict | None:

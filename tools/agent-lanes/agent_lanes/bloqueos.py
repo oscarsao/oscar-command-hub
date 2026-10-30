@@ -31,7 +31,7 @@ CLASES = (TRANSITORIO, ESTRUCTURAL)
 BUTTON_IDS = ("retry", "park", "integrador", "detalle")
 
 # Cuota/límite de uso de Claude (cuota.py reutiliza el regex para pausar el planificador hasta la hora de reset).
-CUOTA_REGEX = r"usage limit|hit your limit|limit reached|resets? (at|in) "
+CUOTA_REGEX = r"usage limit|hit your limit"  # estricto: un «limit reached» o «resets in» ajeno no debe pausar todo el planificador
 
 DEFAULTS: dict = {
     # El primer patrón que casa gana (sin distinguir mayúsculas). `regex` se busca dentro del motivo técnico.
