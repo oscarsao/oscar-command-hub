@@ -1013,6 +1013,14 @@ def test_binary_file_is_flagged_by_secret_scan():
     assert scan_secrets(d) == [("x.sqlite", 0, "archivo binario sin revisar")]
 
 
+def test_media_and_font_binaries_are_not_flagged_but_other_binaries_are():
+    for name in ("docs/x.jpg", "a/B.PNG", "f/y.woff2", "f/z.ttf"):
+        d = f"diff --git a/{name} b/{name}\nnew file mode 100644\nBinary files /dev/null and b/{name} differ\n"
+        assert scan_secrets(d) == [], name
+    d = "diff --git a/tool.exe b/tool.exe\nnew file mode 100644\nBinary files /dev/null and b/tool.exe differ\n"
+    assert scan_secrets(d) == [("tool.exe", 0, "archivo binario sin revisar")]
+
+
 def test_added_line_that_looks_like_header_does_not_blind_the_scan():
     body = f"+++ /dev/null\n+k = '{SECRET}'"
     assert scan_secrets(diff("a.py", body))[0][2] == "clave sk-"

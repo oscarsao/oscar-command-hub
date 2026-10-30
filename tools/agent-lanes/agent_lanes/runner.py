@@ -20,7 +20,7 @@ from .config import ROOT, Lane
 from .hermes import GUARD_LIMIT_MARK, looks_like_guard_limit
 from .notices import (MessageStore, TaskNotices, files_label, fit_reason, money, next_step, normalize_questions,
                       question_text, questions_block, render, status_line, test_label)
-from .preflight import preflight_warnings
+from .preflight import pide_lo_imposible, preflight_warnings
 from .telegram import in_scope, telegram_target
 
 log = logging.getLogger("agent_lanes")
@@ -487,6 +487,13 @@ class LaneRunner:
                         task = {**task, "clasificador_avisos": [m for _, m in veredicto.avisos]}
                     if veredicto.dudas:  # menciona producción/otro repo sin pedir actuar: se trabaja, con recordatorio
                         task = {**task, "clasificador_recordatorio": clasificador.load_config()["intencion"]["recordatorio"]}
+                # Enrutado previo (P7): si la tarjeta pide algo que un worker NUNCA puede (SQL remoto, producción,
+                # env vars de prod), no se lanza claude: va a la cola del integrador como limitacion_guard.
+                if not ops and not (feedback or answers or notes) and "clasificador: omitir" not in (task.get("body") or "").lower() \
+                        and (imposible := pide_lo_imposible(task)):
+                    return self._block_console(tid, task, f"(preflight) {imposible} — lo hace el integrador", {
+                        "summary": f"LIMITACION-GUARD (preflight): {imposible} — lo hace el integrador",
+                        "for_oscar": "Detectado antes de lanzar el worker: esta tarjeta necesita al integrador."})
                 # Aviso previo (antes de gastar la pasada): lo que pide la tarjeta y los límites del carril no
                 # permiten. Solo informa, una vez por tarea y arranque; no bloquea ni toca la config.
                 warns = [] if tid in self._preflighted else self._preflight(lane, tid, task)

@@ -330,9 +330,15 @@ def gate_fingerprint() -> str:
 
 # --- gates puros ---------------------------------------------------------------------------------------
 
+MEDIA_EXTS = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico", ".avif", ".bmp", ".woff", ".woff2", ".ttf", ".otf")
+
+
 def scan_secrets(diff: str) -> list[tuple[str, int, str]]:
     """Líneas AÑADIDAS de un diff unificado -> [(archivo, línea, regla)]. Nunca devuelve el valor.
-    Las cabeceras `---`/`+++` solo cuentan justo tras `diff --git` (una línea añadida `++ x` no es cabecera)."""
+    Las cabeceras `---`/`+++` solo cuentan justo tras `diff --git` (una línea añadida `++ x` no es cabecera).
+    Binarios: los de medios y fuentes (MEDIA_EXTS) no se marcan, porque una imagen o una fuente no lleva secretos de
+    texto revisables (JPG de referencia bloqueaban el push, t_ac097a32). El resto de binarios sigue bloqueando. El diff
+    de git no da el tamaño, así que no se comprueba."""
     hits, path, line, header = [], None, 0, False
     for raw in (diff or "").splitlines():
         if raw.startswith("diff --git "):
@@ -343,8 +349,9 @@ def scan_secrets(diff: str) -> list[tuple[str, int, str]]:
                 p = raw[4:].strip()
                 path = None if p == "/dev/null" else (p[2:] if p.startswith("b/") else p)
             elif raw.startswith("Binary files"):
-                hits.append((raw[13:].split(" and ")[-1].split(" differ")[0].removeprefix("b/"), 0,
-                             "archivo binario sin revisar"))
+                bpath = raw[13:].split(" and ")[-1].split(" differ")[0].removeprefix("b/")
+                if not bpath.lower().endswith(MEDIA_EXTS):
+                    hits.append((bpath, 0, "archivo binario sin revisar"))
             if not raw.startswith("@@"):
                 continue
             header = False

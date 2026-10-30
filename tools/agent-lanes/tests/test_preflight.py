@@ -75,3 +75,43 @@ def test_el_aviso_sale_una_sola_vez_por_tarea():
     h.claim_ok = True
     r.process(task("Crear migración alembic"))
     assert sum(1 for c in h.calls if c[0] == "comment" and "aviso previo" in c[2]) == 1
+
+
+# --- enrutado antes de reclamar (P7) ---------------------------------------------------------------------------------
+
+def test_pide_lo_imposible_detecta_sql_remoto_produccion_y_env_vars():
+    from agent_lanes.preflight import pide_lo_imposible
+    assert "base remota" in pide_lo_imposible(task("Aplica la migración en Supabase producción"))
+    assert "base remota" in pide_lo_imposible(task("Usa execute_sql para crear la tabla"))
+    assert "producción" in pide_lo_imposible(task("Despliega el cambio en Dokploy"))
+    assert "variables de entorno" in pide_lo_imposible(task("Cambia las variables de entorno en producción"))
+
+
+def test_pide_lo_imposible_ignora_limites_y_negaciones():
+    from agent_lanes.preflight import pide_lo_imposible
+    for body in ("Corrige el typo\nLímites: nada de producción ni de desplegar",
+                 "Sin desplegar nada, solo el código", "No apliques la migración en Supabase producción",
+                 "Documenta cómo es el entorno de producción", "Aplica la migración en local"):
+        assert pide_lo_imposible(task(body)) is None, body
+
+
+def _runner_sin_clasificador(monkeypatch, body):
+    from agent_lanes import clasificador
+    monkeypatch.setattr(clasificador, "evaluar", lambda *a, **k: type(
+        "V", (), {"va_al_integrador": False, "avisos": [], "dudas": []})())
+    h = FakeHermes(tasks=[task(body)])
+    w = FakeWorker([ok_outcome()])
+    return LaneRunner(LANE, hermes=h, git=FakeGit(), worker=w, verifier=FakeVerifier(), notify=FakeNotifier()), h, w
+
+
+def test_runner_no_lanza_worker_si_la_tarjeta_pide_lo_imposible(monkeypatch):
+    r, h, w = _runner_sin_clasificador(monkeypatch, "Aplica la migración en Supabase producción")
+    assert r.run_once() == {"t_1": "blocked:limitacion_guard"} and w.runs == []
+    block = next(c for c in h.calls if c[0] == "block")
+    assert block[2] == "needs_input" and "LIMITACION-GUARD:" in block[3] and "(preflight)" in block[3]
+    assert "lo hace el integrador" in block[3]
+
+
+def test_runner_lanza_worker_normal_con_limites_de_produccion(monkeypatch):
+    r, h, w = _runner_sin_clasificador(monkeypatch, "Corrige el typo\nLímites: nada de producción")
+    assert r.run_once() == {"t_1": "review"} and w.runs == ["run"]
