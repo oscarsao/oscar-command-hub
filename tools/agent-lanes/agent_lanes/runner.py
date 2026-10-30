@@ -309,6 +309,11 @@ class LaneRunner:
             self._block_pend: dict[str, tuple[str, str]] = {}
         return self._block_pend
 
+    def _unblock_pendiente(self) -> set:
+        if not hasattr(self, "_unblock_pend"):
+            self._unblock_pend: set[str] = set()
+        return self._unblock_pend
+
     def _bloquear(self, tid: str, kind: str, reason: str) -> bool:
         """`hermes block` con reintento: un timeout puede haber bloqueado ya la tarjeta (se mira el estado) o no (se
         repite). Así un needs_input no se queda en running para siempre."""
@@ -324,10 +329,16 @@ class LaneRunner:
 
     def _conciliar_bloqueos(self) -> None:
         """Bloqueos que no se pudieron hacer en la pasada anterior: se reintentan antes de reclamar nada."""
+        for tid in list(self._unblock_pendiente()):  # devoluciones a ready de una pausa por cuota que fallaron
+            if self.hermes.unblock(tid):
+                self._unblock_pendiente().discard(tid)
+                log.info("%s: devuelta a ready (pausa por cuota) conciliada", tid)
         for tid, (kind, reason) in list(self._block_pendiente().items()):
             if self._bloquear(tid, kind, reason):
                 del self._block_pendiente()[tid]
                 log.info("%s: bloqueo (%s) conciliado", tid, kind)
+                if reason.startswith(cuota.MOTIVO_PREFIX) and not self.hermes.unblock(tid):
+                    self._unblock_pendiente().add(tid)
 
     def _dependency_hold(self, tid: str) -> bool:
         """«Esperar a…» de Oscar (deps.WAIT_PREFIX): la tarjeta no se reclama mientras la dependencia siga pendiente.
@@ -618,7 +629,12 @@ class LaneRunner:
         # (ver _model_fallback) y la pausa impide que el runner la reclame de nuevo antes de la hora de reset.
         if self._bloquear(tid, "transient", reason):
             if not self.hermes.unblock(tid):
-                log.error("%s: no se pudo devolver a ready tras la pausa por cuota; queda bloqueada", tid)
+                log.error("%s: no se pudo devolver a ready tras la pausa por cuota; se reintenta en la pasada "
+                          "siguiente", tid)
+                self._unblock_pendiente().add(tid)
+        else:  # como en _block: sin bloqueo la tarjeta seguiría en running; _conciliar_bloqueos lo reintenta y la suelta
+            log.error("%s: no se pudo bloquear para la pausa por cuota; se concilia en la pasada siguiente", tid)
+            self._block_pendiente()[tid] = ("transient", reason)
         if nueva:
             self.notify("running", tid, task, status_line("en pausa", "se agotó la cuota de uso de Claude",
                                                           f"se reanuda a las {cuota.hora(until)}"), alert=True)

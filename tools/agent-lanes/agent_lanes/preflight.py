@@ -26,6 +26,9 @@ _MIGRATION_PATHS = ("alembic", "migrations")
 # Lo que un worker NUNCA puede hacer en su carril (guard): (patrón sobre UNA línea, qué se pide). Prudentes: piden
 # acción + objetivo remoto en la misma línea; una mención suelta («producción» a secas) no dispara.
 _REMOTE = r"(?:supabase|staging|producci[óo]n|\bprod\b|remot[ao])"
+# Objetivo de un despliegue: sin él («despliega el menú», «los tests pasan antes de desplegar») no se pide nada imposible.
+_PROD_TARGET = r"(?:producci[óo]n|\bprod\b|\bvercel\b|\brailway\b|\bdokploy\b)"
+_DEPLOY = r"(?:desplegar|despliega\w*|redespliega\w*|redeploy\w*|deploy\w*|despliegue)"
 _IMPOSIBLE = (
     (re.compile(r"\bexecute_sql\b|\bapply_migration\b", re.IGNORECASE),
      "ejecutar SQL o migraciones contra una base remota (Supabase/Alembic)"),
@@ -34,9 +37,8 @@ _IMPOSIBLE = (
                 rf"|\balembic\s+upgrade\b[^\n]*{_REMOTE}"
                 rf"|\b(?:ejecut\w+|corre|lanza|aplic\w+)\b[^\n]*\bsql\b[^\n]*{_REMOTE}", re.IGNORECASE),
      "ejecutar SQL o migraciones contra una base remota (Supabase/Alembic)"),
-    (re.compile(r"\b(?:desplegar|despliega|redespliega|redeploy)\b|\bdeploy\s+(?:a|en|to)\s+prod"
-                r"|\bvercel\s+(?:deploy|promote|--prod)\b|\brailway\s+(?:up|deploy|redeploy)\b"
-                r"|\b(?:despliega\w*|deploy\w*|reaplica\w*)\b[^\n]*\bdokploy\b|\bdokploy\b[^\n]*\b(?:deploy|despliegue)\b",
+    (re.compile(rf"\b{_DEPLOY}\b[^\n]*{_PROD_TARGET}|{_PROD_TARGET}[^\n]*\b{_DEPLOY}\b"
+                r"|\bvercel\s+(?:deploy|promote|--prod)\b|\brailway\s+(?:up|deploy|redeploy)\b",
                 re.IGNORECASE),
      "producción o despliegue (Dokploy, Vercel, Railway)"),
     (re.compile(r"\b(?:cambi\w+|a[ñn]ad\w+|actualiz\w+|configur\w+|modific\w+|rota\w*|set|pon\w*)\b[^\n]*"
@@ -45,6 +47,8 @@ _IMPOSIBLE = (
 )
 # Línea que niega o es un límite («Límites: nada de producción», «sin desplegar», «no cambies…»).
 _LIMITE = re.compile(r"^\s*[-*>]*\s*l[ií]mites?\s*:", re.IGNORECASE)
+# Cabecera que cierra un bloque «Límites:» multilínea («## Criterio», «Pruebas:»).
+_CABECERA = re.compile(r"^\s*(?:#+\s|[^\s\-*>][^\n:]{0,40}:\s*$)")
 _NEGADO = re.compile(r"\b(?:sin|nada\s+de|no|ni|nunca|jam[áa]s|tampoco|evita\w*|prohibido)\b", re.IGNORECASE)
 
 
@@ -53,13 +57,22 @@ def pide_lo_imposible(task: dict) -> str | None:
     producción o despliegue, env vars de producción), o None. Ignora las líneas «Límites:» y las que niegan antes de
     la coincidencia («sin desplegar», «nada de producción», «no apliques la migración en prod»)."""
     text = f"{task.get('title') or ''}\n{task.get('body') or ''}"
+    en_limites = False  # bajo una cabecera «Límites:» vacía: hasta la línea en blanco o la siguiente cabecera
     for line in text.splitlines():
         if _LIMITE.match(line):
+            en_limites = not _LIMITE.sub("", line).strip()
             continue
+        if en_limites:
+            if line.strip() and not _CABECERA.match(line):
+                continue
+            en_limites = False
         for pattern, what in _IMPOSIBLE:
             m = pattern.search(line)
-            if m and not _NEGADO.search(line[:m.start()]):
-                return what
+            if not m or _NEGADO.search(line[:m.start()]):
+                continue
+            if "despliegue" in what and _NEGADO.search(line[m.end():]):  # «despliega en prod: no», «prod, nunca»
+                continue
+            return what
     return None
 
 

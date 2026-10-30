@@ -215,3 +215,46 @@ def test_runner_marca_el_fallback_solo_con_fallos_reales(tmp_path):
         assert bool(r._model_fallback("t_1", PEQUENA).get("model_fallback")) is esperado, events
     r, *_ = runner_cuota(tmp_path, [ok_outcome()], lane=LANE)  # sin model_small: ni mira el historial
     assert r._model_fallback("t_1", PEQUENA) is PEQUENA
+
+
+class FakeHermesFalla(FakeHermesCuota):
+    """block falla `block_fallos` veces y unblock `unblock_fallos` veces antes de funcionar (el estado sigue en running)."""
+
+    def __init__(self, tasks, block_fallos=0, unblock_fallos=0):
+        super().__init__(tasks)
+        self.status = "running"
+        self.block_fallos, self.unblock_fallos = block_fallos, unblock_fallos
+
+    def block(self, task_id, kind, reason):
+        self.calls.append(("block", task_id, kind, reason))
+        if self.block_fallos:
+            self.block_fallos -= 1
+            return False
+        self.status = "blocked"
+        return True
+
+    def unblock(self, task_id):
+        self.calls.append(("unblock", task_id))
+        if self.unblock_fallos:
+            self.unblock_fallos -= 1
+            return False
+        self.status = "ready"
+        return True
+
+
+def test_pausa_por_cuota_con_block_fallido_se_concilia_y_vuelve_a_ready(tmp_path):
+    h = FakeHermesFalla([{"id": "t_1", "title": "T", "body": "B"}], block_fallos=LaneRunner.BLOCK_INTENTOS)
+    r, h, w, n = runner_cuota(tmp_path, [limite_outcome()], hermes=h)
+    assert r.run_once() == {"t_1": "cuota"}
+    assert h.status == "running" and "t_1" in r._block_pendiente()   # no queda olvidada en running
+    r._conciliar_bloqueos()
+    assert h.status == "ready" and not r._block_pendiente()          # reintento: block + unblock
+
+
+def test_pausa_por_cuota_con_unblock_fallido_se_reintenta_en_la_pasada_siguiente(tmp_path):
+    h = FakeHermesFalla([{"id": "t_1", "title": "T", "body": "B"}], unblock_fallos=1)
+    r, h, w, n = runner_cuota(tmp_path, [limite_outcome()], hermes=h)
+    assert r.run_once() == {"t_1": "cuota"}
+    assert h.status == "blocked" and "t_1" in r._unblock_pendiente()
+    r._conciliar_bloqueos()
+    assert h.status == "ready" and not r._unblock_pendiente()

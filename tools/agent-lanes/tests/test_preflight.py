@@ -95,6 +95,16 @@ def test_pide_lo_imposible_ignora_limites_y_negaciones():
         assert pide_lo_imposible(task(body)) is None, body
 
 
+def test_pide_lo_imposible_no_dispara_con_despliega_sin_objetivo_de_produccion():
+    from agent_lanes.preflight import pide_lo_imposible
+    for body in ("Despliega el menú lateral con un acordeón", "Los tests deben pasar antes de desplegar",
+                 "Despliega en producción: no, eso lo hace el integrador",
+                 "Corrige el typo\nLímites:\n- nada de desplegar a producción\n- sin tocar Vercel\n\nHecho: test verde"):
+        assert pide_lo_imposible(task(body)) is None, body
+    assert pide_lo_imposible(task("Redespliega la app en Railway")) is not None
+    assert pide_lo_imposible(task("Límites:\n- solo código\n\nDespliega a producción al terminar")) is not None
+
+
 def _runner_sin_clasificador(monkeypatch, body):
     from agent_lanes import clasificador
     monkeypatch.setattr(clasificador, "evaluar", lambda *a, **k: type(
