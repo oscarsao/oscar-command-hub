@@ -21,6 +21,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
+from . import nivel_avisos
 from .ajustes_hub import valor
 from .config import ROOT
 from .hermes import resume
@@ -167,6 +168,8 @@ class ParadasRunner:
 
     def publicar(self) -> list[str]:
         """Cabecera + una ficha con botones por tarjeta parada. Sin paradas no manda nada."""
+        if not nivel_avisos.activo("paradas"):  # nivel «esencial»: ya van en el parte de las 9:00 y en /paradas
+            return []
         found = self.paradas.encontrar()
         if not found:
             return []

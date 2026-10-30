@@ -192,7 +192,7 @@ class LaneRunner:
                                                     questions=questions, changed_files=changed_files,
                                                     summary=summary, for_oscar=for_oscar, yes_no=yes_no,
                                                     q_index=q_index)
-                canal_avisos.publicar(canal_avisos.de(self._decisions), self._notices, canal_avisos.tipo_de_estado(state),
+                canal_avisos.publicar(canal_avisos.de(self._decisions), self._notices, canal_avisos.tipo_de_estado(state, alert),
                                       tid, text, target, lane_target, alert=alert, reply_markup=markup,
                                       mirror=mirror, keep_previous=keep,
                                       followup=list(getattr(bullets, "overflow", None) or ()) or None)

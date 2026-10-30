@@ -46,7 +46,7 @@ class Ajuste:
     grupo: str
     etiqueta: str
     default: Any
-    tipo: str                       # int | float | hora (HH:MM, "" = el de lanes.yaml) | lista
+    tipo: str                       # int | float | hora (HH:MM, "" = el de lanes.yaml) | lista | opcion (una de `opciones`)
     ayuda: str = ""
     minimo: float | None = None
     maximo: float | None = None
@@ -78,6 +78,10 @@ def _topes() -> list[Ajuste]:
 
 def _build() -> dict[str, Ajuste]:
     a = [
+        Ajuste("avisos.nivel", "Avisos", "Nivel de avisos de Telegram", "normal", "opcion",
+               "esencial = solo problemáticas, terminadas, integraciones, urgentes y los partes fijos; lo demás "
+               "(empezando, revisión, choques, paradas, limpieza…) queda como comando. normal = como siempre. "
+               "todo = sin ningún filtro.", opciones=("esencial", "normal", "todo")),
         Ajuste("avisos.hora_parte", "Avisos", "Hora del resumen por carril (parte de las 9:00)", None, "int",
                "Hora (0-21, Madrid) del parte diario. Sin editar vale la de integrador_visibilidad.yaml (9).", 0, 21,
                (7, 8, 9, 10, 12)),
@@ -174,6 +178,11 @@ def parse(spec: Ajuste, raw) -> Any:
             raise AjusteInvalido(f"«{spec.etiqueta}» tiene que estar entre {spec.describe(spec.minimo)} y "
                                  f"{spec.describe(spec.maximo)}.")
         return int(n) if spec.tipo == "int" else n
+    if spec.tipo == "opcion":
+        s = str(raw).strip().lower()
+        if s not in spec.opciones:
+            raise AjusteInvalido(f"«{spec.etiqueta}» tiene que ser una de: {', '.join(spec.opciones)}.")
+        return s
     if spec.tipo == "hora":
         s = str(raw).strip()
         if s and not HORA_RE.fullmatch(s):

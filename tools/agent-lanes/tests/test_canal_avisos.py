@@ -107,7 +107,8 @@ def test_cada_tipo_tiene_su_clase(tipo, clase):
 
 
 def test_la_tabla_cubre_los_24_tipos_del_borrador():
-    assert len(canal_avisos.CLASES) == 24
+    # 24 del borrador + «empezando» (el «▶️ empezando» separado de progreso, nivel de avisos 30-10)
+    assert len(canal_avisos.CLASES) == 25 and "empezando" in canal_avisos.CLASES
 
 
 def test_decision_exige_tema_y_botones(tmp_path):
@@ -118,7 +119,8 @@ def test_decision_exige_tema_y_botones(tmp_path):
     assert not canal(tmp_path, tg).es_decision("limpieza", KB)  # informativo: como hoy
     assert not canal(tmp_path, tg, destino=None).es_decision("choque", KB)  # sin tema: como hoy
     assert canal_avisos.tipo_de_estado("needs_input") == "needs_input"
-    assert canal_avisos.tipo_de_estado("running") == "progreso"
+    assert canal_avisos.tipo_de_estado("running") == "empezando"
+    assert canal_avisos.tipo_de_estado("review") == "progreso"
 
 
 # --- paso 2: avisos sueltos (choques, solapes, limpieza…) ------------------------------------------------------------

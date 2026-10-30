@@ -203,7 +203,7 @@ class ReviewRunner:
                                           None, integ.target, alert=alert, reply_markup=markup, mirror=owner or None,
                                           channel=CHANNEL, leave_behind=lambda sent: link_line(prefix, sent))
                     return
-                canal_avisos.publicar(canal_avisos.de(self._decisions), self._notices, canal_avisos.tipo_de_estado(state),
+                canal_avisos.publicar(canal_avisos.de(self._decisions), self._notices, canal_avisos.tipo_de_estado(state, alert),
                                       task["id"], text, target, lane_target, alert=alert, reply_markup=markup,
                                       mirror=mirror, followup=list(getattr(bullets, "overflow", None) or ()) or None)
                 return
