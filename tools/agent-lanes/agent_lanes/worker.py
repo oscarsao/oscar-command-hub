@@ -3,15 +3,18 @@ from __future__ import annotations
 
 import json
 import os
+import logging
 import re
 import subprocess
 
-from . import preferencias
+from . import grandes, preferencias
 from . import proc as _proc
 from dataclasses import dataclass
 from pathlib import Path
 
 from .config import ROOT, Lane
+
+log = logging.getLogger("agent_lanes")
 
 SCHEMA_PATH = ROOT / "contract" / "result.schema.json"
 SETTINGS_TEMPLATE = ROOT / "contract" / "worker-settings.json"
@@ -25,6 +28,9 @@ OPS_RESUME_PROMPT = ("Continúa donde lo dejaste y termina la tarea. Recuerda: s
                      "workspace y los destinos declarados, acciones externas como propuesta. Devuelve el JSON del schema.")
 
 
+RESULT_ERROR_MAX = 500  # caracteres del texto de error de claude que se guardan en raw_error
+
+
 @dataclass
 class WorkerOutcome:
     ok: bool                      # claude finished normally AND returned schema-shaped output
@@ -32,6 +38,19 @@ class WorkerOutcome:
     structured: dict | None
     cost_usd: float | None
     raw_error: str | None
+
+
+def choose_model(lane: Lane, task: dict) -> str:
+    """Modelo del worker: `model_small` (haiku) para una tarjeta `Tamaño: S`, salvo que ya haya fallado o se haya
+    bloqueado con él (el runner marca `model_fallback` en la tarea): entonces `lane.model`."""
+    small = getattr(lane, "model_small", "")
+    if small and grandes.es_pequena(task):
+        if task.get("model_fallback"):
+            log.info("%s: tarjeta S ya falló con %s; este intento usa %s", task.get("id"), small, lane.model)
+            return lane.model
+        log.info("%s: tarjeta S; modelo %s", task.get("id"), small)
+        return small
+    return lane.model
 
 
 ORIGIN_BRANCH_LINE = re.compile(r"^\s*Rama-origen:\s*(\S+)\s*$", re.M | re.I)
@@ -179,7 +198,7 @@ FIRST_CALL_SHARE = 0.6
 MIN_CALL_BUDGET_USD = 0.10
 
 
-def base_args(lane: Lane, session_flag: list[str], budget: float | None = None) -> list[str]:
+def base_args(lane: Lane, session_flag: list[str], budget: float | None = None, model: str | None = None) -> list[str]:
     return [
         "claude", "-p", *session_flag,
         "--settings", str(render_settings()),
@@ -191,13 +210,14 @@ def base_args(lane: Lane, session_flag: list[str], budget: float | None = None) 
         "--append-system-prompt-file", str(lane.role_path),
         "--json-schema", SCHEMA_PATH.read_text(encoding="utf-8"),
         "--max-budget-usd", str(round(lane.max_budget_usd if budget is None else budget, 4)),
-        "--model", lane.model,
+        "--model", model or lane.model,
         "--effort", lane.effort,
         "--output-format", "json",
     ]
 
 
-def ops_args(lane: Lane, session_flag: list[str], add_dirs: list[str], budget: float | None = None) -> list[str]:
+def ops_args(lane: Lane, session_flag: list[str], add_dirs: list[str], budget: float | None = None,
+             model: str | None = None) -> list[str]:
     """Worker ops. Sin --strict-mcp-config: así cargan los conectores de claude.ai (en -p se cargan salvo con
     --strict-mcp-config/--bare). El filtro real es contract/ops_guard.py (lista blanca de herramientas MCP de lectura;
     exit 2 bloquea en cualquier modo); ops-worker-settings.json añade deny explícitos y --allowedTools las de lectura."""
@@ -211,7 +231,7 @@ def ops_args(lane: Lane, session_flag: list[str], add_dirs: list[str], budget: f
         "--append-system-prompt-file", str(lane.role_path),
         "--json-schema", OPS_SCHEMA_PATH.read_text(encoding="utf-8"),
         "--max-budget-usd", str(round(lane.max_budget_usd if budget is None else budget, 4)),
-        "--model", lane.model,
+        "--model", model or lane.model,
         "--effort", lane.effort,
         "--output-format", "json",
     ]
@@ -234,8 +254,11 @@ def parse_result(stdout: str) -> WorkerOutcome:
     if not isinstance(structured, dict) or "status" not in structured:
         structured = None
     ok = subtype == "success" and not data.get("is_error") and structured is not None
-    return WorkerOutcome(ok, subtype, structured, data.get("total_cost_usd"),
-                         None if ok else f"subtype={subtype} is_error={data.get('is_error')}")
+    error = None if ok else f"subtype={subtype} is_error={data.get('is_error')}"
+    if error and data.get("is_error") and isinstance(data.get("result"), str) and data["result"].strip():
+        # El texto real del fallo (p. ej. «You've hit your usage limit · resets 6pm»): sin él solo se veía el subtype.
+        error += f" result={' '.join(data['result'].split())[:RESULT_ERROR_MAX]}"
+    return WorkerOutcome(ok, subtype, structured, data.get("total_cost_usd"), error)
 
 
 def run_claude(runner, args: list[str], prompt: str, cwd: str, timeout: float, env_extra: dict,
@@ -250,8 +273,9 @@ def run_claude(runner, args: list[str], prompt: str, cwd: str, timeout: float, e
     except subprocess.TimeoutExpired:
         return WorkerOutcome(False, "runner_timeout", None, None, f"claude superó {int(timeout)}s")
     out = parse_result(cp.stdout)
-    if not out.ok and out.raw_error and cp.returncode != 0 and not cp.stdout.strip():
-        out.raw_error += f" rc={cp.returncode} stderr={cp.stderr.strip()[-300:]}"
+    # La cola de stderr también cuando stdout trae algo pero el resultado no es ok (el motivo real suele estar ahí).
+    if not out.ok and out.raw_error and ((cp.returncode != 0 and not cp.stdout.strip()) or (cp.stderr or "").strip()):
+        out.raw_error += f" rc={cp.returncode} stderr={(cp.stderr or '').strip()[-300:]}"
     return out
 
 
@@ -279,6 +303,7 @@ class ClaudeWorker:
         self._ops: dict[str, tuple[dict, list[str]]] = {}  # session_id -> (env, add_dirs) del run() ops, para resume
         self._spent: dict[str, float] = {}   # session_id -> USD gastados en la tarea (run + resumes)
         self._resumes: dict[str, int] = {}   # session_id -> resumes ya lanzados
+        self._models: dict[str, str] = {}    # session_id -> modelo del run(); el resume sigue con el mismo
 
     def _budget_for(self, lane: Lane, session_id: str, first: bool) -> float:
         remaining = max(0.0, lane.max_budget_usd - self._spent.get(session_id, 0.0))
@@ -313,15 +338,16 @@ class ClaudeWorker:
         budget = self._budget_for(lane, session_id, first=True)
         if budget < MIN_CALL_BUDGET_USD:
             return self._exhausted(lane, session_id)
+        model = self._models[session_id] = choose_model(lane, task)
         if lane.kind == "ops":
             from .ops import task_targets, worker_env
             origins, dests, _ = task_targets(lane, task)
             env, dirs = worker_env(lane, task, cwd), [*dests, *origins]
             self._ops[session_id] = (env, dirs)
             return self._account(session_id, self._exec(
-                ops_args(lane, flag, dirs, budget), build_ops_prompt(task, lane, cwd, origins, dests), cwd,
+                ops_args(lane, flag, dirs, budget, model), build_ops_prompt(task, lane, cwd, origins, dests), cwd,
                 timeout, lane, task["id"], env))
-        args = base_args(lane, flag, budget)
+        args = base_args(lane, flag, budget, model)
         env = {"AGENT_LANES_MERGE_OK": json.dumps(merge_refs(lane, task)),
                "AGENT_LANES_PUSH_OK": json.dumps(push_refs(task)),
                # F1-07: el guard veta escribir fuera de aquí y pasa el secret-scan frente a la base antes del push
@@ -340,10 +366,10 @@ class ClaudeWorker:
             # Sin el entorno del run() (proceso reiniciado) el hook no tiene workspace: bloquea toda escritura.
             env, dirs = self._ops.get(session_id, ({"AGENT_LANES_ROLE": "ops"}, []))
             return self._account(session_id, self._exec(
-                ops_args(lane, ["--resume", session_id], dirs, budget), prompt or OPS_RESUME_PROMPT, cwd, timeout, lane,
+                ops_args(lane, ["--resume", session_id], dirs, budget, self._models.get(session_id)), prompt or OPS_RESUME_PROMPT, cwd, timeout, lane,
                 task_id, env))
         env = self._ops.get(session_id, ({"AGENT_LANES_MERGE_OK": json.dumps([f"{lane.remote}/{lane.base}".lower()]),
                                           "AGENT_LANES_WORKTREE": str(cwd),
                                           "AGENT_LANES_BASE": f"{lane.remote}/{lane.base}"}, []))[0]
         return self._account(session_id, self._exec(
-            base_args(lane, ["--resume", session_id], budget), prompt or RESUME_PROMPT, cwd, timeout, lane, task_id, env))
+            base_args(lane, ["--resume", session_id], budget, self._models.get(session_id)), prompt or RESUME_PROMPT, cwd, timeout, lane, task_id, env))
