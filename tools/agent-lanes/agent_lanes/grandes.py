@@ -19,6 +19,7 @@ TAG_RE = re.compile(r"\[\s*(?:GRANDE|XL|WORKFLOW)\s*\]", re.I)
 SIZE_RE = re.compile(r"^[ \t>*_-]*(?:tama[ñn]o|size)[ \t*_]*[:=][ \t*_]*(GRANDE|XL|L)\b", re.I | re.M)
 RUNTIME_RE = re.compile(r"^[ \t>*_-]*(?:runtime|duraci[oó]n|tiempo)(?:[ \t]+estimad[oa])?[ \t*_]*[:=][ \t*_]*~?[ \t]*"
                         r"(\d+(?:[.,]\d+)?)[ \t]*(h|hr|hrs|horas?|min|mins|minutos?|m)\b", re.I | re.M)
+SMALL_RE = re.compile(r"^[ \t>*_-]*(?:tama[ñn]o|size)[ \t*_]*[:=][ \t*_]*S\b", re.I | re.M)
 LABEL_WORDS = {"grande", "xl", "workflow"}
 SIZE_LINE = "Tamaño: GRANDE"
 
@@ -63,6 +64,11 @@ def reason(task: dict, big_minutes: float = DEFAULT_BIG_MINUTES) -> str | None:
 
 def is_big(task: dict, big_minutes: float = DEFAULT_BIG_MINUTES) -> bool:
     return reason(task, big_minutes) is not None
+
+
+def es_pequena(task: dict) -> bool:
+    """Tarjeta con línea `Tamaño: S` (y que no sea grande por otra señal): admite el modelo barato (model_small)."""
+    return bool(SMALL_RE.search(str(task.get("body") or ""))) and not is_big(task)
 
 
 def touches(task: dict, paths) -> bool:

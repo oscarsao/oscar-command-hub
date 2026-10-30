@@ -112,7 +112,9 @@ LOCK = ROOT / ".state" / "runner.lock"
 
 
 def runner_line() -> str:
-    return _runner_line(LOCK, pid_alive, drain.active(), drain.BUSY_FILE)
+    line = _runner_line(LOCK, pid_alive, drain.active(), drain.BUSY_FILE)
+    pausa = cuota.texto_estado()  # pausa por cuota de Claude vigente (.state/cuota.json)
+    return f"{line} · {pausa}" if pausa else line
 
 
 def restart(argv: list[str]) -> int:

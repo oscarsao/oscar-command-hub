@@ -48,8 +48,11 @@ class Service:
     """Each pass collects the jobs of every lane (implementers and review) and runs them with at most
     `max_workers` claude processes alive at once. Default 1: one worker in total on this PC."""
 
-    def __init__(self, lanes: list, max_workers: int = 1, busy_path: Path | None = None, max_big_total: int = 0):
+    def __init__(self, lanes: list, max_workers: int = 1, busy_path: Path | None = None, max_big_total: int = 0,
+                 cuota_pausada: Callable[[], bool] | None = None):
         self.lanes = lanes
+        # Pausa por cuota de Claude (cuota.py): mientras sea verdadera no se lanza ningún worker (los en vuelo siguen).
+        self.cuota_pausada = cuota_pausada
         self.max_workers = max(1, int(max_workers))
         # Planificador sin barrera (tick): huecos grandes en total (0 = sin hueco grande, todo por el carril normal).
         self.max_big_total = max(0, int(max_big_total))
@@ -78,6 +81,8 @@ class Service:
         """Lanza (sin esperar) las tareas de los carriles con plaza reservada: nunca más de `reserved_slots` vivas a la
         vez por carril, cuente lo que cuente max_workers. Devuelve los ids lanzados."""
         started = []
+        if self._cuota():
+            return started
         for lane in self.lanes:
             slots = self._slots(lane)
             if slots <= 0:
@@ -255,6 +260,9 @@ class Service:
             self._reap()
             if not only_reserved:
                 self.list_errors = []
+            if self._cuota():
+                self._write_busy()
+                return started
             counts: dict = {"normal": 0, "big": 0, "reserved": 0, "lanes": {}}
             for fl in self._flights.values():
                 counts[fl.kind] += 1
@@ -308,7 +316,17 @@ class Service:
         except OSError as exc:
             log.info("busy.json no escrito: %s", exc)
 
+    def _cuota(self) -> bool:
+        """¿Pausa por cuota vigente? Un fallo al comprobarla nunca para al planificador (se asume sin pausa)."""
+        try:
+            return bool(self.cuota_pausada and self.cuota_pausada())
+        except Exception as exc:  # noqa: BLE001
+            log.warning("pausa por cuota no comprobada: %s", exc)
+            return False
+
     def run_pass(self) -> dict[str, str]:
+        if self._cuota():
+            return {}
         jobs, named = [], []
         self.list_errors = []
         for lane in self.lanes:
@@ -354,7 +372,9 @@ def acquire_single_instance(lock_path: Path, pid_alive: Callable[[int], bool] = 
             owner = int(json.loads(lock_path.read_text(encoding="utf-8")).get("pid", 0))
         except (OSError, ValueError, json.JSONDecodeError):
             owner = 0
-        if owner and owner != os.getpid() and pid_alive(owner):
-            return False
+        if owner and owner != os.getpid():
+            if pid_alive(owner):
+                return False
+            log.warning("lock caducado del PID %s: lo tomo", owner)
     lock_path.write_text(json.dumps({"pid": os.getpid(), "started": time.time()}), encoding="utf-8")
     return True

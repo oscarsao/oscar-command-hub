@@ -14,6 +14,8 @@ runner:
   # agent_lanes/grandes.py) corren en un hueco propio por carril (max_big, abajo) para no tapar lo pequeño del proyecto.
   # Este es el tope TOTAL de grandes a la vez; cuentan también contra max_workers (RAM). 0 = sin hueco grande.
   max_big_total: 2
+  # Pausa por cuota de Claude: si el reset no se lee del error, minutos sin lanzar workers (agent_lanes/cuota.py).
+  cuota_pausa_minutos: 60
   interval_seconds: 60
   # Vigilante de «runner ciego» (agent_lanes/ciego.py): si no se pueden listar tareas (p. ej. WinError 4551 de App
   # Control) durante estos minutos seguidos, aviso ALTA al DM de Oscar y un `restart --drain` automático (máx. 1/hora).
@@ -122,6 +124,8 @@ defaults:
   remote: origin
   tool: claude
   model: sonnet
+  # Modelo para tarjetas «Tamaño: S»; si una S falla o se bloquea con él, el siguiente intento usa `model`.
+  model_small: haiku
   effort: medium
   max_budget_usd: 3.0
   # Por carril, no global. Se queda en 1: cada carril trabaja un repo y dos workers en el mismo repo/checkout podrían

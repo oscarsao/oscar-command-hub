@@ -8,13 +8,14 @@
 from __future__ import annotations
 
 import argparse
+import atexit
 import logging
 import sys
 import threading
 import time
 from logging.handlers import TimedRotatingFileHandler
 
-from agent_lanes import canal_avisos, ciego, consola, doctor_config, drain, notices, resumen_carriles
+from agent_lanes import canal_avisos, ciego, consola, cuota, doctor_config, drain, notices, resumen_carriles
 from agent_lanes.bandeja import load as load_bandeja
 from agent_lanes.board_guard import BoardGuardTicker
 from agent_lanes.choques import ChoquesTicker
@@ -127,6 +128,7 @@ def main(argv: list[str] | None = None) -> int:
     if not acquire_single_instance(LOCK):
         log.warning("ya hay un runner vivo (%s); salgo", LOCK)
         return 0
+    atexit.register(lambda: log.info("runner detenido"))  # una parada deja rastro en runner.log
 
     env = load_env()
     tg_settings = load_telegram_settings()
@@ -186,6 +188,7 @@ def main(argv: list[str] | None = None) -> int:
     if not args.once:  # RESPUESTA-OSCAR vía Hermes: hilo propio (el bucle puede esperar horas a un worker)
         HermesAnswers(all_lanes, hermes_for=hermes_for, desk=decisions, alert=drain.dm_alert(env)).start()
     git = GitOps()
+    cuota_minutos = float(settings.get("cuota_pausa_minutos") or cuota.DEFAULT_MINUTOS)
     impl = {n: l for n, l in selected.items() if l.kind == "implement"}
     # Candado de repos: un carril de código solo reclama si el remote de su repo es el `github:` de lanes.yaml.
     # Prevención de choques al lanzar (choques.yaml → prevenir_al_lanzar): una instancia para todos los carriles de código.
@@ -193,13 +196,14 @@ def main(argv: list[str] | None = None) -> int:
     runners: list = [LaneRunner(l, hermes=hermes_for(l.board), git=git, worker=ClaudeWorker(pid_dir=STATE_DIR),
                                 verifier=verify, notify=notify, exclude=set(args.exclude), messages=messages, links=links,
                                 decisions=decisions, tree=tree, repo_guard=github_slug_problem, lanes=all_lanes,
-                                final_only=tg_settings["final_only"], prevencion=prevencion)
+                                final_only=tg_settings["final_only"], prevencion=prevencion,
+                                cuota_minutos=cuota_minutos)
                      for l in impl.values()]
     # Carril ops: sin repo. Carpeta de trabajo por tarea + verificación por evidencias; siempre acaba en review para
     # Oscar (no está en `review.reviews`, y sweep_done no lo toca: el workspace se conserva).
     runners += [LaneRunner(l, hermes=hermes_for(l.board), git=OpsWorkspace(), worker=ClaudeWorker(pid_dir=STATE_DIR), verifier=verify_ops,
                            notify=notify, exclude=set(args.exclude), messages=messages, links=links, decisions=decisions,
-                           tree=tree, final_only=tg_settings["final_only"])
+                           tree=tree, final_only=tg_settings["final_only"], cuota_minutos=cuota_minutos)
                 for l in selected.values() if l.kind == "ops"]
     # Tema de Integración (integration_telegram): la tarjeta done con ✅ Aprobar va allí aunque el integrador esté apagado.
     integration = (IntegrationRoute(tg_settings["integration"], load_integrator_settings(env=env, lane_filter=False).policies)
@@ -242,7 +246,8 @@ def main(argv: list[str] | None = None) -> int:
                                            run_async=True)
                  if decisions and not args.once else None)  # solo con el bot de carriles
     service = Service(runners, max_workers=effective_max_workers(args.max_workers, settings), busy_path=drain.BUSY_FILE,
-                      max_big_total=int(settings.get("max_big_total", 0) or 0))
+                      max_big_total=int(settings.get("max_big_total", 0) or 0),
+                      cuota_pausada=lambda: cuota.vigente() is not None)
     interval = args.interval or settings["interval_seconds"]
     log.info("runner: carriles=%s max_workers=%s interval=%ss", list(selected), service.max_workers, interval)
 
