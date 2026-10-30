@@ -102,9 +102,12 @@ def test_alembic_env_local_allowed():
     assert bash("alembic upgrade head", db="postgresql://localhost:5432/x") is None
 
 
-def test_edit_workflows_blocked_and_normal_edit_allowed():
-    assert guard.check({"tool_name": "Write", "tool_input": {"file_path": "C:\\r\\.github\\workflows\\ci.yml"}})
-    assert guard.check({"tool_name": "Edit", "tool_input": {"file_path": "C:/r/docs/a.md"}}) is None
+def test_edit_workflows_blocked_and_normal_edit_allowed(tmp_path):
+    # worktree propio en tmp_path y entorno explícito: no depende de la ruta ni del entorno del proceso
+    env = {"AGENT_LANES_TASK": "t_1", "AGENT_LANES_WORKTREE": str(tmp_path)}
+    assert guard.check({"tool_name": "Write", "tool_input": {"file_path": str(tmp_path / ".github" / "workflows" / "ci.yml")}}, env=env)
+    assert guard.check({"tool_name": "Edit", "tool_input": {"file_path": str(tmp_path / "docs" / "a.md")}}, env=env) is None
+    assert guard.check({"tool_name": "Edit", "tool_input": {"file_path": str(tmp_path.parent / "fuera.md")}}, env=env)
 
 
 def test_process_exit_codes():
