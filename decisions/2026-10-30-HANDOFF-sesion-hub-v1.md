@@ -56,6 +56,21 @@ Sin secretos. Contexto estratégico: `decisions/2026-10-30-INDICE-retomar.md` y 
 - Verificar las 22 aprobaciones «aprobar» de hace ~4 días contra `master` (t_e794cb2f las deja abiertas).
 - Sin verificar en esta sesión: versión desplegada en Dokploy, pildora-01, Supabase (advisors/respaldos), Sentry, Vercel, Stripe.
 
+## 5b. Para no depender de la sesión (decisión de Oscar 30-10)
+Verificado con `python lanes.py doctor-config --sin-gh`:
+- ACTIVO: bot de carriles con botones, integrador (INTEGRATOR_LANES), latido del PC a Oscar HQ (el servidor avisa si el PC
+  lleva >30 min sin latir), temas Decisiones e Integración.
+- APAGADO (lo que hoy ata a una sesión): despliegue por botón de claude-oscarhq en Dokploy (faltan
+  `integrator.lanes.claude-oscarhq.dokploy_application_id` y `DOKPLOY_API_TOKEN`), prodwatch de Vercel (falta `VERCEL_TOKEN`),
+  latido a Uptime Kuma (falta `KUMA_PUSH_URL`), vigilancia de Supabase (falta `SUPABASE_SERVICE_ROLE_KEY`). Son variables de
+  entorno del hub: las pone Oscar; el asistente no las toca.
+- PC: enchufado no se suspende nunca (standby en CA = 0); en batería se suspende a los 10 min. Para operar solo, debe estar enchufado.
+- Tarjetas que cierran la dependencia (todas con su PR y el botón de Oscar): avisos esenciales `t_e1ca40ec`, carril libre y
+  reposición `t_ebd2b253` (sustituye al goteo), integración automática de lo pequeño `t_f5422078`, cierre de avisos obsoletos
+  `t_e794cb2f` (en revisión), y en frío `t_73351cea` (triaje automático de bloqueos con lista blanca; activar tras las dos de arriba)
+  y `t_0f1d02ce` (autoaprendizaje).
+- Orden recomendado de activación: t_e794cb2f → t_e1ca40ec → t_ebd2b253 → t_f5422078 → t_73351cea → t_0f1d02ce.
+
 ## 6. Lecciones para `/distill`
 - Probar `lanes.py status` y `ruff F821` tras tocar `runner.py`/`lanes.py`: la suite (3028 tests) no cubría un `NameError`.
 - Un cierre masivo de avisos o tarjetas «resueltas» hay que cruzarlo con la constancia de integración: 22 de 70 no lo estaban.
