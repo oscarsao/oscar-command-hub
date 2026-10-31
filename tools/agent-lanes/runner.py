@@ -36,6 +36,7 @@ from agent_lanes.limpieza import LimpiezaRunner, LimpiezaTicker
 from agent_lanes import avisos_revision, workflows
 from agent_lanes.avance_workflows import AvanceTicker, AvanceWorkflows
 from agent_lanes.avisos_revision import AvisosRevision, AvisosRevisionTicker
+from agent_lanes.ociosos import Ociosos, OciososTicker
 from agent_lanes.paradas import ParadasRunner, ParadasTicker
 from agent_lanes.reconcile import ReconcileTicker, Reconciler, gh_prs
 from agent_lanes.aviso import REMIND_HOURS, StuckWatcher
@@ -269,6 +270,7 @@ def main(argv: list[str] | None = None) -> int:
     wf_ticker = None
     solapes = None
     choques = None
+    ociosos = None
     if decisions and not args.once:  # PR resueltos -> tarjetas cerradas; propuesta diaria de obsoletas (con botón)
         owner_dm = env.get("OWNER_TELEGRAM_ID") or OWNER_TELEGRAM_ID
         boards = sorted({l.board for l in all_lanes.values() if l.board})
@@ -306,6 +308,8 @@ def main(argv: list[str] | None = None) -> int:
             lambda chat, thread, text, markup=None: notify.send_to(chat, thread, text, html=False, reply_markup=markup),
             notices.truncate, issue=decisions.store.issue, fallback=(owner_dm, None)),
             minutes=float(env.get("RECONCILE_MINUTES") or 10))
+    if not args.once:  # carriles libres (t_ebd2b253): solo anota desde cuándo; no asigna ni avisa
+        ociosos = OciososTicker(Ociosos(all_lanes, hermes_for, state_path=ROOT / ".state" / "ociosos.json"))
     if not args.once:  # guarda de tablero (ADR-036): tarjetas en un tablero que su carril no lee
         owner_dm = env.get("OWNER_TELEGRAM_ID") or OWNER_TELEGRAM_ID
         canal = canal_avisos.de(decisions)  # tipo de cada aviso -> tema 🎯 Decisiones o DM (canal_avisos.CLASES)
@@ -364,6 +368,8 @@ def main(argv: list[str] | None = None) -> int:
                     log.info("integrador: %s", integrated)
             except Exception as exc:
                 log.warning("integrador falló: %s", exc)
+        if ociosos:
+            ociosos.tick()
         if guard:
             guard.tick()
         if solapes:

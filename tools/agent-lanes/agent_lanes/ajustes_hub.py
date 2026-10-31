@@ -152,6 +152,9 @@ def _build() -> dict[str, Ajuste]:
                None, "int", "Tras ese tiempo avisa a Oscar y hace un restart --drain.", 2, 60, (3, 5, 10, 15), True),
         Ajuste("carriles.max_parallel", "Carriles", "Tareas a la vez por carril (valor por defecto)", None, "int",
                "Solo para carriles sin max_parallel propio en lanes.yaml.", 1, 3, (1, 2), True),
+        Ajuste("carriles.ocioso_minutos", "Carriles", "Minutos sin trabajo para considerar un carril libre", 30, "int",
+               "Un carril sin tarjetas running ni ready durante este tiempo cuenta como libre (/libres).", 5, 1440,
+               (15, 30, 60, 120)),
     ]
     return {x.key: x for x in a + _topes()}
 

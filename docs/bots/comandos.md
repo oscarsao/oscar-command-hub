@@ -43,6 +43,7 @@ Por eso, en un grupo, escribe siempre `/comando@pildora_carriles_bot` (el menú 
 | `/falta [marca]` | Checklist de lo que frena una salida (lote, ramas fuera, SQL, variables, deploy), con el siguiente paso arriba | `/falta migrateam` |
 | `/tareas [marca]` | Tareas en curso y en cola por carril | `/tareas pildora` |
 | `/cola [marca]` | Qué corre y qué sigue en cada carril, por prioridad | `/cola nextjobs` |
+| `/libres` | Carriles sin trabajo (ni en curso ni en cola) y desde cuándo; umbral: ajuste `carriles.ocioso_minutos` (30 min) | `/libres` |
 | `/tarea t_xxxxxxxx` | Ficha de una tarea con los botones de su estado (acepta un trozo del id) | `/tarea t_3d4a9c10` |
 | `/salud` | ¿Está vivo el runner? Hermes, servicios, alertas, RAM y decisiones pendientes | `/salud` |
 | `/ram` | RAM ahora y los 5 procesos que más gastan | `/ram` |

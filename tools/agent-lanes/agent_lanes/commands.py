@@ -101,6 +101,7 @@ COMMANDS = (
     ("aprobar", "Tareas listas para integrar"),
     ("tareas", "En curso y en cola por carril: /tareas [migrateam|pildora|nextjobs]"),
     ("cola", "Qué corre y qué sigue en cada carril, por prioridad: /cola [marca]"),
+    ("libres", "Carriles sin trabajo y desde cuándo"),
     ("prioridad", "Sube o baja una tarea en la cola: /prioridad t_xxx <0-99|sube|baja>"),
     ("tarea", "Ficha de una tarea con sus botones: /tarea t_xxx"),
     ("preparar", "Claude prepara las opciones de una decisión: /preparar t_xxx | todas"),
@@ -2757,6 +2758,15 @@ class CommandCenter:
                 return
         numbers: dict[str, str] = {}
         self._registra_lista(where, self._send(where, self.queue_text(brand, numbers)), numbers)
+
+    def cmd_libres(self, where, args: str, brand: str | None) -> None:
+        from . import ociosos
+        try:
+            libres = ociosos.Ociosos(self.lanes, self.hermes_for, clock=self._now).pasada()
+        except Exception as exc:
+            self._send(where, f"No pude mirar los carriles ahora ({type(exc).__name__}).", html=False)
+            return
+        self._send(where, ociosos.texto(libres, ociosos.umbral_minutos()))
 
     def queue_text(self, brand: str | None, numbers: dict[str, str] | None = None) -> str:
         """Por carril: la tarea en curso (desde cuándo) y las siguientes en cola por prioridad actual. Cada línea
