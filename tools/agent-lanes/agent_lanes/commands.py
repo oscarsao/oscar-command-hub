@@ -116,6 +116,10 @@ COMMANDS = (
     ("salud", "Estado de runner, Hermes, servicios, MigraTeam y equipo"),
     ("ram", "Consumo de RAM ahora y qué procesos más gastan"),
     ("avisos", "Apaga o enciende los avisos de «listo para revisar»: /avisos off [1h|3h|mañana|siempre] · /avisos on"),
+    ("choques", "Choques y solapes"),
+    ("paradas", "Paradas más de 24 h"),
+    ("revision", "Por revisar"),
+    ("limpieza", "Propuestas de cierre"),
     ("silenciar", "Calla una alerta del monitor un tiempo: /silenciar <clave> <horas>"),
     ("sesion", "Correcciones agrupadas: /sesion [nombre] abre; fin | cancelar | estado"),
     ("flujo", "Una petición → hasta 8 tarjetas encadenadas: /flujo <texto>"),
@@ -145,7 +149,7 @@ NOT_OWNER = ("Este comando es solo para operadores. Pide a Oscar o a María que 
              "texto libre y se la paso")
 # Comandos sin marca clara o con efecto directo en repos/sesiones de Oscar: un operador acotado por marca no los usa.
 SOLO_TODAS_LAS_MARCAS = ("integrador", "encolar", "preparar", "pedir", "sesion", "flujo", "workflow", "ajustes",
-                         "pendiente", "personal", "agrupar")
+                         "pendiente", "personal", "agrupar", "choques", "paradas", "revision", "limpieza")
 BRAND_ARGS = {"migrateam": "MigraTeam", "pildora": "Píldora", "píldora": "Píldora", "nextjobs": "NextJobs"}
 TASK_ID_RE = re.compile(r"^t_[0-9a-f]{8}$")
 STATUS_TEXT = {"running": ("running", "en curso"), "ready": ("ready", "en cola"), "review": ("review", "en review"),
@@ -2359,6 +2363,63 @@ class CommandCenter:
         """/avisos [off [1h|3h|mañana|siempre]|on]: mismo estado que los botones del resumen de tarjetas listas."""
         from . import avisos_revision
         self._send(where, avisos_revision.comando(args), html=False)
+
+    # --- avisos que el nivel «esencial» no envía, a demanda (nivel_avisos.COMANDO_DE) ---------------------------------
+
+    def _lista(self, where, titulo: str, vacio: str, lineas: list[str]) -> None:
+        cuerpo = "\n".join(f"• {truncate(ln, 220)}" for ln in lineas[:MAX_CARDS])
+        extra = f"\n… y {len(lineas) - MAX_CARDS} más" if len(lineas) > MAX_CARDS else ""
+        self._send(where, f"{titulo} ({len(lineas)})\n{cuerpo}{extra}" if lineas else vacio, html=False)
+
+    def cmd_choques(self, where, args: str, brand: str | None) -> None:
+        """Choques (git) y solapes (alcance) vivos ahora: lo que el nivel esencial no manda como aviso."""
+        from . import choques, solapes
+        lineas: list[str] = []
+        try:
+            t = getattr(self.desk, "choques", None)
+            aj = choques.load_ajustes(t.settings_path if t else None)
+            sil = frozenset(choques.load_silenciadas(t.silenciadas_path if t else None))
+            ign = choques.load_ignorados(t.ignorados_path if t else None, dias=aj.recordar_dias)
+            for c in choques.detectar(self.lanes, self.hermes_for, t.git if t else choques.Git(), aj, silenciadas=sil):
+                if choques.par_uid(c) not in ign and not (c.clase == "compatible" and not aj.avisar_compatibles):
+                    lineas.append("⛔ " + " ".join(choques.aviso(c, aj).split()))
+            t = getattr(self.desk, "solapes", None)
+            sa = solapes.load_ajustes(t.settings_path if t else None)
+            for g in solapes.detectar(self.lanes, self.hermes_for, sa,
+                                      solapes.load_descartes(t.descartes_path if t else None)):
+                lineas.append("🔀 " + " ".join(solapes.aviso(g, sa).split()))
+        except Exception as exc:
+            log.warning("/choques falló: %s", exc)
+            self._send(where, "No he podido calcular los choques ahora; prueba en un minuto.", html=False)
+            return
+        self._lista(where, "⛔ Choques y solapes vivos", "✅ Sin choques ni solapes vivos.", lineas)
+
+    def cmd_paradas(self, where, args: str, brand: str | None) -> None:
+        from .paradas import Paradas
+        now = self._now()
+        found = Paradas(self.lanes, self.hermes_for, self._now).encontrar()
+        self._lista(where, "⏳ Tarjetas paradas", "✅ Ninguna tarjeta de carril parada.",
+                    [f"{p.linea(now)} · carril {p.lane}" for p in found])
+
+    def cmd_revision(self, where, args: str, brand: str | None) -> None:
+        from . import avisos_revision
+        av = avisos_revision.ACTIVO
+        self._send(where, av.pendientes_texto() if av else "Los avisos agrupados no están activos en este runner.",
+                   html=False)
+
+    def cmd_limpieza(self, where, args: str, brand: str | None) -> None:
+        lim = getattr(self.desk, "limpieza", None)
+        if lim is None:
+            self._send(where, "La limpieza de tarjetas no está activa en este runner.", html=False)
+            return
+        try:
+            found = lim.candidatas()
+        except Exception as exc:
+            log.warning("/limpieza falló: %s", exc)
+            self._send(where, "No he podido calcular la limpieza ahora; prueba en un minuto.", html=False)
+            return
+        self._lista(where, "🧹 Tarjetas que propongo cerrar o archivar", "✅ Nada que limpiar ahora.",
+                    [c.linea() for c in found])
 
     def cmd_silenciar(self, where, args: str, brand: str | None) -> None:
         """/silenciar <clave> <horas>: el monitor deja de avisar de esa clave (y las que empiezan por ella)."""

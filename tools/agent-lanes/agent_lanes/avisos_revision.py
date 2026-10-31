@@ -28,6 +28,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Callable
 
+from . import nivel_avisos
 from .ajustes_hub import valor
 from .config import ROOT
 from .notices import truncate
@@ -182,6 +183,13 @@ class AvisosRevision:
             extra.append("sin avisar de: " + ", ".join(data["mudas"]))
         return "\n".join([cab, *extra, "Uso: /avisos off [1h|3h|mañana|siempre] · /avisos on"])
 
+    def pendientes_texto(self) -> str:
+        """Cuerpo de `/revision`: las tarjetas listas para revisar que esperan en el resumen (lo mismo que enviaría)."""
+        pend = self._load()["pendientes"]
+        if not pend:
+            return "📋 Ninguna tarjeta lista para revisar esperando en el resumen."
+        return self._texto(pend)
+
     # --- recogida y emisión --------------------------------------------------------------------------
 
     def registrar(self, task: dict, resumen: str, lane: str | None = None, bajo: bool = False) -> None:
@@ -208,6 +216,12 @@ class AvisosRevision:
             if not pend or self.silenciado_hasta(data):
                 return []
             now = self.clock()
+            if not nivel_avisos.activo("revision"):  # nivel «esencial»: sin resumen; queda a demanda en /revision
+                vivas = [p for p in pend if float(p.get("desde") or now) >= now - ENVIADAS_DIAS * 86400]
+                if len(vivas) != len(pend):  # lo que lleva semanas sin resumirse no se acumula para siempre
+                    data["pendientes"] = vivas
+                    self._save(data)
+                return []
             lote, ventana = int(valor("avisos.revision_lote")), float(valor("avisos.revision_ventana_horas"))
             vencido = min(float(p.get("desde") or now) for p in pend) + ventana * 3600 <= now
             if not (len(pend) >= max(1, lote) or vencido or any(p.get("ret") for p in pend)):

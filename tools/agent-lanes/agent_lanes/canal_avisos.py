@@ -36,6 +36,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from .integration import PinnedSummary, age_label, topic_link
+from .nivel_avisos import activo
 from .resumen_carriles import TIPOS_RESUMEN
 from .resumen_carriles import anotar as anotar_resumen
 from .notices import markup_token, truncate
@@ -67,7 +68,8 @@ CLASES: dict[str, str] = {
     "hazlo": DECISION,           # 17
     "recordatorio": INFO,        # 18 13:00/18:00
     "resumen": INFO,             # 19 parte de las 9:00
-    "progreso": INFO,            # 20 ▶️ / terminada (un mensaje editado por tarjeta)
+    "progreso": INFO,            # 20 terminada / en review / en pausa (un mensaje editado por tarjeta)
+    "empezando": INFO,           # 20b ▶️ empezando (nivel esencial: no se envía; ver nivel_avisos)
     "monitor": URGENTE,          # 21 runner parado, panel caído…
     "prodwatch": URGENTE,        # 22 producción en fallo
     "team_notice": INFO,         # 23 aviso al equipo en Marketing
@@ -180,6 +182,9 @@ class CanalAvisos:
         """Aviso sin mensaje por tarea. DECISIÓN -> tema (+ línea al DM); lo demás -> `defecto` (DM de Oscar si no se
         dice otra cosa), exactamente como antes."""
         extra = {"reply_markup": markup} if markup is not None else {}
+        if not activo(tipo):  # nivel «esencial»: sin mensaje, pero lo que pide decisión sigue contando en el contador
+            self._contar_silenciada(tipo, text, markup, html_text)
+            return None
         if not con_botones(markup) and tipo in TIPOS_RESUMEN and anotar_resumen(tipo, text):
             return None  # F1-04: INFO sin botones del resumen diario; sale una vez al día (URGENTE nunca entra aquí)
         if not self.es_decision(tipo, markup):
@@ -192,6 +197,20 @@ class CanalAvisos:
             self._linea_dm(cabecera(text, html_text), sent)
             self.refrescar()
         return sent
+
+    def _contar_silenciada(self, tipo: str, text: str, markup: dict | None, html_text: bool) -> None:
+        """Una decisión que el nivel apaga (choque, solape) no manda mensaje, pero se anota sin mensaje: mientras su
+        teclado viva cuenta en el contador fijado (se cierra sola pasada la GRACIA, ver refrescar)."""
+        token = markup_token(markup)
+        if not (self.destino and token and clase_de(tipo) == DECISION):
+            return
+        with self._lock:
+            data = self._load()
+            data["abiertas"].setdefault(f"silenciada:{token}", {
+                "tipo": tipo, "rol": "silenciada", "token": token, "head": cabecera(text, html_text),
+                "at": self.clock()})
+            self._save(data)
+        self.refrescar()
 
     # --- avisos por tarea (TaskNotices) ------------------------------------------------------------------------------
 
@@ -311,6 +330,16 @@ class CanalAvisos:
                 for key, e in list(data["abiertas"].items()):
                     if e.get("rol") == "semilla":
                         continue  # las cierra el recálculo de la siembra o su botón (resuelta)
+                    if e.get("rol") == "silenciada":  # sin mensaje que editar: se suelta al gastarse su teclado
+                        if self.vivo(e.get("token")):
+                            cambio = e.pop("gone_at", None) is not None or cambio
+                        elif not e.get("gone_at"):
+                            e["gone_at"] = now
+                            cambio = True
+                        elif now - float(e["gone_at"]) >= GRACIA:
+                            data["abiertas"].pop(key, None)
+                            cambio = True
+                        continue
                     if not self._sigue_en_la_tarea(e):
                         self._cerrar(data, key, f"↪️ Ya no está pendiente (hay un aviso más reciente)\n"
                                                 f"{e.get('head') or ''}".strip())
@@ -537,7 +566,7 @@ class CanalAvisos:
         """Edita el mensaje del tema (texto plano, sin botones) y lo suelta de la tarea: los avisos posteriores de la
         tarea (▶️, terminada) ya no lo pisan."""
         e = data["abiertas"].pop(key, None)
-        if not e:
+        if not e or e.get("rol") == "silenciada":  # las silenciadas no tienen mensaje
             return
         try:
             self.notifier.edit(e["chat_id"], e["message_id"], texto, html=False)
@@ -693,14 +722,19 @@ def de(desk) -> CanalAvisos | None:
     return getattr(desk, "canal", None) if desk is not None else None
 
 
-def tipo_de_estado(state: str | None) -> str:
-    """Tipo de un aviso de tarea según su estado (needs_input, blocked); el resto es progreso (INFORMATIVO)."""
-    return state if state in ("needs_input", "blocked") else "progreso"
+def tipo_de_estado(state: str | None, alert: bool = False) -> str:
+    """Tipo de un aviso de tarea según su estado: needs_input y blocked son suyos; el «▶️ empezando» (running sin
+    alerta) es `empezando`, que el nivel esencial puede apagar sin perder la terminada; el resto es progreso."""
+    if state in ("needs_input", "blocked"):
+        return state
+    return "empezando" if state == "running" and not alert else "progreso"
 
 
 def publicar(canal: CanalAvisos | None, notices, tipo: str, tid: str, text: str, target, lane_target, *,
              alert: bool, reply_markup: dict | None = None, mirror: str | None = None, **kw) -> None:
     """Punto único de los avisos por tarea (runner, review, integrador). Sin canal (sin bot de carriles): como antes."""
+    if not activo(tipo):  # nivel «esencial»: este tipo no manda mensaje (sigue estando a demanda por comando)
+        return
     if canal is None:
         notices.publish(tid, text, target, lane_target, alert=alert, reply_markup=reply_markup,
                         **({"mirror_to": mirror} if mirror else {}), **kw)
