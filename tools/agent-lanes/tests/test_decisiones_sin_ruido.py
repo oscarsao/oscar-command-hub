@@ -231,3 +231,19 @@ def test_resumen_vacio_dice_nada_y_solo_con_tuyas_lleva_boton(tmp_path):
                             now=lambda: __import__("datetime").datetime(2026, 10, 31, 9, 5, tzinfo=rc.MADRID))
     s.tick()
     assert len(enviados) == 1 and "Decides tú" in enviados[0][0] and enviados[0][1] is True
+
+
+# --- siembra: solo las preguntas urgentes llegan al tema ---------------------------------------------------------------
+
+def test_siembra_no_publica_pregunta_sin_marcas_y_si_la_que_las_tiene():
+    from agent_lanes import lo_tuyo
+    from agent_lanes.commands import CommandCenter
+    tareas = {"t_1": {"title": "¿Qué color?", "body": ""},
+              "t_2": {"title": "Hosting", "body": "Implica gasto", "tags": ["dinero"]},
+              "t_3": {"title": "Salida", "body": "Antes del lanzamiento"}}
+    h = SimpleNamespace(show=lambda tid: {"task": tareas[tid]})
+    items = [lo_tuyo.item("pregunta", t, tareas[t]["title"], board="b", since=None, prio=0) for t in tareas]
+    fake = SimpleNamespace(desk=SimpleNamespace(hermes_for=lambda b: h, store=SimpleNamespace(issue=lambda *a: None)),
+                           lo_tuyo_settings=None, lo_tuyo_items=lambda _x: items, _now=lambda: 1_000_000.0)
+    claves = {s["clave"] for s in CommandCenter.semillas(fake)}
+    assert claves == {"pregunta:t_2", "pregunta:t_3"}

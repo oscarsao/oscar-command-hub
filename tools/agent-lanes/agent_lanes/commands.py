@@ -1118,8 +1118,21 @@ class CommandCenter:
             action = ESTADO_MAS if it["kind"] == "integrador" else LT_OPEN
             return lambda: store.issue(rec, [[{"text": verbo, "action": action}]])[1]
 
+        def al_tema(it: dict) -> bool:
+            # Pregunta sin marcas «dinero»/«lanzamiento» (y ajuste distinto de «todas»): espera al «Decides tú» de las 9:00
+            if it.get("kind") != "pregunta":
+                return True
+            try:
+                t = (self.desk.hermes_for(it.get("board") or "").show(it["tid"]) or {}).get("task") or {}
+                marcas = " ".join(str(m) for k in ("tags", "labels", "marcas") if isinstance(t.get(k), (list, tuple))
+                                  for m in t[k])
+                tarjeta = f"{t.get('title') or it.get('title') or ''}\n{t.get('body') or ''}\n{marcas}"
+            except Exception:
+                tarjeta = str(it.get("title") or "")
+            return canal_avisos.CanalAvisos._pregunta_urgente(str(it.get("extra") or ""), tarjeta)
+
         return [canal_avisos.semilla(it, markup_de(it), _lo_tuyo.verbo(it), now)
-                for it in _lo_tuyo.ordenar(self.lo_tuyo_items(None), aj, now)]
+                for it in _lo_tuyo.ordenar(self.lo_tuyo_items(None), aj, now) if al_tema(it)]
 
     def lt_open(self, rec: dict, where: dict) -> bool:
         """Botón de una línea de /pendiente: la ficha de esa cosa, con los botones que le tocan hoy (siempre fresca)."""
