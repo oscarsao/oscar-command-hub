@@ -9,7 +9,7 @@ Cuando se **acepta una empresa** en Signal, enviar un POST JSON a la URL que cad
 Al aceptar una empresa, el webhook configurado recibe un POST real con el JSON esperado y el secret header correcto.
 
 ## Diseño
-1. **Config por marca** (todo desde la UI, no hardcodeado): tabla `brand_webhooks(brand, url, secret, activo, eventos, creado, actualizado)`. El secret se guarda cifrado o en el gestor de secretos del backend; nunca se devuelve entero por la API (solo los 4 últimos caracteres). Pantalla en el panel: URL, secret (generar/rotar), activar/desactivar, botón «Enviar prueba».
+1. **Config por marca** (todo desde la UI, no hardcodeado): tabla `brand_webhooks(id, brand, nombre, url, secret, activo, eventos, creado, actualizado)`. El secret se guarda cifrado o en el gestor de secretos del backend; nunca se devuelve entero por la API (solo los 4 últimos caracteres). Pantalla en el panel: URL, secret (generar/rotar), activar/desactivar, botón «Enviar prueba».
 2. **Evento**: `company.accepted`. Payload JSON versionado:
    `{ "event": "company.accepted", "version": 1, "event_id": "<uuid>", "occurred_at": ISO8601, "brand": "...", "company": { id, name, domain, country, industry, size, score, source, contacts:[{name,title,email,linkedin}] } }`
 3. **Cabeceras**: `Content-Type: application/json`, `X-Signal-Secret: <secret>` (lo que pide la tarjeta), más `X-Signal-Event` y `X-Signal-Delivery` (event_id) para idempotencia en el receptor. Opcional v2: firma HMAC-SHA256 del cuerpo en `X-Signal-Signature`.
@@ -25,7 +25,8 @@ Al aceptar una empresa, el webhook configurado recibe un POST real con el JSON e
 - **Plantillas Zap en el marketplace de Zapier** (Signal→HubSpot, Signal→Google Sheets): exige cuenta de desarrollador de Zapier, app publicada y revisión de Zapier; no es trabajo de un carril. Propuesta: primero Catch Hook genérico + guía de 1 página; la app de Zapier como fase 2.
 - Make: sirve el mismo webhook (módulo «Custom webhook»), sin trabajo extra.
 
-## Preguntas abiertas
-- ¿Un webhook por marca o varios? (recomendado: uno en v1).
-- ¿Solo `company.accepted` o también rechazada/actualizada? (recomendado: solo aceptada).
-- ¿La app de Zapier entra ya o tras validar el webhook con un buyer real?
+## Decisiones de Oscar (31-oct-2026)
+- Spec aprobada: pasa a un carril `claude-oscarhq` para implementarla.
+- **Varios webhooks por marca** en la v1: `brand_webhooks` lleva `id` y `nombre`, cada uno con su URL y secret (tope razonable de 10 por marca). La entrega es un envío independiente por webhook activo (el fallo de uno no afecta a los demás); `webhook_deliveries` lleva también `webhook_id`. La pantalla lista los webhooks de la marca. Test extra: marca con 2 webhooks → 2 POST con su secret cada uno; si uno falla, el otro se entrega.
+- **Plantillas Zap del marketplace de Zapier: fase 2**, tras validar el webhook con un buyer real. En v1, Catch Hook genérico + guía de 1 página.
+- Solo `company.accepted` en v1 (el campo `eventos` queda preparado para ampliar).
