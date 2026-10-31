@@ -36,7 +36,9 @@ CUOTA_REGEX = r"usage limit|hit your limit"  # estricto: un «limit reached» o 
 DEFAULTS: dict = {
     # El primer patrón que casa gana (sin distinguir mayúsculas). `regex` se busca dentro del motivo técnico.
     "patrones": [
-        {"clase": ESTRUCTURAL, "regex": r"toca rutas vetadas",
+        # `leccion: L-NNNN` (opcional): cita la lección de docs/lecciones/ que originó la regla; cada vez que casa, el
+        # runner suma un disparo en .state (lecciones.registrar_disparo) para poder proponer retirarla si no se usa.
+        {"clase": ESTRUCTURAL, "regex": r"toca rutas vetadas", "leccion": "L-0001",
          "resumen": "este carril tiene vetadas las rutas que toca la tarea",
          "que_falta": "que otro carril con permiso (el integrador) la haga, o quitar esas rutas de la tarea"},
         {"clase": ESTRUCTURAL, "regex": r"Destino-Ops no permitido",
@@ -87,6 +89,7 @@ class Diagnostico:
     clase: str            # transitorio | estructural | desconocido
     resumen: str = ""     # motivo real, llano y público ("" si desconocido)
     que_falta: str = ""
+    leccion: str = ""     # id de la lección (docs/lecciones/) que originó la regla; "" si no cita ninguna
 
     @property
     def estructural(self) -> bool:
@@ -125,7 +128,8 @@ def clasificar(reason: str | None, cfg: dict | None = None) -> Diagnostico:
             if clase not in CLASES or not resumen:
                 raise ValueError(f"clase {clase!r} o resumen vacío")
             if re.search(rx, text, re.IGNORECASE):
-                return Diagnostico(clase, resumen, str(pat.get("que_falta") or "").strip())
+                return Diagnostico(clase, resumen, str(pat.get("que_falta") or "").strip(),
+                                   str(pat.get("leccion") or "").strip())
         except (KeyError, TypeError, ValueError, re.error) as exc:
             log.warning("bloqueos.yaml: patrón ignorado (%s): %r", exc, pat)
     return Diagnostico(DESCONOCIDO)

@@ -12,7 +12,7 @@ import uuid
 from pathlib import Path
 from typing import Callable, NamedTuple
 
-from . import avisos_revision, bloqueos, canal_avisos, clasificador, cuota, grandes, holds, telegram_lane
+from . import avisos_revision, bloqueos, canal_avisos, clasificador, cuota, grandes, holds, lecciones, telegram_lane
 from . import consulta as _consulta
 from . import deps
 from . import proc as _proc
@@ -380,6 +380,8 @@ class LaneRunner:
             for_oscar = for_oscar or "El worker se bloquea una y otra vez por el mismo motivo; dime cómo seguir."
         if kind == "transient" and not notify_kind:  # motivo real y clase (bloqueos.yaml); el estructural sin Reintentar
             diag = bloqueos.clasificar(reason)
+            if diag.leccion:  # contador de disparos de la lección (autoaprendizaje); solo aquí, no en cada reaviso
+                lecciones.registrar_disparo(diag.leccion)
             public = bloqueos.texto_publico(diag) or public
             if diag.estructural:
                 notify_kind = "estructural"
