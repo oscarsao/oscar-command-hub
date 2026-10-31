@@ -29,7 +29,16 @@ Toast tras la primera reunión agendada de una cuenta; cada rango de score dispa
 ## Configurable desde la UI (regla de Oscar 21-oct)
 Umbrales (6/7/9), textos de las preguntas y destinatario de la alerta, editables en ajustes; nada hardcodeado.
 
-## Preguntas para Oscar
-- ¿Quién recibe la alerta de 0-6: solo Oscar o también Ángel?
-- ¿Dónde se guardan los testimonios (tabla propia o Drive)?
-- ¿El toast se muestra a quien agenda o a todos los usuarios de la cuenta?
+## Decisiones de Oscar (31-10)
+- **Destinatario de la alerta 0-6**: el dueño de la cuenta, y debe poder cambiarse en ajustes (no hardcodeado).
+- **Implementación**: tarjeta nueva en el carril `claude-oscarhq` (esta spec es su entrada). El hub no toca código.
+
+## Decisiones por defecto (reversibles, tomadas sin preguntar)
+- Testimonios: tabla propia `nps_responses` (`testimonial_text`, `testimonial_consent`); nada en Drive.
+- El toast se muestra solo a quien agenda la primera reunión.
+
+## Tarjeta para `claude-oscarhq` (texto listo para pegar)
+Título: «[Signal] NPS in-app tras la primera reunión agendada». Repo oscar-hq. Alcance y criterio de hecho: ver
+`specs/nps-signal-primera-reunion.md` del hub (rama `lane/t_ff1045cc`), con la alerta 0-6 al dueño de la cuenta,
+configurable en ajustes. Pruebas: los tres rangos, límites 6/7 y 8/9, idempotencia, primera vs segunda reunión.
+La migración Supabase la aplica Oscar (`migracion-supabase`).
