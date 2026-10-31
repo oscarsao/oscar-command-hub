@@ -46,6 +46,7 @@ class Escalera:
     aplicar_reversible: bool
     escalado: tuple       # a quién se escala una decisión irreversible tras el último paso (en orden)
     duenos: dict          # marca normalizada -> clave de persona (ajuste `decisiones.duenos`: "marca/persona")
+    margen_h: float = 1.0  # horas mínimas desde el aviso anterior antes de aplicar la reversible
 
 
 def _horas(raw) -> tuple:
@@ -60,6 +61,13 @@ def _horas(raw) -> tuple:
     return tuple(sorted(dict.fromkeys(out)))
 
 
+def _margen(raw) -> float:
+    try:
+        return max(0.0, float(str(raw).replace(",", "."))) if raw not in (None, "") else 1.0
+    except ValueError:
+        return 1.0
+
+
 def cargar(valor: Callable[[str], object] = ajustes_hub.valor) -> Escalera:
     horas = _horas(valor("decisiones.escalera_horas")) or (1.0, 2.0, 4.0, 24.0)
     destinos = tuple(valor("decisiones.escalera_destinos") or ())
@@ -72,7 +80,7 @@ def cargar(valor: Callable[[str], object] = ajustes_hub.valor) -> Escalera:
     return Escalera(bool(valor("decisiones.recordatorios_activa")), horas, destinos,
                     str(valor("decisiones.silencio_inicio") or ""), str(valor("decisiones.silencio_fin") or ""),
                     int(valor("decisiones.max_avisos") or len(horas)), bool(valor("decisiones.aplicar_reversible")),
-                    tuple(valor("decisiones.escalado") or ()), duenos)
+                    tuple(valor("decisiones.escalado") or ()), duenos, _margen(valor("decisiones.margen_aplicar_horas")))
 
 
 def _minutos(hhmm: str) -> int | None:
@@ -162,10 +170,10 @@ def etiqueta(persona) -> str:
 def texto_aviso(c: dict, paso: int, esc: Escalera, now: float, quien) -> str:
     t = c["task"]
     horas = int((now - (c.get("since") or now)) // 3600)
-    ultimo = paso == len(esc.horas) - 1
-    cola = "Es el último aviso." if ultimo else f"Próximo aviso en {esc.horas[paso + 1] - esc.horas[paso]:g} h."
+    n = min(len(esc.horas), esc.max_avisos)
+    cola = "Es el último aviso." if paso >= n - 1 else f"Próximo aviso en {esc.horas[paso + 1] - esc.horas[paso]:g} h."
     return (f"⏰ {etiqueta(quien)}: la decisión <code>{html.escape(t['id'])}</code> · {html.escape(truncate(t.get('title'), 70))} "
-            f"lleva {horas} h sin respuesta y bloquea trabajo (aviso {paso + 1}/{len(esc.horas)}). {cola}")
+            f"lleva {horas} h sin respuesta y bloquea trabajo (aviso {paso + 1}/{n}). {cola}")
 
 
 class Escalonador:
@@ -174,19 +182,20 @@ class Escalonador:
     `apply(member)` -> bool (apply_recommended); `vetos` -> VetoBook opcional (no doble aplicación)."""
 
     def __init__(self, notifier, people, book: LibroEscalera, cards: Callable[[], list], spec: Callable, marca: Callable,
-                 apply: Callable[[dict], bool], *, vetos=None, now: Callable[[], datetime] = datetime.now,
-                 cargar_esc: Callable[[], Escalera] = cargar):
+                 apply: Callable[[dict], bool], *, vetos=None, deshacer: Callable | None = None,
+                 now: Callable[[], datetime] = datetime.now, cargar_esc: Callable[[], Escalera] = cargar):
         self.notifier, self.people, self.book = notifier, people, book
         self._cards, self._spec, self._marca, self._apply = cards, spec, marca, apply
         self.vetos, self._now, self._cargar = vetos, now, cargar_esc
+        self._deshacer = deshacer  # (task_id, board, texto) -> reply_markup con [↩️ Deshacer], o None
 
-    def _enviar(self, persona, texto: str, rec: dict) -> dict | None:
-        """Edita el mensaje anterior si es del mismo chat (un solo hilo por decisión); si no se puede, responde a él."""
+    def _enviar(self, persona, texto: str, rec: dict, markup: dict | None = None) -> dict | None:
+        """Primer aviso: mensaje nuevo. Siguientes: respuesta al aviso anterior del mismo chat, para que Telegram
+        notifique y el hilo se mantenga. Sin mensaje previo en ese chat, mensaje nuevo."""
         chat = str(persona.user_id)
         prev = rec.get("msg") or {}
-        if prev.get("chat") == chat and prev.get("id") and self.notifier.edit(chat, prev["id"], texto):
-            return prev
-        sent = self.notifier.send_to(chat, None, texto, reply_to=prev.get("id") if prev.get("chat") == chat else None)
+        kw = {"reply_markup": markup} if markup else {}
+        sent = self.notifier.send_to(chat, None, texto, reply_to=prev.get("id") if prev.get("chat") == chat else None, **kw)
         return {"chat": chat, "id": (sent or {}).get("message_id")} if sent else None
 
     def tick(self) -> list[str]:
@@ -199,6 +208,9 @@ class Escalonador:
             tid = c["task"]["id"]
             rec = self.book.get(tid)
             if rec.get("fin"):
+                continue
+            if rec.get("final_pendiente"):
+                self._reintenta_final(esc, c, rec, now, hechos)
                 continue
             paso = paso_debido(esc, c.get("since") or 0, int(rec.get("enviados") or 0), now)
             if paso is None:
@@ -215,14 +227,46 @@ class Escalonador:
         resp = dueno(self.people, esc, self._marca(c))
         clave = esc.destinos[paso]
         destino = resp if clave == DUENO else (_persona(self.people, clave) or resp)
+        previo = float(rec.get("ultimo_ts") or 0) if rec.get("enviados") else 0.0
         rec["enviados"] = paso + 1
+        rec["ultimo_ts"] = now.timestamp()
         msg = self._enviar(destino, texto_aviso(c, paso, esc, now.timestamp(), resp), rec)
         if msg:
             rec["msg"] = msg
-        if paso == len(esc.horas) - 1 or rec["enviados"] >= esc.max_avisos:
-            rec["fin"] = True
-            self._final(esc, c, resp, rec)
+        if paso == len(esc.horas) - 1:
+            # Solo el último paso de la escalera aplica o escala. Sin aviso previo (tarjeta vieja al activar el ajuste,
+            # runner parado) o con el previo demasiado reciente, este aviso va primero y el cierre espera al margen.
+            if previo and now.timestamp() - previo >= esc.margen_h * 3600:
+                rec["fin"] = True
+                self._final(esc, c, resp, rec)
+            else:
+                rec["final_pendiente"] = True
+        elif rec["enviados"] >= esc.max_avisos:
+            rec["fin"] = True  # el tope corta la escalera: se cierra sin aplicar ni escalar
         self.book.put(tid, rec)
+
+    def _reintenta_final(self, esc: Escalera, c: dict, rec: dict, now: datetime, hechos: list) -> None:
+        """Último paso ya avisado pero aplazado por el margen: cuando pasa, se cierra (aplica o escala)."""
+        if en_silencio(now, esc.silencio_ini, esc.silencio_fin):
+            return
+        if now.timestamp() - float(rec.get("ultimo_ts") or 0) < esc.margen_h * 3600:
+            return
+        tid = c["task"]["id"]
+        rec["fin"], rec["final_pendiente"] = True, False
+        try:
+            self._final(esc, c, dueno(self.people, esc, self._marca(c)), rec)
+            hechos.append(tid)
+        except Exception as exc:
+            log.warning("cierre de %s falló: %s", tid, exc)
+        self.book.put(tid, rec)  # cerrada aunque falle el aviso: nunca se aplica dos veces
+
+    def _escalar(self, esc: Escalera, c: dict, resp, motivo: str) -> None:
+        tid, titulo = c["task"]["id"], html.escape(truncate(c["task"].get("title"), 70))
+        for clave in esc.escalado:
+            p = _persona(self.people, clave)
+            if p is not None:
+                self._enviar(p, f"🚨 {etiqueta(p)}: <code>{html.escape(tid)}</code> · {titulo} lleva {esc.horas[-1]:g} h "
+                                f"sin respuesta de {etiqueta(resp)}. {motivo}", {})
 
     def _final(self, esc: Escalera, c: dict, resp, rec: dict) -> None:
         tid, titulo = c["task"]["id"], html.escape(truncate(c["task"].get("title"), 70))
@@ -235,13 +279,16 @@ class Escalonador:
             if self._apply(member):
                 if self.vetos is not None:
                     self.vetos.set_state(tid, "ejecutada")
+                letra = "ABC"[spec.recommended]
+                markup = self._deshacer(tid, c["board"], f"la recomendada ({letra}) aplicada sola") if self._deshacer else None
                 self._enviar(resp, f"✅ Sin respuesta en {esc.horas[-1]:g} h: apliqué la recomendada "
-                                   f"({'ABC'[spec.recommended]}) en <code>{html.escape(tid)}</code> · {titulo}. Era reversible y "
-                                   "el trabajo sale en una rama lane/*, nunca en master. Si no la quieres, reabre la tarjeta.", rec)
+                                   f"({letra}) en <code>{html.escape(tid)}</code> · {titulo}. Era reversible y "
+                                   "el trabajo sale en una rama lane/*, nunca en master. Si no la quieres, pulsa Deshacer "
+                                   "(mientras el worker no la haya recogido) o reabre la tarjeta.", rec, markup)
+            else:
+                self._enviar(resp, f"⚠️ No pude aplicar la recomendada en <code>{html.escape(tid)}</code> · {titulo}: "
+                                   "decídela tú; aviso también a quien escala.", rec)
+                self._escalar(esc, c, resp, "No se pudo aplicar la recomendada sola: decídela tú.")
             return
         if not spec.reversible:
-            for clave in esc.escalado:
-                p = _persona(self.people, clave)
-                if p is not None:
-                    self._enviar(p, f"🚨 {etiqueta(p)}: <code>{html.escape(tid)}</code> · {titulo} lleva {esc.horas[-1]:g} h "
-                                    f"sin respuesta de {etiqueta(resp)}. No es reversible: no la aplico sola, decídela tú.", {})
+            self._escalar(esc, c, resp, "No es reversible: no la aplico sola, decídela tú.")

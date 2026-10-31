@@ -18,8 +18,14 @@ rama `lane/*`, nunca master ni producción); si no lo es, se escala a María y l
 | `escalado` | maria, oscar | Quién recibe el aviso de una decisión irreversible al agotar la escalera. |
 
 ## Reglas
-- Cada decisión tiene un solo hilo: los avisos siguientes editan el mensaje anterior (o lo citan si ya no se puede editar).
+- Cada decisión tiene un solo hilo: a partir del segundo, cada aviso es una respuesta al anterior (Telegram notifica y el hilo se mantiene).
+- Solo el último paso de la escalera aplica o escala; si `max_avisos` corta antes, la escalera se cierra sin aplicar ni escalar.
+- Margen (`margen_aplicar_horas`, 1 h): no se aplica en el mismo tic en que se avisa si no hubo un aviso previo (tarjeta vieja al
+  activar el ajuste, runner parado) o si el previo es más reciente que el margen; se avisa y se aplica pasado el margen.
+- Si la aplicación falla, se avisa al responsable y se escala igual que una irreversible.
 - Si el runner estuvo parado y vencieron varios pasos, sale un solo aviso (el último vencido).
 - Una decisión vetada (⛔) o ya aplicada por el plazo de veto no se vuelve a aplicar.
 - Lo irreversible nunca se aplica solo.
-- Pendiente (siguiente tarjeta): botón «Deshacer» en el aviso de aplicación automática.
+- El aviso de aplicación automática lleva «↩️ Deshacer» (reutiliza el Deshacer del texto libre: vuelve a bloquear la tarea
+  mientras siga en `ready`; si el worker ya la recogió, lo dice y no toca nada). Solo aparece con el texto libre activo
+  (`telegram.free_text` en lanes.yaml).

@@ -708,9 +708,18 @@ class CommandCenter:
                 self.notifier, self.desk._people(), rc.LibroEscalera(Path(root).parent / "escalera.json"),
                 lambda: self.oscar_cards()[0], self.card_spec,
                 lambda c: BRANDS.get(c["task"].get("assignee")) or BOARD_BRANDS.get(c.get("board")),
-                self.desk.apply_recommended, vetos=getattr(self.desk, "vetos", None),
+                self.desk.apply_recommended, vetos=getattr(self.desk, "vetos", None), deshacer=self._boton_deshacer,
                 now=lambda: datetime.fromtimestamp(self._now(), rc.MADRID))
         return self._escalonador.tick()
+
+    def _boton_deshacer(self, tid: str, board: str, texto: str):
+        """Teclado [↩️ Deshacer] del aviso de aplicación automática: el mismo Deshacer del texto libre (vuelve a
+        bloquear la tarea mientras siga en ready). Sin texto libre activo no hay botón."""
+        from .free_text import FREE_UNDO
+        if not getattr(self.desk, "free", None):
+            return None
+        urec = {"task_id": tid, "board": board, "lane": "", "free_undo": True, "notice_token": None, "text": texto}
+        return self.desk.store.issue(urec, [[{"text": "↩️ Deshacer", "action": FREE_UNDO}]])[1]
 
     def equipo_choice(self, action: str, rec: dict, button: dict, where: dict) -> bool:
         return self.vigilancia() is not None and self._equipo_botones().on_button(action, rec, button, where)

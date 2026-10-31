@@ -129,7 +129,10 @@ def _build() -> dict[str, Ajuste]:
         Ajuste("decisiones.aplicar_reversible", "Avisos", "Aplicar la recomendada reversible tras el último paso", 0,
                "int", "Con 1, si nadie responde y la tarjeta es «Reversible: sí», se aplica la recomendada (siempre en una "
                "rama lane/*, nunca master). Las irreversibles nunca.", 0, 1, (0, 1)),
-        Ajuste("decisiones.escalado", "Avisos", "Escalado de una decisión irreversible", ("maria", "oscar"), "lista",
+        Ajuste("decisiones.margen_aplicar_horas", "Avisos", "Margen mínimo antes de aplicar la reversible", 1, "float",
+               "Horas desde el aviso anterior antes de aplicar la recomendada: una tarjeta vieja o un runner parado "
+               "avisa primero y aplica después.", 0.5, 24, (0.5, 1, 2, 4)),
+        Ajuste("decisiones.escalado","Avisos", "Escalado de una decisión irreversible", ("maria", "oscar"), "lista",
                "Claves de people.yaml (o oscar) que reciben el aviso al agotar la escalera, en orden."),
         Ajuste("avisos.alerta_cada_horas", "Avisos", "Horas mínimas entre avisos repetidos del monitor", 24, "float",
                "Una misma alerta (RAM, develop↔master…) sale como mucho una vez en este plazo. /silenciar <clave> <horas> "

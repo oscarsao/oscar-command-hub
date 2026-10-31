@@ -63,6 +63,13 @@ def avanza(clock, horas):
     clock["now"] = T0 + timedelta(hours=horas)
 
 
+def hasta_24(z, clock):
+    """Recorre la escalera como en producción: avisos a 1, 2, 4 y 24 h."""
+    for h in (1, 2, 4, 24):
+        avanza(clock, h)
+        z.tick()
+
+
 def test_escalera_1_2_4_24_etiqueta_al_dueno_y_edita_el_mismo_mensaje(tmp_path):
     z, n, clock, aplicado = make(tmp_path)
     assert z.tick() == []                      # a 0 h no hay nada
@@ -70,7 +77,8 @@ def test_escalera_1_2_4_24_etiqueta_al_dueno_y_edita_el_mismo_mensaje(tmp_path):
         avanza(clock, horas)
         assert z.tick() == ["t_1"]
         assert z.tick() == []                  # no repite en el mismo tic
-    assert len(n.sent) == 1 and len(n.edited) == 2    # 1.º envía; 2.º y 3.º editan el mismo mensaje
+    assert len(n.sent) == 3 and n.edited == []        # cada aviso es una respuesta nueva (Telegram notifica)
+    assert n.sent[0][2] is None and n.sent[1][2] == 101 and n.sent[2][2] == 102   # y encadenada al anterior
     assert n.sent[0][0] == "333" and 'tg://user?id=333' in n.sent[0][1] and "Ana" in n.sent[0][1]  # dueño de MigraTeam
     avanza(clock, 24)
     assert z.tick() == ["t_1"]
@@ -82,8 +90,7 @@ def test_escalera_1_2_4_24_etiqueta_al_dueno_y_edita_el_mismo_mensaje(tmp_path):
 
 def test_irreversible_escala_a_maria_y_oscar_y_no_aplica(tmp_path):
     z, n, clock, aplicado = make(tmp_path, reversible=False)
-    avanza(clock, 24)
-    z.tick()
+    hasta_24(z, clock)
     assert aplicado == []
     chats = [s[0] for s in n.sent]
     assert chats[-2:] == ["222", "111"] and "No es reversible" in n.sent[-1][1]
@@ -91,19 +98,16 @@ def test_irreversible_escala_a_maria_y_oscar_y_no_aplica(tmp_path):
 
 def test_reversible_sin_aplicacion_activada_no_aplica(tmp_path):
     z, n, clock, aplicado = make(tmp_path, e=esc(aplicar_reversible=False))
-    avanza(clock, 24)
-    z.tick()
+    hasta_24(z, clock)
     assert aplicado == []
 
 
 def test_veto_o_ya_aplicada_no_se_vuelve_a_aplicar(tmp_path):
     z, n, clock, aplicado = make(tmp_path, vetos=Vetos({"t_1": "vetoed"}))
-    avanza(clock, 24)
-    z.tick()
+    hasta_24(z, clock)
     assert aplicado == []
     z2, _, c2, ap2 = make(tmp_path / "otro", vetos=Vetos())
-    avanza(c2, 24)
-    z2.tick()
+    hasta_24(z2, c2)
     assert len(ap2) == 1 and z2.vetos.state("t_1") == "ejecutada"
 
 
@@ -135,11 +139,40 @@ def test_runner_parado_envia_un_solo_aviso_del_ultimo_paso_vencido(tmp_path):
 
 def test_max_avisos_corta_la_escalera(tmp_path):
     z, n, clock, aplicado = make(tmp_path, e=esc(max_avisos=2))
-    avanza(clock, 30)
+    avanza(clock, 1)
     z.tick()
-    assert len(n.sent) == 1 and len(aplicado) == 1        # un solo salto al 2.º tope y cierre
+    avanza(clock, 3)
+    assert z.tick() == ["t_1"] and len(n.sent) == 2       # 2.º y último aviso por el tope
+    assert aplicado == [] and "aviso 2/2" in n.sent[1][1]  # a las 3 h no se aplica nada
     avanza(clock, 40)
-    assert z.tick() == []
+    assert z.tick() == [] and aplicado == []              # ni después: el tope cierra sin aplicar ni escalar
+
+
+def test_tarjeta_vieja_avisa_primero_y_aplica_despues_del_margen(tmp_path):
+    z, n, clock, aplicado = make(tmp_path)
+    avanza(clock, 48)                                     # tarjeta de 48 h al activar el ajuste
+    assert z.tick() == ["t_1"] and len(n.sent) == 1 and aplicado == []
+    avanza(clock, 48.5)                                   # aún dentro del margen de 1 h
+    assert z.tick() == [] and aplicado == []
+    avanza(clock, 49.1)
+    assert z.tick() == ["t_1"] and len(aplicado) == 1
+    assert z.tick() == [] and len(aplicado) == 1
+
+
+def test_aplicacion_automatica_lleva_boton_deshacer(tmp_path):
+    z, n, clock, _ = make(tmp_path)
+    z._deshacer = lambda tid, board, texto: {"inline_keyboard": [[{"text": "↩️ Deshacer"}]]}
+    sent = []
+    n.send_to = lambda chat, th, text, **kw: sent.append((text, kw)) or {"message_id": 7}
+    hasta_24(z, clock)
+    assert "apliqué la recomendada" in sent[-1][0] and "reply_markup" in sent[-1][1]
+
+
+def test_si_no_se_puede_aplicar_escala_como_irreversible(tmp_path):
+    z, n, clock, _ = make(tmp_path)
+    z._apply = lambda m: False
+    hasta_24(z, clock)
+    assert [s[0] for s in n.sent[-3:]] == ["333", "222", "111"] and "No pude aplicar" in n.sent[-3][1]
 
 
 def test_apagado_no_envia(tmp_path):
