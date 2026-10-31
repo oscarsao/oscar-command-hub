@@ -47,6 +47,34 @@ def test_max_workers_del_readme_es_el_de_lanes_yaml():
     assert citados == {_yaml()["runner"]["max_workers"]}
 
 
+# Documentos que NO pueden citar un número de workers: el valor vive solo en lanes.yaml (`runner.max_workers`).
+# El README sí lo cita (test de arriba); el resto de la documentación lo remite al yaml.
+_NUMERO_DE_WORKERS = re.compile(
+    r"max_workers\W{0,6}\d"  # max_workers = 6, max_workers: 1, `max_workers`=2
+    r"|(?<![\d-])\d+\s+workers?\b"  # 2 workers (pero no «15-09 worker»)
+    r"|workers?\W{0,4}=\s*\d",  # workers=2
+    re.IGNORECASE,
+)
+
+
+def _docs_sin_numero_de_workers() -> list[Path]:
+    repo = ROOT.parents[1]
+    return [repo / "CONTEXT.md", *sorted((repo / "docs").rglob("*.md"))]
+
+
+def test_documentacion_no_cita_un_numero_de_workers():
+    # Autocomprobación: el patrón sí detecta las formas que queremos vigilar.
+    assert _NUMERO_DE_WORKERS.search("`runner.max_workers` = 4")
+    assert _NUMERO_DE_WORKERS.search("corre con 2 workers")
+    assert not _NUMERO_DE_WORKERS.search("Documento (15-09 worker, lanes.yaml)")
+    culpables = []
+    for path in _docs_sin_numero_de_workers():
+        for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            if _NUMERO_DE_WORKERS.search(line):
+                culpables.append(f"{path.relative_to(ROOT.parents[1])}:{n}: {line.strip()}")
+    assert not culpables, "Citan un número de workers; remitir a lanes.yaml:\n" + "\n".join(culpables)
+
+
 def test_max_parallel_citado_en_el_readme():
     text = (ROOT / "README.md").read_text(encoding="utf-8")
     lanes, defecto = _yaml()["lanes"], _yaml()["defaults"].get("max_parallel", 1)

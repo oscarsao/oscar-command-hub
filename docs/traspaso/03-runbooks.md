@@ -53,8 +53,9 @@ Notas:
   sus tareas; `lanes.py status` muestra «huérfano» solo con el runner parado.
 - El **vigilante de runner ciego** (`ciego.py`) hace un `restart --drain` automático (máx. 1/hora) si durante 5 min no se
   pueden listar tareas (p. ej. `WinError 4551` de App Control); aviso ALTA al DM.
-- `max_workers`: el argumento `--max-workers` del servicio manda sobre `lanes.yaml` (= 1). El servicio **sigue registrado con 2**
-  (`runner.log` 20-10: `max_workers=2`). Alinear = reinstalar la tarea sin `-MaxWorkers` (`install-service.ps1`, lo hace Oscar).
+- `max_workers`: el valor vigente es `runner.max_workers` de `lanes.yaml`. El argumento `--max-workers` del servicio, si lo
+  lleva, manda sobre él. Para ver el valor real que arrancó, mira `runner.log` (`max_workers=N`); si no coincide con el yaml,
+  alinear = reinstalar la tarea sin `-MaxWorkers` (`install-service.ps1`, lo hace Oscar).
 - Los hooks que rigen a un worker son los del **checkout vivo** (`render_settings` usa el ROOT del runner): un cambio en
   `contract/` no manda hasta fusionar y aplicar.
 

@@ -115,9 +115,9 @@ Hechos (21-10): **15,8 GB** de RAM total, 82 % en uso a las 12:00 (`psutil`), co
 el mismo día: «RAM al 89 % (14,0/15,8 GB)» 09:43, «RAM al 90 % (14,2/15,8 GB)» 10:44, «7 procesos claude abiertos (¿workers
 colgados?)» 09:18, 09:56 y 11:39 (`tools/monitor/.state/alerts.log`).
 
-Historia: OOM el **27-09** con varias sesiones abiertas → `runner.max_workers: 1` en `lanes.yaml` y candado de instancia única
-(`service.py`). Pero la tarea programada se registró con `install-service.ps1 -MaxWorkers 2` y **sigue arrancando con 2**
-(`runner.log` 20-10 04:24 y 17:12: `max_workers=2`); alinearlo requiere reinstalar la tarea (Oscar). El aviso continuo de RAM se
+Historia: OOM el **27-09** con varias sesiones abiertas → `runner.max_workers` bajado en `lanes.yaml` y candado de instancia única
+(`service.py`). La tarea programada puede arrancar con un `-MaxWorkers` distinto del yaml (ver `runner.log`); alinearlo
+requiere reinstalar la tarea (Oscar). El aviso continuo de RAM se
 sustituyó el 11-10 (#8) por `/ram` bajo demanda e informe cada 4 h al DM (`monitor.py:68`, `commands.py:1212`). Cada worker es un
 `claude -p` (Sonnet) más Hermes, el panel, el monitor, Chrome y las sesiones interactivas de Claude Code.
 
