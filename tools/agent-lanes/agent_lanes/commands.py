@@ -66,6 +66,7 @@ from typing import Callable
 from urllib.parse import urlsplit
 
 from . import agrupar as _agrupar
+from . import arrancar as _arr
 from . import ayuda as _ayuda
 from . import botonera as _bt
 from . import deps
@@ -103,6 +104,7 @@ COMMANDS = (
     ("cola", "Qué corre y qué sigue en cada carril, por prioridad: /cola [marca]"),
     ("prioridad", "Sube o baja una tarea en la cola: /prioridad t_xxx <0-99|sube|baja>"),
     ("tarea", "Ficha de una tarea con sus botones: /tarea t_xxx"),
+    ("arrancar", "Lanza una tarjeta: /arrancar t_xxx [carril]"),
     ("preparar", "Claude prepara las opciones de una decisión: /preparar t_xxx | todas"),
     ("hazlo", "Crea una tarea pequeña (carril según el texto): /hazlo <texto>"),
     ("pedir", "Pide algo con tipo (bug o feature) y preguntas: /pedir <texto>"),
@@ -111,11 +113,11 @@ COMMANDS = (
     ("desplegar", "Despliega lo fusionado, con doble confirmación: /desplegar oscarhq"),
     ("promover", "Promover MigraTeam a producción (doble confirmación): /promover migrateam"),
     ("lote", "Montar ya el lote de un proyecto: /lote migrateam|oscarhq"),
-    ("al_dia", "Poner al día ramas, ver lo listo e integrarlo (dev): /al_dia [proyecto|todos] [dev]"),
+    ("al_dia", "Pone al día ramas e integra lo listo: /al_dia [proyecto|todos] [dev]"),
     ("aldia", "Alias de /al_dia"),
     ("salud", "Estado de runner, Hermes, servicios, MigraTeam y equipo"),
     ("ram", "Consumo de RAM ahora y qué procesos más gastan"),
-    ("avisos", "Apaga o enciende los avisos de «listo para revisar»: /avisos off [1h|3h|mañana|siempre] · /avisos on"),
+    ("avisos", "Apaga/enciende avisos de «listo para revisar»: /avisos off [1h|3h|mañana|siempre] | on"),
     ("choques", "Choques y solapes"),
     ("paradas", "Paradas más de 24 h"),
     ("revision", "Por revisar"),
@@ -126,8 +128,8 @@ COMMANDS = (
     ("pendiente", "Lo tuyo en UN mensaje, con botones: preguntas, PR y tarjetas"),
     ("personal", "Saca tu backlog personal del kanban (confirmas con botones)"),
     ("agrupar", "Propone fusionar, encadenar o juntar tarjetas abiertas: /agrupar [proyecto|todo]"),
-    ("workflow", "Trabajo largo: plan y coste, nada se crea hasta aprobar: /workflow <texto>"),
-    ("pendientes", "Tus pendientes (pasos «tuyo» y «decidir») con botones"),
+    ("workflow", "Trabajo largo: plan y coste antes de crear: /workflow <texto>"),
+    ("pendientes", "Lo tuyo y las tarjetas sin carril, con Arrancar"),
     ("epicas", "Vista de épicas (fuera de la cola de decisiones)"),
     ("retenidas", "Vista de tarjetas retenidas"),
     ("backlog", "Vista del backlog del bot del equipo"),
@@ -429,7 +431,7 @@ class CommandCenter:
             lane = self.infer_lane(args, scope)
             # Sin carril claro, el comando ofrece botones de carril: se comprueban al pulsarlos.
             return check(BRANDS.get(lane)) if lane else None
-        if cmd in ("prioridad", "tarea"):
+        if cmd in ("prioridad", "tarea", "arrancar"):
             tid = (args.split() or [""])[0].lower()
             found = self._find(tid) if TASK_ID_RE.match(tid) else None
             if not found:
@@ -1017,7 +1019,8 @@ class CommandCenter:
         pend = [c for c in mine if titulos.step_of(c["task"]) in titulos.OSCAR_STEPS and c["task"]["id"] not in snoozed]
         loose = [c for c in mine if titulos.step_of(c["task"]) is None and c["task"]["id"] not in snoozed]
         scope = f" · {brand}" if brand else ""
-        if not pend and not loose:
+        sin_carril = self._sin_carril(brand)  # ready/todo/scheduled de oscar: decide él / integrador / código sin lanzar
+        if not pend and not loose and not sin_carril:
             self._send(where, f"Nada pendiente de ti{scope} 🎉", html=False)
             return
         if pend:
@@ -1033,6 +1036,8 @@ class CommandCenter:
             lines += [f"• <code>{c['task']['id']}</code> · {e(truncate(c['task'].get('title'), CARD_TITLE_MAX))}"
                       for c in loose[:MAX_CARDS]]
             self._send(where, "\n".join(lines))
+        if sin_carril:
+            self._send_sin_carril(where, brand, sin_carril)
 
     # --- /pendiente: bandeja única «Lo tuyo» (lo_tuyo.py) ----------------------------------------------------------
 
@@ -3092,10 +3097,12 @@ class CommandCenter:
             spec = [[{"text": "▶️ Sacar de triage", "action": UNTRIAGE}, {"text": "🗂 Archivar", "action": _tm.TR_ARCHIVAR}]]
         else:
             spec = []
+        if self._arrancable(task):  # 🚀 Arrancar: ready/todo/scheduled de oscar que no son suyas ni del integrador
+            spec = [*spec, [{"text": "🚀 Arrancar", "action": _tm.TR_ARRANCAR}]]
         estado = _bt.estado_de(status)  # botonera estándar (F1-14): todo estado con tarjeta tiene salida
-        if estado is None:
+        if estado is None and not spec:
             return None
-        spec = _bt.con_mas(spec, estado)
+        spec = _bt.con_mas(spec, estado) if estado is not None else spec
         rec = {"task_id": task["id"], "board": board, "lane": task.get("assignee") or "",
                "title": task.get("title") or "", "body": (task.get("body") or "")[:1500]}
         markup = self.desk.store.issue(rec, spec)[1]
@@ -3103,6 +3110,12 @@ class CommandCenter:
         if url:
             markup["inline_keyboard"].append([{"text": "🗂 Tarjeta", "url": url}])
         return markup
+
+    @staticmethod
+    def _arrancable(task: dict) -> bool:
+        """Tarjeta de código sin lanzar: en cola, en espera o programada, asignada a oscar y que no es suya."""
+        return (task.get("status") in _arr.ESTADOS_ARRANCABLES and task.get("assignee") == OSCAR_ASSIGNEE
+                and _arr.grupo_pendiente(task) == _arr.G_CODIGO)
 
     def reply_target(self, msg: dict) -> dict | None:
         """Qué es el mensaje al que responde `msg` (lista, ficha o fusión), si lo guardamos y no ha caducado."""
@@ -3238,6 +3251,8 @@ class CommandCenter:
                 return True
             self._send_ficha((where["chat_id"], where["thread_id"]), *found)
             return True
+        if action in (_tm.TR_ARRANCAR, _tm.TR_ARRANCAR_A):
+            return self._arrancar_step(action, rec, button, where, say)
         h = self.hermes_for(board)
         if action == _tm.TR_PRIO:
             found = self._find(tid)
@@ -3270,6 +3285,151 @@ class CommandCenter:
         if action == _tm.TR_RELANZAR:
             return self._relanzar(h, tid, say)
         return False
+
+    # --- 🚀 Arrancar (31-10): reasigna a un carril y deja la tarjeta lista para el runner -------------------------
+
+    def _puede_lanzar(self) -> bool:
+        """Quién puede lanzar: la tabla de permisos (`desk.puede_lanzar`, fábrica v3 §4.2) cuando exista; hasta
+        entonces vale cualquier operador (Oscar, María, Ángel), que es quien llega a los comandos y botones."""
+        fn = getattr(self.desk, "puede_lanzar", None)
+        return bool(fn(getattr(self._ctx, "actor", None))) if callable(fn) else True
+
+    def _arrancar_pedir_carril(self, where, board: str, show: dict) -> None:
+        """Mensaje con un botón por carril del tablero (el recomendado primero y con ⭐). Nunca elige solo."""
+        task = show["task"]
+        carriles = _arr.carriles_para(board, self.lanes)
+        if not carriles:
+            self._send(where, f"No hay carriles de código en el tablero «{board}» para {task['id']}", html=False)
+            return
+        rec_lane = _arr.carril_recomendado(board, self.lanes)
+        rec = {"task_id": task["id"], "board": board, "lane": "", "title": task.get("title") or "",
+               "carriles": carriles}
+        spec = [[{"text": ("⭐ " if c == rec_lane else "") + c, "action": _tm.TR_ARRANCAR_A, "index": n}]
+                for n, c in enumerate(carriles)]
+        self._send(where, f"🚀 ¿En qué carril arranco {task['id']} · {truncate(task.get('title'), 50)}?"
+                   + (f" Recomendado: {rec_lane}" if rec_lane else ""), html=False,
+                   markup=self.desk.store.issue(rec, spec)[1])
+
+    def _arrancar_hacer(self, board: str, show: dict, lane: str, say) -> bool:
+        task = show["task"]
+        if lane not in _arr.carriles_para(board, self.lanes):
+            say(f"⚠️ {lane} no trabaja en el tablero «{board}»")
+            return True
+        if not self._permitida(board, task):
+            say(self._rechazo(board, task))
+            return True
+        if not self._puede_lanzar():
+            say("No tienes permiso para lanzar tarjetas")
+            return True
+        who = self.desk._who() if hasattr(self.desk, "_who") else "Oscar"
+        ok, text = _arr.arrancar(self.hermes_for(board), task["id"], lane, who, OSCAR_AUTHOR)
+        say(text)
+        return ok
+
+    def _arrancar_step(self, action: str, rec: dict, button: dict, where: dict, say) -> bool:
+        tid, board = rec.get("task_id"), rec.get("board") or ""
+        cands = rec.get("candidates")
+        if cands is not None:  # botón de una lista (/pendientes): la tarjeta va en `candidates[index]`
+            idx = button.get("index")
+            if not isinstance(idx, int) or not 0 <= idx < len(cands):
+                return False
+            tid, board = cands[idx]["task_id"], cands[idx].get("board") or ""
+        found = self._find(tid) if tid and not board else None
+        if found:
+            board = found[0]
+        try:
+            show = found[1] if found else self.hermes_for(board).show(tid)
+        except Exception:
+            show = None
+        if not show or not show.get("task"):
+            say("Ya no encuentro esa tarea en los tableros")
+            return True
+        if action == _tm.TR_ARRANCAR:
+            if not self._permitida(board, show["task"]):
+                say(self._rechazo(board, show["task"]))
+                return True
+            self._arrancar_pedir_carril((where["chat_id"], where["thread_id"]), board, show)
+            return True
+        idx = button.get("index")
+        carriles = rec.get("carriles") or []
+        if not isinstance(idx, int) or not 0 <= idx < len(carriles):
+            return False
+        return self._arrancar_hacer(board, show, carriles[idx], say)
+
+    def cmd_arrancar(self, where, args: str, brand: str | None) -> None:
+        parts = args.split()
+        tid = (parts[0] if parts else "").lower()
+        if not (TASK_ID_RE.match(tid) or _tm.SUFFIX_RE.match(tid)):
+            self._send(where, "Uso: /arrancar t_xxxxxxxx [carril]  (p. ej. /arrancar t_1234abcd hub)", html=False)
+            return
+        if _tm.SUFFIX_RE.match(tid) and not TASK_ID_RE.match(tid):
+            hits = self._buscar(tid)
+            tid = hits[0][0] if len(hits) == 1 else tid
+        found = self._find(tid) if TASK_ID_RE.match(tid) else None
+        if not found:
+            self._send(where, f"No encuentro {tid} en los tableros de los carriles", html=False)
+            return
+        board, show = found
+        if not self._permitida(board, show["task"]):
+            self._send(where, self._rechazo(board, show["task"]), html=False)
+            return
+        if len(parts) < 2:
+            self._arrancar_pedir_carril(where, board, show)
+            return
+        lane = _arr.resolver_carril(parts[1], board, self.lanes)
+        if lane is None:
+            self._send(where, f"«{parts[1]}» no es un carril del tablero «{board}». Opciones: "
+                       + ", ".join(_arr.carriles_para(board, self.lanes)), html=False)
+            return
+        self._arrancar_hacer(board, show, lane, lambda text: self._send(where, text, html=False))
+
+    def _sin_carril(self, brand: str | None) -> dict[str, dict[str, list[dict]]]:
+        """{tablero: {grupo: [tarea]}} de las tarjetas ready/todo/scheduled asignadas a oscar. Un tablero ilegible
+        no vacía la vista."""
+        out: dict[str, dict[str, list[dict]]] = {}
+        for board in dict.fromkeys([l.board for l in self.lanes.values() if l.board] + list(EXTRA_BOARDS)):
+            if brand and BOARD_BRANDS.get(board, "Otros") != brand:
+                continue
+            h = self.hermes_for(board)
+            vistos: set[str] = set()
+            for status in _arr.ESTADOS_ARRANCABLES:
+                try:
+                    tasks = h.list_status_all(status)
+                except Exception as exc:
+                    log.warning("pendientes sin carril: %s/%s no leído: %s", board, status, exc)
+                    continue
+                for t in tasks or ():
+                    if (not isinstance(t, dict) or not t.get("id") or t["id"] in vistos
+                            or t.get("assignee") != OSCAR_ASSIGNEE or not titulos.is_live(t)
+                            or not self._permitida(board, t)):
+                        continue
+                    vistos.add(t["id"])
+                    t = {"status": status, **t}
+                    out.setdefault(board, {}).setdefault(_arr.grupo_pendiente(t), []).append(t)
+        return out
+
+    def _send_sin_carril(self, where, brand: str | None, grupos: dict) -> None:
+        """Un mensaje por tablero con las tres listas; los botones 🚀 Arrancar van solo con las de código."""
+        for board, por_grupo in grupos.items():
+            lines = [f"📋 Sin carril · {board}"]
+            codigo: list[dict] = []
+            for g in (_arr.G_DECIDES, _arr.G_INTEGRADOR, _arr.G_CODIGO):
+                tasks = por_grupo.get(g) or []
+                lines.append(f"\n{_arr.TITULOS_GRUPO[g]} ({len(tasks)})")
+                lines += [f"• {t['id']} · {truncate(t.get('title'), CARD_TITLE_MAX)} · {t['status']}"
+                          for t in tasks[:MAX_CARDS]]
+                if len(tasks) > MAX_CARDS:
+                    lines.append(f"… y {len(tasks) - MAX_CARDS} más en el panel")
+                if g == _arr.G_CODIGO:
+                    codigo = tasks[:_tm.MAX_OPCIONES]
+            markup = None
+            if codigo:
+                rec = {"task_id": "pendientes", "board": "", "lane": "",
+                       "candidates": [{"task_id": t["id"], "board": board} for t in codigo]}
+                spec = [[{"text": f"🚀 Arrancar {t['id']}", "action": _tm.TR_ARRANCAR, "index": n}]
+                        for n, t in enumerate(codigo)]
+                markup = self.desk.store.issue(rec, spec)[1]
+            self._send(where, "\n".join(lines)[:TEXT_MAX], html=False, markup=markup)
 
     def _relanzar(self, h, tid: str, say) -> bool:
         try:

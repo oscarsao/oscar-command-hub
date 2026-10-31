@@ -23,7 +23,8 @@ PRIO_PASO = 10  # lo que sube [⬆️ Prioridad] de la ficha
 
 TR_PICK, TR_PRIO, TR_FUSION = "tr_pick", "tr_prio", "tr_fusion"
 TR_ARCHIVAR, TR_RELANZAR, TR_ANOTAR = "tr_archivar", "tr_relanzar", "tr_anotar"
-TR_ACTIONS = (TR_PICK, TR_PRIO, TR_FUSION, TR_ARCHIVAR, TR_RELANZAR, TR_ANOTAR)
+TR_ARRANCAR, TR_ARRANCAR_A = "tr_arrancar", "tr_arrancar_a"  # 🚀 Arrancar: pide carril / lo asigna y la deja lista
+TR_ACTIONS = (TR_PICK, TR_PRIO, TR_FUSION, TR_ARCHIVAR, TR_RELANZAR, TR_ANOTAR, TR_ARRANCAR, TR_ARRANCAR_A)
 
 KIND_LISTA, KIND_FICHA, KIND_FUSION = "lista", "ficha", "fusion"
 

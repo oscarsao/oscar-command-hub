@@ -22,7 +22,7 @@ GRUPOS = (
     ("👀 Ver cómo va todo", ("hoy", "estado", "falta", "tareas", "cola", "tarea", "salud", "ram", "integrador", "choques", "paradas",
                            "revision", "limpieza")),
     ("✅ Decidir y aprobar", ("decisiones", "atencion", "pendiente", "pendientes", "aprobar", "preparar")),
-    ("➕ Pedir trabajo", ("hazlo", "pedir", "flujo", "workflow", "sesion")),
+    ("➕ Pedir trabajo", ("hazlo", "arrancar", "pedir", "flujo", "workflow", "sesion")),
     ("🚀 Publicar", ("lote", "desplegar", "promover", "al_dia", "aldia", "encolar")),
     ("🧹 Ordenar el kanban", ("prioridad", "agrupar", "personal", "epicas", "retenidas", "backlog")),
     ("🔔 Avisos y ajustes", ("avisos", "silenciar", "ajustes")),

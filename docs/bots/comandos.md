@@ -59,7 +59,8 @@ Por eso, en un grupo, escribe siempre `/comando@pildora_carriles_bot` (el menú 
 | `/pendiente` | **«Lo tuyo» en un solo mensaje**: preguntas, PR por aprobar, tarjetas tuyas, con un botón por línea | `/pendiente` |
 | `/decisiones` | Bandeja de preguntas de los workers, con [✅ Aceptar todo lo recomendado] y una tarjeta por tarea | `/decisiones` |
 | `/atencion` | Todo lo que espera a Oscar con botones para resolverlo ahí mismo | `/atencion` |
-| `/pendientes` | Tus pasos «tuyo» y «decidir» con botones | `/pendientes` |
+| `/pendientes` | Tus pasos «tuyo» y «decidir» con botones, y por tablero las tarjetas sin carril: las decides tú, las hace el integrador y de código sin lanzar (con botón 🚀 Arrancar) | `/pendientes` |
+| `/arrancar t_xxx [carril]` | Asigna una tarjeta ready/todo/scheduled de oscar a un carril (sin carril, pregunta con botones) y la deja lista: el runner la coge en menos de 2 minutos | `/arrancar t_3d4a9c10 hub` |
 | `/aprobar` | Tareas listas para integrar: [✅ Aprobar] [🔁 Pedir cambios] [🗄 Aparcar] | `/aprobar` |
 | `/preparar t_xxx \| todas` | Claude redacta el contexto y 3 opciones de una tarjeta de decisión | `/preparar t_3d4a9c10` |
 

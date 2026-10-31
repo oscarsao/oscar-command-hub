@@ -27,6 +27,7 @@ import time
 from contextlib import contextmanager
 
 from . import proc as _proc
+from . import arrancar
 from .hermes import HermesCLI, HermesError, KanbanComun, OSCAR_AUTHOR, preparar_tarjeta
 
 log = logging.getLogger("agent_lanes")
@@ -363,6 +364,9 @@ class SupabaseKanban(KanbanComun):
                created_by: str | None = None, parents: list[str] | None = None, alcance: list[str] | None = None,
                rama: str | None = None) -> str:
         body, assignee = preparar_tarjeta(self.board, title, body, assignee)
+        triage = arrancar.sin_carril_ni_marca(title, assignee)  # regla de creación (31-10): a triage, no a oscar
+        if triage:
+            arrancar.aviso_creacion(title)
         author = created_by or self.author
         parents = list(dict.fromkeys(parents or ()))
 
@@ -383,6 +387,8 @@ class SupabaseKanban(KanbanComun):
                 status = "ready" if all(known[p] in TERMINAL for p in parents) else "todo"
             else:
                 status = "ready"
+            if triage:
+                status = "triage"
             for _ in range(5):
                 tid = "t_" + secrets.token_hex(4)
                 cur.execute(

@@ -11,7 +11,7 @@ import tempfile
 import time
 
 from . import proc as _proc
-from . import grandes, telegram_lane, titulos
+from . import arrancar, grandes, telegram_lane, titulos
 from pathlib import Path
 
 log = logging.getLogger("agent_lanes")
@@ -477,12 +477,17 @@ class HermesCLI(KanbanComun):
         """Crea una tarjeta y devuelve su id. --body-file: un cuerpo que empieza por "- " no se toma como flag.
         `parents` = ids del mismo tablero de los que depende (un --parent por id)."""
         body, assignee = preparar_tarjeta(getattr(self, "board", None), title, body, assignee)
+        triage = arrancar.sin_carril_ni_marca(title, assignee)  # regla de creación (31-10): a triage, no a la cola de oscar
+        if triage:
+            arrancar.aviso_creacion(title)
         fd, tmp = tempfile.mkstemp(prefix="tarjeta-", suffix=".md")
         try:
             with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as fh:
                 fh.write(body)
             args = ["create", "--assignee", assignee, "--body-file", tmp, "--created-by", created_by or self.author,
                     "--json"]
+            if triage:
+                args.append("--triage")
             if priority is not None:
                 args += ["--priority", str(priority)]
             if key:
