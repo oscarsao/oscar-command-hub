@@ -36,6 +36,7 @@ ACTIONS = (APLICAR, DEJAR)
 MODOS = ("apagado", "aviso", "auto")
 AUTO_REMEDIOS = ("reintentar", "gitattributes", "requeue")
 STATUSES = ("blocked", "triage")
+ESCALADA = re.compile(r"\s*Bloqueada \d+ veces por lo mismo\b.*?\n\s*Último detalle:(?P<detalle>.*)", re.DOTALL | re.IGNORECASE)
 
 DEFAULTS: dict = {
     "patrones": [
@@ -131,14 +132,24 @@ def situacion(show: dict, n_comentarios: int = 3) -> dict:
     reason = str(payload.get("reason") or "")
     comments = [str(c.get("body") or "") for c in (show.get("comments") or [])][-n_comentarios:] if n_comentarios > 0 else []
     firma = hashlib.sha1(f"{len(blocks)}|{reason}".encode("utf-8", "replace")).hexdigest()[:10]
+    # runner._block, al 2º bloqueo transitorio igual, lo reescribe como needs_input «Bloqueada N veces por lo mismo… Último
+    # detalle: <causa>»: es un transitorio escalado, no una pregunta del worker; casa por la causa (el «Último detalle»).
+    esc = ESCALADA.match(reason)
+    if esc:
+        reason = esc.group("detalle").strip() or reason
     return {"status": task.get("status"), "title": str(task.get("title") or ""), "assignee": str(task.get("assignee") or ""),
-            "reason": reason, "kind": payload.get("kind"), "texto": "\n".join([reason, *comments]), "firma": firma}
+            "reason": reason, "kind": payload.get("kind"), "escalada": bool(esc), "texto": "\n".join([reason, *comments]),
+            "firma": firma}
+
+
+def decision_pendiente(sit: dict) -> bool:
+    """Pregunta real del worker a Oscar (needs_input que no es un transitorio escalado): solo el patrón 3, que propone con botones."""
+    return sit.get("kind") == "needs_input" and not sit.get("escalada")
 
 
 def es_nunca(sit: dict, cfg: dict) -> bool:
-    """Producción, migraciones, secretos, borrados, MigraTeam o decisión de Oscar pendiente: jamás automático."""
-    if sit.get("kind") == "needs_input":
-        return True
+    """Producción, migraciones, secretos, borrados o MigraTeam: jamás automático. (La decisión pendiente de Oscar va aparte:
+    decision_pendiente(); solo deja pasar el patrón 3, que únicamente propone.)"""
     if "migrateam" in (sit.get("assignee") or "").lower():
         return True
     try:
@@ -150,7 +161,10 @@ def es_nunca(sit: dict, cfg: dict) -> bool:
 def casar(sit: dict, cfg: dict) -> dict | None:
     """Primer patrón de la lista blanca que casa: {patron, remedio, destino?} o None. El 5 (triage) se deduce aquí."""
     from . import bloqueos
+    pendiente = decision_pendiente(sit)
     for pat in cfg.get("patrones") or ():
+        if pendiente and pat.get("remedio") != "recrear":
+            continue
         try:
             m = re.search(pat["regex"], sit["texto"], re.IGNORECASE)
         except (KeyError, TypeError, re.error):
@@ -169,7 +183,7 @@ def casar(sit: dict, cfg: dict) -> dict | None:
         if sit["status"] == "triage":  # patrón 5: sacar de triage una vez resuelta la causa
             return {"patron": f"triage+{pat['id']}", "remedio": "requeue", "previo": remedio}
         return {"patron": pat["id"], "remedio": remedio}
-    if sit["status"] == "triage" and bloqueos.clasificar(sit["reason"]).clase == bloqueos.TRANSITORIO:
+    if not pendiente and sit["status"] == "triage" and bloqueos.clasificar(sit["reason"]).clase == bloqueos.TRANSITORIO:
         return {"patron": "triage+transitorio", "remedio": "requeue", "previo": None}
     return None
 
@@ -200,9 +214,11 @@ def aplicar(h, tid: str, dec: dict, sit: dict, cfg: dict, *, hermes_for=None, la
             show = h.show(tid)
             task = show.get("task") or {}
             nota = f"Recreada desde {tid} ({sit['assignee']}): la tarjeta apuntaba al repo equivocado.\n\n"
-            nuevo = hermes_for(lane.board).create(sit["title"], nota + str(task.get("body") or ""), lane.name)
+            nuevo = hermes_for(lane.board).create(sit["title"], nota + str(task.get("body") or ""), lane.name,
+                                                  key=f"triaje-recrear-{tid}")
             _comentar(h, tid, f"recreada en {lane.name} como {nuevo} (repo equivocado, {quien}); esta se archiva")
-            h.archive(tid)
+            if not h.archive(tid):
+                return False, f"recreada en {lane.name} como {nuevo}, pero NO pude archivar la vieja {tid}: archívala tú"
             return True, f"recreada en {lane.name} como {nuevo}"
         previo = dec.get("previo") or remedio
         if previo == "gitattributes":
@@ -275,6 +291,8 @@ def procesar(i, *, log_path: Path | None = None, now: float | None = None) -> li
                 if es_nunca(sit, cfg):
                     continue  # a Oscar por el camino de siempre; ni se anota (no es un hueco de la lista blanca)
                 dec = casar(sit, cfg)
+                if dec is None and decision_pendiente(sit):
+                    continue  # pregunta real del worker sin patrón: a Oscar por el camino de siempre; ni se anota
                 if dec is None:
                     registrar(tid, "-", "-", "no_casa", firma=sit["firma"], motivo=sit["reason"], path=log_path, now=now)
                     vistas.add((tid, sit["firma"]))
@@ -317,7 +335,7 @@ def on_button(action: str, rec: dict, where: dict | None, desk) -> bool:
     except Exception:  # noqa: BLE001
         say(f"{tid}: no pude leer la tarjeta ahora")
         return False
-    if sit["status"] not in STATUSES or es_nunca(sit, cfg):
+    if sit["status"] not in STATUSES or es_nunca(sit, cfg) or (decision_pendiente(sit) and rec.get("remedio") != "recrear"):
         say(f"{tid}: ya no está bloqueada o necesita tu decisión; no toco nada")
         return True
     if intentos(tid) >= tope():

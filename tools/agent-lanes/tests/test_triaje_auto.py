@@ -201,6 +201,52 @@ def test_nunca_automatico(tmp_path, modo, reason, extra):
     assert h.calls == [] and i.desk.notifier.sent == []
 
 
+ESCALADA = ("Bloqueada 2 veces por lo mismo (fallo transitorio); reintentar sin cambios no sirve.\n"
+            "Último detalle: could not lock config file .git/config")
+
+
+def test_needs_input_patron3_propone_con_botones_tambien_en_auto(tmp_path, modo):
+    modo("auto")
+    i, h, out = _run(tmp_path, {"t_1": T("El worker necesita decisión:\n- " + REPO, kind="needs_input")})
+    assert out[0]["resultado"] == "propuesto" and out[0]["patron"] == "repo"
+    assert h.calls == [] and [b["action"] for b in i.desk.store.last[1][0]] == [ta.APLICAR, ta.DEJAR]
+
+
+def test_needs_input_patron5_escalada_por_lo_mismo_hace_requeue_en_auto(tmp_path, modo):
+    modo("auto")
+    _, h, out = _run(tmp_path, {"t_1": T(ESCALADA, status="triage", kind="needs_input")})
+    assert out[0]["remedio"] == "requeue" and out[0]["resultado"] == "aplicado" and ("requeue", "t_1") in h.calls
+
+
+def test_needs_input_escalada_en_blocked_reintenta_por_el_ultimo_detalle(tmp_path, modo):
+    modo("auto")
+    _, h, out = _run(tmp_path, {"t_1": T(ESCALADA, kind="needs_input")})
+    assert out[0]["patron"] == "transitorio" and ("unblock", "t_1") in h.calls
+
+
+def test_needs_input_pregunta_real_sin_patron_no_se_toca(tmp_path, modo):
+    modo("auto")
+    i, h, out = _run(tmp_path, {"t_1": T("El worker necesita decisión:\n- ¿Uso A o B? (recomendada A)", kind="needs_input"),
+                                "t_2": T("El worker necesita decisión:\n- " + TRANS, status="triage", kind="needs_input")})
+    assert out == [] and h.calls == [] and i.desk.notifier.sent == [] and not (tmp_path / "t.jsonl").exists()
+
+
+def test_recrear_usa_clave_idempotente_y_avisa_si_archive_falla(tmp_path, modo, monkeypatch):
+    modo("aviso")
+    monkeypatch.setattr(ta, "LOG_PATH", tmp_path / "t.jsonl")
+    i, h = _hub({"t_1": T(REPO, title="Mover cosa")})
+    ta.procesar(i, log_path=tmp_path / "t.jsonl")
+    rec = i.desk.store.last[0]
+    claves, dichos = [], []
+    destino = i.hs["b2"]
+    destino.create = lambda title, body, assignee, **kw: claves.append(kw.get("key")) or "t_nuevo001"
+    h.archive = lambda tid: False
+    i.desk.notifier.send_to = lambda c, t, text, **kw: dichos.append(text)
+    assert ta.on_button(ta.APLICAR, rec, {"chat_id": 1}, i.desk) is False
+    assert claves == ["triaje-recrear-t_1"]
+    assert "NO pude archivar" in dichos[-1] and "recreada" in dichos[-1]
+
+
 def test_tope_de_intentos_impide_bucles(tmp_path, modo):
     modo("auto", tope=2)
     i, h = _hub({"t_1": T(TRANS)})
