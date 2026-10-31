@@ -582,8 +582,8 @@ class Integrator:
             self.check_live_lag()
         except Exception as exc:  # nunca tumba la pasada
             log.warning("integrador: Aplicar/checkout vivo: %s", exc)
-        from . import backmerge, retro  # import tardío: ambos usan el integrador por duck typing
-        for step in (backmerge.check, retro.check) if self.automatismos else ():  # back-merge y retro del lunes
+        from . import backmerge, retro, triaje_auto  # import tardío: todos usan el integrador por duck typing
+        for step in (backmerge.check, retro.check, triaje_auto.check) if self.automatismos else ():  # back-merge, retro y triaje
             try:
                 step(self)
             except Exception as exc:  # nunca tumba la pasada

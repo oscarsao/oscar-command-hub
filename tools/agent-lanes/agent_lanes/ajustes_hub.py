@@ -126,6 +126,13 @@ def _build() -> dict[str, Ajuste]:
                "Pasado el tope, el resto sale agrupado en un solo mensaje.", 1, 30, (5, 10, 20)),
         Ajuste("atascos.escalado_guard_horas", "Atascos", "Escalado a Oscar de un bloqueo de guard", 2.0, "float",
                "Horas en la cola del integrador antes de pasar a Oscar (mínimo 1).", 1, 72, (1, 2, 4, 8)),
+        Ajuste("triaje.modo", "Atascos", "Triaje automático de bloqueos", "aviso", "opcion",
+               "apagado = no hace nada. aviso = propone el remedio con botones. auto = aplica solo los remedios de la "
+               "lista blanca (reintentar fallos transitorios, .gitattributes, sacar de triage); cambiar de carril "
+               "siempre se pregunta.", opciones=("apagado", "aviso", "auto")),
+        Ajuste("triaje.tope_intentos", "Atascos", "Intentos máximos del triaje por tarjeta", 2, "int",
+               "Pasado este número de remedios aplicados a la misma tarjeta, deja de intentarlo y la escala a Oscar.",
+               1, 5, (1, 2, 3)),
         Ajuste("atascos.aplazar_horas", "Atascos", "Duración de «Aplazar»", 24.0, "float",
                "Horas que el bloqueo no se escala tras pulsar Aplazar.", 1, 168, (8, 24, 48, 72)),
         Ajuste("atascos.aviso_hora", "Atascos", "Hora del aviso diario de PR esperando lote", 9, "int",

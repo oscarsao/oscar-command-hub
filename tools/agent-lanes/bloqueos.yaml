@@ -22,3 +22,12 @@ botones:
 umbrales:
   detalle_max: 3000
   detalle_comentarios: 3
+
+# triaje: lista blanca del triaje automático (agent_lanes/triaje_auto.py). Lo que falte vale el defecto del módulo.
+# El modo (apagado | aviso | auto) y el tope de intentos se cambian en /ajustes (triaje.modo, triaje.tope_intentos).
+# Ampliar la lista blanca es decisión de Oscar: la retro semanal solo propone, nunca la amplía sola.
+#   patrones: lista {id, remedio: reintentar|gitattributes|recrear, regex}   carril_por_repo: repo -> carril
+#   nunca: regex de lo que jamás se toca solo (producción, migraciones, secretos, borrados, MigraTeam)
+#   umbral_retro: veces que un motivo sin remedio debe repetirse en la semana para proponerlo en la retro
+triaje:
+  umbral_retro: 3

@@ -43,6 +43,7 @@ from .notices import (BOARD_BRANDS, BRANDS, DECISION_CARD_STATUSES, OPTION_LETTE
                       questions_block, render, status_line, truncate, with_default_options)
 from .tareas_movil import TR_ACTIONS
 from .tipo_peticion import A_ASK as PEDIR_ASK, KIND as PEDIR_KIND
+from . import triaje_auto
 from .limpieza import LIM_CLOSE, LIM_KEEP, LIM_VIEW
 from . import avisos_revision
 from .avisos_revision import AV_ACTIONS
@@ -1333,6 +1334,8 @@ class DecisionDesk:
             return bool(self.integrator) and self.integrator.on_button(action, rec, where, self)
         if action in (REC_ARCHIVE, REC_KEEP):  # propuesta de obsolescencia (reconcile.py)
             return bool(self.reconciler) and self.reconciler.on_button(action, rec, where, self)
+        if action in triaje_auto.ACTIONS:  # propuesta del triaje automático de bloqueos (triaje_auto.py)
+            return triaje_auto.on_button(action, rec, where, self)
         if action in (LIM_CLOSE, LIM_KEEP, LIM_VIEW):  # propuesta de limpieza (limpieza.py)
             return bool(self.limpieza) and self.limpieza.on_button(action, rec, where, self)
         if action in FUS_ACTIONS:  # avisos de solape/choque y ficha de tarjeta (fusion.py)

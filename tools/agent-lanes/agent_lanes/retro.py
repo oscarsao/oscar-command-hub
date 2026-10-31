@@ -145,6 +145,14 @@ def check(i, *, out_dir: Path | None = None, alerts_log: Path | None = None) -> 
         log.warning("retro: no pude guardar el informe: %s", exc)
         path = None
     text = resumen(now, al, k, path)
+    try:  # triaje: bloqueos que la lista blanca no cubre -> texto en el resumen y tarjeta de decisión (nunca se amplía sola)
+        from . import triaje_auto
+        extra = triaje_auto.retro_texto(now)
+        if extra:
+            text = f"{text}\n\n{extra}"
+            triaje_auto.proponer_ampliacion(i, week, now)
+    except Exception as exc:  # noqa: BLE001 - la retro sale aunque el triaje falle
+        log.warning("retro: triaje: %s", exc)
     owner = str(getattr(i.desk, "owner_id", "") or "")
     if owner:
         i.notifier.send_to(owner, None, text, html=False)
