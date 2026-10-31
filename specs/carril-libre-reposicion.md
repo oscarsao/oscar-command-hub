@@ -1,7 +1,7 @@
 # Spec: aviso de carril libre y reposición (t_ebd2b253)
 
 Decisión de Oscar (30-10): que el hub avise cuando un carril lleva libre un tiempo y recomiende una tarea corta y/o larga, o la asigne solo por proyecto.
-Tamaño: L (3-5 días en 3 PR). Estado: BORRADOR, pendiente de OK.
+Tamaño: L (3-5 días en 3 PR). Estado: OK de Oscar (31-10). **Esta tarjeta (t_ebd2b253) queda reducida al PR 1 (detección + `/libres`); las piezas 2-7 (PR 2 y PR 3) pasan a tarjetas nuevas.**
 
 ## Piezas
 1. `agent_lanes/ociosos.py` (nuevo): por pasada del runner, carril «libre» = sin tarjetas running ni ready. Persiste `desde` en `.state/ociosos.json`; reloj inyectado. Umbral: ajuste `carriles.ocioso_minutos` (30).
