@@ -274,18 +274,8 @@ def load_people(owner_id: str, path: Path | str | None = None, hq=None) -> Peopl
         seen.add(uid)
         asked = cfg.get("can") if isinstance(cfg.get("can"), list) else []
         caps = BASE_CAPS[role] | (frozenset(str(c) for c in asked) & OPTIONAL_CAPS.get(role, frozenset()))
-<<<<<<< HEAD
-        persons.append(Person(_clean(key), _clean(cfg.get("name") or key) or _clean(key), uid, role, (), caps,
-                              hermes=cfg.get("hermes") is not False))
-    return People(owner_id, persons, hq=hq)
-=======
-        brands = tuple(_clean(b) for b in (cfg.get("brands") or ()) if _clean(b)) if isinstance(
-            cfg.get("brands"), (list, tuple)) else ()
-        pedidos = cfg.get("permisos") if isinstance(cfg.get("permisos"), list) else []
-        permisos = frozenset(str(x) for x in pedidos) & PERMISOS_YAML
         mencion = _clean(cfg.get("mencion")).lstrip("@")
         solo = f"@{mencion}" if cfg.get("solo_menciones") is True and mencion else ""
-        persons.append(Person(_clean(key), _clean(cfg.get("name") or key) or _clean(key), uid, role, brands, caps,
-                              cfg.get("operador") is True, permisos, cfg.get("hermes") is not False, solo))
-    return People(owner_id, persons)
->>>>>>> origin/main
+        persons.append(Person(_clean(key), _clean(cfg.get("name") or key) or _clean(key), uid, role, (), caps,
+                              hermes=cfg.get("hermes") is not False, solo_menciones=solo))
+    return People(owner_id, persons, hq=hq)
