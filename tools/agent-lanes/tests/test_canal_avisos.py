@@ -447,3 +447,148 @@ def test_doble_toque_con_no_vuelve_el_teclado_y_sigue_pendiente(tmp_path):
     tap(d, first(tg.markups[-1], 1))  # ✖ No
     assert not merges(w) and len(d.canal.pendientes()) == 1
     assert not [e for e in edits if e["mid"] == pend["message_id"] and e["text"].startswith("✅")]
+
+
+# --- avisos obsoletos: tarjetas ya hechas (30-10) -----------------------------------------------------------------
+
+def _abierto(c, mid, tipo, tid):
+    """Aviso ya publicado en el tema (registro directo: no hace falta enviarlo)."""
+    data = c._load()
+    data["abiertas"][f"{TEMA[0]}:{mid}"] = {"tipo": tipo, "rol": "main", "tid": tid, "token": None, "head": f"aviso {tid}",
+                                           "chat_id": TEMA[0], "message_id": mid, "thread_id": TEMA[1], "at": 1.0}
+    c._save(data)
+
+
+def _obsoletas(tmp_path, tarjetas, avisos, **kw):
+    """Canal con tarjetas falsas `tarjetas` {tid: info o Exception} y avisos [(tipo, tid)]; sin pausa real."""
+    tg = TG()
+
+    def lee(tid):
+        v = tarjetas.get(tid)
+        if isinstance(v, Exception):
+            raise v
+        return v
+
+    c = CanalAvisos(tg, OWNER, TEMA, tmp_path, vivo=lambda t: False, tarjeta=lee, sleep=lambda s: None, **kw)
+    for n, (tipo, tid) in enumerate(avisos):
+        _abierto(c, 900 + n, tipo, tid)
+    return c, tg
+
+
+def _restantes(c):
+    return sorted(e["tid"] for e in c.pendientes())
+
+
+def test_blocked_y_needs_input_de_tarjeta_hecha_se_cierran_y_la_viva_no(tmp_path):
+    tarjetas = {"t_a": {"status": "done", "comentarios": []}, "t_b": {"status": "archived", "comentarios": []},
+                "t_c": {"status": "running", "comentarios": []}}
+    c, tg = _obsoletas(tmp_path, tarjetas, [("blocked", "t_a"), ("needs_input", "t_b"), ("blocked", "t_c")])
+    assert c.cerrar_obsoletas() == 2
+    assert _restantes(c) == ["t_c"]
+    assert [p["text"] for p in tg.edits()] == ["✅ Resuelta: tarjeta done", "✅ Resuelta: tarjeta archived"]
+
+
+def test_aprobar_e_integrar_solo_con_constancia_de_integracion(tmp_path, caplog):
+    tarjetas = {
+        "t_a": {"status": "done", "comentarios": ["INTEGRADO 3f2a1b · PR #9"]},
+        "t_b": {"status": "done", "comentarios": ["INTEGRADOR: PR #9 descartado"]},
+        "t_c": {"status": "archived", "comentarios": [], "rama_integrada": True},
+        "t_d": {"status": "done", "comentarios": [], "rama_integrada": None},
+        "t_e": {"status": "done", "comentarios": ["Integrada en main (rebase)"]},
+    }
+    c, _tg = _obsoletas(tmp_path, tarjetas, [("aprobar", "t_a"), ("integrar", "t_b"), ("aprobar", "t_c"),
+                                             ("aprobar", "t_d"), ("integrar", "t_e")])
+    with caplog.at_level("INFO"):
+        assert c.cerrar_obsoletas() == 3
+    assert _restantes(c) == ["t_b", "t_d"]
+    assert "t_b (aprobar)" not in caplog.text and "t_b (integrar) sigue abierto" in caplog.text
+    assert "t_d (aprobar) sigue abierto" in caplog.text
+
+
+def test_tipos_ajenos_no_se_tocan_aunque_la_tarjeta_este_hecha(tmp_path):
+    tarjetas = {"t_a": {"status": "done", "comentarios": ["INTEGRADO x"], "rama_integrada": True}}
+    tipos = ["tuyo", "solape", "choque", "cola", "progreso"]
+    c, tg = _obsoletas(tmp_path, tarjetas, [(t, "t_a") for t in tipos])
+    assert c.cerrar_obsoletas() == 0
+    assert len(c.pendientes()) == len(tipos) and not tg.edits()
+
+
+def test_tope_por_pasada_y_es_idempotente(tmp_path):
+    tarjetas = {f"t_{n:02d}": {"status": "done", "comentarios": []} for n in range(30)}
+    c, tg = _obsoletas(tmp_path, tarjetas, [("blocked", f"t_{n:02d}") for n in range(30)])
+    assert c.cerrar_obsoletas() == canal_avisos.CERRAR_MAX
+    assert len(c.pendientes()) == 5
+    assert c.cerrar_obsoletas() == 5
+    assert c.cerrar_obsoletas() == 0 and c.pendientes() == [] and len(tg.edits()) == 30
+
+
+def test_fallo_de_edicion_o_de_lectura_no_rompe_la_pasada(tmp_path):
+    tarjetas = {"t_a": RuntimeError("hermes caído"), "t_b": {"status": "done", "comentarios": []},
+                "t_c": {"status": "done", "comentarios": []}}
+    c, tg = _obsoletas(tmp_path, tarjetas, [("blocked", "t_a"), ("blocked", "t_b"), ("needs_input", "t_c")])
+
+    def edit_roto(chat_id, message_id, text, **kw):
+        raise RuntimeError("429 Too Many Requests")
+
+    tg.edit = edit_roto
+    assert c.cerrar_obsoletas() == 2  # _cerrar traga el fallo de edición: el aviso se cierra igual
+    assert _restantes(c) == ["t_a"]
+
+
+def test_sin_lector_de_tarjetas_no_hace_nada(tmp_path):
+    c = CanalAvisos(TG(), OWNER, TEMA, tmp_path, vivo=lambda t: False)
+    _abierto(c, 901, "blocked", "t_a")
+    assert c.cerrar_obsoletas() == 0 and len(c.pendientes()) == 1
+
+
+def test_la_revision_periodica_cierra_y_el_contador_queda_bien(tmp_path):
+    tarjetas = {"t_a": {"status": "done", "comentarios": []}, "t_b": {"status": "running", "comentarios": []}}
+    c, _tg = _obsoletas(tmp_path, tarjetas, [("needs_input", "t_a"), ("needs_input", "t_b")], sembrador=lambda: [])
+    c.run_async = False
+    c._sembrar_si_toca()  # «inicio»: pasada completa
+    assert _restantes(c) == ["t_b"]
+    assert json_abiertas(tmp_path) == ["t_b"]
+
+
+def json_abiertas(tmp_path):
+    import json
+    data = json.loads((tmp_path / "decisiones_tema.json").read_text(encoding="utf-8"))
+    return sorted(e["tid"] for e in data["abiertas"].values())
+
+
+def test_rama_integrada_usa_refs_sin_fetch_y_dice_no_o_no_sabe(tmp_path):
+    from types import SimpleNamespace as NS
+    from agent_lanes import canal_avisos as ca
+    lanes = [NS(repo="/r", remote="origin", base="main"), NS(repo="/r", remote="origin", base="main")]
+    llamadas = []
+
+    def git_ok(repo, *args):
+        llamadas.append(args)
+        return 0 if args[2] == "lane/t_a" else 1  # solo la rama t_a es ancestro
+
+    assert ca._rama_integrada(lanes, "t_a", git_ok) is True
+    assert all(a[:2] == ("merge-base", "--is-ancestor") and a[3] == "origin/main" for a in llamadas)
+    assert ca._rama_integrada(lanes, "t_b", lambda repo, *a: 1) is False
+    assert ca._rama_integrada(lanes, "t_c", lambda repo, *a: 128) is None
+
+
+def test_estado_tarjeta_de_lee_el_tablero_y_la_rama(tmp_path):
+    from types import SimpleNamespace as NS
+    from agent_lanes import canal_avisos as ca
+
+    class H:
+        def __init__(self, show):
+            self._show = show
+
+        def show(self, tid):
+            if isinstance(self._show, Exception):
+                raise self._show
+            return self._show.get(tid, {})
+
+    tableros = {"alfa": H({"t_a": {"task": {"status": "done"}, "comments": [{"body": "INTEGRADO 1"}]}}),
+                "beta": H(RuntimeError("tablero caído"))}
+    desk = NS(lanes={"l": NS(board="alfa", repo="/r", remote="origin", base="main")},
+              hermes_for=lambda b: tableros[b])
+    tarjeta = ca.estado_tarjeta_de(desk, git=lambda *a: 0)
+    assert tarjeta("t_a") == {"status": "done", "comentarios": ["INTEGRADO 1"], "rama_integrada": True}
+    assert tarjeta("t_x") is None
