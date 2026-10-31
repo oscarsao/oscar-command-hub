@@ -336,7 +336,8 @@ def gate_fingerprint() -> str:
 
 # --- gates puros ---------------------------------------------------------------------------------------
 
-MEDIA_EXTS = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico", ".avif", ".bmp", ".woff", ".woff2", ".ttf", ".otf")
+MEDIA_EXTS = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico", ".avif", ".bmp", ".woff", ".woff2", ".ttf", ".otf",
+              ".pdf")  # PDF: documento de referencia (factura, contrato escaneado…), no lleva secretos revisables
 
 
 def scan_secrets(diff: str) -> list[tuple[str, int, str]]:

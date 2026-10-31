@@ -38,6 +38,18 @@ def test_diff_check_accepts_crlf_files(tmp_path):
     assert cp.returncode == 0, cp.stderr[-500:]
 
 
-def test_diff_check_still_catches_trailing_spaces_in_crlf(tmp_path):
+def test_trailing_spaces_in_added_lines_only_warn(tmp_path):
+    # Antes bloqueaba el carril entero; ahora es un aviso (el resto de problemas sigue bloqueando).
     cp = _check(_repo(tmp_path), b"x: 1\r\ny: 2  \r\n")
-    assert cp.returncode == 1 and "trailing whitespace" in cp.stderr
+    assert cp.returncode == 0, cp.stderr[-500:]
+    assert "aviso" in cp.stdout and "trailing whitespace" in cp.stdout
+
+
+def test_conflict_marker_still_blocks(tmp_path):
+    cp = _check(_repo(tmp_path), b"x: 1\r\n<<<<<<< HEAD\r\ny: 2\r\n")
+    assert cp.returncode == 1 and "conflict marker" in cp.stderr
+
+
+def test_trailing_spaces_plus_conflict_marker_still_blocks(tmp_path):
+    cp = _check(_repo(tmp_path), b"x: 1  \r\n<<<<<<< HEAD\r\ny: 2\r\n")
+    assert cp.returncode == 1 and "conflict marker" in cp.stderr

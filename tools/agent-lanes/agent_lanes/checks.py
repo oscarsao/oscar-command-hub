@@ -2,7 +2,7 @@
 
     py -3.12 <agent-lanes>/agent_lanes/checks.py <BASE> [--run-from-base <repo/script.py> [args...]]
 
-- diff-check: `git diff --check BASE...HEAD` (whitespace errors, conflict markers)
+- diff-check: `git diff --check BASE...HEAD` (conflict markers bloquean; espacios finales solo avisan)
 - py-compile: every .py added/modified since BASE must compile (in memory, nothing written)
 - --run-from-base: run a repo gate script as it is on BASE, never the worker's copy (the worker controls the
   worktree, so running its version would be arbitrary code execution in the runner).
@@ -60,9 +60,17 @@ def main(argv: list[str]) -> int:
     failures = []
     # cr-at-eol: un archivo CRLF versionado así (lanes.yaml, config.py, runner.py del hub) no es "trailing
     # whitespace"; sin esto, todo cambio del carril claude-hub a esos archivos fallaba el gate (28-09).
+    # Solo líneas AÑADIDAS (es lo que hace diff --check). Los espacios al final de línea son un aviso, no un bloqueo:
+    # un worker que deja un espacio sobrante no debe tumbar el carril (t_d05032a0, t_6fe6a510, t_ac097a32). Cualquier
+    # otro problema (marcas de conflicto, espacio antes de tabulador…) sigue bloqueando.
     dc = _git("-c", "core.whitespace=cr-at-eol", "diff", "--check", f"{base}...HEAD")
     if dc.returncode != 0:
-        failures.append(f"git diff --check:\n{dc.stdout.strip()[-1500:]}")
+        # Las líneas que empiezan por "+" son el contenido añadido que git repite bajo cada aviso: no son avisos.
+        problems = [line for line in dc.stdout.splitlines() if line.strip() and not line.startswith("+")]
+        if problems and all(line.endswith(": trailing whitespace.") for line in problems):
+            print("aviso: espacios al final de línea en líneas añadidas (no bloquea):\n" + "\n".join(problems[:20]))
+        else:
+            failures.append(f"git diff --check:\n{dc.stdout.strip()[-1500:]}")
     names = _git("diff", "--name-only", "--diff-filter=ACMR", f"{base}...HEAD", "--", "*.py").stdout.split()
     for name in names:
         try:

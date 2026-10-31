@@ -1025,6 +1025,20 @@ def test_media_and_font_binaries_are_not_flagged_but_other_binaries_are():
     assert scan_secrets(d) == [("tool.exe", 0, "archivo binario sin revisar")]
 
 
+def test_pdf_binary_is_not_flagged():
+    # Falso positivo: un PDF de referencia añadido al repo bloqueaba el push.
+    d = "diff --git a/docs/factura.pdf b/docs/factura.pdf\nnew file mode 100644\nBinary files /dev/null and b/docs/factura.pdf differ\n"
+    assert scan_secrets(d) == []
+
+
+def test_lockfile_integrity_hashes_are_not_flagged():
+    # Falso positivo: los lockfiles llevan hashes sha512 en base64 que no son secretos.
+    integrity = "sha512-" + "Qk3vZ8xR1pLw0sYt9aHnC2dEfG4iJ6kM8oN0qP2rS4tU6vW8xY0zA2bC4dE6fG8hI0jK2lM4nO6pQ8rS0tU=="
+    body = f'+    "integrity": "{integrity}",'
+    assert scan_secrets(diff("package-lock.json", body)) == []
+    assert scan_secrets(diff("pnpm-lock.yaml", f"+  integrity: {integrity}")) == []
+
+
 def test_added_line_that_looks_like_header_does_not_blind_the_scan():
     body = f"+++ /dev/null\n+k = '{SECRET}'"
     assert scan_secrets(diff("a.py", body))[0][2] == "clave sk-"
