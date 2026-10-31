@@ -243,8 +243,8 @@ class CanalAvisos:
 
     def cerrar_conjuntos(self, tipo: str, vigentes: set[str]) -> int:
         """Cierra los avisos de solape/choque cuyo conjunto ya no está entre los vigentes (tras una detección que SÍ
-        funcionó). Hace falta que falte en dos pasadas seguidas: un fallo puntual de Hermes no cierra nada. Los avisos
-        antiguos sin `conjunto` se cierran igual (no se sabe de qué tarjetas eran). Devuelve cuántos sin `conjunto`
+        funcionó; el llamador no llama si la lectura fue parcial). Un conjunto debe faltar en dos pasadas seguidas. Los
+        avisos antiguos sin `conjunto` se cierran en la PRIMERA pasada fiable (así basta una pasada para el barrido). Devuelve cuántos sin `conjunto`
         cerró: el llamador debe volver a avisar de los conjuntos vigentes, ahora agrupados."""
         if not self.destino or tipo not in TIPOS_CONJUNTO:
             return 0
@@ -259,7 +259,7 @@ class CanalAvisos:
                 viva = bool(c) and (c in vigentes or (tipo == "solape" and any(set(c.split("|")) & v for v in vig_ids)))
                 if viva:
                     e.pop("ausente", None)
-                elif not e.get("ausente"):
+                elif c and not e.get("ausente"):  # sin `conjunto` no se sabe de qué tarjetas era: se cierra ya
                     e["ausente"] = True
                 else:
                     motivo = "ya no solapan" if tipo == "solape" else "ya no chocan"
@@ -295,7 +295,8 @@ class CanalAvisos:
         al DM (`mirror`). Con decisión: el aviso principal se queda donde iba (tema del carril, Integración) salvo
         que fuese el DM de Oscar, que pasa al tema; la copia completa con botones va al tema (en vez de al DM) y al
         DM solo una línea con enlace."""
-        if tipo == "needs_input" and alert and self.es_decision(tipo, reply_markup) and not self._pregunta_urgente(text):
+        if (tipo == "needs_input" and alert and self.es_decision(tipo, reply_markup)
+                and not self._pregunta_urgente(text, self._texto_tarjeta(tid))):
             # Pregunta que no bloquea un lanzamiento ni cuesta dinero: se queda en el tema del carril (con sus botones) y
             # NO va al tema Decisiones ni al DM; Oscar la ve en el resumen de las 9:00.
             notices.publish(tid, text, None if self.es_dm(self._resuelto(target, lane_target)) else target, lane_target,
@@ -327,12 +328,20 @@ class CanalAvisos:
         self.refrescar()
 
     @staticmethod
-    def _pregunta_urgente(text: str) -> bool:
-        """¿La pregunta toca dinero o un lanzamiento (o el ajuste `avisos.preguntas_en_tema` es «todas»)?"""
+    def _pregunta_urgente(text: str, tarjeta: str = "") -> bool:
+        """¿La pregunta toca dinero o un lanzamiento (o el ajuste `avisos.preguntas_en_tema` es «todas»)? Se mira el
+        texto del aviso y también el título, cuerpo y marcas de la tarjeta (`tarjeta`)."""
         if valor("avisos.preguntas_en_tema") == "todas":
             return True
-        bajo = (text or "").lower()
+        bajo = f"{text or ''}\n{tarjeta or ''}".lower()
         return any(m in bajo for m in MARCAS_URGENTES)
+
+    def _texto_tarjeta(self, tid: str) -> str:
+        """Título, cuerpo y marcas de la tarjeta; vacío si no se puede leer."""
+        try:
+            return str((self.tarjeta(tid) or {}).get("texto") or "") if self.tarjeta else ""
+        except Exception:
+            return ""
 
     def _copias_equipo(self, notices, tipo: str, tid: str, text: str, markup: dict | None, main: dict | None,
                        lane_target) -> None:
@@ -804,7 +813,10 @@ def estado_tarjeta_de(desk, git: Callable[..., int | None] = _git_rc) -> Callabl
             status = str(task.get("status") or "")
             comentarios = [str(c.get("body") or "") for c in show.get("comments") or () if isinstance(c, dict)]
             rama = _rama_integrada(lanes, tid, git) if status in ESTADOS_TERMINADA else None
-            return {"status": status, "comentarios": comentarios, "rama_integrada": rama}
+            marcas = " ".join(str(m) for k in ("tags", "labels", "marcas") if isinstance(task.get(k), (list, tuple))
+                              for m in task[k])
+            texto = f"{task.get('title') or ''}\n{task.get('body') or ''}\n{marcas}"
+            return {"status": status, "comentarios": comentarios, "rama_integrada": rama, "texto": texto}
         return None
 
     return tarjeta

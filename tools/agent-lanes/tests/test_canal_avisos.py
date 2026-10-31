@@ -600,5 +600,6 @@ def test_estado_tarjeta_de_lee_el_tablero_y_la_rama(tmp_path):
     desk = NS(lanes={"l": NS(board="alfa", repo="/r", remote="origin", base="main")},
               hermes_for=lambda b: tableros[b])
     tarjeta = ca.estado_tarjeta_de(desk, git=lambda *a: 0)
-    assert tarjeta("t_a") == {"status": "done", "comentarios": ["INTEGRADO 1"], "rama_integrada": True}
+    assert tarjeta("t_a") == {"status": "done", "comentarios": ["INTEGRADO 1"], "rama_integrada": True,
+                              "texto": "\n\n"}
     assert tarjeta("t_x") is None

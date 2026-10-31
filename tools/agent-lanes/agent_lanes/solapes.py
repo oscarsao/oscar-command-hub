@@ -226,8 +226,9 @@ class Grupo:
     comparten: list
 
 
-def tarjetas_activas(lanes: dict, hermes_for, ajustes: Ajustes) -> dict[str, list[Card]]:
-    """repo -> tarjetas vigiladas con sus rutas. Un tablero ilegible no corta el resto."""
+def tarjetas_activas(lanes: dict, hermes_for, ajustes: Ajustes, fallos: list | None = None) -> dict[str, list[Card]]:
+    """repo -> tarjetas vigiladas con sus rutas. Un tablero ilegible no corta el resto; si se pasa `fallos`, cada
+    lectura fallida se anota ahí (la detección es parcial y no debe cerrarse nada por ausencia)."""
     by_repo: dict[str, list[Card]] = {}
     vistos: set[tuple[str, str]] = set()
     boards = list(dict.fromkeys(l.board for l in lanes.values()
@@ -238,6 +239,8 @@ def tarjetas_activas(lanes: dict, hermes_for, ajustes: Ajustes) -> dict[str, lis
                 tasks = hermes_for(board).list_status_all(status)
             except Exception as exc:
                 log.warning("solapes: %s/%s no leído: %s", board, status, exc)
+                if fallos is not None:
+                    fallos.append(f"{board}/{status}")
                 continue
             for t in tasks:
                 lane = lanes.get(t.get("assignee"))
@@ -267,14 +270,15 @@ def _enlazadas(a: Card, b: Card, hermes_for, cache: dict) -> bool:
     return b.tid in rel(a) or a.tid in rel(b)
 
 
-def detectar(lanes: dict, hermes_for, ajustes: Ajustes | None = None, descartes: set[str] | None = None) -> list[Grupo]:
+def detectar(lanes: dict, hermes_for, ajustes: Ajustes | None = None, descartes: set[str] | None = None,
+             fallos: list | None = None) -> list[Grupo]:
     """Conjuntos de 2+ tarjetas del mismo repo con solape (componentes conexos de los pares que solapan).
     `descartes`: parejas (`par`) que Oscar ya dijo que no son duplicadas; no se juntan."""
     ajustes = ajustes or Ajustes()
     descartes = descartes or set()
     grupos: list[Grupo] = []
     cache: dict = {}
-    for repo, cards in sorted(tarjetas_activas(lanes, hermes_for, ajustes).items()):
+    for repo, cards in sorted(tarjetas_activas(lanes, hermes_for, ajustes, fallos).items()):
         parent = {c.tid: c.tid for c in cards}
 
         def raiz(x):
@@ -404,10 +408,12 @@ class SolapeTicker:
             if not ajustes.activo or (self._last is not None and now - self._last < ajustes.minutos * 60):
                 return []
             self._last = now
-            grupos = detectar(self.lanes, self.hermes_for, ajustes, load_descartes(self.descartes_path))
+            fallos: list = []
+            grupos = detectar(self.lanes, self.hermes_for, ajustes, load_descartes(self.descartes_path), fallos)
             seen = self._seen()
             antes = list(seen)
-            self._cerrar_resueltos(grupos, seen)
+            if not fallos:  # lectura parcial (algún tablero no respondió): no se cierra nada por ausencia
+                self._cerrar_resueltos(grupos, seen)
             fresh = [g for g in grupos if clave(g) not in seen]
             try:
                 for g in fresh:  # si un envío falla, ese conjunto se reintenta en la pasada siguiente

@@ -60,7 +60,7 @@ def test_aviso_antiguo_sin_conjunto_se_cierra_y_avisa_al_ticker(tmp_path):
                                  "message_id": 900, "thread_id": TEMA[1], "at": 1.0}
     c._save(data)
     send = canal_avisos.emisor(c, tg, "solape", OWNER)
-    assert send.cerrar_salvo([]) == 0 and send.cerrar_salvo([]) == 1
+    assert send.cerrar_salvo([]) == 1  # a la primera pasada fiable: basta una para el barrido inicial
     assert c.pendientes() == []
 
 
@@ -138,6 +138,77 @@ def test_pregunta_normal_no_va_al_tema_y_la_de_dinero_o_lanzamiento_si(tmp_path)
     por_tid = {t: kw for t, _, _, kw in n.publicados}
     assert "decision_to" not in por_tid["t_1"]
     assert por_tid["t_2"].get("decision_to") and por_tid["t_3"].get("decision_to")
+
+
+def test_dinero_solo_en_el_cuerpo_de_la_tarjeta_cuenta_como_urgente(tmp_path):
+    c, _ = _canal(tmp_path)
+    c.tarjeta = lambda tid: {"texto": "Contratar hosting\nImplica gasto: marca dinero"} if tid == "t_4" else None
+    n = Notices()
+    c.publicar(n, "needs_input", "t_4", "¿Qué plan?", None, ("g", "5"), alert=True, reply_markup=KB)
+    c.publicar(n, "needs_input", "t_5", "¿Qué plan?", None, ("g", "5"), alert=True, reply_markup=KB)
+    por_tid = {t: kw for t, _, _, kw in n.publicados}
+    assert por_tid["t_4"].get("decision_to") and "decision_to" not in por_tid["t_5"]
+
+
+# --- lectura parcial: no se cierra nada por ausencia -------------------------------------------------------------------
+
+def _lanes():
+    ln = SimpleNamespace(board="b", kind="implement", repo="C:/r", base="main", remote="origin", github="")
+    return {"l": ln}
+
+
+class _Roto:
+    def list_status_all(self, status):
+        raise RuntimeError("hermes caído")
+
+
+def test_solapes_con_lectura_fallida_no_cierra_avisos_en_varias_pasadas(tmp_path):
+    cierres = []
+
+    def send(texto, markup=None, conjunto=None):
+        pass
+
+    send.conjuntos = True
+    send.cerrar_salvo = lambda vigentes: cierres.append(list(vigentes)) or 0
+    t = solapes.SolapeTicker(_lanes(), lambda b: _Roto(), send=send, state_path=tmp_path / "s.json",
+                             clock=iter(range(0, 10**6, 10**4)).__next__)
+    for _ in range(3):
+        t.tick()
+    assert cierres == []
+
+
+def test_choques_con_lectura_fallida_no_cierra_avisos_en_varias_pasadas(tmp_path):
+    cierres = []
+
+    def send(texto, markup=None, conjunto=None):
+        pass
+
+    send.conjuntos = True
+    send.cerrar_salvo = lambda vigentes: cierres.append(list(vigentes)) or 0
+    t = choques.ChoquesTicker(_lanes(), lambda b: _Roto(), send=send, state_path=tmp_path / "c.json",
+                              silenciadas_path=tmp_path / "si.json", ignorados_path=tmp_path / "ig.json",
+                              orden_path=tmp_path / "o.json", git=SimpleNamespace(),
+                              clock=iter(range(0, 10**6, 10**4)).__next__)
+    for _ in range(3):
+        t.tick()
+    assert cierres == []
+
+
+def test_solapes_con_lectura_buena_si_cierra(tmp_path):
+    cierres = []
+
+    class Ok:
+        def list_status_all(self, status):
+            return []
+
+    def send(texto, markup=None, conjunto=None):
+        pass
+
+    send.conjuntos = True
+    send.cerrar_salvo = lambda vigentes: cierres.append(list(vigentes)) or 0
+    t = solapes.SolapeTicker(_lanes(), lambda b: Ok(), send=send, state_path=tmp_path / "s.json")
+    t.tick()
+    assert cierres == [[]]
 
 
 # --- resumen de las 9:00: «Decides tú» --------------------------------------------------------------------------------

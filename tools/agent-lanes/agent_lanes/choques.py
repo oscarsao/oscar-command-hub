@@ -411,8 +411,9 @@ def unidades_repo(repo: str, remote: str, base: str, tarjetas: list[dict], git: 
 
 
 def detectar(lanes: dict, hermes_for, git: Git, ajustes: Ajustes | None = None, ahora: float | None = None,
-             silenciadas=frozenset()) -> list[Choque]:
-    """Choques no aditivos de todos los repos de los carriles de código. Un tablero o repo ilegible no corta el resto."""
+             silenciadas=frozenset(), fallos: list | None = None) -> list[Choque]:
+    """Choques no aditivos de todos los repos de los carriles de código. Un tablero o repo ilegible no corta el resto;
+    si se pasa `fallos`, cada lectura o repo fallido se anota ahí (detección parcial: no cerrar nada por ausencia)."""
     ajustes = ajustes or Ajustes()
     ahora = time.time() if ahora is None else ahora
     repos: dict[str, tuple] = {}
@@ -431,6 +432,8 @@ def detectar(lanes: dict, hermes_for, git: Git, ajustes: Ajustes | None = None, 
                 tasks = hermes_for(board).list_status_all(status)
             except Exception as exc:
                 log.warning("choques: %s/%s no leído: %s", board, status, exc)
+                if fallos is not None:
+                    fallos.append(f"{board}/{status}")
                 continue
             for t in tasks:
                 lane = lanes.get(t.get("assignee"))
@@ -477,6 +480,8 @@ def detectar(lanes: dict, hermes_for, git: Git, ajustes: Ajustes | None = None, 
                     out.append(Choque(solapes._norm_repo(repo), clase, a, b, comun, propuesta(clase, a, b)))
         except Exception as exc:
             log.warning("choques: %s no analizado: %s", repo, exc)
+            if fallos is not None:
+                fallos.append(str(repo))
     return out
 
 
@@ -697,8 +702,9 @@ class ChoquesTicker:
                 return []
             self._last = now
             wall = self._wall()
+            fallos: list = []
             choques = detectar(self.lanes, self.hermes_for, self.git, ajustes,
-                               silenciadas=frozenset(load_silenciadas(self.silenciadas_path)))
+                               silenciadas=frozenset(load_silenciadas(self.silenciadas_path)), fallos=fallos)
             ignorados = load_ignorados(self.ignorados_path, ahora=wall, dias=ajustes.recordar_dias)
             choques = [c for c in choques if par_uid(c) not in ignorados]
             seen = self._seen()
@@ -706,7 +712,8 @@ class ChoquesTicker:
             changed = len(vigentes) != len(seen)
             seen = vigentes
             antes = set(seen)
-            self._cerrar_resueltos(choques, seen)
+            if not fallos:  # lectura parcial (algún tablero o repo falló): no se cierra nada por ausencia
+                self._cerrar_resueltos(choques, seen)
             changed = changed or set(seen) != antes
             nuevos = [c for c in choques if clave(c) not in seen]
             silenciosos = [c for c in nuevos if c.clase == "compatible" and not ajustes.avisar_compatibles]
