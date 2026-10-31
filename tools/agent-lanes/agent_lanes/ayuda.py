@@ -19,7 +19,7 @@ ENFRIAMIENTO_S = 600.0  # un mismo comando se sugiere como mucho una vez cada 10
 # Comandos agrupados por lo que Oscar quiere hacer (no por orden alfabético). Todo comando de COMMANDS debe salir
 # en algún grupo: lo comprueba tests/test_ayuda.py (los que falten van a «Otros»).
 GRUPOS = (
-    ("👀 Ver cómo va todo", ("hoy", "estado", "falta", "tareas", "cola", "tarea", "salud", "ram", "integrador", "choques", "paradas",
+    ("👀 Ver cómo va todo", ("hoy", "estado", "falta", "tareas", "cola", "tarea", "salud", "ram", "consumo", "integrador", "choques", "paradas",
                            "revision", "limpieza")),
     ("✅ Decidir y aprobar", ("decisiones", "atencion", "pendiente", "pendientes", "aprobar", "preparar")),
     ("➕ Pedir trabajo", ("hazlo", "pedir", "flujo", "workflow", "sesion")),

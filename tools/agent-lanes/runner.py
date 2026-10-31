@@ -15,7 +15,7 @@ import threading
 import time
 from logging.handlers import TimedRotatingFileHandler
 
-from agent_lanes import canal_avisos, ciego, consola, cuota, doctor_config, drain, notices, resumen_carriles
+from agent_lanes import canal_avisos, ciego, consola, consumo, cuota, doctor_config, drain, notices, resumen_carriles
 from agent_lanes.bandeja import load as load_bandeja
 from agent_lanes.board_guard import BoardGuardTicker
 from agent_lanes.choques import ChoquesTicker
@@ -247,7 +247,7 @@ def main(argv: list[str] | None = None) -> int:
                  if decisions and not args.once else None)  # solo con el bot de carriles
     service = Service(runners, max_workers=effective_max_workers(args.max_workers, settings), busy_path=drain.BUSY_FILE,
                       max_big_total=int(settings.get("max_big_total", 0) or 0),
-                      cuota_pausada=lambda: cuota.vigente() is not None)
+                      cuota_pausada=cuota.pausada)
     interval = args.interval or settings["interval_seconds"]
     log.info("runner: carriles=%s max_workers=%s interval=%ss", list(selected), service.max_workers, interval)
 
@@ -269,6 +269,7 @@ def main(argv: list[str] | None = None) -> int:
     wf_ticker = None
     solapes = None
     choques = None
+    consumo_ticker = None
     if decisions and not args.once:  # PR resueltos -> tarjetas cerradas; propuesta diaria de obsoletas (con botón)
         owner_dm = env.get("OWNER_TELEGRAM_ID") or OWNER_TELEGRAM_ID
         boards = sorted({l.board for l in all_lanes.values() if l.board})
@@ -328,6 +329,8 @@ def main(argv: list[str] | None = None) -> int:
                                 issue=decisions.store.issue if decisions else None)
         if decisions:
             decisions.choques = choques  # 🙈 Ignorar este par / 🔇 Silenciar rama (los de tarjetas siguen en fusion.py)
+        # Consumo de la suscripción de Claude: un aviso al cruzar consumo.avisar_al (esencial: sale con cualquier nivel).
+        consumo_ticker = consumo.AvisadorTicker(consumo.Avisador(canal_avisos.emisor(canal, notify, "consumo", owner_dm)))
     if not args.once:
         # El planificador va en su PROPIO hilo (fix/runner-tick, 23-10): el mantenimiento del bucle principal (sweep_done,
         # integrador, tickers) puede tardar minutos (un `git worktree remove` colgado bloqueó 5 min el tick y el runner
@@ -370,6 +373,8 @@ def main(argv: list[str] | None = None) -> int:
             solapes.tick()
         if choques:
             choques.tick()
+        if consumo_ticker:
+            consumo_ticker.tick()  # nunca lanza
         if reconcile:
             reconcile.tick()
         if limpieza:

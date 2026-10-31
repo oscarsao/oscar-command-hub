@@ -175,7 +175,7 @@ def test_register_commands_in_three_scopes_with_spanish_descriptions():
     assert names.pop(0) == "ayuda" and "sesion" not in names and "sesion" in [c for c, _ in bot.commands["all_private_chats"]]
     names.insert(names.index("flujo"), "sesion")  # el menú de grupos no lleva /sesion (solo DM); el resto, igual
     assert names == ["ajustes", "hoy", "integrador", "encolar", "decisiones", "atencion", "aprobar", "tareas", "cola", "prioridad", "tarea", "preparar", "hazlo", "pedir", "estado", "falta", "desplegar", "promover",
-                     "lote", "al_dia", "aldia", "salud", "ram", "avisos", "choques", "paradas", "revision", "limpieza", "silenciar", "sesion", "flujo", "pendiente", "personal", "agrupar", "workflow", "pendientes", "epicas", "retenidas", "backlog"]
+                     "lote", "al_dia", "aldia", "salud", "ram", "consumo", "avisos", "choques", "paradas", "revision", "limpieza", "silenciar", "sesion", "flujo", "pendiente", "personal", "agrupar", "workflow", "pendientes", "epicas", "retenidas", "backlog"]
     assert all(d and len(d) <= 256 for _, d in bot.commands["default"])
 
 

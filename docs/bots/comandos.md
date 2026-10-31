@@ -19,7 +19,7 @@ esta guía. El bot la resume con `/ayuda` (agrupada por tarea y por rol) y los c
 - **Operadores** (Oscar y María): todos los comandos.
 - **Operador acotado a una marca** (Angel): solo los de su marca. No puede usar `/integrador`, `/encolar`, `/preparar`,
   `/pedir`, `/sesion`, `/flujo`, `/workflow`, `/ajustes`, `/pendiente`, `/personal`, `/agrupar`, `/choques`,
-  `/paradas`, `/revision` ni `/limpieza`, y `/al_dia prod` es solo
+  `/paradas`, `/revision`, `/limpieza` ni `/consumo`, y `/al_dia prod` es solo
   de Oscar (o de quien tenga todas las marcas).
 - **Cualquier otra persona** (Andrea, Ingerber…): recibe «Este comando es solo para operadores». Para pedir algo: texto
   libre a Hermes o al bot de Avisos.
@@ -47,6 +47,7 @@ Por eso, en un grupo, escribe siempre `/comando@pildora_carriles_bot` (el menú 
 | `/tarea t_xxxxxxxx` | Ficha de una tarea con los botones de su estado (acepta un trozo del id) | `/tarea t_3d4a9c10` |
 | `/salud` | ¿Está vivo el runner? Hermes, servicios, alertas, RAM y decisiones pendientes | `/salud` |
 | `/ram` | RAM ahora y los 5 procesos que más gastan | `/ram` |
+| `/consumo` | % de la suscripción de Claude en la ventana de 5 h y la semanal (con su reinicio y la edad del dato; pasada 1 h sin refrescar, «sin dato fiable»), y coste estimado a precio de API de hoy y 7 días por carril, modelo y las 5 tarjetas más caras. El dólar es una estimación, no el % del plan. Ajustes: `consumo.avisar_al` (aviso, 80 %), `consumo.frenar_activo` y `consumo.frenar_al` (freno, 95 %, apagado) | `/consumo` |
 | `/choques` | Choques y solapes vivos entre tarjetas y ramas (con `avisos.nivel=esencial` no se avisan solos) | `/choques` |
 | `/paradas` | Tarjetas de carril paradas más de 24 h | `/paradas` |
 | `/revision` | Tarjetas listas para revisar que esperan en el resumen | `/revision` |

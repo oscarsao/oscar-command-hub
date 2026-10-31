@@ -163,6 +163,15 @@ def _build() -> dict[str, Ajuste]:
                "Intervalo entre pasadas del runner.", 10, 600, (30, 60, 120), True),
         Ajuste("carriles.ciego_minutos", "Carriles", "Minutos sin ver tareas para dar la alarma de «runner ciego»",
                None, "int", "Tras ese tiempo avisa a Oscar y hace un restart --drain.", 2, 60, (3, 5, 10, 15), True),
+        Ajuste("consumo.avisar_al", "Carriles", "Aviso al llegar a este % de consumo de Claude (0 = sin aviso)", 80, "int",
+               "Un solo mensaje al cruzar este % en la ventana de 5 h o en la semanal; no se repite hasta el siguiente "
+               "reinicio. Cuenta como aviso esencial. Necesita una sesión de Claude Code abierta que refresque el dato.", 0,
+               100, (0, 70, 80, 90)),
+        Ajuste("consumo.frenar_activo", "Carriles", "Frenar tarjetas nuevas por consumo (0 = apagado, 1 = encendido)", 0,
+               "int", "Con 1 y el consumo en «Frenar al» % o más, el runner no lanza tarjetas nuevas (las que ya corren "
+               "siguen). Sin dato fiable (más de 60 min) nunca frena.", 0, 1, (0, 1)),
+        Ajuste("consumo.frenar_al", "Carriles", "% de consumo de Claude desde el que se frena", 95, "int",
+               "Solo rige si «Frenar tarjetas nuevas por consumo» está en 1.", 1, 100, (90, 95, 98)),
         Ajuste("carriles.max_parallel", "Carriles", "Tareas a la vez por carril (valor por defecto)", None, "int",
                "Solo para carriles sin max_parallel propio en lanes.yaml.", 1, 3, (1, 2), True),
     ]

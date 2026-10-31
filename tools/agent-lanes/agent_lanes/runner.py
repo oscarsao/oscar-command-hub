@@ -12,7 +12,7 @@ import uuid
 from pathlib import Path
 from typing import Callable, NamedTuple
 
-from . import avisos_revision, bloqueos, canal_avisos, clasificador, cuota, grandes, holds, telegram_lane
+from . import avisos_revision, bloqueos, canal_avisos, clasificador, consumo, cuota, grandes, holds, telegram_lane
 from . import consulta as _consulta
 from . import deps
 from . import proc as _proc
@@ -129,6 +129,7 @@ class LaneRunner:
         # Pausa por cuota de Claude: .state/cuota.json junto al estado de las tareas; minutos si el error no trae la hora.
         self._cuota_path = Path(cuota_path) if cuota_path else Path(state_dir).parent / "cuota.json"
         self._cuota_minutos = cuota_minutos
+        self._consumo_path = Path(state_dir).parent / "consumo_tarjetas.jsonl"  # coste por tarjeta (consumo.py)
         self._wall = wall_clock
         # prevencion.Prevencion: una ready que choca con trabajo en marcha del mismo repo no se lanza en paralelo
         # (choques.yaml → prevenir_al_lanzar). None = sin prevención (tests, carriles sin repo).
@@ -535,6 +536,9 @@ class LaneRunner:
             except Exception as exc:
                 return self._block(tid, "transient", f"error del runner: {exc}", task, public="error del runner")
 
+            # Coste de esta ejecución (estimación de API) para /consumo: sin contenido de la tarjeta; nunca lanza.
+            consumo.registrar_coste(tid, self.lane.name, getattr(self.worker, "_models", {}).get(session_id) or getattr(self.lane, "model", None),
+                                    outcome.cost_usd, self._wall(), self._consumo_path)
             if not outcome.ok and cuota.es_cuota(outcome.raw_error):
                 return self._pausar_por_cuota(tid, task, outcome.raw_error)
             if not outcome.ok:

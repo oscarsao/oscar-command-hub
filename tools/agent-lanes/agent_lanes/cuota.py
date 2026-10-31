@@ -70,6 +70,12 @@ def vigente(path: Path = PATH, now: float | None = None) -> dict | None:
     return None
 
 
+def pausada(path: Path = PATH, now: float | None = None) -> bool:
+    """¿No se lanzan tarjetas nuevas? Pausa por cuota agotada o freno por consumo de la suscripción (consumo.frenar)."""
+    from . import consumo
+    return vigente(path, now) is not None or consumo.frenar(now)
+
+
 def escribir(path: Path, paused_until: float, motivo: str, now: float) -> bool:
     """Guarda la pausa (se queda la más larga si ya había una). True si es una pausa NUEVA (la que merece aviso)."""
     previa = vigente(path, now)

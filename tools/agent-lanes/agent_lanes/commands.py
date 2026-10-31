@@ -115,6 +115,7 @@ COMMANDS = (
     ("aldia", "Alias de /al_dia"),
     ("salud", "Estado de runner, Hermes, servicios, MigraTeam y equipo"),
     ("ram", "Consumo de RAM ahora y qué procesos más gastan"),
+    ("consumo", "Consumo de la suscripción de Claude (5 h y semana) y coste por carril y tarjeta"),
     ("avisos", "Apaga o enciende los avisos de «listo para revisar»: /avisos off [1h|3h|mañana|siempre] · /avisos on"),
     ("choques", "Choques y solapes"),
     ("paradas", "Paradas más de 24 h"),
@@ -149,7 +150,7 @@ NOT_OWNER = ("Este comando es solo para operadores. Pide a Oscar o a María que 
              "texto libre y se la paso")
 # Comandos sin marca clara o con efecto directo en repos/sesiones de Oscar: un operador acotado por marca no los usa.
 SOLO_TODAS_LAS_MARCAS = ("integrador", "encolar", "preparar", "pedir", "sesion", "flujo", "workflow", "ajustes",
-                         "pendiente", "personal", "agrupar", "choques", "paradas", "revision", "limpieza")
+                         "pendiente", "personal", "agrupar", "choques", "paradas", "revision", "limpieza", "consumo")
 BRAND_ARGS = {"migrateam": "MigraTeam", "pildora": "Píldora", "píldora": "Píldora", "nextjobs": "NextJobs"}
 TASK_ID_RE = re.compile(r"^t_[0-9a-f]{8}$")
 STATUS_TEXT = {"running": ("running", "en curso"), "ready": ("ready", "en cola"), "review": ("review", "en review"),
@@ -2400,6 +2401,16 @@ class CommandCenter:
         found = Paradas(self.lanes, self.hermes_for, self._now).encontrar()
         self._lista(where, "⏳ Tarjetas paradas", "✅ Ninguna tarjeta de carril parada.",
                     [f"{p.linea(now)} · carril {p.lane}" for p in found])
+
+    def cmd_consumo(self, where, args: str, brand: str | None) -> None:
+        """Consumo de la suscripción (fichero de la línea de estado) y coste por carril, modelo y tarjeta."""
+        from . import consumo
+        now = self._now()
+        try:
+            self._send(where, consumo.texto(consumo.leer(now=now), consumo.resumen(now=now), now), html=False)
+        except Exception as exc:
+            log.warning("/consumo falló: %s", exc)
+            self._send(where, "No he podido calcular el consumo ahora; prueba en un minuto.", html=False)
 
     def cmd_revision(self, where, args: str, brand: str | None) -> None:
         from . import avisos_revision
