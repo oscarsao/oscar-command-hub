@@ -690,6 +690,28 @@ class CommandCenter:
         v = self.vigilancia()
         return v.tick() if v else None
 
+    def recordatorios_tick(self):
+        """Recordatorios escalonados de decisiones sin responder (recordatorios.py). Apagado por defecto
+        (`decisiones.recordatorios_activa`); una pasada cada 5 min como mucho."""
+        from . import recordatorios as rc
+        if not rc.cargar().activa:
+            return None
+        now = self._now()
+        if now - getattr(self, "_escalera_at", 0) < 300:
+            return None
+        self._escalera_at = now
+        root = getattr(self.messages, "root", None)
+        if getattr(self, "_escalonador", None) is None:
+            if not (root and Path(root).parent.name == ".state"):
+                return None  # sin almacén real de estado no hay dónde recordar qué se avisó
+            self._escalonador = rc.Escalonador(
+                self.notifier, self.desk._people(), rc.LibroEscalera(Path(root).parent / "escalera.json"),
+                lambda: self.oscar_cards()[0], self.card_spec,
+                lambda c: BRANDS.get(c["task"].get("assignee")) or BOARD_BRANDS.get(c.get("board")),
+                self.desk.apply_recommended, vetos=getattr(self.desk, "vetos", None),
+                now=lambda: datetime.fromtimestamp(self._now(), rc.MADRID))
+        return self._escalonador.tick()
+
     def equipo_choice(self, action: str, rec: dict, button: dict, where: dict) -> bool:
         return self.vigilancia() is not None and self._equipo_botones().on_button(action, rec, button, where)
 
@@ -1369,7 +1391,7 @@ class CommandCenter:
         except Exception as exc:
             log.warning("avisos urgentes: %s", exc)
         for tick in (self.guard_tick, self.daily_tick, self.peticiones_tick, self.al_dia_tick,
-                     self.vigilancia_tick):  # cola, partes de las 9:00, /al_dia, tema 👥 Equipo
+                     self.vigilancia_tick, self.recordatorios_tick):  # cola, partes de las 9:00, /al_dia, tema 👥 Equipo
             try:
                 tick()
             except Exception as exc:

@@ -111,6 +111,26 @@ def _build() -> dict[str, Ajuste]:
                "Cuántas decisiones pendientes se nombran; el resto se cuenta.", 1, 20, (3, 5, 8, 10)),
         Ajuste("avisos.recordatorio_atascadas_horas", "Avisos", "Recordatorio de [ATENCIÓN] sin respuesta", 24, "float",
                "Horas sin respuesta antes de recordar una tarjeta atascada.", 1, 168, (12, 24, 48, 72)),
+        Ajuste("decisiones.recordatorios_activa", "Avisos", "Recordatorios escalonados de decisiones (0 = apagados)", 0,
+               "int", "Con 1, una decisión sin respuesta se recuerda a su responsable con la escalera de abajo "
+               "(decisions/2026-10-31-recordatorios-escalonados.md).", 0, 1, (0, 1)),
+        Ajuste("decisiones.escalera_horas", "Avisos", "Escalera de recordatorios (horas de espera)",
+               ("1", "2", "4", "24"), "lista", "Horas desde que la decisión espera, separadas por comas. El último paso "
+               "aplica la reversible o escala la irreversible."),
+        Ajuste("decisiones.escalera_destinos", "Avisos", "Quién recibe cada paso", ("dueno",), "lista",
+               "Un valor por paso: dueno, oscar o la clave de una persona de people.yaml. Si faltan, se repite el último."),
+        Ajuste("decisiones.duenos", "Avisos", "Responsable de cada marca", (), "lista",
+               "Pares marca/persona (migrateam/maria). Sin par, el operador de people.yaml con esa marca; si no, Oscar."),
+        Ajuste("decisiones.silencio_inicio", "Avisos", "Inicio del horario silencioso", "22:00", "hora",
+               "HH:MM (Madrid). Los recordatorios que caen dentro salen al terminar. Igual al fin = sin silencio."),
+        Ajuste("decisiones.silencio_fin", "Avisos", "Fin del horario silencioso", "08:00", "hora", "HH:MM (Madrid)."),
+        Ajuste("decisiones.max_avisos", "Avisos", "Máximo de recordatorios por decisión", 4, "int",
+               "Tope de avisos aunque la escalera tenga más pasos.", 1, 10, (2, 3, 4, 6)),
+        Ajuste("decisiones.aplicar_reversible", "Avisos", "Aplicar la recomendada reversible tras el último paso", 0,
+               "int", "Con 1, si nadie responde y la tarjeta es «Reversible: sí», se aplica la recomendada (siempre en una "
+               "rama lane/*, nunca master). Las irreversibles nunca.", 0, 1, (0, 1)),
+        Ajuste("decisiones.escalado", "Avisos", "Escalado de una decisión irreversible", ("maria", "oscar"), "lista",
+               "Claves de people.yaml (o oscar) que reciben el aviso al agotar la escalera, en orden."),
         Ajuste("avisos.alerta_cada_horas", "Avisos", "Horas mínimas entre avisos repetidos del monitor", 24, "float",
                "Una misma alerta (RAM, develop↔master…) sale como mucho una vez en este plazo. /silenciar <clave> <horas> "
                "la calla del todo un tiempo. Lo lee el monitor.", 1, 168, (6, 12, 24, 48)),
