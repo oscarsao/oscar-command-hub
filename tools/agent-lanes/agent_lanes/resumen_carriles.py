@@ -62,11 +62,26 @@ def render_lane(row: dict) -> str:
     return f"{icon} {row['name']}: {what} · cola {row['queue']} · bloqueos {row['blocked']}"
 
 
+def _opciones(p) -> str:
+    """Opciones de la primera pregunta pendiente de la tarjeta como A) B) C) (la recomendada, marcada)."""
+    try:
+        q = next(iter(p.pending_questions()))
+    except (AttributeError, StopIteration):
+        return ""
+    opts = [str(o) for o in (q.get("options") or [])][:4]
+    rec = q.get("recommended")
+    return " ".join(f"{chr(65 + i)}) {truncate(o, 40)}{' (recomendada)' if i == rec else ''}" for i, o in enumerate(opts))
+
+
 def render_summary(rows: list[dict], decisions: list, guard_n: int, now: float, who: str = "", extra: str = "",
-                   hour: int | None = None) -> str:
-    """El mensaje: una línea por carril (también los vacíos) y las decisiones de Oscar con su próximo paso.
+                   hour: int | None = None, tuyas: list[dict] | None = None) -> str:
+    """El mensaje: una línea por carril (también los vacíos) y la sección «Decides tú» con lo que solo decide Oscar:
+    las preguntas de los carriles (needs_input, con sus opciones A/B/C) y sus tarjetas «tuyo/decidir» (`tuyas`, ítems
+    de lo_tuyo). Sin solapes, choques, «aprobar» ni cola del integrador (esa va en su propia línea de arriba).
     `extra`: líneas del integrador (estado de sus consolas y PR de sesiones interactivas), ya compuestas."""
     hour, shown = _hour(hour), valor("avisos.decisiones_en_resumen")
+    tuyas = tuyas or []
+    total = len(decisions) + len(tuyas)
     lines = [f"☀️ Resumen de las {hour}:00 por carril"]
     lines += [render_lane(r) for r in rows] or ["(no hay carriles configurados)"]
     if guard_n:
@@ -74,14 +89,19 @@ def render_summary(rows: list[dict], decisions: list, guard_n: int, now: float, 
     if extra:
         lines.append(extra)
     lines.append("")
-    if not decisions:
-        lines.append("Decisiones pendientes de Oscar: ninguna. ➡️ Próximo paso: ninguno · Lo da: nadie")
+    if not total:
+        lines.append("Decides tú: nada. ➡️ Próximo paso: ninguno · Lo da: nadie")
         return "\n".join(lines)
-    lines.append(f"{who + ' ' if who else ''}Decisiones pendientes de Oscar ({len(decisions)}):")
+    lines.append(f"{who + ' ' if who else ''}Decides tú ({total}):")
     for p in decisions[:shown]:
         lines.append(f"• {p.tid} · {truncate((p.task or {}).get('title'), 60)} · hace {hours_ago(p.since, now)} h")
-    if len(decisions) > shown:
-        lines.append(f"… y {len(decisions) - shown} más")
+        if opciones := _opciones(p):
+            lines.append(f"   {opciones}")
+    for it in tuyas[:max(0, shown - len(decisions))]:
+        lines.append(f"• {it['tid']} · {truncate(it.get('title') or '', 60)} · tuya"
+                     + (f" · hace {hours_ago(it['since'], now)} h" if it.get("since") else ""))
+    if total > shown:
+        lines.append(f"… y {total - shown} más")
     lines.append("➡️ Próximo paso: pulsa «Ver decisiones» y responde con los botones · Lo da: Oscar")
     lines.append(PIE_TEXTO_LIBRE)  # formato único de aviso (t_211c9902): botones + texto libre
     return "\n".join(lines)
@@ -102,8 +122,9 @@ class DailyLaneSummary:
     def __init__(self, rows: Callable[[], list], decisions: Callable[[], list], guard_n: Callable[[], int],
                  send: Callable[[str, bool], bool], state_path: Path | str, *, who: str = "",
                  now: Callable[[], datetime] = lambda: datetime.now(MADRID), hour: int | None = None,
-                 extra: Callable[[], str] = lambda: ""):
+                 extra: Callable[[], str] = lambda: "", tuyas: Callable[[], list] = lambda: []):
         self.rows, self.decisions, self.guard_n, self.send = rows, decisions, guard_n, send
+        self.tuyas = tuyas
         self.state_path, self.who, self._now = Path(state_path), who, now
         self.hour, self.extra = hour, extra
 
@@ -119,10 +140,10 @@ class DailyLaneSummary:
         key = due_date(now, self._sent(), self.hour)
         if not key:
             return None
-        decisions = self.decisions()
-        text = render_summary(self.rows(), decisions, self.guard_n(), now.timestamp(), self.who if decisions else "",
-                              self.extra(), self.hour)
-        if not self.send(text, bool(decisions)):
+        decisions, tuyas = self.decisions(), self.tuyas()
+        text = render_summary(self.rows(), decisions, self.guard_n(), now.timestamp(),
+                              self.who if decisions or tuyas else "", self.extra(), self.hour, tuyas)
+        if not self.send(text, bool(decisions or tuyas)):
             return None
         self.state_path.parent.mkdir(parents=True, exist_ok=True)
         self.state_path.write_text(json.dumps({"sent": sorted(self._sent() | {key})[-14:]}), encoding="utf-8")

@@ -23,6 +23,14 @@ from tests.test_runner_state import (
     ok_outcome,
 )
 
+@pytest.fixture(autouse=True)
+def _preguntas_todas(monkeypatch):
+    """Estos tests miran el enrutado del tema con preguntas cualquiera: el filtro «solo dinero/lanzamiento» (31-10) se
+    prueba aparte, en test_decisiones_sin_ruido.py."""
+    real = canal_avisos.valor
+    monkeypatch.setattr(canal_avisos, "valor", lambda k: "todas" if k == "avisos.preguntas_en_tema" else real(k))
+
+
 OWNER = "6744452215"
 GESTION = "-1003530490339"
 TEMA = (GESTION, "777")          # 🎯 Decisiones (id de prueba)
@@ -516,8 +524,8 @@ def test_tipos_ajenos_no_se_tocan_aunque_la_tarjeta_este_hecha(tmp_path):
 
 
 def test_tope_por_pasada_y_es_idempotente(tmp_path):
-    tarjetas = {f"t_{n:02d}": {"status": "done", "comentarios": []} for n in range(30)}
-    c, tg = _obsoletas(tmp_path, tarjetas, [("blocked", f"t_{n:02d}") for n in range(30)])
+    tarjetas = {f"t_{n:02d}": {"status": "done", "comentarios": ["INTEGRADO abc"]} for n in range(30)}
+    c, tg = _obsoletas(tmp_path, tarjetas, [("aprobar", f"t_{n:02d}") for n in range(30)])  # blocked/needs_input: sin tope
     assert c.cerrar_obsoletas() == canal_avisos.CERRAR_MAX
     assert len(c.pendientes()) == 5
     assert c.cerrar_obsoletas() == 5

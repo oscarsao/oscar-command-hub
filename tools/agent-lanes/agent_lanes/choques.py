@@ -600,13 +600,24 @@ class ChoquesTicker:
         self._last: float | None = None
 
     def _enviar(self, c: Choque, ajustes: Ajustes) -> None:
+        # Con el canal de avisos (send.conjuntos): un solo mensaje por par de tarjetas; si cambia de clase se edita.
+        kw = {"conjunto": par_uid(c)} if getattr(self.send, "conjuntos", False) else {}
         if not self.issue:
-            self.send(aviso(c, ajustes))
+            self.send(aviso(c, ajustes), **kw)
             return
         rec, spec, urls = teclado(c)
         markup = self.issue(rec, spec)[1]
         markup = {**markup, "inline_keyboard": markup["inline_keyboard"] + urls}  # URL: Telegram los abre, no llegan
-        self.send(aviso(c, ajustes), markup)
+        self.send(aviso(c, ajustes), markup, **kw)
+
+    def _cerrar_resueltos(self, choques: list[Choque], seen: dict[str, float]) -> None:
+        """Cierra los avisos de pares que ya no chocan (ninguna de las dos tarjetas sigue activa en esa zona). Si cerró
+        avisos antiguos (sin conjunto), olvida los vigentes de `seen` para que salgan una vez más, ya por par."""
+        cerrar = getattr(self.send, "cerrar_salvo", None)
+        if cerrar and cerrar([par_uid(c) for c in choques]):
+            vigentes = {clave(c) for c in choques}
+            for k in vigentes & set(seen):
+                del seen[k]
 
     # --- botones 🙈 Ignorar / 🔇 Silenciar (los despacha DecisionDesk._act con CHO_ACTIONS) --------------------------
 
@@ -694,6 +705,9 @@ class ChoquesTicker:
             vigentes = {k: t for k, t in seen.items() if wall - t < ajustes.recordar_dias * 86400}
             changed = len(vigentes) != len(seen)
             seen = vigentes
+            antes = set(seen)
+            self._cerrar_resueltos(choques, seen)
+            changed = changed or set(seen) != antes
             nuevos = [c for c in choques if clave(c) not in seen]
             silenciosos = [c for c in nuevos if c.clase == "compatible" and not ajustes.avisar_compatibles]
             for c in silenciosos:  # se registran sin mensaje: misma zona pero compatibles, no hace falta decidir nada

@@ -555,7 +555,8 @@ class CommandCenter:
             lambda: rc.collect_rows(self.lanes, self.hermes_for), lambda: self.pending_decisions() + self.stuck_tasks(),
             lambda: len(queue.entries()) if queue else 0, send, path, who=who,
             now=lambda: datetime.fromtimestamp(self._now(), rc.MADRID), hour=hour,
-            extra=lambda: self.integrador_resumen()[0]).tick()
+            extra=lambda: self.integrador_resumen()[0],
+            tuyas=lambda: [it for it in self.lo_tuyo_items(None) if it.get("kind") == "tuyo"]).tick()
 
     # --- visibilidad del integrador (t_5624611d): estado, PR de sesiones interactivas, «ver más» ---------------
 

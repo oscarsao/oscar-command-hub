@@ -344,10 +344,20 @@ class SolapeTicker:
         self._last: float | None = None
 
     def _enviar(self, g: Grupo, ajustes: Ajustes) -> None:
+        # Con el canal de avisos (send.conjuntos): un solo mensaje por conjunto de tarjetas, que se edita si cambia.
+        kw = {"conjunto": "|".join(sorted(c.tid for c in g.cards))} if getattr(self.send, "conjuntos", False) else {}
         if self.issue:
-            self.send(aviso(g, ajustes), self.issue(registro(g), teclado(g))[1])
+            self.send(aviso(g, ajustes), self.issue(registro(g), teclado(g))[1], **kw)
         else:
-            self.send(aviso(g, ajustes))
+            self.send(aviso(g, ajustes), **kw)
+
+    def _cerrar_resueltos(self, grupos: list[Grupo], seen: list[str]) -> None:
+        """Cierra los avisos cuyo conjunto ya no tiene dos tarjetas activas en la misma zona. Si cerró avisos antiguos
+        (sin conjunto), olvida los vigentes de `seen` para que salgan una vez más, ya agrupados."""
+        cerrar = getattr(self.send, "cerrar_salvo", None)
+        if cerrar and cerrar(["|".join(sorted(c.tid for c in g.cards)) for g in grupos]):
+            vigentes = {clave(g) for g in grupos}
+            seen[:] = [k for k in seen if k not in vigentes]
 
     def on_button(self, action: str, rec: dict, where: dict | None, desk) -> bool:
         """Botones del aviso. Nunca fusiona, mueve ni cierra tarjetas."""
@@ -396,14 +406,15 @@ class SolapeTicker:
             self._last = now
             grupos = detectar(self.lanes, self.hermes_for, ajustes, load_descartes(self.descartes_path))
             seen = self._seen()
+            antes = list(seen)
+            self._cerrar_resueltos(grupos, seen)
             fresh = [g for g in grupos if clave(g) not in seen]
-            n = len(seen)
             try:
                 for g in fresh:  # si un envío falla, ese conjunto se reintenta en la pasada siguiente
                     self._enviar(g, ajustes)
                     seen.append(clave(g))
             finally:
-                if len(seen) > n:
+                if seen != antes:
                     self.state_path.parent.mkdir(parents=True, exist_ok=True)
                     self.state_path.write_text(json.dumps(seen[-MAX_ESTADO:]), encoding="utf-8")
             return grupos

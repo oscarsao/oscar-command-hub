@@ -82,6 +82,10 @@ def _build() -> dict[str, Ajuste]:
                "esencial = solo problemáticas, terminadas, integraciones, urgentes y los partes fijos; lo demás "
                "(empezando, revisión, choques, paradas, limpieza…) queda como comando. normal = como siempre. "
                "todo = sin ningún filtro.", opciones=("esencial", "normal", "todo")),
+        Ajuste("avisos.preguntas_en_tema", "Avisos", "Preguntas de carriles en el tema Decisiones", "urgentes", "opcion",
+               "urgentes = al momento solo las que bloquean un lanzamiento o implican gasto (marca «dinero» o "
+               "«lanzamiento»); el resto espera al resumen de las 9:00 («Decides tú»). todas = como antes.",
+               opciones=("urgentes", "todas")),
         Ajuste("avisos.hora_parte", "Avisos", "Hora del resumen por carril (parte de las 9:00)", None, "int",
                "Hora (0-21, Madrid) del parte diario. Sin editar vale la de integrador_visibilidad.yaml (9).", 0, 21,
                (7, 8, 9, 10, 12)),

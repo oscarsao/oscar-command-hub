@@ -35,6 +35,7 @@ from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from .ajustes_hub import valor
 from .integration import PinnedSummary, age_label, topic_link
 from .nivel_avisos import activo
 from .resumen_carriles import TIPOS_RESUMEN
@@ -104,6 +105,11 @@ SEMBRAR_MAX = 40               # tope de mensajes por siembra
 NO_CIERRAN = frozenset({"lt_open", "estado_mas", "explain", "detail"})  # abren/explican: no deciden
 # Avisos obsoletos (decisión de Oscar 30-10): se cierran en la revisión de 30 min. Tope por pasada por el 429 de Telegram.
 CERRAR_MAX = 25
+CERRAR_TARJETA_MAX = 200       # tope (solo de seguridad) para las tarjetas ya cerradas: sin él 52 avisos tardaban 3 pasadas
+TIPOS_CONJUNTO = frozenset({"solape", "choque"})  # un solo aviso por conjunto de tarjetas (31-10)
+# Una pregunta de un carril solo interrumpe en el momento si bloquea un lanzamiento o implica gasto; el resto espera al
+# resumen de las 9:00 (sección «Decides tú»). Se mira en el texto del aviso (título, cuerpo y pregunta de la tarjeta).
+MARCAS_URGENTES = ("dinero", "lanzamiento")
 TIPOS_CIERRE_TARJETA = frozenset({"blocked", "needs_input"})  # cerrar si la tarjeta está done/archived
 TIPOS_CIERRE_INTEGRADO = frozenset({"aprobar", "integrar"})   # además, solo con constancia de integración
 ESTADOS_TERMINADA = ("done", "archived")
@@ -178,9 +184,10 @@ class CanalAvisos:
     # --- avisos sueltos (choques, solapes, limpieza, reconcile, guarda de tablero, paradas) -------------------------
 
     def enviar(self, tipo: str, text: str, markup: dict | None = None, *, defecto: tuple | None = None,
-               html_text: bool = False) -> dict | None:
+               html_text: bool = False, conjunto: str | None = None) -> dict | None:
         """Aviso sin mensaje por tarea. DECISIÓN -> tema (+ línea al DM); lo demás -> `defecto` (DM de Oscar si no se
-        dice otra cosa), exactamente como antes."""
+        dice otra cosa), exactamente como antes. `conjunto` (solape/choque): ids ordenados unidos con «|»; si ya hay un
+        aviso abierto de ese conjunto (o, en solapes, de uno que comparte tarjetas) se edita en vez de enviar otro."""
         extra = {"reply_markup": markup} if markup is not None else {}
         if not activo(tipo):  # nivel «esencial»: sin mensaje, pero lo que pide decisión sigue contando en el contador
             self._contar_silenciada(tipo, text, markup, html_text)
@@ -190,13 +197,81 @@ class CanalAvisos:
         if not self.es_decision(tipo, markup):
             chat, thread = defecto or (self.owner_dm, None)
             return self.notifier.send_to(chat, thread, text, html=html_text, **extra)
+        if conjunto and tipo in TIPOS_CONJUNTO:
+            previo = self._editar_conjunto(tipo, conjunto, text, markup, html_text)
+            if previo:
+                return previo
         sent = self.notifier.send_to(self.destino[0], self.destino[1], text, html=html_text, **extra)
         if sent and sent.get("message_id"):
             self._registrar({"tipo": tipo, "rol": "solo", "token": markup_token(markup),
-                             "head": cabecera(text, html_text), **_donde(sent)})
+                             "head": cabecera(text, html_text), **_donde(sent),
+                             **({"conjunto": conjunto} if conjunto else {})})
             self._linea_dm(cabecera(text, html_text), sent)
             self.refrescar()
         return sent
+
+    def _editar_conjunto(self, tipo: str, conjunto: str, text: str, markup: dict | None, html_text: bool) -> dict | None:
+        """Un solo mensaje por conjunto de tarjetas: si hay un aviso abierto del mismo conjunto (en solapes, también de
+        uno que comparta alguna tarjeta) lo edita con el texto y los botones nuevos y cierra los demás que casen.
+        None = no hay ninguno (o el mensaje ya no se puede editar): el llamador envía uno nuevo."""
+        ids = set(conjunto.split("|"))
+        with self._lock:
+            data = self._load()
+            hits = [(k, e) for k, e in data["abiertas"].items()
+                    if e.get("tipo") == tipo and e.get("rol") == "solo" and e.get("conjunto")
+                    and (e["conjunto"] == conjunto or (tipo == "solape" and ids & set(e["conjunto"].split("|"))))]
+            if not hits:
+                return None
+            key, e = hits[0]
+            extra = {"reply_markup": markup} if markup is not None else {}
+            try:
+                ok = self.notifier.edit(e["chat_id"], e["message_id"], text, html=html_text, **extra)
+            except Exception as exc:
+                log.info("tema Decisiones: no se pudo editar el aviso del conjunto %s: %s", conjunto, exc)
+                ok = False
+            if not ok:  # mensaje borrado o no editable: se suelta y el aviso sale nuevo
+                data["abiertas"].pop(key, None)
+                self._save(data)
+                return None
+            e.update(conjunto=conjunto, token=markup_token(markup), head=cabecera(text, html_text))
+            for campo in ("gone_at", "ausente", "extra"):
+                e.pop(campo, None)
+            for k2, e2 in hits[1:]:
+                self._cerrar(data, k2, f"↪️ Agrupado con otro aviso del mismo conjunto\n{e2.get('head') or ''}".strip())
+            self._save(data)
+            return {"chat_id": e["chat_id"], "thread_id": e.get("thread_id"), "message_id": e["message_id"]}
+
+    def cerrar_conjuntos(self, tipo: str, vigentes: set[str]) -> int:
+        """Cierra los avisos de solape/choque cuyo conjunto ya no está entre los vigentes (tras una detección que SÍ
+        funcionó). Hace falta que falte en dos pasadas seguidas: un fallo puntual de Hermes no cierra nada. Los avisos
+        antiguos sin `conjunto` se cierran igual (no se sabe de qué tarjetas eran). Devuelve cuántos sin `conjunto`
+        cerró: el llamador debe volver a avisar de los conjuntos vigentes, ahora agrupados."""
+        if not self.destino or tipo not in TIPOS_CONJUNTO:
+            return 0
+        vig_ids = [set(v.split("|")) for v in vigentes]
+        cerrados = antiguos = 0
+        with self._lock:
+            data = self._load()
+            for key, e in list(data["abiertas"].items()):
+                if e.get("tipo") != tipo or e.get("rol") != "solo":
+                    continue
+                c = e.get("conjunto")
+                viva = bool(c) and (c in vigentes or (tipo == "solape" and any(set(c.split("|")) & v for v in vig_ids)))
+                if viva:
+                    e.pop("ausente", None)
+                elif not e.get("ausente"):
+                    e["ausente"] = True
+                else:
+                    motivo = "ya no solapan" if tipo == "solape" else "ya no chocan"
+                    self._cerrar(data, key, f"✅ Resuelto: {motivo} (no hay dos tarjetas activas en la misma zona)\n"
+                                            f"{e.get('head') or ''}".strip())
+                    cerrados += 1
+                    antiguos += 0 if c else 1
+            self._save(data)
+        if cerrados:
+            log.info("tema Decisiones: %d avisos de %s cerrados (%d antiguos sin conjunto)", cerrados, tipo, antiguos)
+            self.refrescar()
+        return antiguos
 
     def _contar_silenciada(self, tipo: str, text: str, markup: dict | None, html_text: bool) -> None:
         """Una decisión que el nivel apaga (choque, solape) no manda mensaje, pero se anota sin mensaje: mientras su
@@ -220,6 +295,12 @@ class CanalAvisos:
         al DM (`mirror`). Con decisión: el aviso principal se queda donde iba (tema del carril, Integración) salvo
         que fuese el DM de Oscar, que pasa al tema; la copia completa con botones va al tema (en vez de al DM) y al
         DM solo una línea con enlace."""
+        if tipo == "needs_input" and alert and self.es_decision(tipo, reply_markup) and not self._pregunta_urgente(text):
+            # Pregunta que no bloquea un lanzamiento ni cuesta dinero: se queda en el tema del carril (con sus botones) y
+            # NO va al tema Decisiones ni al DM; Oscar la ve en el resumen de las 9:00.
+            notices.publish(tid, text, None if self.es_dm(self._resuelto(target, lane_target)) else target, lane_target,
+                            alert=alert, reply_markup=reply_markup, **kw)
+            return
         if not (alert and self.es_decision(tipo, reply_markup)):
             notices.publish(tid, text, target, lane_target, alert=alert, reply_markup=reply_markup,
                             **({"mirror_to": mirror} if mirror else {}), **kw)
@@ -244,6 +325,14 @@ class CanalAvisos:
         if not self.es_dm((main.get("chat_id"), main.get("thread_id"))):
             self._linea_dm(head, donde)
         self.refrescar()
+
+    @staticmethod
+    def _pregunta_urgente(text: str) -> bool:
+        """¿La pregunta toca dinero o un lanzamiento (o el ajuste `avisos.preguntas_en_tema` es «todas»)?"""
+        if valor("avisos.preguntas_en_tema") == "todas":
+            return True
+        bajo = (text or "").lower()
+        return any(m in bajo for m in MARCAS_URGENTES)
 
     def _copias_equipo(self, notices, tipo: str, tid: str, text: str, markup: dict | None, main: dict | None,
                        lane_target) -> None:
@@ -459,10 +548,13 @@ class CanalAvisos:
             candidatos = [(k, e) for k, e in self._load()["abiertas"].items()
                           if e.get("tid") and e.get("tipo") in TIPOS_CIERRE_TARJETA | TIPOS_CIERRE_INTEGRADO]
         info: dict[str, dict | None] = {}
-        n = 0
+        n = n_tarjeta = n_integ = 0
         for key, e in candidatos:
-            if n >= CERRAR_MAX:
-                break
+            if e["tipo"] in TIPOS_CIERRE_TARJETA:  # tarjeta ya cerrada: tope alto; aprobar/integrar: el de siempre (429)
+                if n_tarjeta >= CERRAR_TARJETA_MAX:
+                    continue
+            elif n_integ >= CERRAR_MAX:
+                continue
             tid = e["tid"]
             if tid not in info:
                 try:
@@ -482,9 +574,14 @@ class CanalAvisos:
                 self._cerrar(data, key, texto)
                 self._save(data)
             n += 1
+            if e["tipo"] in TIPOS_CIERRE_TARJETA:
+                n_tarjeta += 1
+            else:
+                n_integ += 1
             self.sleep(PAUSA_ENTRE_MENSAJES)
         if n:
-            log.info("tema Decisiones: %d avisos obsoletos cerrados (tope %d por pasada)", n, CERRAR_MAX)
+            log.info("tema Decisiones: %d avisos obsoletos cerrados (%d de tarjeta cerrada, tope %d; %d de integración, "
+                     "tope %d)", n, n_tarjeta, CERRAR_TARJETA_MAX, n_integ, CERRAR_MAX)
         return n
 
     @staticmethod
@@ -749,7 +846,14 @@ def emisor(canal: CanalAvisos | None, notifier, tipo: str, owner_dm, defecto: tu
     chat, thread = defecto or (str(owner_dm), None)
     if canal is None:
         return lambda text, markup=None: notifier.send_to(chat, thread, text, html=False, reply_markup=markup)
-    return lambda text, markup=None: canal.enviar(tipo, text, markup, defecto=(chat, thread))
+
+    def send(text, markup=None, conjunto=None):
+        return canal.enviar(tipo, text, markup, defecto=(chat, thread), conjunto=conjunto)
+
+    if tipo in TIPOS_CONJUNTO:  # los tickers de solapes/choques lo detectan: mandan `conjunto` y cierran lo resuelto
+        send.conjuntos = True
+        send.cerrar_salvo = lambda vigentes: canal.cerrar_conjuntos(tipo, set(vigentes))
+    return send
 
 
 def para_desk(desk, destino: tuple[str, str] | None) -> CanalAvisos:

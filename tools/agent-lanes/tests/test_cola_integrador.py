@@ -203,7 +203,7 @@ def test_summary_with_empty_lanes_and_no_decisions():
     lanes = {"a": SimpleNamespace(board="b", kind="implement"), "b": SimpleNamespace(board="b", kind="review")}
     rows = rc.collect_rows(lanes, lambda board: Board({}))
     text = rc.render_summary(rows, [], 0, 0)
-    assert text.count("libre · cola 0 · bloqueos 0") == 2 and "Decisiones pendientes de Oscar: ninguna" in text
+    assert text.count("libre · cola 0 · bloqueos 0") == 2 and "Decides tú: nada" in text
 
 
 def test_summary_lines_per_lane_and_decisions_with_mention():
@@ -214,7 +214,7 @@ def test_summary_lines_per_lane_and_decisions_with_mention():
     d = [SimpleNamespace(tid="t_9", task={"title": "¿Publicar?"}, since=0)]
     text = rc.render_summary(rows, d, 2, 3 * H, "@oscar_t")
     assert "a: Haciendo cosas · cola 3 · bloqueos 1" in text and "x: libre" in text
-    assert "@oscar_t Decisiones pendientes de Oscar (1)" in text and "t_9" in text and "Próximo paso" in text
+    assert "@oscar_t Decides tú (1)" in text and "t_9" in text and "Próximo paso" in text
     assert "2 en la cola del integrador" in text
 
 
