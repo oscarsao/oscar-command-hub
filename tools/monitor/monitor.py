@@ -57,7 +57,7 @@ WATCH_PROCS = ("claude", "python", "pythonw", "node", "chrome", "hermes", "cloud
 LOG_LEVEL_RE = re.compile(r"\b(WARNING|ERROR|CRITICAL)\b")
 # Silencio del DM de 23:00 a 08:00 (30-09): solo pasan las caídas reales (runner, Hermes, servicios, listado de tareas).
 QUIET_START, QUIET_END = 23, 8
-OUTAGE_KEYS = ("runner-dead", "gw-dead", "health-", "list-fail", "db-down", "db-slow", "vercel-prod", "battery-low")
+OUTAGE_KEYS = ("runner-dead", "runner-hung", "gw-dead", "health-", "list-fail", "db-down", "db-slow", "vercel-prod", "battery-low")
 PROD_EVERY = 300      # s entre comprobaciones de Vercel (producción) y del servidor (health + Dokploy)
 DB_EVERY = 300        # s entre sondas de la base de Supabase (01-10: saturada 30-09 y 01-10)
 DB_MAX_CONNS = 45     # AVISO por encima (el plan Micro admite 60)
@@ -543,10 +543,41 @@ class Monitor:
                        "en el PC: Programador de tareas → "
                        "'agent-lanes runner' → Ejecutar. /salud (bot de Trabajos) te dice el estado.",
                        min_secs=RUNNER_DEAD_SECS, auto_secs=RUNNER_AUTO_SECS, cause=self._causa_runner)
+        self._runner_colgado(draining)
         self.condition("orphan", "huérfano" in self.lanes_text,
                        "Hay un worker funcionando sin runner que lo vigile.",
                        "normalmente se resuelve solo al terminar la tarea; si pasa de 30 min, avísame en la "
                        "sesión de Claude Code o mira /salud.", min_hits=4)
+
+    def _runner_colgado(self, draining: bool) -> None:
+        """Latido real del runner (agent_lanes/supervisor.py): proceso vivo pero planificador sin latir = colgado.
+        Avisa ALTA y, si no había workers en vuelo, lanza `lanes.py restart --drain --colgado` (máx. 1/hora)."""
+        try:
+            if str(LANES) not in sys.path:
+                sys.path.insert(0, str(LANES))
+            from agent_lanes import ciego, supervisor
+            from agent_lanes.config import load_runner_settings
+            cfg = load_runner_settings()
+            parado = float(cfg.get("latido_parado_segundos") or supervisor.DEFAULT_PARADO_SECS)
+            data = supervisor.leer(LANES / ".state" / "runner-latido.json")
+            estado, detalle = supervisor.evaluar(data, time.time(), parado, psutil.pid_exists)
+            if estado == "colgado" and not draining:
+                accion = supervisor.reinicio_si_colgado(
+                    data, estado, now=time.time(), habilitado=bool(cfg.get("reinicio_auto_colgado", True)),
+                    lanzar=lambda: ciego.launch_restart(extra=("--colgado",)))
+                if accion.startswith("reinicio automático lanzado") or not getattr(self, "_colgado_accion", ""):
+                    self._colgado_accion = accion
+            else:
+                self._colgado_accion = ""
+            self.condition("runner-hung", estado == "colgado" and not draining,
+                           f"El runner de carriles está colgado: {detalle}. No reclama tareas nuevas."
+                           + (f"\n🔧 {self._colgado_accion}." if getattr(self, "_colgado_accion", "") else ""),
+                           "en el PC: Programador de tareas → 'agent-lanes runner' → Finalizar y Ejecutar "
+                           "(solo si no hay workers en vuelo).", min_hits=1, level="ALTA")
+        except Exception as exc:  # noqa: BLE001 - la vigilancia extra nunca tumba el monitor
+            if not getattr(self, "_colgado_err", False):
+                self._colgado_err = True
+                self.runner_events.append(f"latido: vigilancia no disponible ({type(exc).__name__})")
 
     def _causa_runner(self) -> str:
         """Por qué `lanes.py status` no ve el runner: con RAM al límite Hermes tarda en contestar."""

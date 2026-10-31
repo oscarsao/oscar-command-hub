@@ -163,6 +163,12 @@ def _build() -> dict[str, Ajuste]:
                "Intervalo entre pasadas del runner.", 10, 600, (30, 60, 120), True),
         Ajuste("carriles.ciego_minutos", "Carriles", "Minutos sin ver tareas para dar la alarma de «runner ciego»",
                None, "int", "Tras ese tiempo avisa a Oscar y hace un restart --drain.", 2, 60, (3, 5, 10, 15), True),
+        Ajuste("carriles.worker_ram_mb", "Carriles", "Memoria máxima por worker (MB, 0 = sin límite)", None, "int",
+               "Si el árbol de procesos de un claude pasa de esto, se corta y se avisa a Oscar.", 0, 16384,
+               (2048, 4096, 6144, 8192), True),
+        Ajuste("carriles.latido_parado_segundos", "Carriles", "Segundos sin latido para dar el runner por colgado",
+               None, "int", "El monitor avisa (y reinicia si no hay workers) pasado este tiempo. Mínimo 60.", 60, 900,
+               (120, 180, 300), False),
         Ajuste("carriles.max_parallel", "Carriles", "Tareas a la vez por carril (valor por defecto)", None, "int",
                "Solo para carriles sin max_parallel propio en lanes.yaml.", 1, 3, (1, 2), True),
     ]
@@ -345,7 +351,8 @@ def aplicar_runner(settings: dict) -> dict:
     """lanes.yaml `runner:` con los valores editados encima (para config.load_runner_settings, que lee el runner al arrancar)."""
     out = dict(settings)
     for key, field in (("carriles.max_workers", "max_workers"), ("carriles.intervalo_segundos", "interval_seconds"),
-                       ("carriles.ciego_minutos", "ciego_minutes")):
+                       ("carriles.ciego_minutos", "ciego_minutes"), ("carriles.worker_ram_mb", "worker_ram_mb"),
+                       ("carriles.latido_parado_segundos", "latido_parado_segundos")):
         v = valor(key)
         if v is not None:
             out[field] = v

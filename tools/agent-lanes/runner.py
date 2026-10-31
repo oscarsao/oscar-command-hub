@@ -15,7 +15,7 @@ import threading
 import time
 from logging.handlers import TimedRotatingFileHandler
 
-from agent_lanes import canal_avisos, ciego, consola, cuota, doctor_config, drain, notices, resumen_carriles
+from agent_lanes import canal_avisos, ciego, consola, cuota, doctor_config, drain, notices, resumen_carriles, supervisor
 from agent_lanes.bandeja import load as load_bandeja
 from agent_lanes.board_guard import BoardGuardTicker
 from agent_lanes.choques import ChoquesTicker
@@ -73,12 +73,19 @@ def effective_max_workers(arg: int, settings: dict) -> int:
     return arg or settings["max_workers"]
 
 
-def run_scheduler(service, paused, interval: float, stop=None) -> None:
+def run_scheduler(service, paused, interval: float, stop=None, latido=None) -> None:
     """Hilo del planificador: tick() al arrancar, en cuanto un worker termina (`wake`) y cada `interval` s. Un error en un
-    tick se registra y no mata el hilo. `paused()` (reinicio ordenado) detiene los lanzamientos. `stop`: Event (tests)."""
+    tick se registra y no mata el hilo. `paused()` (reinicio ordenado) detiene los lanzamientos. `stop`: Event (tests).
+    `latido` (supervisor.Latido): cada vuelta anota que el planificador vive y qué workers hay en vuelo; si el tick se
+    cuelga, deja de latir y el monitor lo detecta."""
     log = logging.getLogger("agent_lanes")
     while not (stop is not None and stop.is_set()):
         service.wake.clear()  # antes de lanzar: un worker que termine después despierta la espera de abajo
+        if latido:
+            try:
+                latido.beat("planificador", service.busy_tasks())
+            except Exception as exc:  # noqa: BLE001 - el latido nunca tumba al planificador
+                log.warning("latido: %s", exc)
         try:
             if not paused():
                 if launched := service.tick():
@@ -193,7 +200,10 @@ def main(argv: list[str] | None = None) -> int:
     # Candado de repos: un carril de código solo reclama si el remote de su repo es el `github:` de lanes.yaml.
     # Prevención de choques al lanzar (choques.yaml → prevenir_al_lanzar): una instancia para todos los carriles de código.
     prevencion = Prevencion(all_lanes, hermes_for)
-    runners: list = [LaneRunner(l, hermes=hermes_for(l.board), git=git, worker=ClaudeWorker(pid_dir=STATE_DIR),
+    # Límite de RAM por worker (lanes.yaml runner.worker_ram_mb; 0 = sin límite): corta al que se desboca y avisa al DM.
+    ram = {"ram_mb": float(settings.get("worker_ram_mb") or 0), "alert": drain.dm_alert(env),
+           "ram_intervalo": float(settings.get("worker_ram_intervalo_segundos") or supervisor.DEFAULT_RAM_INTERVALO)}
+    runners: list = [LaneRunner(l, hermes=hermes_for(l.board), git=git, worker=ClaudeWorker(pid_dir=STATE_DIR, **ram),
                                 verifier=verify, notify=notify, exclude=set(args.exclude), messages=messages, links=links,
                                 decisions=decisions, tree=tree, repo_guard=github_slug_problem, lanes=all_lanes,
                                 final_only=tg_settings["final_only"], prevencion=prevencion,
@@ -201,7 +211,7 @@ def main(argv: list[str] | None = None) -> int:
                      for l in impl.values()]
     # Carril ops: sin repo. Carpeta de trabajo por tarea + verificación por evidencias; siempre acaba en review para
     # Oscar (no está en `review.reviews`, y sweep_done no lo toca: el workspace se conserva).
-    runners += [LaneRunner(l, hermes=hermes_for(l.board), git=OpsWorkspace(), worker=ClaudeWorker(pid_dir=STATE_DIR), verifier=verify_ops,
+    runners += [LaneRunner(l, hermes=hermes_for(l.board), git=OpsWorkspace(), worker=ClaudeWorker(pid_dir=STATE_DIR, **ram), verifier=verify_ops,
                            notify=notify, exclude=set(args.exclude), messages=messages, links=links, decisions=decisions,
                            tree=tree, final_only=tg_settings["final_only"], cuota_minutos=cuota_minutos)
                 for l in selected.values() if l.kind == "ops"]
@@ -261,6 +271,7 @@ def main(argv: list[str] | None = None) -> int:
     draining_logged = False
     # Runner ciego: mismo fallo al listar tareas durante `ciego_minutes` -> aviso ALTA al DM + restart --drain (1/hora).
     watch = None if args.once else ciego.Vigilante(minutes=float(settings["ciego_minutes"]), alert=drain.dm_alert(env))
+    latido = None if args.once else supervisor.Latido()  # .state/runner-latido.json: lo lee el monitor (supervisor.py)
     guard = None
     reconcile = None
     limpieza = None
@@ -332,9 +343,11 @@ def main(argv: list[str] | None = None) -> int:
         # El planificador va en su PROPIO hilo (fix/runner-tick, 23-10): el mantenimiento del bucle principal (sweep_done,
         # integrador, tickers) puede tardar minutos (un `git worktree remove` colgado bloqueó 5 min el tick y el runner
         # no reclamó nada tras el reinicio de las 12:23). Un hueco libre o un worker que termina se atienden al momento.
-        threading.Thread(target=run_scheduler, args=(service, drain.active, interval), name="lane-scheduler",
+        threading.Thread(target=run_scheduler, args=(service, drain.active, interval, None, latido), name="lane-scheduler",
                          daemon=True).start()
     while True:
+        if latido:
+            latido.beat("principal")
         shows.clear()
         # Reinicio ordenado (lanes.py restart --drain): entre pasadas, sin reclamar nada; el acuse dice si queda
         # algo en marcha fuera del pool (deploy/gates lanzados por un botón de Oscar).
