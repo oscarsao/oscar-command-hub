@@ -107,7 +107,8 @@ def _ruta(p: str) -> str:
 
 def es_solo_docs(ficheros) -> bool:
     rutas = [_ruta(f) for f in ficheros]
-    return bool(rutas) and all(r.startswith(SOLO_DOCS) or r.endswith(".md") for r in rutas)
+    # Solo las carpetas de documentos: un .md suelto (CLAUDE.md, skills, prompts de agentes) cambia el comportamiento.
+    return bool(rutas) and all(r.startswith(SOLO_DOCS) for r in rutas)
 
 
 def dentro_de_zona(ficheros, zona) -> bool:

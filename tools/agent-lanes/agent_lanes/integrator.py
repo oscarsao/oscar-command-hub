@@ -852,9 +852,13 @@ class Integrator:
             return self._auto_no(tid, problem or "conflictos o tarjetas padre sin integrar")
         number, url, head = pr["number"], pr["url"], pr["headRefOid"]
         from .review import implementation_metadata  # import tardío: review no depende del integrador
-        reviewed = str((implementation_metadata(show) or {}).get("head_sha") or "").lower()
+        meta = implementation_metadata(show) or {}
+        reviewed = str(meta.get("head_sha") or "").lower()
+        # «Revisado» = la cabeza del PR es la que se entregó Y el carril de revisión la aprobó (review.status == approve):
+        # una tarjeta que llegó a done sin pasar por el revisor nunca se fusiona sola.
+        aprobada = str((meta.get("review") or {}).get("status") or "").lower() == "approve"
         clase = dict(ids=ids, proyectos=proyectos, tamano=tm.group(1) if tm else "", zona=zona,
-                     revisado=bool(reviewed) and head.startswith(reviewed))
+                     revisado=bool(reviewed) and head.startswith(reviewed) and aprobada)
         files = self._pr_files(slug, number)
         if motivos := cola_integrador.clasificar_integrable(ficheros=files, **clase):
             return self._auto_no(tid, motivos[0])

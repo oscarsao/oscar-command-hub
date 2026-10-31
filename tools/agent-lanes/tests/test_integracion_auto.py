@@ -35,8 +35,11 @@ def test_ni_s_ni_documentacion_no_entra():
 
 
 def test_solo_documentacion_aunque_el_tamano_sea_m():
-    assert clasifica(tamano="M", zona=["pitches/", "x.md"], ficheros=["pitches/p.md", "x.md"]) == []
-    assert es_solo_docs(["docs/a.txt", "specs/b.md", "decisions/c.md", "README.md"])
+    assert clasifica(tamano="M", zona=["pitches/", "docs/"], ficheros=["pitches/p.md", "docs/x.md"]) == []
+    assert es_solo_docs(["docs/a.txt", "specs/b.md", "decisions/c.md", "pitches/p.md"])
+    # un .md suelto cambia el comportamiento de los agentes (CLAUDE.md, skills, prompts): NO es documentación
+    assert not es_solo_docs(["README.md"]) and not es_solo_docs(["CLAUDE.md", "docs/a.md"])
+    assert not es_solo_docs(["skills/tomar-tarea/SKILL.md"])
     assert not es_solo_docs(["docs/a.md", "src/app.py"]) and not es_solo_docs([])
 
 
@@ -237,6 +240,14 @@ def test_diff_fuera_de_la_zona_no_se_fusiona(tmp_path):
 def test_sin_revision_conforme_no_se_fusiona(tmp_path):
     integ, w, h, tg, d, t = montar(tmp_path)
     h.reviewed = "f" * 40
+    assert integ.run_pass(force=True) == {}
+    assert not tg.sent and not fusiones(w)
+
+
+def test_cabeza_correcta_pero_sin_veredicto_aprobado_no_se_fusiona(tmp_path):
+    """Defensa: la cabeza del PR coincide con la entregada, pero el carril de revisión nunca dio «approve»."""
+    integ, w, h, tg, d, t = montar(tmp_path)
+    h.sin_review = True
     assert integ.run_pass(force=True) == {}
     assert not tg.sent and not fusiones(w)
 
