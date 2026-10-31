@@ -92,3 +92,61 @@ def ejecutar_aprobada(item: dict, ejecutores: dict[str, Callable[[dict], object]
         log.warning("cola integrador: %s (aprobada) falló: %s", accion, exc)
         return {"ok": False, "resultado": "fallida", "detalle": str(exc)[:200]}
     return {"ok": bool(ok), "resultado": "hecha" if ok else "fallida"}
+
+
+# --- integración automática de lo pequeño (decisión de Oscar 30-10) --------------------------------------------------
+# Clase «integrable sin botón»: se fusiona sola tras una ventana de veto. El despliegue nunca se automatiza.
+SOLO_DOCS = ("docs/", "pitches/", "specs/", "decisions/")
+NUNCA_AUTO = ("migrateam", "ocr-pdf-and-images")  # el proyecto (repo o carril) que contenga esto queda fuera siempre
+SENSIBLE_AUTO = (".env", "secret", "credential", "token", ".github/", "contract/", "lanes.yaml", "alembic", "migration")
+
+
+def _ruta(p: str) -> str:
+    return (p or "").replace("\\", "/").strip().lower().removeprefix("./").lstrip("/")
+
+
+def es_solo_docs(ficheros) -> bool:
+    rutas = [_ruta(f) for f in ficheros]
+    # Solo las carpetas de documentos: un .md suelto (CLAUDE.md, skills, prompts de agentes) cambia el comportamiento.
+    return bool(rutas) and all(r.startswith(SOLO_DOCS) for r in rutas)
+
+
+def dentro_de_zona(ficheros, zona) -> bool:
+    """Todos los ficheros caen en alguna ruta (fichero o carpeta) de la `Zona:` declarada. Sin zona o sin ficheros: no."""
+    z = [_ruta(x).rstrip("/") for x in zona if _ruta(x).rstrip("/")]
+    rutas = [_ruta(f) for f in ficheros]
+    return bool(z and rutas) and all(any(r == c or r.startswith(c + "/") for c in z) for r in rutas)
+
+
+def _es_nunca(ids) -> bool:
+    return any(n in str(i).lower() for i in ids for n in NUNCA_AUTO)
+
+
+def proyecto_permitido(ids: tuple, proyectos) -> bool:
+    """`ids` = (repo, carril). En la lista y nunca MigraTeam, aunque alguien lo ponga en la lista."""
+    ids = tuple(str(i).lower() for i in ids if i)
+    return bool(ids) and not _es_nunca(ids) and ids[0] in {str(p).lower() for p in proyectos}
+
+
+def clasificar_integrable(*, ids: tuple, proyectos, tamano: str, zona, ficheros, revisado: bool,
+                          suite_ok: bool | None = None, migracion: str | None = None, sensibles=()) -> list[str]:
+    """Motivos (en llano) por los que una tarjeta NO es integrable sin botón; lista vacía = lo es. `ids` = (repo, carril).
+    `suite_ok=None` = los gates aún no se han ejecutado (no cuenta como fallo; el llamador repite con el resultado)."""
+    if _es_nunca(ids):
+        return ["MigraTeam queda fuera de la integración automática"]
+    motivos = []
+    if not proyecto_permitido(ids, proyectos):
+        motivos.append("el proyecto no está en la lista de integración automática")
+    if not (str(tamano).strip().upper() == "S" or es_solo_docs(ficheros)):
+        motivos.append("no es de tamaño S ni solo documentación")
+    if not dentro_de_zona(ficheros, zona):
+        motivos.append("el diff sale de la Zona declarada (o no hay Zona)")
+    if migracion or any("alembic" in _ruta(f) or "migration" in _ruta(f) for f in ficheros):
+        motivos.append("lleva migraciones")
+    if sensibles or any(s in _ruta(f) for f in ficheros for s in SENSIBLE_AUTO):
+        motivos.append("toca ficheros sensibles")
+    if suite_ok is False:
+        motivos.append("la suite no está en verde")
+    if not revisado:
+        motivos.append("el revisor no ha dado conformidad a esta cabeza")
+    return motivos

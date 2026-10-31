@@ -149,9 +149,13 @@ class FakeHermes:
         return [t for t in self.tasks if t.get("assignee") == assignee and status == "done"]
 
     reviewed = HEAD
+    sin_review = False   # True: la tarjeta llegó a done SIN el veredicto «approve» del carril de revisión
 
     def show(self, tid):
-        runs = [{"metadata": {"branch": f"lane/{tid}", "head_sha": self.reviewed}}] if self.reviewed else []
+        meta = {"branch": f"lane/{tid}", "head_sha": self.reviewed}
+        if not self.sin_review:
+            meta["review"] = {"status": "approve"}
+        runs = [{"metadata": meta}] if self.reviewed else []
         return {"task": {"id": tid}, "comments": list(self.comments_by.get(tid, [])), "runs": runs}
 
     def comment(self, tid, text, author=None):

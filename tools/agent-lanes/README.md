@@ -372,6 +372,32 @@ ficha por tarjeta de carril parada más de 24 h en ready sin worker, blocked, tr
 las `scheduled` ni las asignadas a personas (solo se leen las de un carril). Sin paradas no manda nada. También sale una
 línea «Paradas» en /salud. Hora, umbral de horas y nº de fichas se editan con /ajustes (grupo Atascos).
 
+## Nivel de avisos (`avisos.nivel`, `nivel_avisos.py`)
+Ajuste de /ajustes (grupo Avisos) y del panel, con recarga en caliente y registro: `esencial` | `normal` | `todo`.
+**Por defecto `normal`**: sale todo, como siempre. `todo` hoy es igual que `normal` (sin filtros). `esencial` no envía los
+tipos de la columna «Esencial = no». Lo apagado no se pierde: sigue contando en el contador fijado de 🎯 Decisiones
+(choques y solapes mientras viva su teclado) y está a demanda con un comando.
+
+| Tipo | Clase | Esencial | A demanda |
+|---|---|---|---|
+| `needs_input`, `blocked`, `bloqueo_urgente` (problemáticas) | decisión / urgente | sí | `/decisiones`, `/atencion` |
+| `progreso` (terminada, en review, en pausa) | info | sí | `/tareas` |
+| `aprobar`, `integrar`, `workflow`, `hazlo` (integraciones, con botones) | decisión | sí | `/aprobar`, `/integrador` |
+| `fijado` (mensaje fijado de Integración), `pr_conflicto` | info | fijado sí; `pr_conflicto` no (vive en el panel) | `/integrador` |
+| `monitor`, `prodwatch` | urgente | sí | `/salud` |
+| `resumen` (9:00), retro del lunes, `recordatorio` (13:00/18:00), `al_dia` | info | sí | `/hoy`, `/al_dia` |
+| `equipo`, `team_notice` (respuestas al equipo) | decisión / info | sí | — |
+| `empezando` (▶️ empezando; antes dentro de `progreso`) | info | **no** | `/tareas` |
+| `revision` (resumen de tarjetas listas) | info | **no** | `/revision` |
+| `choque`, `solape` | decisión | **no** | `/choques` |
+| `paradas` (ya van en el parte de las 9:00) | info | **no** | `/paradas` |
+| `limpieza`, `reconcile` | info | **no** | `/limpieza` |
+| `board_guard` | info | **no** | `/salud` |
+
+Con `esencial`, una tarjeta que empieza, avanza y termina genera UN mensaje (la terminada). Comandos reutilizados:
+`/tareas`, `/decisiones`, `/atencion`, `/aprobar`, `/integrador`, `/salud`, `/hoy`, `/al_dia`; nuevos (mínimos): `/choques`,
+`/paradas`, `/revision`, `/limpieza` (solo operadores de todas las marcas).
+
 ## Backend del kanban (`KANBAN_BACKEND`, F2-02/F2-03 del plan del hub)
 
 Todo el hub crea su cliente del kanban con `kanban_api.backend_for(board, author=...)`, nunca con `HermesCLI(...)`.

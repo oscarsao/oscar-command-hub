@@ -51,7 +51,9 @@ if __package__ in (None, ""):  # `py agent_lanes/integrator.py`
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     __package__ = "agent_lanes"
 
+from . import ajustes_hub  # noqa: E402
 from . import canal_avisos  # noqa: E402
+from . import cola_integrador  # noqa: E402
 from . import consola  # noqa: E402
 from . import drain  # noqa: E402
 from . import proc as _proc  # noqa: E402
@@ -86,8 +88,12 @@ INT_BATCH_FIX, INT_BATCH_REBASE, INT_BATCH_SKIP = "int_batch_fix", "int_batch_re
 INT_BATCH_CONSOLE, INT_BATCH_DISCARD = "int_batch_console", "int_batch_discard"
 BATCH_EXCLUDED_ACTIONS = (INT_BATCH_FIX, INT_BATCH_REBASE, INT_BATCH_SKIP, INT_BATCH_CONSOLE, INT_BATCH_DISCARD)
 INT_BATCH_BUILD = "int_batch_build"  # [🔀 Fusionar lote] del aviso diario «N PR esperando lote»: monta el lote ya
+INT_AUTO_VETO = "int_auto_veto"  # [⛔ Vetar] de la integración automática de lo pequeño (cola_integrador.clasificar_integrable)
 INT_ACTIONS = (INT_MERGE, INT_DEPLOY, INT_MERGE_DEPLOY, INT_MIGRATION_APPLIED, INT_APPLY, INT_BATCH_MERGE,
-               INT_BATCH_BUILD, *BATCH_EXCLUDED_ACTIONS)
+               INT_BATCH_BUILD, INT_AUTO_VETO, *BATCH_EXCLUDED_ACTIONS)
+AUTO_REINTENTO = 1800  # s entre comprobaciones de una tarjeta que hoy no es integrable sin botón
+ZONA_RE = re.compile(r"^[ \t>*-]*zona[ \t]*:[ \t]*(.+)$", re.IGNORECASE | re.MULTILINE)
+TAMANO_RE = re.compile(r"^[ \t>*-]*tama[ñn]o[ \t]*:[ \t]*(\w+)", re.IGNORECASE | re.MULTILINE)
 MIGRATION_APPLIED_PREFIX = "MIGRACION-APLICADA"
 MIGRATION_KINDS = ("supabase", "alembic")  # "infra" no es una migración: no se da por aplicada con un botón
 MIGRATION_BUTTON = {"text": "✅ Migración aplicada", "action": INT_MIGRATION_APPLIED}
@@ -731,7 +737,7 @@ class Integrator:
             return None
         approval = self._approval(lane, tid, comments)
         if not approval:
-            return None
+            return self._consider_auto(lane, policy, {**(show.get("task") or {}), **task}, show, st)
         number, url = approval
         task = {**(show.get("task") or {}), **task}
         from .review import implementation_metadata  # import tardío: review no depende del integrador
@@ -798,6 +804,117 @@ class Integrator:
         self._save(tid, status="offered", pr=number, pr_url=url, head_sha=result.head_sha, base_sha=result.base_sha,
                    migration=result.migration, **about)
         return "offered"
+
+    # --- integración automática de lo pequeño (decisión de Oscar 30-10) ------------------------------------
+
+    def _pr_files(self, slug: str, number) -> list[str]:
+        cp = self._gh("pr", "view", str(number), "--repo", slug, "--json", "files")
+        try:
+            return [str(f.get("path") or "") for f in (json.loads(cp.stdout or "{}").get("files") or [])] \
+                if cp.returncode == 0 else []
+        except (json.JSONDecodeError, AttributeError):
+            return []
+
+    def _auto_no(self, tid: str, motivo: str, **extra) -> None:
+        self._save(tid, status="auto_no", auto_motivo=motivo[:200], auto_next=self._now() + AUTO_REINTENTO, **extra)
+        return None
+
+    def _consider_auto(self, lane, policy: Policy, task: dict, show: dict, st: dict) -> str | None:
+        """Tarjeta `done` SIN aprobación de Oscar. Apagado (por defecto) = no hace nada. Encendido: si es integrable sin
+        botón (cola_integrador.clasificar_integrable) y pasa los gates, avisa con [⛔ Vetar] y, vencida la ventana sin
+        veto, la fusiona por la ruta de siempre (`_merge`). El despliegue sigue siendo un botón. Cualquier otra tarjeta
+        queda como hoy: sin ficha hasta que Oscar la apruebe."""
+        tid, estado = task["id"], st.get("status")
+        if self.dry_run or not self.desk:
+            return None
+        if not ajustes_hub.valor("integracion_auto.activa"):
+            if estado == "auto_veto":  # apagado durante la ventana: se cancela, no se fusiona nada
+                self._save(tid, status="auto_apagado")
+            return None
+        if estado and not str(estado).startswith("auto_") or estado == "auto_vetado":
+            return None
+        now = self._now()
+        if estado == "auto_veto":
+            return self._auto_cierre(lane, policy, task, st, now)
+        if now < float(st.get("auto_next") or 0):
+            return None
+        slug = self.links.repo_slug(lane) if self.links else None
+        cuerpo = task.get("body") or ""
+        zona = [z for linea in ZONA_RE.findall(cuerpo) for z in re.split(r"[,;]", linea.replace("`", ""))]
+        tm = TAMANO_RE.search(cuerpo)
+        ids = ((slug or "").rsplit("/", 1)[-1], lane.name)
+        proyectos = ajustes_hub.valor("integracion_auto.proyectos")
+        if not slug or not zona or not cola_integrador.proyecto_permitido(ids, proyectos):
+            return None  # barato y sin red: ni proyecto, ni Zona, ni MigraTeam (los ficheros se miran después)
+        pr = self._pr_view(slug, f"lane/{tid}")
+        problem = self._pr_problem(lane, tid, pr)
+        if problem or pr.get("mergeable") == "CONFLICTING" or pending_parents(self.hermes_for(lane.board), tid, show):
+            return self._auto_no(tid, problem or "conflictos o tarjetas padre sin integrar")
+        number, url, head = pr["number"], pr["url"], pr["headRefOid"]
+        from .review import implementation_metadata  # import tardío: review no depende del integrador
+        meta = implementation_metadata(show) or {}
+        reviewed = str(meta.get("head_sha") or "").lower()
+        # «Revisado» = la cabeza del PR es la que se entregó Y el carril de revisión la aprobó (review.status == approve):
+        # una tarjeta que llegó a done sin pasar por el revisor nunca se fusiona sola.
+        aprobada = str((meta.get("review") or {}).get("status") or "").lower() == "approve"
+        clase = dict(ids=ids, proyectos=proyectos, tamano=tm.group(1) if tm else "", zona=zona,
+                     revisado=bool(reviewed) and head.startswith(reviewed) and aprobada)
+        files = self._pr_files(slug, number)
+        if motivos := cola_integrador.clasificar_integrable(ficheros=files, **clase):
+            return self._auto_no(tid, motivos[0])
+        result = self.run_gates(lane, policy, tid, number, head)
+        if motivos := cola_integrador.clasificar_integrable(
+                ficheros=result.changed_files or files, suite_ok=result.ok, migracion=result.migration,
+                sensibles=result.sensitive, **clase):
+            if st.get("auto_fallo_head") != head:  # una sola nota por cabeza
+                self._comment(lane, tid, f"INTEGRADOR: integración automática descartada · PR #{number} · {motivos[0]}")
+            return self._auto_no(tid, motivos[0], auto_fallo_head=head)
+        minutos = int(ajustes_hub.valor("integracion_auto.veto_minutos"))
+        rec = self._rec(lane, task, number, url, result, policy)
+        markup = self.desk.store.issue(rec, [[{"text": "⛔ Vetar", "action": INT_AUTO_VETO}]])[1]
+        self._save(tid, status="auto_veto", pr=number, pr_url=url, head_sha=head, base_sha=result.base_sha,
+                   auto_due=now + minutos * 60, auto_files=result.changed_files[:50], lane=lane.name,
+                   title=(task.get("title") or "")[:200])
+        self._comment(lane, tid, f"INTEGRADOR: integración automática armada · PR #{number} @ {head[:12]} · "
+                      f"se fusiona en {minutos} min salvo veto")
+        self._publish(lane, task, f"🤖 {tid} · {truncate(task.get('title'), 50)} · PR #{number} (pequeño, gates OK): "
+                      f"se fusiona sola en {minutos} min si no la vetas. El despliegue sigue siendo tu botón.",
+                      markup, link=f"🤖 PR #{number} se integra sola en {minutos} min")
+        return "auto_veto"
+
+    def _auto_cierre(self, lane, policy: Policy, task: dict, st: dict, now: float) -> str | None:
+        """Ventana de veto vencida y sin veto: fusiona por `_merge` si la cabeza es EXACTAMENTE la que pasó los gates."""
+        tid = task["id"]
+        if now < float(st.get("auto_due") or 0):
+            return None
+        slug = self.links.repo_slug(lane) if self.links else None
+        pr = self._pr_view(slug, st.get("pr")) if slug else None
+        problem = self._pr_problem(lane, tid, pr)
+        if problem or pr["headRefOid"] != st.get("head_sha"):
+            self._comment(lane, tid, "INTEGRADOR: integración automática cancelada · "
+                          + (problem or "el PR tiene commits nuevos desde los gates"))
+            return self._auto_no(tid, problem or "commits nuevos")
+        rec = self._rec(lane, task, int(st["pr"]), st["pr_url"])
+        rec.update(head_sha=st["head_sha"], base_sha=st.get("base_sha") or "", migration=None,
+                   changed_files=st.get("auto_files") or [])
+        with self._inflight_lock:  # busy(): un reinicio ordenado no corta la fusión
+            self._inflight += 1
+        try:
+            self._merge(lane, policy, rec, {}, self.desk)
+        finally:
+            with self._inflight_lock:
+                self._inflight -= 1
+        return "auto_merged" if self._state(tid).get("status") == "merged" else "auto_fallo"
+
+    def _auto_vetar(self, lane, rec: dict, where: dict, desk) -> bool:
+        """[⛔ Vetar]: la tarjeta no se vuelve a integrar sola; sigue el camino normal (aprobación y botón de Oscar)."""
+        tid, number = rec.get("task_id") or "", rec.get("pr_number")
+        if self._state(tid).get("status") != "auto_veto":
+            return False  # ya fusionada, cancelada o vetada
+        self._save(tid, status="auto_vetado", auto_veto_por=str((where or {}).get("user_id") or ""))
+        self._comment(lane, tid, f"INTEGRADOR: integración automática vetada por Oscar · PR #{number}; sigue el camino normal")
+        self._edit(desk, lane, rec, where, "blocked", status_line(f"⛔ vetado PR #{number}", "no se fusiona sola; decides tú"))
+        return True
 
     def _conflict_pass(self, lane, policy: Policy, tid: str, number: int, url: str, pr: dict, task: dict,
                        about: dict) -> str | None:
@@ -1271,6 +1388,8 @@ class Integrator:
         lane = self.lanes.get(rec.get("lane"))
         if not policy or not lane:
             return False
+        if action == INT_AUTO_VETO:
+            return self._auto_vetar(lane, rec, where, desk)
         if action == INT_BATCH_MERGE and policy.batch and rec.get("batch"):
             return self.batches.on_merge_button(lane, policy, rec, where, desk)
         if action == INT_BATCH_BUILD and policy.batch and rec.get("batch_build"):

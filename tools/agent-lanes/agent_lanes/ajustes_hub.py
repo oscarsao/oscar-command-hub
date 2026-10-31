@@ -46,7 +46,7 @@ class Ajuste:
     grupo: str
     etiqueta: str
     default: Any
-    tipo: str                       # int | float | hora (HH:MM, "" = el de lanes.yaml) | lista
+    tipo: str                       # int | float | hora (HH:MM, "" = el de lanes.yaml) | lista | opcion (una de `opciones`)
     ayuda: str = ""
     minimo: float | None = None
     maximo: float | None = None
@@ -78,6 +78,10 @@ def _topes() -> list[Ajuste]:
 
 def _build() -> dict[str, Ajuste]:
     a = [
+        Ajuste("avisos.nivel", "Avisos", "Nivel de avisos de Telegram", "normal", "opcion",
+               "esencial = solo problemáticas, terminadas, integraciones, urgentes y los partes fijos; lo demás "
+               "(empezando, revisión, choques, paradas, limpieza…) queda como comando. normal = como siempre. "
+               "todo = sin ningún filtro.", opciones=("esencial", "normal", "todo")),
         Ajuste("avisos.hora_parte", "Avisos", "Hora del resumen por carril (parte de las 9:00)", None, "int",
                "Hora (0-21, Madrid) del parte diario. Sin editar vale la de integrador_visibilidad.yaml (9).", 0, 21,
                (7, 8, 9, 10, 12)),
@@ -143,6 +147,15 @@ def _build() -> dict[str, Ajuste]:
         Ajuste("lotes.hora", "Lotes", "Hora de montaje del lote diario", "", "hora",
                "HH:MM. Vacío = la de cada proyecto en lanes.yaml (08:30).", opciones=("", "07:30", "08:30", "09:30",
                                                                                      "12:00")),
+        Ajuste("integracion_auto.activa", "Lotes", "Integración automática de lo pequeño (0 = apagada, 1 = encendida)", 0,
+               "int", "Con 1, los PR de tamaño S o solo documentación con suite verde y revisor conforme se fusionan solos "
+               "tras la ventana de veto. El despliegue sigue siendo tu botón. MigraTeam queda siempre fuera.", 0, 1,
+               (0, 1)),
+        Ajuste("integracion_auto.veto_minutos", "Lotes", "Minutos para vetar una integración automática", 30, "int",
+               "Antes de fusionar, el aviso lleva [⛔ Vetar] durante este tiempo.", 1, 1440, (10, 30, 60, 120)),
+        Ajuste("integracion_auto.proyectos", "Lotes", "Proyectos con integración automática",
+               ("oscar-hq", "oscar-command-hub"), "lista",
+               "Nombres de repo (sin el dueño) separados por comas. MigraTeam se ignora aunque lo pongas.", avanzado=True),
         Ajuste("carriles.max_workers", "Carriles", "Workers a la vez (todos los carriles)", None, "int",
                "Tope global de procesos claude vivos. Con 3 o más hay riesgo de quedarse sin RAM (OOM el 27-09).", 1, 4,
                (1, 2, 3, 4), True, aviso_ram=3),
@@ -174,6 +187,11 @@ def parse(spec: Ajuste, raw) -> Any:
             raise AjusteInvalido(f"«{spec.etiqueta}» tiene que estar entre {spec.describe(spec.minimo)} y "
                                  f"{spec.describe(spec.maximo)}.")
         return int(n) if spec.tipo == "int" else n
+    if spec.tipo == "opcion":
+        s = str(raw).strip().lower()
+        if s not in spec.opciones:
+            raise AjusteInvalido(f"«{spec.etiqueta}» tiene que ser una de: {', '.join(spec.opciones)}.")
+        return s
     if spec.tipo == "hora":
         s = str(raw).strip()
         if s and not HORA_RE.fullmatch(s):
