@@ -362,9 +362,10 @@ class SupabaseKanban(KanbanComun):
     # --- escrituras ----------------------------------------------------------------------------------------------
     def create(self, title: str, body: str, assignee: str, *, priority: int | None = None, key: str | None = None,
                created_by: str | None = None, parents: list[str] | None = None, alcance: list[str] | None = None,
-               rama: str | None = None) -> str:
+               rama: str | None = None, triage_sin_marca: bool = True) -> str:
         body, assignee = preparar_tarjeta(self.board, title, body, assignee)
-        triage = arrancar.sin_carril_ni_marca(title, assignee)  # regla de creación (31-10): a triage, no a oscar
+        # regla de creación (31-10): a triage, no a oscar; `triage_sin_marca=False` la desactiva
+        triage = triage_sin_marca and arrancar.sin_carril_ni_marca(title, assignee)
         if triage:
             arrancar.aviso_creacion(title)
         author = created_by or self.author

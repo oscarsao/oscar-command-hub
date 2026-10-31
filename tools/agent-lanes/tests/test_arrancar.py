@@ -86,6 +86,22 @@ def test_create_sin_carril_ni_marca_va_a_triage_y_avisa(caplog):
     assert "--triage" in cmd and "triage" in caplog.text
 
 
+def test_create_con_optout_no_va_a_triage_aunque_no_tenga_marca():
+    cmds = []
+
+    def run(cmd, **kw):
+        cmds.append(cmd)
+        return SimpleNamespace(returncode=0, stdout="t_0000abcd", stderr="")
+
+    HermesCLI("default", exe="hermes", runner=run).create(CODIGO, "b", "oscar", triage_sin_marca=False)
+    assert "--triage" not in cmds[0]
+
+
+def test_contrato_de_hermes_exige_triage_en_create():
+    from agent_lanes.hermes import CONTRACT
+    assert "--triage" in CONTRACT["create"]
+
+
 @pytest.mark.parametrize("title,assignee", [("[Hub] Elegir · decidir", "oscar"), (CODIGO, "claude-hub")])
 def test_create_con_marca_o_carril_no_toca_nada(title, assignee):
     assert "--triage" not in _crear(title, assignee)

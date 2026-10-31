@@ -91,7 +91,8 @@ def mover(card: dict, hermes_for, aj: Ajustes) -> tuple[bool, str]:
     body = f"{body}\n\n— Movida desde el board «{src}» ({t['id']}) al backlog personal." if body else \
         f"Movida desde el board «{src}» ({t['id']}) al backlog personal."
     try:
-        new = hermes_for(aj.board).create(t.get("title") or t["id"], body, OSCAR_ASSIGNEE, priority=t.get("priority"))
+        new = hermes_for(aj.board).create(t.get("title") or t["id"], body, OSCAR_ASSIGNEE, priority=t.get("priority"),
+                                       triage_sin_marca=False)
     except Exception as exc:
         log.warning("personal: no pude crear %s en %s: %s", t["id"], aj.board, exc)
         return False, f"no pude crearla en «{aj.board}» (¿existe ese board?)"

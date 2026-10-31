@@ -45,6 +45,7 @@ _BOARD_RE = re.compile(r"^[\w-]{1,64}$")
 # subcommand -> flags the runner relies on
 CONTRACT = {
     "list": ["--assignee", "--status", "--json"],
+    "create": ["--triage"],
     "claim": ["--ttl"],
     "heartbeat": ["--note"],
     "comment": ["--author"],
@@ -473,11 +474,14 @@ class HermesCLI(KanbanComun):
         return json.loads(cp.stdout or "[]")
 
     def create(self, title: str, body: str, assignee: str, *, priority: int | None = None, key: str | None = None,
-               created_by: str | None = None, parents: list[str] | None = None) -> str:
+               created_by: str | None = None, parents: list[str] | None = None,
+               triage_sin_marca: bool = True) -> str:
         """Crea una tarjeta y devuelve su id. --body-file: un cuerpo que empieza por "- " no se toma como flag.
-        `parents` = ids del mismo tablero de los que depende (un --parent por id)."""
+        `parents` = ids del mismo tablero de los que depende (un --parent por id).
+        `triage_sin_marca=False` desactiva la regla de creación (traslados y mensajes de colaboradores que ya son de oscar)."""
         body, assignee = preparar_tarjeta(getattr(self, "board", None), title, body, assignee)
-        triage = arrancar.sin_carril_ni_marca(title, assignee)  # regla de creación (31-10): a triage, no a la cola de oscar
+        # regla de creación (31-10): a triage, no a la cola de oscar
+        triage = triage_sin_marca and arrancar.sin_carril_ni_marca(title, assignee)
         if triage:
             arrancar.aviso_creacion(title)
         fd, tmp = tempfile.mkstemp(prefix="tarjeta-", suffix=".md")

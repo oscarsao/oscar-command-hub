@@ -176,7 +176,8 @@ class CollabIntake:
         board = self.board_for(person)
         title, body = self.build_card(person, uid, clean)
         tid = self.hermes_for(board).create(title, body, ASSIGNEE, key=f"tg-dm:{uid}:{message_id}",
-                                            created_by=f"tg-dm-{person.key or 'colaborador'}")
+                                            created_by=f"tg-dm-{person.key or 'colaborador'}",
+                                            triage_sin_marca=False)
         return tid, board
 
     # --- límites y respuestas ----------------------------------------------------------------------------

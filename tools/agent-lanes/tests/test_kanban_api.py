@@ -81,7 +81,8 @@ def test_contrato_de_14_operaciones_cubierto():
     ops = {"list": "list_status", "claim": "claim", "heartbeat": "heartbeat", "comment": "comment", "block": "block",
            "request-review": "request_review", "show": "show", "complete": "complete",
            "reopen-review": "reopen_review", "reassign": "reassign", "assign": "assign", "unblock": "unblock",
-           "notify-list": "drop_telegram_subs", "notify-unsubscribe": "drop_telegram_subs"}
+           "notify-list": "drop_telegram_subs", "notify-unsubscribe": "drop_telegram_subs",
+           "create": "create"}
     from agent_lanes.hermes import CONTRACT
     assert set(ops) == set(CONTRACT)
     assert all(hasattr(SupabaseKanban, m) for m in ops.values())

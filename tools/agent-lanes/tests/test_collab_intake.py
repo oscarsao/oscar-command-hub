@@ -46,12 +46,13 @@ class FakeTG:
 
 class FakeHermes:
     def __init__(self):
-        self.created, self.fail = [], False
+        self.created, self.fail, self.triage_flags = [], False, []
         self._keys: dict[str, str] = {}
 
-    def create(self, title, body, assignee, *, priority=None, key=None, created_by=None):
+    def create(self, title, body, assignee, *, priority=None, key=None, created_by=None, triage_sin_marca=True):
         if self.fail:
             raise RuntimeError("boom")
+        self.triage_flags.append(triage_sin_marca)
         if key in self._keys:  # Hermes: misma idempotency-key = misma tarjeta
             return self._keys[key]
         tid = f"t_{len(self.created) + 1:08x}"
@@ -117,6 +118,7 @@ def test_dm_from_known_person_creates_idea_card_assigned_to_oscar(env):
     assert reply["chat"] == str(INGERBER) and reply["html"] is False and reply["trusted"] is True
     assert reply["text"].startswith(f"Apuntado {card['id']}, lo revisa Oscar")
     assert f"{PANEL_URL}?board=oscarhq#{card['id']}" in reply["text"]
+    assert env.h.triage_flags == [False]  # la idea de un colaborador va a oscar: sin regla de triage
 
 
 def test_board_follows_first_brand(env):

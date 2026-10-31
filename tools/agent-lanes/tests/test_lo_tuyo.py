@@ -105,10 +105,10 @@ def test_move_archives_the_original_only_if_the_new_card_exists():
         def __init__(self, fail=False):
             self.fail, self.calls = fail, []
 
-        def create(self, title, body, assignee, *, priority=None):
+        def create(self, title, body, assignee, *, priority=None, triage_sin_marca=True):
             if self.fail:
                 raise RuntimeError("board no existe")
-            self.calls.append(("create", title, assignee))
+            self.calls.append(("create", title, assignee, triage_sin_marca))
             return "t_aaaaaaaa"
 
         def comment(self, tid, text, author=None):
@@ -123,6 +123,7 @@ def test_move_archives_the_original_only_if_the_new_card_exists():
     dest, src = H(), H()
     ok, new = personal.mover(card, lambda b: dest if b == "personal" else src, aj)
     assert ok and new == "t_aaaaaaaa" and ("archive", "t_00000001") in src.calls and dest.calls[0][2] == "oscar"
+    assert dest.calls[0][3] is False   # mover no aplica la regla de creación: no pasa --triage
     bad, src2 = H(fail=True), H()
     ok, why = personal.mover(card, lambda b: bad if b == "personal" else src2, aj)
     assert not ok and "personal" in why and src2.calls == []   # la original queda intacta
