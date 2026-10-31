@@ -149,9 +149,13 @@ class FakeHermes:
         return [t for t in self.tasks if t.get("assignee") == assignee and status == "done"]
 
     reviewed = HEAD
+    sin_review = False   # True: la tarjeta llegó a done SIN el veredicto «approve» del carril de revisión
 
     def show(self, tid):
-        runs = [{"metadata": {"branch": f"lane/{tid}", "head_sha": self.reviewed}}] if self.reviewed else []
+        meta = {"branch": f"lane/{tid}", "head_sha": self.reviewed}
+        if not self.sin_review:
+            meta["review"] = {"status": "approve"}
+        runs = [{"metadata": meta}] if self.reviewed else []
         return {"task": {"id": tid}, "comments": list(self.comments_by.get(tid, [])), "runs": runs}
 
     def comment(self, tid, text, author=None):
@@ -1011,6 +1015,14 @@ def test_sensitive_infra_in_migrateam_has_no_button(tmp_path):
 def test_binary_file_is_flagged_by_secret_scan():
     d = "diff --git a/x.sqlite b/x.sqlite\nnew file mode 100644\nBinary files /dev/null and b/x.sqlite differ\n"
     assert scan_secrets(d) == [("x.sqlite", 0, "archivo binario sin revisar")]
+
+
+def test_media_and_font_binaries_are_not_flagged_but_other_binaries_are():
+    for name in ("docs/x.jpg", "a/B.PNG", "f/y.woff2", "f/z.ttf"):
+        d = f"diff --git a/{name} b/{name}\nnew file mode 100644\nBinary files /dev/null and b/{name} differ\n"
+        assert scan_secrets(d) == [], name
+    d = "diff --git a/tool.exe b/tool.exe\nnew file mode 100644\nBinary files /dev/null and b/tool.exe differ\n"
+    assert scan_secrets(d) == [("tool.exe", 0, "archivo binario sin revisar")]
 
 
 def test_added_line_that_looks_like_header_does_not_blind_the_scan():

@@ -172,8 +172,10 @@ def test_register_commands_in_three_scopes_with_spanish_descriptions():
     assert register_commands(bot) == list(COMMAND_SCOPES)
     assert set(bot.commands) == {"default", "all_private_chats", "all_group_chats"}
     names = [c for c, _ in bot.commands["all_group_chats"]]
+    assert names.pop(0) == "ayuda" and "sesion" not in names and "sesion" in [c for c, _ in bot.commands["all_private_chats"]]
+    names.insert(names.index("flujo"), "sesion")  # el menú de grupos no lleva /sesion (solo DM); el resto, igual
     assert names == ["ajustes", "hoy", "integrador", "encolar", "decisiones", "atencion", "aprobar", "tareas", "cola", "prioridad", "tarea", "preparar", "hazlo", "pedir", "estado", "falta", "desplegar", "promover",
-                     "lote", "al_dia", "aldia", "salud", "ram", "avisos", "silenciar", "sesion", "flujo", "pendiente", "personal", "agrupar", "workflow", "pendientes", "epicas", "retenidas", "backlog"]
+                     "lote", "al_dia", "aldia", "salud", "ram", "avisos", "choques", "paradas", "revision", "limpieza", "silenciar", "sesion", "flujo", "pendiente", "personal", "agrupar", "workflow", "pendientes", "epicas", "retenidas", "backlog"]
     assert all(d and len(d) <= 256 for _, d in bot.commands["default"])
 
 
@@ -212,7 +214,8 @@ def test_decisiones_header_and_one_card_per_task_with_buttons(tmp_path):
     assert "1 con opción recomendada" in head["text"]
     assert texts(head["markup"]) == ["✅ Aceptar todo lo recomendado"]
     assert [c["text"].split("\n")[0].split(" · ")[0] for c in cards] == ["❓ t_aaaaaaa1", "❓ t_bbbbbbb2"]
-    assert texts(cards[0]["markup"]) == ["A", "B", "⭐ Recomendada", "✍️ Otra", "🗄 Aparcar", "💬 Explícame más"]
+    assert texts(cards[0]["markup"]) == ["A", "B", "⭐ Recomendada", "✍️ Otra", "🗄 Aparcar", "💬 Explícame más",
+                                           "🗑 Quitar aviso"]
     assert "hace 30 h" in cards[0]["text"]
     # cada tarjeta queda como copia del aviso de su tarea (sincronización)
     assert messages.all_messages("t_aaaaaaa1")[0]["message_id"] == cards[0]["message_id"]
@@ -399,7 +402,7 @@ def test_aprobar_lists_ready_tasks_with_approve_buttons(tmp_path):
     head, card = bot.sent
     assert head["text"] == "✅ 1 tarea lista para integrar"
     assert card["text"].startswith("✅ t_fffffff6") and "lista para merge" in card["text"]
-    assert texts(card["markup"]) == ["✅ Aprobar", "🔁 Pedir cambios", "🗄 Aparcar"]
+    assert texts(card["markup"]) == ["✅ Aprobar", "🔁 Pedir cambios", "🗄 Aparcar", "🗑 Quitar aviso"]
     assert messages.all_messages("t_fffffff6")[0]["message_id"] == card["message_id"]
 
 

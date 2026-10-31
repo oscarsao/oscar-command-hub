@@ -299,7 +299,8 @@ def test_ya_esta_resuelta_sobre_tarjeta_cerrada_solo_edita(tmp_path):
 
 def test_botones_de_tarjeta_sembrada():
     spec = seed_card_keyboard_spec()
-    assert [b["action"] for row in spec for b in row] == [CARD_DONE, CARD_SNOOZE, CARD_INTEGRADOR, CARD_PARK]
+    assert [b["action"] for row in spec for b in row] == [CARD_DONE, CARD_SNOOZE, CARD_INTEGRADOR, CARD_PARK,
+                                                                       "quitar_aviso"]
 
 
 def test_integrador_de_tarjeta_reasigna_y_comenta():

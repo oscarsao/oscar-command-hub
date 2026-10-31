@@ -153,7 +153,7 @@ def test_escalation_reaches_oscar_with_mention_and_two_buttons():
     spec = keyboard_spec("blocked", block_kind="console_escalated")
     assert [(b["text"], b["action"]) for row in spec for b in row] == [
         ("🧑‍💻 Que lo resuelva el integrador", TO_INTEGRADOR), ("✅ Ya está resuelta", COLA_RESUELTA),
-        ("⏳ Aplazar", GUARD_SNOOZE)]
+        ("⏳ Aplazar", GUARD_SNOOZE), ("🗑 Quitar aviso", "quitar_aviso")]
     assert "Que lo resuelva" in oscar_text(entry, 1_000_000 + 3 * H)
 
 

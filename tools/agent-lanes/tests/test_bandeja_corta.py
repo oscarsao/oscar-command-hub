@@ -199,7 +199,7 @@ def test_reversible_card_shows_the_deadline_and_a_veto_button(tmp_path):
     cc, desk, bot, h, clock = _veto_setup(tmp_path)
     msg = bot.sent[-1]
     assert "⏱ Reversible: si no decides antes del" in msg["text"] and "aún no se aplica sola" in msg["text"]
-    assert texts(msg["markup"])[-1] == "⛔ Vetar"
+    assert texts(msg["markup"])[-2:] == ["⛔ Vetar", "🗑 Quitar aviso"]
     cc2, desk2, bot2, h2, _ = _veto_setup(tmp_path / "x", body=BODY)  # sin `Reversible: sí`: ni plazo ni botón
     assert "⏱" not in bot2.sent[-1]["text"] and "⛔ Vetar" not in texts(bot2.sent[-1]["markup"])
     cc3, desk3, bot3, h3, _ = _veto_setup(tmp_path / "y", veto_horas=0)  # desactivado

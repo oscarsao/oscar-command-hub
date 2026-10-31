@@ -20,6 +20,7 @@ class Lane:
     tool: str = "claude"
     model: str = "sonnet"
     effort: str = "medium"
+    model_small: str = ""  # modelo barato para tarjetas `Tamaño: S` (grandes.es_pequena); "" = siempre `model`
     max_budget_usd: float = 3.0
     max_parallel: int = 1
     role: str = "roles/implementador.md"

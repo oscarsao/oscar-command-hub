@@ -27,6 +27,7 @@ from .worker import WorkerOutcome, render_settings, run_claude
 
 log = logging.getLogger("agent_lanes")
 
+LIMPIEZA_LOG_PATH = ROOT / ".state" / "limpieza_pendiente_log.json"  # {tid: "AAAA-MM-DD"} del último WARNING
 REVIEW_SCHEMA_PATH = ROOT / "contract" / "review.schema.json"
 REVIEW_SETTINGS = ROOT / "contract" / "reviewer-settings.json"
 CERRADAS = ("done", "archived")  # tarjetas que el carril de revisión no debe tocar
@@ -35,8 +36,31 @@ READ_ONLY_TOOLS = ("Read", "Grep", "Glob", "Bash(git diff:*)", "Bash(git log:*)"
                    "Bash(git status:*)")
 WRITE_TOOLS = ("Edit", "Write", "MultiEdit", "NotebookEdit")
 APPROVED_PREFIX = "APROBADO-OSCAR"  # = integrator.APPROVED_PREFIX / decisions._approve
+COMPLETE_INTENTOS = 3  # intentos de `hermes kanban complete` antes de aparcar la tarjeta por fallo transitorio
+COMPLETE_ESPERA = 10  # s; espera creciente: 10 s antes del 2.º intento, 20 s antes del 3.º
 RECHEQUEO_ESCALADA = 120  # s entre relecturas de una tarjeta escalada (¿cabeza nueva? ¿aprobada?) al elegir trabajo
 SIN_COMMITS = "la rama no tiene commits sobre la base; empuja el trabajo"
+
+
+def log_limpieza_pendiente(tid: str, msg: str, *, hoy: str | None = None, path: Path | None = None) -> bool:
+    """WARNING «limpieza local pendiente» como mucho una vez por tarea y día (cada pasada lo repetía: 14.800 líneas en
+    5 días). True si se registró. La fecha vive en un fichero pequeño de .state; ilegible = se registra."""
+    hoy, path = hoy or time.strftime("%Y-%m-%d"), Path(path or LIMPIEZA_LOG_PATH)
+    try:
+        vistos = json.loads(path.read_text(encoding="utf-8"))
+        vistos = vistos if isinstance(vistos, dict) else {}
+    except (OSError, ValueError):
+        vistos = {}
+    if vistos.get(tid) == hoy:
+        return False
+    log.warning("%s: limpieza local pendiente: %s", tid, msg)
+    vistos[tid] = hoy
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(vistos, ensure_ascii=False), encoding="utf-8", newline="\n")
+    except OSError as exc:
+        log.info("limpieza pendiente: estado no guardado: %s", exc)
+    return True
 
 
 def aprobada_por_oscar(show: dict) -> bool:
@@ -112,8 +136,10 @@ class ReviewRunner:
     def __init__(self, review_lane: Lane, lanes: dict[str, Lane], *, hermes_for: Callable[[str], object], git,
                  reviewer, verifier, notify, clock: Callable[[], float] = time.monotonic,
                  messages: MessageStore | None = None, links: Callable | None = None, decisions=None,
-                 integration=None, tree: Callable | None = None, state_dir: Path | str | None = None):
+                 integration=None, tree: Callable | None = None, state_dir: Path | str | None = None,
+                 sleep: Callable[[float], None] = time.sleep):
         self.lane = review_lane
+        self._sleep = sleep
         # Tareas en review que NO se pudieron bloquear (h.block solo mueve running/ready): se recuerda la cabeza ya
         # avisada para no reprocesarlas ni repetir la alerta en cada vuelta. state_dir=None: solo en memoria.
         self._unblockable: dict[str, str] = {}
@@ -136,10 +162,18 @@ class ReviewRunner:
     def notify(self, state: str, task: dict, status: str, *, alert: bool = False,
                bullets: list[str] | None = None, changed_files=None, buttons: bool = False,
                block_kind: str | None = None, questions=None, summary: str | None = None,
-               for_oscar: str | None = None, yes_no: bool = True, test_exit=None, deps=None) -> None:
-        """Edita el mensaje único de la tarea (o envía uno nuevo si `alert`). `status` es texto público."""
+               for_oscar: str | None = None, yes_no: bool = True, test_exit=None, deps=None,
+               findings=None) -> None:
+        """Edita el mensaje único de la tarea (o envía uno nuevo si `alert`). `status` es texto público.
+        `findings`: hallazgos de la review aprobada (None = desconocidos: la tarjeta no entra en el lote de bajo riesgo)."""
         target = telegram_target(task.get("body"))
-        alert = avisos_revision.interceptar(state, task, status, alert, summary=summary, for_oscar=for_oscar)
+        try:
+            revisada = telegram_lane.lane_de_tarjeta(self.lanes, task)
+        except Exception:  # el aviso sigue su curso aunque no se resuelva el carril (el bucle de abajo lo reintenta)
+            revisada = None
+        politica = (self._integration.policies.get(revisada.name) if (self._integration and revisada) else None)
+        alert = avisos_revision.interceptar(state, task, status, alert, summary=summary, for_oscar=for_oscar,
+                                            lane=revisada, changed_files=changed_files, findings=findings, policy=politica)
         mirror = dm_mirror(self._decisions, target, alert, state)
         for attempt in (1, 2):  # un aviso que falla se reintenta UNA vez
             try:
@@ -169,7 +203,7 @@ class ReviewRunner:
                                           None, integ.target, alert=alert, reply_markup=markup, mirror=owner or None,
                                           channel=CHANNEL, leave_behind=lambda sent: link_line(prefix, sent))
                     return
-                canal_avisos.publicar(canal_avisos.de(self._decisions), self._notices, canal_avisos.tipo_de_estado(state),
+                canal_avisos.publicar(canal_avisos.de(self._decisions), self._notices, canal_avisos.tipo_de_estado(state, alert),
                                       task["id"], text, target, lane_target, alert=alert, reply_markup=markup,
                                       mirror=mirror, followup=list(getattr(bullets, "overflow", None) or ()) or None)
                 return
@@ -309,6 +343,25 @@ class ReviewRunner:
         self.notify("changes", task, status_line("la rama no tiene commits sobre la base", "vuelve al carril"))
         return "changes:sin_commits"
 
+    def _complete_con_reintentos(self, h, tid: str, result: str, metadata: dict) -> tuple[bool, str]:
+        """`complete` con hasta COMPLETE_INTENTOS intentos y espera creciente: un timeout de hermes (120 s) no debe
+        aparcar la tarjeta (t_104416af, 2 h en review). Antes de cada intento se relee la tarjeta: si el complete
+        anterior sí llegó a aplicarse (done/archived), no hay nada que hacer."""
+        err = ""
+        for intento in range(COMPLETE_INTENTOS):
+            if intento:
+                self._sleep(COMPLETE_ESPERA * intento)
+                if (cerrada := self._cerrada(h, tid)):
+                    log.info("%s: complete reintentado y la tarjeta ya está %s", tid, cerrada)
+                    return True, ""
+            ok, err = h.complete(tid, result, metadata)
+            if ok:
+                return True, ""
+            log.warning("%s: complete rechazado (intento %d/%d): %s", tid, intento + 1, COMPLETE_INTENTOS, err)
+        if self._cerrada(h, tid):
+            return True, ""
+        return False, err
+
     @staticmethod
     def _cerrada(h, tid: str) -> str | None:
         """Estado `done`/`archived` si la tarjeta ya está cerrada (se relee del kanban); None si no, o si no se lee."""
@@ -355,6 +408,9 @@ class ReviewRunner:
             self._heads[tid] = str(meta.get("head_sha") or "")
             if self._already_escalated(tid, self._heads[tid]):
                 return "blocked:already_escalated"  # misma cabeza ya avisada y sin poder bloquearse: no se repite
+            if (path := self._unblockable_path(tid)) and path.exists():  # cabeza nueva: la escalada vieja ya no vale
+                path.unlink(missing_ok=True)
+            self._unblockable.pop(tid, None)
             if not meta:
                 return self._block(h, task, "transient", "review sin metadata de implementación (branch/head_sha)",
                                    public="falta la metadata de implementación")
@@ -382,13 +438,14 @@ class ReviewRunner:
             metadata = {**meta, "review": {"status": "approve", "summary": verdict.get("summary"),
                                            "findings": verdict.get("findings"), "session_id": session_id,
                                            "cost_usd": outcome.cost_usd}}
-            ok, err = h.complete(tid, f"Aprobada por revisión: {verdict.get('summary', '')}"[:1500], metadata)
+            ok, err = self._complete_con_reintentos(h, tid, f"Aprobada por revisión: {verdict.get('summary', '')}"[:1500],
+                                                    metadata)
             if not ok:
                 return self._block(h, task, "transient", f"complete rechazado: {err}",
                                    public="el kanban rechazó el cierre")
             cleaned, msg = self.git.cleanup(lane, tid)
             if not cleaned:  # detalle técnico solo al log y a la tarjeta
-                log.warning("%s: limpieza local pendiente: %s", tid, msg)
+                log_limpieza_pendiente(tid, msg)
                 h.comment(tid, f"Limpieza local pendiente: {msg}"[:1500])
             cost = sum(float(c or 0) for c in (meta.get("cost_usd"), outcome.cost_usd))
             self.notify("done", task, status_line(
@@ -397,7 +454,7 @@ class ReviewRunner:
                 None if cleaned else "limpieza local pendiente"), alert=True,
                 changed_files=meta.get("changed_files"), buttons=True,
                 summary=verdict.get("summary") or meta.get("summary"), for_oscar=meta.get("for_oscar"),
-                test_exit=check.test_exit, deps=self._deps(h, tid, show))
+                test_exit=check.test_exit, deps=self._deps(h, tid, show), findings=verdict.get("findings") or [])
             return "done"
 
         changes = verdict.get("required_changes") or [verdict.get("summary", "")]
@@ -428,15 +485,25 @@ class ReviewRunner:
         return "changes"
 
 
-def sweep_done(lane: Lane, h, git) -> list[str]:
-    """Remove worktree + local branch of done tasks (approved by the review lane or by Oscar)."""
+REINTENTO_LIMPIEZA = 6 * 3600  # s entre intentos de limpiar la misma tarjeta tras un fallo (1.386 líneas de log, 28-10)
+_limpieza_fallida: dict[str, float] = {}  # tid -> instante del último intento fallido
+
+
+def sweep_done(lane: Lane, h, git, clock: Callable[[], float] = time.monotonic) -> list[str]:
+    """Remove worktree + local branch of done tasks (approved by the review lane or by Oscar). Una limpieza fallida
+    no se reintenta hasta pasadas REINTENTO_LIMPIEZA s: una línea de log por intento, no por pasada."""
     cleaned = []
     for task in h.list_status(lane.name, "done"):
         if (Path(lane.worktree_root) / f"lane-{task['id']}").exists():
+            ultimo = _limpieza_fallida.get(task["id"])
+            if ultimo is not None and clock() - ultimo < REINTENTO_LIMPIEZA:
+                continue
             ok, msg = git.cleanup(lane, task["id"])
             if ok:
+                _limpieza_fallida.pop(task["id"], None)
                 cleaned.append(task["id"])
             else:
+                _limpieza_fallida[task["id"]] = clock()
                 log.warning("%s: limpieza pendiente: %s", task["id"], msg)
                 resumen_carriles.anotar("limpieza", f"{task['id']}: {msg}", clave=task["id"])  # F1-04: 1 vez al día
     return cleaned

@@ -704,10 +704,19 @@ class TaskNotices:
             # Cambio de canal (tema del carril -> Integración): el viejo queda como una línea con enlace al nuevo.
             trail = {k: rec.get(k) for k in ("chat_id", "thread_id", "message_id")}
         elif rec and same_bot and alert and not keep_previous:  # el aviso nuevo sustituye al mensaje de progreso: un mensaje por tarea
-            try:
-                self.notifier.delete(rec["chat_id"], rec["message_id"])
-            except Exception as exc:
-                log.info("%s: no se pudo borrar el mensaje anterior: %s", tid, exc)
+            if rec.get("was_alert"):
+                # El anterior era un aviso de verdad (pregunta, bloqueo...): no se borra, que no tape lo que Oscar aún
+                # no ha visto. Se queda como historial, sin botones.
+                try:
+                    if hasattr(self.notifier, "edit_markup"):
+                        self.notifier.edit_markup(rec["chat_id"], rec["message_id"], None)
+                except Exception as exc:
+                    log.info("%s: no se pudieron quitar los botones del aviso anterior: %s", tid, exc)
+            else:
+                try:
+                    self.notifier.delete(rec["chat_id"], rec["message_id"])
+                except Exception as exc:
+                    log.info("%s: no se pudo borrar el mensaje anterior: %s", tid, exc)
         if alert:
             # Copias de la decisión anterior: se quedan como historial pero sin botones (su token ya no vale).
             for m in mirrors:
@@ -722,7 +731,7 @@ class TaskNotices:
                 self.notifier.edit(trail["chat_id"], trail["message_id"], leave_behind(sent))
             except Exception as exc:
                 log.info("%s: no se pudo dejar la línea de enlace: %s", tid, exc)
-        self.store.put(tid, {**sent, "sig": sig, "sig_at": time.time(), **({"mirrors": mirrors} if mirrors else {}),
+        self.store.put(tid, {**sent, "sig": sig, "sig_at": time.time(), "was_alert": bool(alert), **({"mirrors": mirrors} if mirrors else {}),
                              **({"channel": channel} if channel else {}), **({"trail": trail} if trail else {})})
         dm = None
         if alert and mirror_to and hasattr(self.notifier, "send_to") and str(sent.get("chat_id")) != str(mirror_to):

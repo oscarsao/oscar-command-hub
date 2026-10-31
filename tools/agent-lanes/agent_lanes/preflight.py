@@ -23,6 +23,59 @@ _MIGRATION = re.compile(r"\balembic\b|\bmigraci(?:ón|on|ones)\b|\bmigrations?\b
 _MIGRATION_PATHS = ("alembic", "migrations")
 
 
+# Lo que un worker NUNCA puede hacer en su carril (guard): (patrón sobre UNA línea, qué se pide). Prudentes: piden
+# acción + objetivo remoto en la misma línea; una mención suelta («producción» a secas) no dispara.
+_REMOTE = r"(?:supabase|staging|producci[óo]n|\bprod\b|remot[ao])"
+# Objetivo de un despliegue: sin él («despliega el menú», «los tests pasan antes de desplegar») no se pide nada imposible.
+_PROD_TARGET = r"(?:producci[óo]n|\bprod\b|\bvercel\b|\brailway\b|\bdokploy\b)"
+_DEPLOY = r"(?:desplegar|despliega\w*|redespliega\w*|redeploy\w*|deploy\w*|despliegue)"
+_IMPOSIBLE = (
+    (re.compile(r"\bexecute_sql\b|\bapply_migration\b", re.IGNORECASE),
+     "ejecutar SQL o migraciones contra una base remota (Supabase/Alembic)"),
+    (re.compile(rf"\b(?:aplic\w+|ejecut\w+|corre|lanza)\b[^\n]*\bmigraci(?:ón|on|ones)\b[^\n]*{_REMOTE}"
+                rf"|\b(?:aplic\w+|ejecut\w+|corre|lanza)\b[^\n]*{_REMOTE}[^\n]*\bmigraci(?:ón|on|ones)\b"
+                rf"|\balembic\s+upgrade\b[^\n]*{_REMOTE}"
+                rf"|\b(?:ejecut\w+|corre|lanza|aplic\w+)\b[^\n]*\bsql\b[^\n]*{_REMOTE}", re.IGNORECASE),
+     "ejecutar SQL o migraciones contra una base remota (Supabase/Alembic)"),
+    (re.compile(rf"\b{_DEPLOY}\b[^\n]*{_PROD_TARGET}|{_PROD_TARGET}[^\n]*\b{_DEPLOY}\b"
+                r"|\bvercel\s+(?:deploy|promote|--prod)\b|\brailway\s+(?:up|deploy|redeploy)\b",
+                re.IGNORECASE),
+     "producción o despliegue (Dokploy, Vercel, Railway)"),
+    (re.compile(r"\b(?:cambi\w+|a[ñn]ad\w+|actualiz\w+|configur\w+|modific\w+|rota\w*|set|pon\w*)\b[^\n]*"
+                r"(?:variables?\s+de\s+entorno|\benv(?:ironment)?\s+vars?\b)[^\n]*(?:producci[óo]n|\bprod\b)", re.IGNORECASE),
+     "variables de entorno de producción"),
+)
+# Línea que niega o es un límite («Límites: nada de producción», «sin desplegar», «no cambies…»).
+_LIMITE = re.compile(r"^\s*[-*>]*\s*l[ií]mites?\s*:", re.IGNORECASE)
+# Cabecera que cierra un bloque «Límites:» multilínea («## Criterio», «Pruebas:»).
+_CABECERA = re.compile(r"^\s*(?:#+\s|[^\s\-*>][^\n:]{0,40}:\s*$)")
+_NEGADO = re.compile(r"\b(?:sin|nada\s+de|no|ni|nunca|jam[áa]s|tampoco|evita\w*|prohibido)\b", re.IGNORECASE)
+
+
+def pide_lo_imposible(task: dict) -> str | None:
+    """Qué pide la tarjeta que un worker nunca puede hacer en su carril (SQL/migraciones contra base remota,
+    producción o despliegue, env vars de producción), o None. Ignora las líneas «Límites:» y las que niegan antes de
+    la coincidencia («sin desplegar», «nada de producción», «no apliques la migración en prod»)."""
+    text = f"{task.get('title') or ''}\n{task.get('body') or ''}"
+    en_limites = False  # bajo una cabecera «Límites:» vacía: hasta la línea en blanco o la siguiente cabecera
+    for line in text.splitlines():
+        if _LIMITE.match(line):
+            en_limites = not _LIMITE.sub("", line).strip()
+            continue
+        if en_limites:
+            if line.strip() and not _CABECERA.match(line):
+                continue
+            en_limites = False
+        for pattern, what in _IMPOSIBLE:
+            m = pattern.search(line)
+            if not m or _NEGADO.search(line[:m.start()]):
+                continue
+            if "despliegue" in what and _NEGADO.search(line[m.end():]):  # «despliega en prod: no», «prod, nunca»
+                continue
+            return what
+    return None
+
+
 def _has_tool(lane: Lane, prefixes: tuple[str, ...]) -> bool:
     return any(t.startswith(p) for t in lane.allowed_tools for p in prefixes)
 

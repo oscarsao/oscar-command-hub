@@ -271,12 +271,12 @@ cambia; cualquier cola, orden o escalada que se escriba aquí debe respetarla.
   DM de Oscar (ni comando ni /sesion abierta) se contesta con haiku sin herramientas y tope de coste, alimentado con
   /falta y /estado; solo informa. `telegram.team_notice` en lanes.yaml (apagado) hace que el bot conteste en un grupo
   «esto lo lleva el asistente del equipo» cuando le escriben a él.
-- max_workers: `lanes.yaml` `runner.max_workers` = 4 (el 21-oct Oscar lo subió de 2 a 3 para medir la RAM; hoy vale 4). El argumento `--max-workers` PISA el
+- max_workers: `lanes.yaml` `runner.max_workers` = 6 (el 21-oct Oscar lo subió de 2 a 3 para medir la RAM; el 27-10 a 6, PC con 32 GB). El argumento `--max-workers` PISA el
   yaml, y la tarea instalada se registró con `-MaxWorkers 2` en su línea de comandos (dos fuentes de verdad). Para que
   mande solo el yaml: reinstalar el servicio SIN `-MaxWorkers` (`instalar_servicio.sh` ya no lo pasa; lo hace Oscar, los
   `.ps1` quedan fuera del alcance de los workers) y reiniciar el runner. El log de arranque
-  (`runner: carriles=… max_workers=N`) dice el valor real. `max_parallel` por carril: 1 por defecto (`defaults`); 2 en
-  `claude-oscarhq` y `claude-hub`; 1 en `claude-ops`.
+  (`runner: carriles=… max_workers=N`) dice el valor real. `max_parallel` por carril: 1 por defecto (`defaults`); 4 en
+  `claude-oscarhq` (27-10); 2 en `claude-hub`; 1 en `claude-ops`.
 
 ## Guarda de tablero (ADR-036)
 `hermes kanban create` sin `--board` cae en `default`, y cada carril solo lee el tablero de su `board:` en `lanes.yaml`.
@@ -371,6 +371,32 @@ ficha por tarjeta de carril parada más de 24 h en ready sin worker, blocked, tr
 `t_xxxxxxxx · título · estado · hace N d H h` con [🔁 Reintentar] [🛠 Integrador] [🗄 Archivar]. No entran las `running`,
 las `scheduled` ni las asignadas a personas (solo se leen las de un carril). Sin paradas no manda nada. También sale una
 línea «Paradas» en /salud. Hora, umbral de horas y nº de fichas se editan con /ajustes (grupo Atascos).
+
+## Nivel de avisos (`avisos.nivel`, `nivel_avisos.py`)
+Ajuste de /ajustes (grupo Avisos) y del panel, con recarga en caliente y registro: `esencial` | `normal` | `todo`.
+**Por defecto `normal`**: sale todo, como siempre. `todo` hoy es igual que `normal` (sin filtros). `esencial` no envía los
+tipos de la columna «Esencial = no». Lo apagado no se pierde: sigue contando en el contador fijado de 🎯 Decisiones
+(choques y solapes mientras viva su teclado) y está a demanda con un comando.
+
+| Tipo | Clase | Esencial | A demanda |
+|---|---|---|---|
+| `needs_input`, `blocked`, `bloqueo_urgente` (problemáticas) | decisión / urgente | sí | `/decisiones`, `/atencion` |
+| `progreso` (terminada, en review, en pausa) | info | sí | `/tareas` |
+| `aprobar`, `integrar`, `workflow`, `hazlo` (integraciones, con botones) | decisión | sí | `/aprobar`, `/integrador` |
+| `fijado` (mensaje fijado de Integración), `pr_conflicto` | info | fijado sí; `pr_conflicto` no (vive en el panel) | `/integrador` |
+| `monitor`, `prodwatch` | urgente | sí | `/salud` |
+| `resumen` (9:00), retro del lunes, `recordatorio` (13:00/18:00), `al_dia` | info | sí | `/hoy`, `/al_dia` |
+| `equipo`, `team_notice` (respuestas al equipo) | decisión / info | sí | — |
+| `empezando` (▶️ empezando; antes dentro de `progreso`) | info | **no** | `/tareas` |
+| `revision` (resumen de tarjetas listas) | info | **no** | `/revision` |
+| `choque`, `solape` | decisión | **no** | `/choques` |
+| `paradas` (ya van en el parte de las 9:00) | info | **no** | `/paradas` |
+| `limpieza`, `reconcile` | info | **no** | `/limpieza` |
+| `board_guard` | info | **no** | `/salud` |
+
+Con `esencial`, una tarjeta que empieza, avanza y termina genera UN mensaje (la terminada). Comandos reutilizados:
+`/tareas`, `/decisiones`, `/atencion`, `/aprobar`, `/integrador`, `/salud`, `/hoy`, `/al_dia`; nuevos (mínimos): `/choques`,
+`/paradas`, `/revision`, `/limpieza` (solo operadores de todas las marcas).
 
 ## Backend del kanban (`KANBAN_BACKEND`, F2-02/F2-03 del plan del hub)
 

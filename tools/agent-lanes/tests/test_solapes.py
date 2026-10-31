@@ -236,3 +236,13 @@ def test_son_duplicadas_solo_comenta_y_luego_no_hace_nada(tmp_path):
     boards["default"].comments.clear()
     assert t.on_button(SOL_LUEGO, rec, None, desk) is True
     assert boards["default"].comments == [] and not t.descartes_path.exists()
+
+
+def test_zona_declarada_se_lee_y_suma_a_las_rutas_extraidas():
+    t = "Cambia `agent_lanes/commands.py`.\n- ZONA: Dashboard/src/app/ideas, tools/x/run.py ,`lanes.yaml`\nTamaño: M"
+    got = extraer_rutas(t, Ajustes(nivel="archivo"), HUB)
+    assert {"dashboard/src/app/ideas/", "tools/x/run.py", "lanes.yaml", "agent_lanes/commands.py"} <= got
+    assert extraer_rutas("sin zona aquí", Ajustes(nivel="archivo"), HUB) == set()
+    a, b = extraer_rutas("zona: web/ideas", A, HUB), extraer_rutas("Zona: web/ideas/detalle", A, HUB)
+    assert compartido(a, b, Ajustes(nivel="archivo")) == ["zona web/ideas/detalle/"]  # una contiene a la otra
+    assert compartido(a, extraer_rutas("Zona: web/otra", A, HUB), Ajustes(nivel="archivo")) == []

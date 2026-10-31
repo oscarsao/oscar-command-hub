@@ -27,6 +27,7 @@ import json
 import logging
 import os
 import re
+import subprocess
 import threading
 import time
 from collections.abc import Callable
@@ -35,6 +36,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from .integration import PinnedSummary, age_label, topic_link
+from .nivel_avisos import activo
 from .resumen_carriles import TIPOS_RESUMEN
 from .resumen_carriles import anotar as anotar_resumen
 from .notices import markup_token, truncate
@@ -66,7 +68,8 @@ CLASES: dict[str, str] = {
     "hazlo": DECISION,           # 17
     "recordatorio": INFO,        # 18 13:00/18:00
     "resumen": INFO,             # 19 parte de las 9:00
-    "progreso": INFO,            # 20 ▶️ / terminada (un mensaje editado por tarjeta)
+    "progreso": INFO,            # 20 terminada / en review / en pausa (un mensaje editado por tarjeta)
+    "empezando": INFO,           # 20b ▶️ empezando (nivel esencial: no se envía; ver nivel_avisos)
     "monitor": URGENTE,          # 21 runner parado, panel caído…
     "prodwatch": URGENTE,        # 22 producción en fallo
     "team_notice": INFO,         # 23 aviso al equipo en Marketing
@@ -99,6 +102,11 @@ REVISAR_SEMILLAS = 30 * 60     # s entre recálculos que solo cierran lo ya resu
 PAUSA_ENTRE_MENSAJES = 1.0     # s entre mensajes de la siembra (TG-07: varias fichas seguidas dan 429)
 SEMBRAR_MAX = 40               # tope de mensajes por siembra
 NO_CIERRAN = frozenset({"lt_open", "estado_mas", "explain", "detail"})  # abren/explican: no deciden
+# Avisos obsoletos (decisión de Oscar 30-10): se cierran en la revisión de 30 min. Tope por pasada por el 429 de Telegram.
+CERRAR_MAX = 25
+TIPOS_CIERRE_TARJETA = frozenset({"blocked", "needs_input"})  # cerrar si la tarjeta está done/archived
+TIPOS_CIERRE_INTEGRADO = frozenset({"aprobar", "integrar"})   # además, solo con constancia de integración
+ESTADOS_TERMINADA = ("done", "archived")
 HEAD_MAX = 90
 _TAG_RE = re.compile(r"<[^>]+>")
 
@@ -138,7 +146,7 @@ class CanalAvisos:
     def __init__(self, notifier, owner_dm: str, destino: tuple[str, str] | None, state_dir: Path | str, *,
                  vivo: Callable[[str], bool], messages=None, clock: Callable[[], float] = time.time,
                  sembrador: Callable[[], list[dict]] | None = None, sleep: Callable[[float], None] = time.sleep,
-                 run_async: bool = False):
+                 run_async: bool = False, tarjeta: Callable[[str], dict | None] | None = None):
         self.notifier = notifier
         self.owner_dm = str(owner_dm)
         self.destino = (str(destino[0]), str(destino[1])) if destino else None
@@ -151,6 +159,8 @@ class CanalAvisos:
         self._lock = threading.RLock()
         # Siembra (F1-03): `sembrador()` -> [{clave, tid, tipo, texto, markup (dict o callable)}] (ver semilla()).
         self.sembrador, self.sleep, self.run_async = sembrador, sleep, run_async
+        # `tarjeta(tid)` -> {status, comentarios [str], rama_integrada (True/False/None)} o None: para cerrar obsoletos.
+        self.tarjeta = tarjeta
         self._inicio_pendiente = True
         self._sembrando = threading.Lock()
         # `copias(markup)` -> ids de usuario de quienes reciben copia de una aprobación (ver para_desk); None = nadie.
@@ -172,6 +182,9 @@ class CanalAvisos:
         """Aviso sin mensaje por tarea. DECISIÓN -> tema (+ línea al DM); lo demás -> `defecto` (DM de Oscar si no se
         dice otra cosa), exactamente como antes."""
         extra = {"reply_markup": markup} if markup is not None else {}
+        if not activo(tipo):  # nivel «esencial»: sin mensaje, pero lo que pide decisión sigue contando en el contador
+            self._contar_silenciada(tipo, text, markup, html_text)
+            return None
         if not con_botones(markup) and tipo in TIPOS_RESUMEN and anotar_resumen(tipo, text):
             return None  # F1-04: INFO sin botones del resumen diario; sale una vez al día (URGENTE nunca entra aquí)
         if not self.es_decision(tipo, markup):
@@ -184,6 +197,20 @@ class CanalAvisos:
             self._linea_dm(cabecera(text, html_text), sent)
             self.refrescar()
         return sent
+
+    def _contar_silenciada(self, tipo: str, text: str, markup: dict | None, html_text: bool) -> None:
+        """Una decisión que el nivel apaga (choque, solape) no manda mensaje, pero se anota sin mensaje: mientras su
+        teclado viva cuenta en el contador fijado (se cierra sola pasada la GRACIA, ver refrescar)."""
+        token = markup_token(markup)
+        if not (self.destino and token and clase_de(tipo) == DECISION):
+            return
+        with self._lock:
+            data = self._load()
+            data["abiertas"].setdefault(f"silenciada:{token}", {
+                "tipo": tipo, "rol": "silenciada", "token": token, "head": cabecera(text, html_text),
+                "at": self.clock()})
+            self._save(data)
+        self.refrescar()
 
     # --- avisos por tarea (TaskNotices) ------------------------------------------------------------------------------
 
@@ -303,6 +330,16 @@ class CanalAvisos:
                 for key, e in list(data["abiertas"].items()):
                     if e.get("rol") == "semilla":
                         continue  # las cierra el recálculo de la siembra o su botón (resuelta)
+                    if e.get("rol") == "silenciada":  # sin mensaje que editar: se suelta al gastarse su teclado
+                        if self.vivo(e.get("token")):
+                            cambio = e.pop("gone_at", None) is not None or cambio
+                        elif not e.get("gone_at"):
+                            e["gone_at"] = now
+                            cambio = True
+                        elif now - float(e["gone_at"]) >= GRACIA:
+                            data["abiertas"].pop(key, None)
+                            cambio = True
+                        continue
                     if not self._sigue_en_la_tarea(e):
                         self._cerrar(data, key, f"↪️ Ya no está pendiente (hay un aviso más reciente)\n"
                                                 f"{e.get('head') or ''}".strip())
@@ -356,6 +393,7 @@ class CanalAvisos:
                 n = self.sembrar(publicar=modo != "revisar")
                 if n:
                     log.info("tema Decisiones: sembradas %d decisiones (%s)", n, modo)
+                self.cerrar_obsoletas()
             except Exception as exc:  # la siembra es una ayuda: nunca tumba la pasada
                 log.warning("tema Decisiones: la siembra (%s) falló: %s", modo, exc)
             finally:
@@ -409,6 +447,64 @@ class CanalAvisos:
                 log.info("decisión publicada en el tema (semilla) %s", it["clave"])
                 n += 1
         return n
+
+    def cerrar_obsoletas(self) -> int:
+        """Cierra avisos de decisiones ya hechas: `blocked`/`needs_input` cuya tarjeta está done/archived, y
+        `aprobar`/`integrar` de tarjetas done/archived con constancia de integración. Otros tipos no se tocan. Lo que no
+        se puede comprobar queda abierto y va al log con el motivo. Tope CERRAR_MAX por pasada; sin `tarjeta` no hace
+        nada. Devuelve cuántos cerró."""
+        if not self.tarjeta:
+            return 0
+        with self._lock:
+            candidatos = [(k, e) for k, e in self._load()["abiertas"].items()
+                          if e.get("tid") and e.get("tipo") in TIPOS_CIERRE_TARJETA | TIPOS_CIERRE_INTEGRADO]
+        info: dict[str, dict | None] = {}
+        n = 0
+        for key, e in candidatos:
+            if n >= CERRAR_MAX:
+                break
+            tid = e["tid"]
+            if tid not in info:
+                try:
+                    info[tid] = self.tarjeta(tid)
+                except Exception as exc:  # una tarjeta que no se lee no para la pasada
+                    log.info("tema Decisiones: no se pudo leer %s: %s", tid, exc)
+                    info[tid] = None
+            texto, motivo = self._cierre(e["tipo"], info[tid])
+            if not texto:
+                if motivo:
+                    log.info("tema Decisiones: %s (%s) sigue abierto: %s", tid, e["tipo"], motivo)
+                continue
+            with self._lock:
+                data = self._load()
+                if key not in data["abiertas"]:
+                    continue
+                self._cerrar(data, key, texto)
+                self._save(data)
+            n += 1
+            self.sleep(PAUSA_ENTRE_MENSAJES)
+        if n:
+            log.info("tema Decisiones: %d avisos obsoletos cerrados (tope %d por pasada)", n, CERRAR_MAX)
+        return n
+
+    @staticmethod
+    def _cierre(tipo: str, info: dict | None) -> tuple[str | None, str]:
+        """(texto del ✅ si el aviso está obsoleto, motivo por el que queda abierto o "" si la tarjeta sigue viva)."""
+        if not info:
+            return None, "no se pudo leer la tarjeta"
+        status = info.get("status") or ""
+        if status not in ESTADOS_TERMINADA:
+            return None, ""
+        texto = f"✅ Resuelta: tarjeta {status}"
+        if tipo in TIPOS_CIERRE_TARJETA:
+            return texto, ""
+        if any(_es_integracion(c) for c in info.get("comentarios") or ()):
+            return texto, ""
+        if info.get("rama_integrada") is True:
+            return texto, ""
+        if info.get("rama_integrada") is None:
+            return None, "sin comentario de integración y no se pudo comprobar la rama"
+        return None, "sin comentario de integración ni rama integrada"
 
     def confirmacion(self, original: str, nuevo: str) -> None:
         """1.er toque del doble toque (consola.pedir): el mensaje lleva ahora [✅ Sí] [✖ No] con otro teclado. La
@@ -470,7 +566,7 @@ class CanalAvisos:
         """Edita el mensaje del tema (texto plano, sin botones) y lo suelta de la tarea: los avisos posteriores de la
         tarea (▶️, terminada) ya no lo pisan."""
         e = data["abiertas"].pop(key, None)
-        if not e:
+        if not e or e.get("rol") == "silenciada":  # las silenciadas no tienen mensaje
             return
         try:
             self.notifier.edit(e["chat_id"], e["message_id"], texto, html=False)
@@ -560,6 +656,63 @@ def _donde(sent: dict) -> dict:
             "message_id": sent["message_id"]}
 
 
+def _es_integracion(body: str) -> bool:
+    """Comentario de integración: «INTEGRADO <sha> …» del integrador o «Integrada en …». Con el espacio final, «INTEGRADOR:»
+    (sus otros comentarios) no cuenta."""
+    b = str(body or "").lstrip()
+    return b.startswith("INTEGRADO ") or b.startswith("Integrada en")
+
+
+def _git_rc(repo: str, *args: str) -> int | None:
+    """Código de salida de `git -C repo args`, o None si git no se pudo ejecutar."""
+    try:
+        return subprocess.run(["git", "-C", repo, *args], capture_output=True, timeout=30).returncode
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def _rama_integrada(lanes, tid: str, git: Callable[..., int | None] = _git_rc) -> bool | None:
+    """¿La rama `lane/<tid>` es ancestro de la base de su carril? Sin fetch: solo las refs que ya hay en el repo.
+    True si lo es en algún carril; False si se comprobó y no; None si no se pudo comprobar."""
+    resultado, vistos = None, set()
+    for lane in lanes:
+        if not lane.repo or not lane.base or (lane.repo, lane.remote, lane.base) in vistos:
+            continue
+        vistos.add((lane.repo, lane.remote, lane.base))
+        base = f"{lane.remote}/{lane.base}"
+        for ref in (f"lane/{tid}", f"{lane.remote}/lane/{tid}"):
+            rc = git(lane.repo, "merge-base", "--is-ancestor", ref, base)
+            if rc == 0:
+                return True
+            if rc == 1:
+                resultado = False
+    return resultado
+
+
+def estado_tarjeta_de(desk, git: Callable[..., int | None] = _git_rc) -> Callable[[str], dict | None]:
+    """`tarjeta(tid)` del canal: estado y comentarios de la tarjeta (busca en los tableros de los carriles) y, si está
+    terminada, si su rama ya es ancestro de la base. None si no se puede leer."""
+    lanes = list((getattr(desk, "lanes", None) or {}).values())
+    boards = sorted({ln.board for ln in lanes if ln.board}) or ["default"]
+
+    def tarjeta(tid: str) -> dict | None:
+        for board in boards:
+            try:
+                show = desk.hermes_for(board).show(tid) or {}
+            except Exception:  # el tablero no tiene la tarjeta (o no responde): se prueba el siguiente
+                continue
+            task = show.get("task") or {}
+            if not task:
+                continue
+            status = str(task.get("status") or "")
+            comentarios = [str(c.get("body") or "") for c in show.get("comments") or () if isinstance(c, dict)]
+            rama = _rama_integrada(lanes, tid, git) if status in ESTADOS_TERMINADA else None
+            return {"status": status, "comentarios": comentarios, "rama_integrada": rama}
+        return None
+
+    return tarjeta
+
+
 def _en(sent: dict, destino: tuple[str, str] | None) -> bool:
     return bool(destino) and (str(sent.get("chat_id")), str(sent.get("thread_id") or "0")) == destino
 
@@ -569,14 +722,19 @@ def de(desk) -> CanalAvisos | None:
     return getattr(desk, "canal", None) if desk is not None else None
 
 
-def tipo_de_estado(state: str | None) -> str:
-    """Tipo de un aviso de tarea según su estado (needs_input, blocked); el resto es progreso (INFORMATIVO)."""
-    return state if state in ("needs_input", "blocked") else "progreso"
+def tipo_de_estado(state: str | None, alert: bool = False) -> str:
+    """Tipo de un aviso de tarea según su estado: needs_input y blocked son suyos; el «▶️ empezando» (running sin
+    alerta) es `empezando`, que el nivel esencial puede apagar sin perder la terminada; el resto es progreso."""
+    if state in ("needs_input", "blocked"):
+        return state
+    return "empezando" if state == "running" and not alert else "progreso"
 
 
 def publicar(canal: CanalAvisos | None, notices, tipo: str, tid: str, text: str, target, lane_target, *,
              alert: bool, reply_markup: dict | None = None, mirror: str | None = None, **kw) -> None:
     """Punto único de los avisos por tarea (runner, review, integrador). Sin canal (sin bot de carriles): como antes."""
+    if not activo(tipo):  # nivel «esencial»: este tipo no manda mensaje (sigue estando a demanda por comando)
+        return
     if canal is None:
         notices.publish(tid, text, target, lane_target, alert=alert, reply_markup=reply_markup,
                         **({"mirror_to": mirror} if mirror else {}), **kw)
@@ -605,6 +763,7 @@ def para_desk(desk, destino: tuple[str, str] | None) -> CanalAvisos:
 
     canal = CanalAvisos(desk.notifier, desk.owner_id, destino, Path(store.root).parent, vivo=vivo,
                         messages=desk.messages)
+    canal.tarjeta = estado_tarjeta_de(desk) if getattr(desk, "hermes_for", None) else None
 
     def copias(markup: dict | None) -> list[str]:
         """Operadores acotados por marca (no Oscar ni los de «*») que pueden decidir TODAS las marcas de la tarjeta

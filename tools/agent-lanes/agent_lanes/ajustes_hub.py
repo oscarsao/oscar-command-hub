@@ -30,6 +30,9 @@ GRUPOS = ("Avisos", "Atascos", "Lotes", "Carriles")
 AVANZADO = "Avanzado"
 HORA_RE = re.compile(r"(?:[01]\d|2[0-3]):[0-5]\d")
 PATH_RE = re.compile(r"[\w.\-]+(?:/[\w.\-]+)*")
+LOTE_RIESGO = (".env", "environment", "secret", "token", "credential", "stripe", "billing", "payment", "pago", "checkout",
+               "factur", "invoice", "cliente", "customer", "migration", "alembic", "supabase", "dockerfile", "docker-compose",
+               ".github", "railway", "vercel", "dokploy", "deploy", "produccion", "production", "auth")
 SOLO_ANADIR = ("docs/kb/CHANGELOG.md", "docs/kb/LEDGER_ESTATUS.md", "docs/kb/archivo/CHANGELOG.md", "CHANGELOG.md")
 
 
@@ -43,7 +46,7 @@ class Ajuste:
     grupo: str
     etiqueta: str
     default: Any
-    tipo: str                       # int | float | hora (HH:MM, "" = el de lanes.yaml) | lista
+    tipo: str                       # int | float | hora (HH:MM, "" = el de lanes.yaml) | lista | opcion (una de `opciones`)
     ayuda: str = ""
     minimo: float | None = None
     maximo: float | None = None
@@ -75,6 +78,10 @@ def _topes() -> list[Ajuste]:
 
 def _build() -> dict[str, Ajuste]:
     a = [
+        Ajuste("avisos.nivel", "Avisos", "Nivel de avisos de Telegram", "normal", "opcion",
+               "esencial = solo problemáticas, terminadas, integraciones, urgentes y los partes fijos; lo demás "
+               "(empezando, revisión, choques, paradas, limpieza…) queda como comando. normal = como siempre. "
+               "todo = sin ningún filtro.", opciones=("esencial", "normal", "todo")),
         Ajuste("avisos.hora_parte", "Avisos", "Hora del resumen por carril (parte de las 9:00)", None, "int",
                "Hora (0-21, Madrid) del parte diario. Sin editar vale la de integrador_visibilidad.yaml (9).", 0, 21,
                (7, 8, 9, 10, 12)),
@@ -84,6 +91,13 @@ def _build() -> dict[str, Ajuste]:
         Ajuste("avisos.revision_ventana_horas", "Avisos", "Horas máximas hasta el resumen de tarjetas listas", 2.0,
                "float", "Si no se llena el lote, el resumen sale cuando la tarjeta más antigua cumple estas horas.", 0.25,
                24, (1, 2, 4, 8)),
+        Ajuste("avisos.lote_aprobar_min", "Avisos", "Tarjetas de bajo riesgo para ofrecer «Aprobar todas»", 5, "int",
+               "Con tantas tarjetas de bajo riesgo del mismo carril, el resumen ofrece aprobarlas de una vez.", 2, 50,
+               (3, 5, 8, 10)),
+        Ajuste("avisos.lote_rutas_riesgo", "Avisos", "Palabras que sacan una tarjeta del lote de bajo riesgo",
+               LOTE_RIESGO, "lista",
+               "Si una de estas palabras aparece en un archivo cambiado o en el título, la tarjeta se aprueba sola, no "
+               "en lote (entorno, pagos, datos de cliente, migraciones, deploy). Separadas por comas.", avanzado=True),
         Ajuste("avisos.estado_max_horas", "Avisos", "Horas tras las que el estado del integrador se da por viejo",
                None, "float", "Sin editar vale el de integrador_visibilidad.yaml (24).", 1, 168, (6, 12, 24, 48)),
         Ajuste("avisos.resumen_pasos", "Avisos", "Pasos del resumen corto del integrador", None, "int",
@@ -133,6 +147,15 @@ def _build() -> dict[str, Ajuste]:
         Ajuste("lotes.hora", "Lotes", "Hora de montaje del lote diario", "", "hora",
                "HH:MM. Vacío = la de cada proyecto en lanes.yaml (08:30).", opciones=("", "07:30", "08:30", "09:30",
                                                                                      "12:00")),
+        Ajuste("integracion_auto.activa", "Lotes", "Integración automática de lo pequeño (0 = apagada, 1 = encendida)", 0,
+               "int", "Con 1, los PR de tamaño S o solo documentación con suite verde y revisor conforme se fusionan solos "
+               "tras la ventana de veto. El despliegue sigue siendo tu botón. MigraTeam queda siempre fuera.", 0, 1,
+               (0, 1)),
+        Ajuste("integracion_auto.veto_minutos", "Lotes", "Minutos para vetar una integración automática", 30, "int",
+               "Antes de fusionar, el aviso lleva [⛔ Vetar] durante este tiempo.", 1, 1440, (10, 30, 60, 120)),
+        Ajuste("integracion_auto.proyectos", "Lotes", "Proyectos con integración automática",
+               ("oscar-hq", "oscar-command-hub"), "lista",
+               "Nombres de repo (sin el dueño) separados por comas. MigraTeam se ignora aunque lo pongas.", avanzado=True),
         Ajuste("carriles.max_workers", "Carriles", "Workers a la vez (todos los carriles)", None, "int",
                "Tope global de procesos claude vivos. Con 3 o más hay riesgo de quedarse sin RAM (OOM el 27-09).", 1, 4,
                (1, 2, 3, 4), True, aviso_ram=3),
@@ -164,6 +187,11 @@ def parse(spec: Ajuste, raw) -> Any:
             raise AjusteInvalido(f"«{spec.etiqueta}» tiene que estar entre {spec.describe(spec.minimo)} y "
                                  f"{spec.describe(spec.maximo)}.")
         return int(n) if spec.tipo == "int" else n
+    if spec.tipo == "opcion":
+        s = str(raw).strip().lower()
+        if s not in spec.opciones:
+            raise AjusteInvalido(f"«{spec.etiqueta}» tiene que ser una de: {', '.join(spec.opciones)}.")
+        return s
     if spec.tipo == "hora":
         s = str(raw).strip()
         if s and not HORA_RE.fullmatch(s):

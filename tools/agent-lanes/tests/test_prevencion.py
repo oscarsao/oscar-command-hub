@@ -90,6 +90,19 @@ def test_tambien_frena_contra_review(tmp_path):
     assert prev(tmp_path, b).filtrar(LANE, ready(b), b) == []
 
 
+def test_review_escalada_sin_worker_vivo_no_frena(tmp_path):
+    b = Board([card("t_00000001", CMD, "review"), card("t_00000002", CMD)])
+    p = prev(tmp_path, b)
+    p.escaladas_dir = tmp_path / "rb"
+    (tmp_path / "rb").mkdir()
+    assert p.filtrar(LANE, ready(b), b) == []                       # en review normal sigue frenando
+    (tmp_path / "rb" / "t_00000001.json").write_text('{"head_sha": "a"}')  # el carril review la aparcó
+    assert ids(p.filtrar(LANE, ready(b), b)) == ["t_00000002"]
+    (tmp_path / "rb" / "t_00000001.json").unlink()                  # cabeza nueva: vuelve a contar
+    b.cards[1]["status"] = "ready"
+    assert ids(p.filtrar(LANE, ready(b), b)) == []
+
+
 def test_mismo_modulo_distinto_fichero_no_frena(tmp_path):
     b = Board([card("t_00000001", CMD, "running"), card("t_00000002", DEC)])
     assert ids(prev(tmp_path, b).filtrar(LANE, ready(b), b)) == ["t_00000002"]
@@ -266,3 +279,15 @@ def test_si_hermes_no_lee_los_activos_vuelve_a_la_regla_de_antiguedad(tmp_path):
     g = FakeGit({"lane/t_0000000a": (NOW, "x", [CMD])})
     b = Media([card("t_0000000a", "otra cosa", "done"), card("t_00000002", CMD)])
     assert prev(tmp_path, b, g).filtrar(LANE, ready(b), b) == []                     # rama reciente: frena como antes
+
+
+def test_zona_declarada_dos_ready_sin_rama_no_salen_a_la_vez(tmp_path):
+    """«Zona:» sin ficheros con extensión: nivel «archivo» (por defecto) las trata igualmente como zona común."""
+    def tarjeta(tid, zona):
+        return {"id": tid, "assignee": "claude-hub", "status": "ready", "title": f"tarea {tid}",
+                "body": f"Mejorar la pantalla.\nzona: {zona}\nTamaño: S"}
+    b = Board([tarjeta("t_00000001", "dashboard/src/app/ideas"), tarjeta("t_00000002", "Dashboard/src/app/ideas/")])
+    assert ids(prev(tmp_path, b).filtrar(LANE, ready(b), b)) == ["t_00000001"]
+    assert "t_00000001" in b.notas("t_00000002", MARCA)[0]
+    b2 = Board([tarjeta("t_00000003", "dashboard/src/app/ideas"), tarjeta("t_00000004", "dashboard/src/app/otra")])
+    assert ids(prev(tmp_path, b2).filtrar(LANE, ready(b2), b2)) == ["t_00000003", "t_00000004"]

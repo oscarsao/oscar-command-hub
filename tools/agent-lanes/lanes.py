@@ -36,7 +36,7 @@ import json
 import subprocess
 import sys
 
-from agent_lanes import drain, holds
+from agent_lanes import cuota, drain, holds
 from agent_lanes.config import ROOT, load_lanes
 from agent_lanes.git_ops import GitOps, github_slug_problem
 from agent_lanes.hermes import HermesCLI
@@ -112,7 +112,9 @@ LOCK = ROOT / ".state" / "runner.lock"
 
 
 def runner_line() -> str:
-    return _runner_line(LOCK, pid_alive, drain.active(), drain.BUSY_FILE)
+    line = _runner_line(LOCK, pid_alive, drain.active(), drain.BUSY_FILE)
+    pausa = cuota.texto_estado()  # pausa por cuota de Claude vigente (.state/cuota.json)
+    return f"{line} · {pausa}" if pausa else line
 
 
 def restart(argv: list[str]) -> int:

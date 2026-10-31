@@ -79,6 +79,7 @@ class Person:
     operador: bool = False  # lo rellena People.lookup desde Oscar HQ (algún desarrollo.aprobar); no viene del YAML
     permisos: frozenset = field(default_factory=frozenset)  # idem: {APROBAR_PRODUCCION} si tiene algún desarrollo.publicar
     hermes: bool = True  # people.yaml `hermes: false` (estricto): Hermes no le contesta; el bot de carriles le avisa
+    solo_menciones: str = ""  # people.yaml `solo_menciones: true` + `mencion: "@usuario"`: solo recibe avisos que la mencionan
 
     def can(self, cap: str) -> bool:
         return cap in self.caps
@@ -176,6 +177,11 @@ class People:
         person = self.lookup(user_id)
         return bool(person and not person.is_owner and not person.hermes)
 
+    def filtros_menciones(self) -> dict[str, str]:
+        """{user_id: "@usuario"} de quien pidió `solo_menciones: true`. Sin `mencion` válida no hay filtro (por defecto,
+        todo como hoy: no se silencia a nadie por un YAML a medias)."""
+        return {p.user_id: p.solo_menciones for p in self._by_id.values() if p.solo_menciones}
+
     def restringido(self, user_id) -> bool:
         """True si es un operador acotado por marca (ni Oscar ni quien tenga `"*"`)."""
         person = self.lookup(user_id)
@@ -268,6 +274,18 @@ def load_people(owner_id: str, path: Path | str | None = None, hq=None) -> Peopl
         seen.add(uid)
         asked = cfg.get("can") if isinstance(cfg.get("can"), list) else []
         caps = BASE_CAPS[role] | (frozenset(str(c) for c in asked) & OPTIONAL_CAPS.get(role, frozenset()))
+<<<<<<< HEAD
         persons.append(Person(_clean(key), _clean(cfg.get("name") or key) or _clean(key), uid, role, (), caps,
                               hermes=cfg.get("hermes") is not False))
     return People(owner_id, persons, hq=hq)
+=======
+        brands = tuple(_clean(b) for b in (cfg.get("brands") or ()) if _clean(b)) if isinstance(
+            cfg.get("brands"), (list, tuple)) else ()
+        pedidos = cfg.get("permisos") if isinstance(cfg.get("permisos"), list) else []
+        permisos = frozenset(str(x) for x in pedidos) & PERMISOS_YAML
+        mencion = _clean(cfg.get("mencion")).lstrip("@")
+        solo = f"@{mencion}" if cfg.get("solo_menciones") is True and mencion else ""
+        persons.append(Person(_clean(key), _clean(cfg.get("name") or key) or _clean(key), uid, role, brands, caps,
+                              cfg.get("operador") is True, permisos, cfg.get("hermes") is not False, solo))
+    return People(owner_id, persons)
+>>>>>>> origin/main
