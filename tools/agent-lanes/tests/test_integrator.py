@@ -1025,6 +1025,15 @@ def test_media_and_font_binaries_are_not_flagged_but_other_binaries_are():
     assert scan_secrets(d) == [("tool.exe", 0, "archivo binario sin revisar")]
 
 
+def test_lockfiles_marked_binary_by_gitattributes_are_not_flagged():
+    for name in ("dashboard/pnpm-lock.yaml", "package-lock.json", "poetry.lock"):
+        d = f"diff --git a/{name} b/{name}
+index 1..2 100644
+Binary files a/{name} and b/{name} differ
+"
+        assert scan_secrets(d) == [], name
+
+
 def test_added_line_that_looks_like_header_does_not_blind_the_scan():
     body = f"+++ /dev/null\n+k = '{SECRET}'"
     assert scan_secrets(diff("a.py", body))[0][2] == "clave sk-"
