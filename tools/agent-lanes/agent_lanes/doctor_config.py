@@ -11,11 +11,11 @@ from __future__ import annotations
 import json
 import logging
 import os
-import subprocess
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
+from . import proc as _proc
 from .config import ROOT, _load, load_env, ohq_api_url
 
 log = logging.getLogger("agent_lanes")
@@ -123,7 +123,7 @@ def repo_publico(slug: str, run: Callable | None = None) -> bool | None:
     """True/False según `gh api repos/<slug>`; None si gh falla o no está (nunca lanza)."""
     if not slug:
         return None
-    run = run or (lambda args: subprocess.run(args, capture_output=True, text=True, timeout=20, encoding="utf-8"))
+    run = run or (lambda args: _proc.run(args, capture_output=True, text=True, timeout=20, encoding="utf-8"))
     try:
         out = run([GH_EXE if Path(GH_EXE).exists() else "gh", "api", f"repos/{slug}"])
         if getattr(out, "returncode", 1) != 0:

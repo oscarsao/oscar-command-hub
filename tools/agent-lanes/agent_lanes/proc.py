@@ -11,10 +11,36 @@ import time
 
 CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
 
+# Contador de procesos lanzados por `run`, por ejecutable (hermes, git, claude…): sirve para medir cuántas llamadas por
+# minuto hace el runner (t_4d64e8d5). `stats_delta` devuelve lo acumulado desde la lectura anterior.
+_calls: dict[str, int] = {}
+_calls_lock = threading.Lock()
+_calls_last: dict[str, int] = {}
+
+
+def _count(args, kwargs) -> None:
+    cmd = args[0] if args else kwargs.get("args")
+    try:
+        exe = str(cmd if isinstance(cmd, (str, bytes)) else cmd[0]).replace("\\", "/").rsplit("/", 1)[-1].lower()
+    except (TypeError, IndexError):
+        return
+    exe = exe[:-4] if exe.endswith(".exe") else exe
+    with _calls_lock:
+        _calls[exe] = _calls.get(exe, 0) + 1
+
+
+def stats_delta() -> dict[str, int]:
+    """Procesos lanzados por ejecutable desde la última llamada a esta función (vacío si ninguno)."""
+    with _calls_lock:
+        delta = {k: v - _calls_last.get(k, 0) for k, v in _calls.items() if v != _calls_last.get(k, 0)}
+        _calls_last.update(_calls)
+    return delta
+
 
 def run(*args, on_start=None, **kwargs) -> subprocess.CompletedProcess:
     """`subprocess.run`. `on_start(pid)`: se llama en cuanto el proceso hijo existe (el runner apunta ahí el PID de
     cada `claude` para poder matarlo o reconocerlo si el propio runner muere antes de que acabe)."""
+    _count(args, kwargs)
     if sys.platform == "win32":
         kwargs["creationflags"] = kwargs.get("creationflags", 0) | CREATE_NO_WINDOW
     if on_start is None:
@@ -84,6 +110,7 @@ def kill_tree(pid: int) -> None:
 TIMEOUT_RC = 124
 DEFAULT_CLI_TIMEOUT = 120
 DEFAULT_CLI_BACKOFF = (5.0, 20.0)
+DEFAULT_LIST_CACHE = 20.0  # s que vive un `hermes kanban list` repetido (runner.list_cache_seconds; 0 = sin caché)
 GH_NET_MARKS = ("error connecting to", "i/o timeout", "connection reset", "tls handshake timeout",
                 "could not resolve host", "http 502", "http 503", "http 504", "502 bad gateway",
                 "503 service unavailable", "504 gateway timeout")
@@ -95,10 +122,12 @@ def cli_settings() -> dict:
     """`runner.cli_timeout_seconds` y `runner.cli_timeout_backoff` de lanes.yaml (se leen una vez). Nunca lanza."""
     global _cli_cfg
     if _cli_cfg is None:
-        cfg = {"timeout": DEFAULT_CLI_TIMEOUT, "backoff": DEFAULT_CLI_BACKOFF}
+        cfg = {"timeout": DEFAULT_CLI_TIMEOUT, "backoff": DEFAULT_CLI_BACKOFF, "list_cache": DEFAULT_LIST_CACHE}
         try:
             from .config import _load
             runner = (_load(None) or {}).get("runner") or {}
+            if runner.get("list_cache_seconds") is not None:  # 0 = sin caché
+                cfg["list_cache"] = max(0.0, float(runner["list_cache_seconds"]))
             if runner.get("cli_timeout_seconds"):
                 cfg["timeout"] = int(runner["cli_timeout_seconds"])
             if isinstance(runner.get("cli_timeout_backoff"), (list, tuple)):
@@ -109,10 +138,11 @@ def cli_settings() -> dict:
     return _cli_cfg
 
 
-def configure_cli(timeout: int | None = None, backoff: tuple[float, ...] | None = None) -> None:
-    """Fija los valores (tests); None en ambos vuelve a leerlos de lanes.yaml."""
+def configure_cli(timeout: int | None = None, backoff: tuple[float, ...] | None = None,
+                  list_cache: float | None = None) -> None:
+    """Fija los valores (tests); None en todos vuelve a leerlos de lanes.yaml."""
     global _cli_cfg
-    if timeout is None and backoff is None:
+    if timeout is None and backoff is None and list_cache is None:
         _cli_cfg = None
         return
     base = dict(cli_settings())
@@ -120,6 +150,8 @@ def configure_cli(timeout: int | None = None, backoff: tuple[float, ...] | None 
         base["timeout"] = timeout
     if backoff is not None:
         base["backoff"] = tuple(backoff)
+    if list_cache is not None:
+        base["list_cache"] = float(list_cache)
     _cli_cfg = base
 
 

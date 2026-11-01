@@ -16,7 +16,14 @@ runner:
   max_big_total: 2
   # Pausa por cuota de Claude: si el reset no se lee del error, minutos sin lanzar workers (agent_lanes/cuota.py).
   cuota_pausa_minutos: 60
+  # Segundos entre pasadas del runner (sondeo del kanban, limpieza, avisos). Subirlo baja CPU y procesos hijos
+  # (hermes/git/conhost); el planificador además se despierta solo cuando termina un worker. `--interval` lo pisa.
   interval_seconds: 60
+  # t_4d64e8d5 (1-nov): vida (s) de un `hermes kanban list` ya hecho en esta pasada (mismo tablero/estado/assignee);
+  # cualquier escritura del runner lo invalida. 0 = sin caché. stats_log_minutes: cada cuántos minutos el runner
+  # anota en el log cuántos procesos lanzó (hermes/git/claude…); 0 = no anotar.
+  list_cache_seconds: 20
+  stats_log_minutes: 5
   # Vigilante de «runner ciego» (agent_lanes/ciego.py): si no se pueden listar tareas (p. ej. WinError 4551 de App
   # Control) durante estos minutos seguidos, aviso ALTA al DM de Oscar y un `restart --drain` automático (máx. 1/hora).
   ciego_minutes: 5

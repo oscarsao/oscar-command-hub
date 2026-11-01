@@ -35,6 +35,7 @@ from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from . import proc as _proc
 from .integration import PinnedSummary, age_label, topic_link
 from .nivel_avisos import activo
 from .resumen_carriles import TIPOS_RESUMEN
@@ -666,7 +667,7 @@ def _es_integracion(body: str) -> bool:
 def _git_rc(repo: str, *args: str) -> int | None:
     """Código de salida de `git -C repo args`, o None si git no se pudo ejecutar."""
     try:
-        return subprocess.run(["git", "-C", repo, *args], capture_output=True, timeout=30).returncode
+        return _proc.run(["git", "-C", repo, *args], capture_output=True, timeout=30).returncode  # sin ventana
     except (OSError, subprocess.SubprocessError):
         return None
 

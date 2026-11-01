@@ -16,6 +16,7 @@ import time
 from logging.handlers import TimedRotatingFileHandler
 
 from agent_lanes import canal_avisos, ciego, consola, cuota, doctor_config, drain, notices, resumen_carriles
+from agent_lanes import proc as _proc
 from agent_lanes.bandeja import load as load_bandeja
 from agent_lanes.board_guard import BoardGuardTicker
 from agent_lanes.choques import ChoquesTicker
@@ -334,8 +335,16 @@ def main(argv: list[str] | None = None) -> int:
         # no reclamó nada tras el reinicio de las 12:23). Un hueco libre o un worker que termina se atienden al momento.
         threading.Thread(target=run_scheduler, args=(service, drain.active, interval), name="lane-scheduler",
                          daemon=True).start()
+    stats_every = float(settings.get("stats_log_minutes") or 0) * 60
+    stats_at = time.monotonic()
     while True:
         shows.clear()
+        if stats_every and time.monotonic() - stats_at >= stats_every:  # medición t_4d64e8d5: procesos lanzados
+            elapsed, stats_at = time.monotonic() - stats_at, time.monotonic()
+            delta = _proc.stats_delta()
+            log.info("procesos lanzados en %.1f min: %s (%.1f/min)", elapsed / 60,
+                     ", ".join(f"{k}={v}" for k, v in sorted(delta.items())) or "ninguno",
+                     sum(delta.values()) * 60 / elapsed)
         # Reinicio ordenado (lanes.py restart --drain): entre pasadas, sin reclamar nada; el acuse dice si queda
         # algo en marcha fuera del pool (deploy/gates lanzados por un botón de Oscar).
         if drain.active():

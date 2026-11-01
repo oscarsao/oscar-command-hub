@@ -169,7 +169,7 @@ def load_telegram_settings(path: Path | None = None) -> dict:
 def load_runner_settings(path: Path | None = None) -> dict:
     """Top-level `runner:` block (global worker cap, poll interval)."""
     from .ajustes_hub import aplicar_runner  # lo editado con /ajustes manda sobre lanes.yaml (rige al arrancar el runner)
-    return aplicar_runner({"max_workers": 1, "interval_seconds": 60, "ciego_minutes": 5, "max_big_total": 2,
+    return aplicar_runner({"max_workers": 1, "interval_seconds": 60, "stats_log_minutes": 5, "ciego_minutes": 5, "max_big_total": 2,
                            **(_load(path).get("runner") or {})})
 
 

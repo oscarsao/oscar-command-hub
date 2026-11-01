@@ -8,6 +8,7 @@ import os
 import re
 import subprocess
 import tempfile
+import threading
 import time
 
 from . import proc as _proc
@@ -20,6 +21,7 @@ log = logging.getLogger("agent_lanes")
 READONLY_MARK = "is read-only for this user"
 NO_RETRY_MARK = "WinError 4551"
 READONLY_BACKOFF = (1.0, 2.0)  # esperas entre los 3 intentos
+READ_ONLY_SUBS = frozenset({"list", "show", "notify-list"})  # lecturas: no invalidan la caché de listados
 # Subcomandos que se pueden repetir tras un timeout sin riesgo de aplicar dos veces (lecturas y asignaciones absolutas).
 TIMEOUT_IDEMPOTENT = frozenset({"list", "show", "notify-list", "heartbeat", "assign"})
 
@@ -401,7 +403,13 @@ class KanbanComun:
 class HermesCLI(KanbanComun):
     def __init__(self, board: str, exe: Path = HERMES_EXE, runner=_proc.run, author: str = "agent-lanes",
                  sleep=time.sleep, backoff: tuple[float, ...] = READONLY_BACKOFF,
-                 timeout_backoff: tuple[float, ...] | None = None):
+                 timeout_backoff: tuple[float, ...] | None = None, list_cache: float | None = None):
+        # Caché de `kanban list` (t_4d64e8d5): la misma lectura (tablero + estado + assignee) se repite por decenas de
+        # ticks en cada pasada. `list_cache` = segundos de vida; None = runner.list_cache_seconds de lanes.yaml, pero
+        # solo con el runner real (un doble de pruebas no se cachea salvo que se pida); 0 = sin caché.
+        self._list_cache = list_cache if list_cache is not None else (-1.0 if runner is _proc.run else 0.0)
+        self._lists: dict[tuple, tuple[float, str]] = {}
+        self._lists_lock = threading.Lock()
         self._sleep = sleep
         self._backoff = backoff
         self._timeout_backoff = timeout_backoff  # None = runner.cli_timeout_backoff de lanes.yaml
@@ -415,6 +423,33 @@ class HermesCLI(KanbanComun):
         (t_cce5da81): reintento con espera progresiva solo en lo idempotente (TIMEOUT_IDEMPOTENT, `--help`); agotado,
         o en una escritura, devuelve un fallo (returncode proc.TIMEOUT_RC) en vez de lanzar, y anota el fallo
         transitorio en el hilo (lo usa la cola de decisiones). Tiempo y esperas: `runner.cli_timeout_*` de lanes.yaml."""
+        sub = args[0] if args else "?"
+        if sub in READ_ONLY_SUBS:
+            return self._call_read(sub, args, timeout)
+        cp = self._call_raw(*args, timeout=timeout)
+        self._invalidate_lists()  # cualquier escritura (claim, comment, block…) puede cambiar lo listado
+        return cp
+
+    def _invalidate_lists(self) -> None:
+        with self._lists_lock:
+            self._lists.clear()
+
+    def _call_read(self, sub: str, args: tuple, timeout: int | None) -> subprocess.CompletedProcess:
+        ttl = _proc.cli_settings()["list_cache"] if self._list_cache < 0 else self._list_cache
+        if sub != "list" or ttl <= 0 or "--help" in args:
+            return self._call_raw(*args, timeout=timeout)
+        now = time.monotonic()
+        with self._lists_lock:
+            hit = self._lists.get(args)
+        if hit and now - hit[0] < ttl:
+            return subprocess.CompletedProcess([self.exe, "kanban", "--board", self.board, *args], 0, hit[1], "")
+        cp = self._call_raw(*args, timeout=timeout)
+        if cp.returncode == 0:  # solo lo bueno; el texto se guarda (no el objeto): cada lector parsea su copia
+            with self._lists_lock:
+                self._lists[args] = (now, cp.stdout or "")
+        return cp
+
+    def _call_raw(self, *args: str, timeout: int | None = None) -> subprocess.CompletedProcess:
         cfg = _proc.cli_settings()
         timeout = timeout or cfg["timeout"]
         tbackoff = self._timeout_backoff if self._timeout_backoff is not None else cfg["backoff"]
