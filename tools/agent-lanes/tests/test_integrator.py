@@ -1027,10 +1027,8 @@ def test_media_and_font_binaries_are_not_flagged_but_other_binaries_are():
 
 def test_lockfiles_marked_binary_by_gitattributes_are_not_flagged():
     for name in ("dashboard/pnpm-lock.yaml", "package-lock.json", "poetry.lock"):
-        d = f"diff --git a/{name} b/{name}
-index 1..2 100644
-Binary files a/{name} and b/{name} differ
-"
+        d = (f"diff --git a/{name} b/{name}\nindex 1..2 100644\n"
+             f"Binary files a/{name} and b/{name} differ\n")
         assert scan_secrets(d) == [], name
 
 
