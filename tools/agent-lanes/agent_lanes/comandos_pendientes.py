@@ -282,4 +282,3 @@ class PendientesMixin:
     def agrupar_step(self, action: str, rec: dict, where: dict) -> bool:
         """[📦 Mismo lote] / [📌 Una sola pregunta] de /agrupar (Fusionar, Encadenar y Dejar son los de fusion.py)."""
         return _agrupar.on_button(action, rec, where, self.desk, self.hermes_for)
-

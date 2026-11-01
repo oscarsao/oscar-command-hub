@@ -218,5 +218,3 @@ def _progress_label(p) -> str | None:
     if n < 2 or not getattr(p, "yes_no", True):  # escalada de review: sin secuencia
         return None
     return f"Pregunta {getattr(p, 'q_index', 0) + 1}/{n}"
-
-

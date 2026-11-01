@@ -712,5 +712,3 @@ class AprobacionesMixin:
                            f"{'Dokploy' if policy.deploy == 'dokploy' else '`railway up`'}.", html=False,
                            reply_markup=markup)
         return True
-
-

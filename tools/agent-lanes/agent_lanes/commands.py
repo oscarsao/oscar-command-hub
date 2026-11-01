@@ -347,4 +347,3 @@ class CommandCenter(AprobacionesMixin, TablerosMixin, PendientesMixin, Peticione
             self._send_card(where, c, self._now())
         if failed:
             self._send(where, "No pude preparar: " + ", ".join(failed), html=False)
-

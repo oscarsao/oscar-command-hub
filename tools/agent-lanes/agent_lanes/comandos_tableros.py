@@ -418,4 +418,3 @@ class TablerosMixin:
             pending=lambda: (len(self.pending_decisions()), len(self.stuck_tasks()), len(self.decision_cards())),
             now=now, blind=lambda: ciego.resumen(ciego.FILE, now),
             paradas=lambda: Paradas(self.lanes, self.hermes_for, self._now).resumen())
-
