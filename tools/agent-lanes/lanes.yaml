@@ -24,6 +24,9 @@ runner:
   # anota en el log cuántos procesos lanzó (hermes/git/claude…); 0 = no anotar.
   list_cache_seconds: 20
   stats_log_minutes: 5
+  # Cada cuántos minutos como máximo el integrador ejecuta `git worktree prune` tras borrar un worktree temporal
+  # (int-*/intdep-*). 0 = tras cada borrado.
+  worktree_cleanup_minutes: 10
   # Vigilante de «runner ciego» (agent_lanes/ciego.py): si no se pueden listar tareas (p. ej. WinError 4551 de App
   # Control) durante estos minutos seguidos, aviso ALTA al DM de Oscar y un `restart --drain` automático (máx. 1/hora).
   ciego_minutes: 5

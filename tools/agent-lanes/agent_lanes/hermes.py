@@ -409,6 +409,7 @@ class HermesCLI(KanbanComun):
         # solo con el runner real (un doble de pruebas no se cachea salvo que se pida); 0 = sin caché.
         self._list_cache = list_cache if list_cache is not None else (-1.0 if runner is _proc.run else 0.0)
         self._lists: dict[tuple, tuple[float, str]] = {}
+        self._lists_gen = 0  # sube con cada escritura: un listado empezado antes de ella no se guarda
         self._lists_lock = threading.Lock()
         self._sleep = sleep
         self._backoff = backoff
@@ -433,6 +434,7 @@ class HermesCLI(KanbanComun):
     def _invalidate_lists(self) -> None:
         with self._lists_lock:
             self._lists.clear()
+            self._lists_gen += 1
 
     def _call_read(self, sub: str, args: tuple, timeout: int | None) -> subprocess.CompletedProcess:
         ttl = _proc.cli_settings()["list_cache"] if self._list_cache < 0 else self._list_cache
@@ -440,13 +442,14 @@ class HermesCLI(KanbanComun):
             return self._call_raw(*args, timeout=timeout)
         now = time.monotonic()
         with self._lists_lock:
-            hit = self._lists.get(args)
+            hit, gen = self._lists.get(args), self._lists_gen
         if hit and now - hit[0] < ttl:
             return subprocess.CompletedProcess([self.exe, "kanban", "--board", self.board, *args], 0, hit[1], "")
         cp = self._call_raw(*args, timeout=timeout)
         if cp.returncode == 0:  # solo lo bueno; el texto se guarda (no el objeto): cada lector parsea su copia
             with self._lists_lock:
-                self._lists[args] = (now, cp.stdout or "")
+                if gen == self._lists_gen:  # una escritura durante la lectura la deja obsoleta: no se guarda
+                    self._lists[args] = (now, cp.stdout or "")
         return cp
 
     def _call_raw(self, *args: str, timeout: int | None = None) -> subprocess.CompletedProcess:

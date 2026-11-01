@@ -100,6 +100,7 @@ GRACIA = 15 * 60  # s: un teclado gastado tanto tiempo (y no devuelto) = decisi�
 MADRID = ZoneInfo("Europe/Madrid")
 SEMBRAR_HORA = 9               # siembra diaria (además de la del arranque)
 REVISAR_SEMILLAS = 30 * 60     # s entre recálculos que solo cierran lo ya resuelto (sin publicar nada nuevo)
+REINTENTO_SIEMBRA = 5 * 60     # s mínimos entre dos intentos de siembra, salga bien o mal (t_4d64e8d5)
 PAUSA_ENTRE_MENSAJES = 1.0     # s entre mensajes de la siembra (TG-07: varias fichas seguidas dan 429)
 SEMBRAR_MAX = 40               # tope de mensajes por siembra
 NO_CIERRAN = frozenset({"lt_open", "estado_mas", "explain", "detail"})  # abren/explican: no deciden
@@ -164,6 +165,7 @@ class CanalAvisos:
         self.tarjeta = tarjeta
         self._inicio_pendiente = True
         self._sembrando = threading.Lock()
+        self._ultimo_intento: float | None = None  # reloj del último intento de siembra (con o sin éxito)
         # `copias(markup)` -> ids de usuario de quienes reciben copia de una aprobación (ver para_desk); None = nadie.
         self.copias: Callable[[dict | None], list[str]] | None = None
 
@@ -372,9 +374,11 @@ class CanalAvisos:
         cada REVISAR_SEMILLAS) o None."""
         if not self.sembrador or not self.destino:
             return None
+        now = self.clock()
+        if self._ultimo_intento is not None and 0 <= now - self._ultimo_intento < REINTENTO_SIEMBRA:
+            return None  # ya se intentó hace poco: un fallo (no actualiza `sembrado`) no se repite en cada pasada
         if self._inicio_pendiente:
             return "inicio"
-        now = self.clock()
         dt = datetime.fromtimestamp(now, MADRID)
         estado = self._load().get("sembrado") or {}
         if dt.hour >= SEMBRAR_HORA and estado.get("dia") != f"{dt:%Y-%m-%d}":
@@ -388,6 +392,7 @@ class CanalAvisos:
         if not modo or not self._sembrando.acquire(blocking=False):
             return
         self._inicio_pendiente = False
+        self._ultimo_intento = self.clock()
 
         def run() -> None:
             try:

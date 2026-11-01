@@ -126,3 +126,39 @@ def test_contador_de_procesos_por_ejecutable(monkeypatch):
     proc.run(["git", "log"])
     assert proc.stats_delta() == {"hermes": 1, "git": 2}
     assert proc.stats_delta() == {}
+
+
+def test_listado_empezado_antes_de_una_escritura_no_se_guarda():
+    """Contador de generación: una escritura que ocurre mientras se lee deja ese listado obsoleto."""
+    h = None
+
+    class Racing(Fake):
+        def __call__(self, cmd, **kw):
+            if cmd[4] == "list" and not self.calls:
+                h.comment("t_1", "mientras se lista")  # escritura concurrente
+            return super().__call__(cmd, **kw)
+
+    f = Racing('[{"id": "t_1"}]')
+    h = cli(f)
+    h.list_status("a", "ready")
+    h.list_status("a", "ready")
+    assert [c[0] for c in f.calls].count("list") == 2  # el primero no quedó en caché
+
+
+def _pasadas(ttl: float, pasadas: int = 5) -> int:
+    """Llamadas a hermes de `pasadas` pasadas: 8 lectores x 6 carriles x 3 estados y una escritura al final de cada una."""
+    f = Fake()
+    h = cli(f, ttl)
+    for _ in range(pasadas):
+        for _lector in range(8):
+            for lane in range(6):
+                for estado in ("ready", "running", "blocked"):
+                    h.list_status(f"claude-{lane}", estado)
+        h.comment("t_1", "x")
+    return len(f.calls)
+
+
+def test_medicion_antes_despues_llamadas_por_pasada():
+    """Antes (sin caché): 144 listados + 1 escritura por pasada. Después: 18 + 1 (uno por tablero y estado)."""
+    assert _pasadas(0.0) == 5 * (8 * 18 + 1)
+    assert _pasadas(60.0) == 5 * (18 + 1)

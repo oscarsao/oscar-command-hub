@@ -119,7 +119,8 @@ def sha_rama(repo: Path, rama: str) -> str | None:
     for ref in (f"origin/{rama}", rama):
         try:
             r = subprocess.run(["git", "-C", str(repo), "rev-parse", "--verify", "--quiet", ref],
-                               capture_output=True, text=True, timeout=30)
+                               capture_output=True, text=True, timeout=30,
+                               creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))  # sin consola (tarea programada)
         except (OSError, subprocess.SubprocessError):
             return None
         if r.returncode == 0 and r.stdout.strip():

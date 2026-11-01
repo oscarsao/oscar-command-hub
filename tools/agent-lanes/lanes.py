@@ -33,10 +33,9 @@ from __future__ import annotations
 
 import argparse
 import json
-import subprocess
 import sys
 
-from agent_lanes import cuota, drain, holds
+from agent_lanes import cuota, drain, holds, proc
 from agent_lanes.config import ROOT, load_lanes
 from agent_lanes.git_ops import GitOps, github_slug_problem
 from agent_lanes.hermes import HermesCLI
@@ -94,9 +93,9 @@ def take(task_id: str) -> int:
 def close(task_id: str, summary: str) -> int:
     lane, h, task = find_task(task_id)
     path = f"{lane.worktree_root}/lane-{task_id}"
-    head = subprocess.run(["git", "-C", path, "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
-    changed = subprocess.run(["git", "-C", path, "diff", "--name-only", f"{lane.base_ref}...HEAD"],
-                             capture_output=True, text=True).stdout.split()
+    head = proc.run(["git", "-C", path, "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+    changed = proc.run(["git", "-C", path, "diff", "--name-only", f"{lane.base_ref}...HEAD"],
+                       capture_output=True, text=True).stdout.split()
     check = verify(lane, task_id, path, {"branch": f"lane/{task_id}", "head_sha": head})
     if not check.ok:
         print("Verificación FALLIDA; la tarea sigue en running:\n- " + "\n- ".join(check.reasons))

@@ -2,6 +2,7 @@
 Todo con mocks de git/gh/railway/hermes/Telegram: ningún test toca un repo, GitHub ni Railway reales."""
 from __future__ import annotations
 
+import dataclasses
 import json
 import subprocess
 import tempfile
@@ -1126,3 +1127,36 @@ def test_migrateam_goes_through_develop_never_master():
     p = load_integrator_settings(env={}).policies["claude-migrateam"]
     assert "develop" in p.merge_label and "producción" not in p.merge_label
     assert "staging" in p.health_url and "production" not in p.health_url
+
+
+def _prunes(w):
+    return [a for a in w.argv("worktree") if "prune" in a]
+
+
+def test_worktree_prune_se_limita_por_intervalo(tmp_path):
+    """t_4d64e8d5: `git worktree prune` como mucho cada runner.worktree_cleanup_minutes por repo."""
+    integ, w, *_rest, clock = make(tmp_path)
+    wt = lambda n: Path(integ.settings.worktree_root) / f"int-t_{n}"  # noqa: E731
+    integ._remove_worktree("C:/repo", wt(1))
+    integ._remove_worktree("C:/repo", wt(2))
+    integ._remove_worktree("C:/other", wt(3))  # otro repo: su propio intervalo
+    assert len(_prunes(w)) == 2
+    clock.t += integ.settings.worktree_cleanup_minutes * 60 + 1
+    integ._remove_worktree("C:/repo", wt(4))
+    assert len(_prunes(w)) == 3
+
+
+def test_worktree_prune_cero_minutos_es_cada_vez(tmp_path):
+    integ, w, *_ = make(tmp_path)
+    integ.settings = dataclasses.replace(integ.settings, worktree_cleanup_minutes=0)
+    for n in (1, 2, 3):
+        integ._remove_worktree("C:/repo", Path(integ.settings.worktree_root) / f"int-t_{n}")
+    assert len(_prunes(w)) == 3
+
+
+def test_worktree_cleanup_minutes_se_lee_de_lanes_yaml(tmp_path):
+    y = tmp_path / "l.yaml"
+    y.write_text("runner:\n  worktree_cleanup_minutes: 3\nintegrator:\n  enabled: true\n", encoding="utf-8")
+    assert load_integrator_settings(y).worktree_cleanup_minutes == 3.0
+    y.write_text("integrator:\n  enabled: true\n", encoding="utf-8")
+    assert load_integrator_settings(y).worktree_cleanup_minutes == 10.0

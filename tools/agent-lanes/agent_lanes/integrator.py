@@ -234,6 +234,9 @@ class IntegratorSettings:
     pr_watch_repeat_hours: float = 6.0
     # Mensaje vivo del tema de Integración (panel_vivo.py): bloque `live_panel:` de lanes.yaml (vacío = apagado).
     live_panel: dict = field(default_factory=dict)
+    # `runner.worktree_cleanup_minutes` (t_4d64e8d5): `git worktree prune` como máximo cada tantos minutos por repo
+    # (0 = tras cada borrado, como antes). El `worktree remove` sí se hace siempre.
+    worktree_cleanup_minutes: float = 10.0
     commit_name: str = DEFAULT_COMMIT_NAME
     commit_email: str = DEFAULT_COMMIT_EMAIL
 
@@ -246,6 +249,13 @@ def _api_url_ok(url: str) -> bool:
 def ident_args(name: str = DEFAULT_COMMIT_NAME, email: str = DEFAULT_COMMIT_EMAIL) -> tuple[str, ...]:
     """Argumentos `-c` de git con el autor de los commits de fusión del integrador."""
     return ("-c", f"user.name={name}", "-c", f"user.email={email}", "-c", "commit.gpgsign=false")
+
+
+def _minutes(v, default: float) -> float:
+    try:
+        return max(0.0, float(default if v is None else v))
+    except (TypeError, ValueError):
+        return default
 
 
 def _truthy(v) -> bool:
@@ -305,7 +315,9 @@ def load_integrator_settings(path: Path | None = None, env: dict | None = None, 
                               batch_pending_days=int(cfg.get("batch_pending_days") or 3),
                               pr_watch_hours=float(2 if cfg.get("pr_watch_hours") is None else cfg["pr_watch_hours"]),
                               pr_watch_repeat_hours=float(cfg.get("pr_watch_repeat_hours") or 6),
-                              live_panel=data.get("live_panel") if isinstance(data.get("live_panel"), dict) else {})
+                              live_panel=data.get("live_panel") if isinstance(data.get("live_panel"), dict) else {},
+                              worktree_cleanup_minutes=_minutes((data.get("runner") or {}).get("worktree_cleanup_minutes"),
+                                                                10.0))
 
 
 # Texto de prueba ficticio (hub #171: «sk-ABCD…» en un test de redacción). Se admite si la COINCIDENCIA lleva ABCD,
@@ -483,6 +495,7 @@ class Integrator:
         self._inflight = 0  # botones de Oscar en marcha (merge, deploy, verificación de /health)
         self._inflight_lock = threading.Lock()
         self._last_pass: float | None = None
+        self._last_prune: dict[str, float] = {}  # repo -> self._clock() del último `git worktree prune`
         self._now = now  # reloj de pared: antigüedad del resumen fijado (self._clock es monotónico)
         # Resumen fijado del tema de Integración: se edita en cada pasada (y tras cada botón) si cambia.
         target = settings.integration_telegram
@@ -1214,6 +1227,12 @@ class Integrator:
             raise PermissionError(f"worktree ajeno: {wt}")
         if wt.exists():
             self._git(repo, "worktree", "remove", "--force", str(wt))
+        every = self.settings.worktree_cleanup_minutes * 60
+        now = self._clock()
+        last = self._last_prune.get(repo)
+        if every > 0 and last is not None and 0 <= now - last < every:
+            return  # prune reciente: el `remove` ya desregistró el worktree; lo huérfano espera al siguiente
+        self._last_prune[repo] = now
         self._git(repo, "worktree", "prune")
 
     # --- avisos ---------------------------------------------------------------------------------------
@@ -2304,6 +2323,8 @@ def launch_detached(argv: list[str], cwd: str) -> None:
     se lanza sin él. Aun así, `restart --drain` no debe depender de sobrevivir a que maten al runner."""
     flags = 0
     if sys.platform == "win32":
+        # DETACHED_PROCESS ya implica sin consola (no hereda ni crea una): equivale a CREATE_NO_WINDOW, que no se
+        # puede combinar con él.
         flags = (getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
                  | getattr(subprocess, "DETACHED_PROCESS", 0x00000008))
     kw = dict(cwd=cwd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, close_fds=True)

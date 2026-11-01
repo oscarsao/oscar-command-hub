@@ -60,6 +60,7 @@ def launch_restart(lanes_py: Path | None = None, log_path: Path = RESTART_LOG) -
     log_path.parent.mkdir(parents=True, exist_ok=True)
     flags = 0
     if os.name == "nt":
+        # DETACHED_PROCESS ya implica sin consola (no hereda ni crea una): equivale a CREATE_NO_WINDOW y no se pueden combinar.
         flags = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
     with open(log_path, "ab") as out:
         kw = dict(cwd=str(ROOT), stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT)

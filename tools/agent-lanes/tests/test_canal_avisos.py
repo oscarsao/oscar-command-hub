@@ -594,3 +594,35 @@ def test_estado_tarjeta_de_lee_el_tablero_y_la_rama(tmp_path):
     tarjeta = ca.estado_tarjeta_de(desk, git=lambda *a: 0)
     assert tarjeta("t_a") == {"status": "done", "comentarios": ["INTEGRADO 1"], "rama_integrada": True}
     assert tarjeta("t_x") is None
+
+
+def test_la_siembra_no_se_repite_en_cada_pasada_ni_tras_fallar(tmp_path):
+    """t_4d64e8d5: `refrescar` corre en cada pasada; el sembrador (lecturas de hermes) no debe repetirse mientras no
+    toque, ni reintentarse de inmediato si falló (un fallo no actualiza `sembrado`)."""
+    ahora = [1_700_000_000.0]
+    llamadas = []
+
+    def sembrador():
+        llamadas.append(1)
+        raise RuntimeError("hermes no responde")
+
+    c = CanalAvisos(TG(), OWNER, TEMA, tmp_path, vivo=lambda t: False, sembrador=sembrador, clock=lambda: ahora[0])
+    for _ in range(5):
+        c.refrescar()
+    assert len(llamadas) == 1  # el fallo no se reintenta en la misma ventana
+    ahora[0] += 6 * 60
+    c.refrescar()
+    assert len(llamadas) == 2  # pasada la ventana sí se reintenta
+
+
+def test_una_siembra_hecha_no_se_vuelve_a_calcular_hasta_la_revision(tmp_path):
+    ahora = [1_700_000_000.0]
+    llamadas = []
+    c = CanalAvisos(TG(), OWNER, TEMA, tmp_path, vivo=lambda t: False, clock=lambda: ahora[0],
+                    sembrador=lambda: llamadas.append(1) or [])
+    for _ in range(4):
+        c.refrescar()
+    assert len(llamadas) == 1
+    ahora[0] += 31 * 60  # REVISAR_SEMILLAS
+    c.refrescar()
+    assert len(llamadas) == 2
