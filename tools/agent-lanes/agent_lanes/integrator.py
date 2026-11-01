@@ -336,6 +336,9 @@ def gate_fingerprint() -> str:
 
 # --- gates puros ---------------------------------------------------------------------------------------
 
+# Lockfiles que .gitattributes marca `-diff` (pnpm-lock.yaml): git los muestra como «Binary files» sin ser binarios.
+LOCKFILES = ("pnpm-lock.yaml", "package-lock.json", "yarn.lock", "poetry.lock", "uv.lock", "Cargo.lock")
+
 MEDIA_EXTS = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico", ".avif", ".bmp", ".woff", ".woff2", ".ttf", ".otf")
 
 
@@ -356,7 +359,7 @@ def scan_secrets(diff: str) -> list[tuple[str, int, str]]:
                 path = None if p == "/dev/null" else (p[2:] if p.startswith("b/") else p)
             elif raw.startswith("Binary files"):
                 bpath = raw[13:].split(" and ")[-1].split(" differ")[0].removeprefix("b/")
-                if not bpath.lower().endswith(MEDIA_EXTS):
+                if not bpath.lower().endswith(MEDIA_EXTS) and bpath.rsplit("/", 1)[-1] not in LOCKFILES:
                     hits.append((bpath, 0, "archivo binario sin revisar"))
             if not raw.startswith("@@"):
                 continue
