@@ -8,7 +8,6 @@ agentes se niegan a ejecutar). Sin red ni estado en disco.
 from __future__ import annotations
 
 import re
-from pathlib import Path
 
 from .config import ROOT
 
