@@ -114,6 +114,9 @@ def _build() -> dict[str, Ajuste]:
         Ajuste("avisos.alerta_cada_horas", "Avisos", "Horas mínimas entre avisos repetidos del monitor", 24, "float",
                "Una misma alerta (RAM, develop↔master…) sale como mucho una vez en este plazo. /silenciar <clave> <horas> "
                "la calla del todo un tiempo. Lo lee el monitor.", 1, 168, (6, 12, 24, 48)),
+        Ajuste("avisos.huella_ventana_horas", "Avisos", "Horas sin repetir el mismo aviso del monitor", None, "float",
+               "Un aviso con el mismo texto (ignorando cifras) no se repite en este plazo aunque cambie su clave. "
+               "Sin editar vale lo de «Horas mínimas entre avisos repetidos». 0 = sin filtro. Lo lee el monitor.", 0, 168, (6, 12, 24, 48)),
         Ajuste("avisos.retro_hora", "Avisos", "Hora de la retro semanal del lunes", 9, "int",
                "Hora (0-23, Madrid) desde la que el lunes sale el informe de fricción de la semana.", 0, 23,
                (8, 9, 10, 12)),

@@ -504,6 +504,6 @@ def sweep_done(lane: Lane, h, git, clock: Callable[[], float] = time.monotonic) 
                 cleaned.append(task["id"])
             else:
                 _limpieza_fallida[task["id"]] = clock()
-                log.warning("%s: limpieza pendiente: %s", task["id"], msg)
+                log_limpieza_pendiente(task["id"], msg)  # una línea por tarea y día, no por intento
                 resumen_carriles.anotar("limpieza", f"{task['id']}: {msg}", clave=task["id"])  # F1-04: 1 vez al día
     return cleaned

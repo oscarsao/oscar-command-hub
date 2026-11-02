@@ -94,6 +94,25 @@ def alert_cap_seconds() -> float:
     return max(h, 0.0) * 3600
 
 
+def alert_fingerprint(level: str, text: str) -> str:
+    """Huella de un aviso: nivel + texto sin cifras (minutos, porcentajes, ids numéricos) ni espacios de más, para que
+    «RAM 86 %» y «RAM 87 %» cuenten como el mismo aviso."""
+    import hashlib
+    cuerpo = re.sub(r"\d+", "#", " ".join(text.split())).lower()
+    return hashlib.sha1(f"{level}|{cuerpo}".encode("utf-8")).hexdigest()[:16]
+
+
+def fingerprint_window_seconds() -> float:
+    """Horas durante las que el mismo aviso (misma huella) no se repite: ajuste del hub avisos.huella_ventana_horas
+    (agent-lanes/ajustes_hub.json); sin editar, la misma que la de la clave (alert_cap_seconds). 0 = sin filtro."""
+    import json
+    try:
+        h = float(json.loads((LANES / "ajustes_hub.json").read_text(encoding="utf-8"))["valores"]["avisos.huella_ventana_horas"])
+    except (OSError, ValueError, KeyError, TypeError):
+        return alert_cap_seconds()
+    return max(h, 0.0) * 3600
+
+
 def code_fingerprint(base: Path | None = None) -> tuple:
     """(nombre, mtime_ns, tamaño) de los .py del monitor: cambia cuando un merge aplicado los reescribe."""
     base = base or Path(__file__).resolve().parent
@@ -296,10 +315,16 @@ class Monitor:
             every = max(every, alert_cap_seconds())  # como mucho 1 al día por clave
         if t - self._seen.get(key, 0) < every:
             return
+        huella = "huella:" + alert_fingerprint(level, text) if capped else None
+        if huella and t - self._seen.get(huella, 0) < fingerprint_window_seconds():
+            return  # mismo aviso con otra clave (o clave nueva): no se repite dentro de la ventana
         self._seen[key] = t
+        if huella:
+            self._seen[huella] = t
         if capped and self.write_log:  # sobrevive a reinicios del monitor (si no, cada reinicio repetiría todo)
             import json
-            self._daily = {k: v for k, v in {**self._daily, key: t}.items() if t - v < 7 * 86400}
+            self._daily = {k: v for k, v in {**self._daily, key: t, **({huella: t} if huella else {})}.items()
+                           if t - v < 7 * 86400}
             try:
                 (STATE / "alert_daily.json").write_text(json.dumps(self._daily), encoding="utf-8")
             except OSError:
