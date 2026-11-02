@@ -5,6 +5,7 @@
     py -3.12 tools/kanban_migrar.py importar  --origen <dir> [--seco]   # SQLite -> hub.* (HUB_DB_DSN)
     py -3.12 tools/kanban_migrar.py exportar  --destino <dir> --esquema-de <kanban.db> [--espejo --retener 14]
     py -3.12 tools/kanban_migrar.py comparar  --origen <dir>            # SQLite frente a hub.*: recuentos e ids
+    py -3.12 tools/kanban_migrar.py analizar  --origen <dir>            # importación en seco SIN Postgres (solo lectura)
 
 `--origen` acepta la carpeta de Hermes (kanban.db = board default + kanban/boards/<b>/kanban.db) o una carpeta con
 copias `<board>.db`. Los SQLite de origen se abren SIEMPRE en solo lectura (`mode=ro`). `exportar` (= «volver» del
@@ -497,6 +498,88 @@ def comparar(a: dict[str, dict], b: dict[str, dict]) -> list[str]:
     return diffs
 
 
+_ID_RE = re.compile(r"^t_[0-9a-f]{8}$")
+BLOCK_KINDS = ("dependency", "needs_input", "capability", "transient")
+
+
+def analizar(paths: dict[str, Path]) -> tuple[dict[str, dict], dict[str, dict]]:
+    """Importación en seco SIN Postgres: resultado esperado de `importar` y filas que no entrarían, calculado solo con
+    los SQLite (solo lectura, sin red, sin tocar hub.*). Devuelve (esperado, problemas): `esperado` tiene la forma de
+    `recuentos_sqlite` para contrastarlo con `comparar` (las huérfanas salen como diferencia); `problemas` cuenta, por
+    board, las filas que el esquema de hub.* rechazaría o que el importador saltaría. Solo recuentos, nunca contenido."""
+    esperado: dict[str, dict] = {}
+    problemas: dict[str, dict] = {}
+    vistos: set[str] = set()
+    for board, path in paths.items():
+        if path.stat().st_size == 0:
+            continue
+        src = abrir_ro(path)
+        try:
+            tabs = _tables(src)
+            if "tasks" not in tabs:
+                continue
+            prob: dict[str, int] = {}
+
+            def add(k: str) -> None:
+                prob[k] = prob.get(k, 0) + 1
+
+            ids: set[str] = set()
+            estados: dict[str, int] = {}
+            for r in src.execute("SELECT * FROM tasks"):
+                row = dict(r)
+                tid = row["id"]
+                if not _ID_RE.match(str(tid)):
+                    add("id_con_formato_no_valido")
+                if row.get("title") is None:
+                    add("sin_titulo")
+                if row.get("status") not in STATUSES:
+                    add("estado_no_valido")
+                if row.get("block_kind") is not None and row["block_kind"] not in BLOCK_KINDS:
+                    add("block_kind_no_valido")
+                if tid in vistos:
+                    add("id_repetido_en_otro_board")
+                vistos.add(tid)
+                ids.add(tid)
+                estados[row.get("status")] = estados.get(row.get("status"), 0) + 1
+            exp = {"estados": estados, "tareas": len(ids), "ids": ids, "comentarios": 0, "eventos": 0,
+                   "ejecuciones": 0}
+            obligatorias = {"task_runs": [("started_at", "ejecucion_sin_started_at")],
+                            "task_events": [("kind", "evento_sin_kind")],
+                            "task_comments": [("body", "comentario_sin_cuerpo"), ("author", "comentario_sin_autor")]}
+            for tabla, clave, huerfana in (("task_runs", "ejecuciones", "ejecuciones_huerfanas"),
+                                           ("task_events", "eventos", "eventos_huerfanos"),
+                                           ("task_comments", "comentarios", "comentarios_huerfanos")):
+                if tabla not in tabs:
+                    continue
+                for r in src.execute(f"SELECT * FROM {tabla}"):
+                    if r["task_id"] not in ids:
+                        add(huerfana)
+                        continue
+                    exp[clave] += 1
+                    # NOT NULL de hub.*: si falta, el INSERT del importador fallaría y abortaría todo
+                    for col, nombre in obligatorias[tabla]:
+                        if col in r.keys() and r[col] is None:
+                            add(nombre)
+            if ids:
+                esperado[board] = exp
+            if prob:
+                problemas[board] = prob
+        finally:
+            src.close()
+    return esperado, problemas
+
+
+def texto_analisis(origen: dict[str, dict], esperado: dict[str, dict], problemas: dict[str, dict]) -> str:
+    diffs = comparar({b: v for b, v in origen.items() if v["tareas"]}, esperado)
+    lines = ["importación esperada:", texto_recuentos(esperado) or "(nada que importar)",
+             "diferencias origen frente a esperado: " + ("ninguna" if not diffs else "")]
+    lines.extend(f"  {d}" for d in diffs)
+    lines.append("filas que no se podrían importar: " + ("ninguna" if not problemas else ""))
+    for b in sorted(problemas):
+        lines.append(f"  {b}: " + ", ".join(f"{k} {v}" for k, v in sorted(problemas[b].items())))
+    return "\n".join(lines)
+
+
 def texto_recuentos(r: dict[str, dict]) -> str:
     lines = []
     for board in sorted(r):
@@ -527,6 +610,8 @@ def main(argv: list[str] | None = None) -> int:
         p.add_argument("--retener", type=int, default=14)
     p = sub.add_parser("comparar")
     p.add_argument("--origen", type=Path, required=True)
+    p = sub.add_parser("analizar", help="importación en seco sin Postgres: esperado, diferencias y filas rechazadas")
+    p.add_argument("--origen", type=Path, required=True)
     args = ap.parse_args(argv)
     try:
         if args.cmd == "recuentos":
@@ -539,6 +624,11 @@ def main(argv: list[str] | None = None) -> int:
             _fuera_de_hermes(args.destino)
             print(json.dumps(copiar(args.origen, args.destino), ensure_ascii=False))
             return 0
+        if args.cmd == "analizar":
+            paths = descubrir(args.origen)
+            esperado, problemas = analizar(paths)
+            print(texto_analisis(recuentos_sqlite(paths), esperado, problemas))
+            return 0 if not problemas else 1
         if args.cmd == "importar":
             conn = conectar()
             print(json.dumps(importar(conn, descubrir(args.origen), seco=args.seco), ensure_ascii=False))
