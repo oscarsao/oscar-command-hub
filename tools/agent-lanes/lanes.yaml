@@ -104,6 +104,20 @@ live_panel: {enabled: true, queue: 3, done: 5, done_hours: 24, conflicts: 6}
 # mucho cada `min_seconds`. Fijarlo necesita que el bot sea admin del grupo con «fijar mensajes».
 hub_panel: {enabled: true, chat: -1003731090094, thread: 38, min_seconds: 180}
 
+# Tareas del equipo por Telegram (/asignar, /tareas_equipo, /mis_tareas, /hecha; decisión de Oscar 22-10). Viven en el
+# tablero «equipo» de Hermes, FUERA de los carriles: ningún carril lo lee (si `tablero` coincidiera con el de un carril, la
+# función se apaga). Se crea una vez con `hermes kanban boards create equipo`. Quitar el bloque o `activo: false` la apaga.
+#   grupos: nombre -> chat/tema «📌 Tareas del equipo» de ese grupo. Cada persona apunta a su grupo con `grupo_tareas` en
+#     people.yaml; quien no tiene grupo (Oscar) se publica en el chat donde se pidió.
+#   recordatorio: resumen diario a partir de `hora` (Madrid) con las tareas abiertas por persona, en el grupo de cada una.
+tareas_equipo:
+  activo: true
+  tablero: equipo
+  recordatorio: {activo: true, hora: 9}
+  grupos:
+    marketing: {chat: -1004277259008, thread: 275}   # Marketing Píldora Digital · 📌 Tareas del equipo (Ingerber, Andrea)
+    desarrollo: {chat: -1003731090094, thread: 9}    # Desarrollo · 📌 Tareas del equipo (Angel)
+
 # Topes de los avisos de Telegram (los de fábrica están en notices.LIMITS). Nada se recorta en silencio: lo que no cabe
 # se marca ("➕ +2 preguntas más", "[…recortado]") y el resto va en un segundo mensaje o en la tarjeta.
 notices:

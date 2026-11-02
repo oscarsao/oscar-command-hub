@@ -31,6 +31,12 @@
 #     marcas; "*" = todas (Maria). Sin "*" y sin marca clara en el destino, se rechaza. OscarHQ cuenta como Pildora.
 #     Limite conocido (pendiente de Oscar): los listados (/tareas, /estado...) aun muestran tarjetas de otras marcas;
 #     solo se veta ACTUAR sobre ellas. /ajustes, /integrador, /sesion... quedan reservados a quien tiene "*".
+#   - Tareas del equipo (/asignar, /tareas_equipo, /mis_tareas, /hecha; tablero «equipo»), campos OPCIONALES por persona:
+#     username: sin @ (4-32 letras/numeros/_). Si lo hay, la mencion es @username; si no, un enlace tg://user?id=...
+#       Se resuelve /asignar @persona por clave, name o username.
+#     grupo_tareas: clave del grupo en lanes.yaml `tareas_equipo.grupos` donde se publican SUS tareas (marketing,
+#       desarrollo). Sin el, la tarea se publica en el chat donde se pidio. Oscar no se declara aqui: es asignable.
+#     tareas_equipo: false = no participa (ni asignable ni usa los comandos ni recordatorios): sus tareas pasan a Oscar.
 people:
   maria:
     name: María
@@ -40,6 +46,7 @@ people:
     can: []         # [carril] reservado; desactivado por defecto
     operador: true  # mismo acceso que Oscar en el bot de carriles (comandos, botones, aprobaciones); decision de Oscar 19-10
     permisos: [aprobar_produccion]  # OK con boton a produccion del carril integrador; decision de Oscar 22-10
+    tareas_equipo: false   # fuera de las tareas del equipo (Oscar 22-10): sus tareas pasan a Oscar
   ingerber:
     name: Ingerber
     user_id: "5000000002"   # Ingerber (CMO Pildora)
@@ -47,6 +54,7 @@ people:
     role: cmo
     brands: [Píldora]
     can: []
+    grupo_tareas: marketing   # sin username: se le menciona con enlace tg://user?id=
   andrea:
     name: Andrea
     user_id: "5000000003"   # Andrea (marketing, a prueba)
@@ -54,6 +62,8 @@ people:
     role: marketing
     brands: [Píldora]
     can: []
+    username: andrea_ejemplo
+    grupo_tareas: marketing
   mauredy:
     name: Mauredy
     user_id: null   # PENDIENTE - rellenar cuando Oscar confirme el Telegram ID (atencion cliente + desarrollo MigraTeam)
@@ -67,6 +77,7 @@ people:
     role: dev
     brands: [Píldora, Signal, Hub]   # D9 (26-10): decide también el Hub. SIN MigraTeam; sin credenciales Railway/Supabase/Vercel
     can: []
+    grupo_tareas: desarrollo
     # OK final de Oscar el 22-10 (consola del integrador): operador acotado a Pildora (=OscarHQ) y Signal por el veto
     # de marca (#72). Nada en MigraTeam ni en lo demas.
     operador: true
