@@ -47,7 +47,7 @@ def test_same_key_alerts_once_a_day_even_if_every_is_short(monitor, tmp_path):
         m.alert("ALTA", "algo roto", "k1", every=60)
     assert pushed == ["algo roto"]
     assert (tmp_path / "alerts.log").read_text(encoding="utf-8").count("algo roto") == 1
-    m._seen["k1"] -= 25 * 3600  # pasó más de un día
+    m._seen = {k: v - 25 * 3600 for k, v in m._seen.items()}  # pasó más de un día (clave y huella)
     m.alert("ALTA", "algo roto", "k1", every=60)
     assert len(pushed) == 2
 
@@ -66,7 +66,7 @@ def test_cap_is_editable_from_ajustes_hub(monitor, tmp_path):
         json.dumps({"valores": {"avisos.alerta_cada_horas": 1}}), encoding="utf-8")
     m, pushed = make(monitor)
     m.alert("ALTA", "x", "k1", every=60)
-    m._seen["k1"] -= 2 * 3600
+    m._seen = {k: v - 2 * 3600 for k, v in m._seen.items()}  # clave y huella
     m.alert("ALTA", "x", "k1", every=60)
     assert len(pushed) == 2
 

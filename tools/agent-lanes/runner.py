@@ -33,6 +33,7 @@ from agent_lanes.deps import ShowCache, TreeReader
 from agent_lanes.hermes_answers import HermesAnswers
 from agent_lanes.reminders import Reminders
 from agent_lanes.limpieza import LimpiezaRunner, LimpiezaTicker
+from agent_lanes.recolector import Recolector, RecolectorTicker
 from agent_lanes import avisos_revision, workflows
 from agent_lanes.avance_workflows import AvanceTicker, AvanceWorkflows
 from agent_lanes.avisos_revision import AvisosRevision, AvisosRevisionTicker
@@ -264,6 +265,7 @@ def main(argv: list[str] | None = None) -> int:
     guard = None
     reconcile = None
     limpieza = None
+    recolector = RecolectorTicker(Recolector(all_lanes, hermes_for, merged_pr=git.merged_pr))  # apagado salvo lanes.yaml
     paradas = None
     avisos_ticker = None
     wf_ticker = None
@@ -374,6 +376,8 @@ def main(argv: list[str] | None = None) -> int:
             reconcile.tick()
         if limpieza:
             limpieza.tick()
+        if recolector:
+            recolector.tick()
         if paradas:
             paradas.tick()
         if avisos_ticker:

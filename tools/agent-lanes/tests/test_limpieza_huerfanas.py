@@ -90,7 +90,8 @@ class Git:
         return False, "no se pudo"
 
 
-def test_limpieza_fallida_se_reintenta_cada_6h_y_loguea_una_vez(tmp_path, caplog):
+def test_limpieza_fallida_se_reintenta_cada_6h_y_loguea_una_vez_al_dia(tmp_path, caplog, monkeypatch):
+    monkeypatch.setattr(review, "LIMPIEZA_LOG_PATH", tmp_path / "limpieza_log.json")
     review._limpieza_fallida.clear()
     root = tmp_path / "_lanes"
     (root / "lane-t_dddddddd").mkdir(parents=True)
@@ -99,8 +100,9 @@ def test_limpieza_fallida_se_reintenta_cada_6h_y_loguea_una_vez(tmp_path, caplog
         for _ in range(5):
             sweep_done(lane, Hermes(), g, clock=lambda: t[0])
             t[0] += 600
-        assert g.n == 1 and sum("limpieza pendiente" in r.message for r in caplog.records) == 1
+        assert g.n == 1 and sum("limpieza local pendiente" in r.message for r in caplog.records) == 1
         t[0] += REINTENTO_LIMPIEZA
         sweep_done(lane, Hermes(), g, clock=lambda: t[0])
-    assert g.n == 2 and sum("limpieza pendiente" in r.message for r in caplog.records) == 2
+    # El 2.º intento (6 h después, mismo día) reintenta pero no repite la línea: una por tarea y día.
+    assert g.n == 2 and sum("limpieza local pendiente" in r.message for r in caplog.records) == 1
     review._limpieza_fallida.clear()
