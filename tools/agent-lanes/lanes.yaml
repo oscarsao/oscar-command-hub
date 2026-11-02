@@ -398,6 +398,12 @@ promote:
     seeds: [backend/seeds/, backend/app/seeds/]
     sensitive_paths: [backend/alembic/, backend/alembic.ini, backend/Procfile, backend/railway.json, backend/railway.toml, backend/nixpacks.toml, backend/Dockerfile, railway.json, vercel.json, frontend/vercel.json, .github/]
 
+# Recolector nocturno de worktrees y ramas locales ya integradas (agent_lanes/recolector.py). APAGADO por defecto.
+# Una vez al día, pasada `hora` (Madrid), quita el worktree lane-<id> y su rama local SOLO si la tarjeta está done/archived,
+# el worktree está limpio, sin commits sin empujar y la rama ya está en la base. Nunca --force ni ramas sin fusionar.
+# seco: true = solo informa (.state/recolector.json); ponlo a false cuando el informe en seco te convenza.
+recolector: {enabled: false, hora: 3, seco: true}
+
 # Avisos de producción del monitor (tools/monitor/prodwatch.py): fallo de un despliegue de PRODUCCIÓN en Vercel (las
 # vistas previas de lane/* no avisan; un aviso por despliegue) y salud del servidor (health_url de cada carril de
 # `integrator.lanes` + estado de su aplicación en Dokploy). Tokens por NOMBRE de variable (agent-lanes/.env), no aquí.
