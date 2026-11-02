@@ -94,10 +94,10 @@ URGENT_EVERY = 120  # s mínimos entre pasadas del aviso inmediato de bloqueos d
 COMMANDS = (
     ("ajustes", "Ajustes del hub con botones"),
     ("hoy", "Resumen del día (el de las 8:00) ahora"),
-    ("integrador", "Estado del integrador, PR de sesiones interactivas y bloqueos de guard"),
+    ("integrador", "Estado del integrador, PR de sesiones y bloqueos de guard"),
     ("encolar", "Encola el PR de una sesión interactiva: /encolar <repo> <PR>"),
     ("decisiones", "Bandeja de decisiones pendientes con botones"),
-    ("atencion", "Todo lo que espera a Oscar, con botones para resolverlo aquí"),
+    ("atencion", "Todo lo que espera a Oscar, con botones"),
     ("aprobar", "Tareas listas para integrar"),
     ("tareas", "En curso y en cola por carril: /tareas [migrateam|pildora|nextjobs]"),
     ("cola", "Qué corre y qué sigue en cada carril, por prioridad: /cola [marca]"),
@@ -107,7 +107,7 @@ COMMANDS = (
     ("hazlo", "Crea una tarea pequeña (carril según el texto): /hazlo <texto>"),
     ("pedir", "Pide algo con tipo (bug o feature) y preguntas: /pedir <texto>"),
     ("estado", "En curso, esperando a Oscar y pendiente de desplegar: /estado [marca]"),
-    ("falta", "Qué frena una salida, con el siguiente paso arriba: /falta [marca]"),
+    ("falta", "Qué frena una salida: /falta [marca]"),
     ("desplegar", "Despliega lo fusionado, con doble confirmación: /desplegar oscarhq"),
     ("promover", "Promover MigraTeam a producción (doble confirmación): /promover migrateam"),
     ("lote", "Montar ya el lote de un proyecto: /lote migrateam|oscarhq"),
@@ -126,11 +126,15 @@ COMMANDS = (
     ("pendiente", "Lo tuyo en UN mensaje, con botones: preguntas, PR y tarjetas"),
     ("personal", "Saca tu backlog personal del kanban (confirmas con botones)"),
     ("agrupar", "Propone fusionar, encadenar o juntar tarjetas abiertas: /agrupar [proyecto|todo]"),
-    ("workflow", "Trabajo largo: plan y coste, nada se crea hasta aprobar: /workflow <texto>"),
+    ("workflow", "Trabajo largo: plan y coste antes de crear: /workflow <texto>"),
     ("pendientes", "Tus pendientes (pasos «tuyo» y «decidir») con botones"),
     ("epicas", "Vista de épicas (fuera de la cola de decisiones)"),
     ("retenidas", "Vista de tarjetas retenidas"),
     ("backlog", "Vista del backlog del bot del equipo"),
+    ("asignar", "Tarea al equipo: /asignar @persona Título | detalle"),
+    ("tareas_equipo", "Tareas abiertas del equipo"),
+    ("mis_tareas", "Tus tareas del equipo"),
+    ("hecha", "Cierra una: /hecha t_xxx"),
 )
 COMMAND_SCOPES = ("default", "all_private_chats", "all_group_chats")
 HELP_ALIASES = ("start", "ayuda", "help")
@@ -463,14 +467,26 @@ class CommandCenter:
                 + "\n· Trabajos (yo): a los /comandos y a las respuestas (reply) a mis mensajes. En grupo no leo el "
                   "texto suelto."
                 + "\n· Hermes (@oscarsaoBot): conversa sin mención en Gestión (temas 5, 230, 231 y 1903), Marketing "
-                  "(tema 406) y Desarrollo (tema 71); en el resto de temas, menciónalo."
-                + "\n· Un /comando de Hermes (/new, /status…) escríbelo como /comando@oscarsaoBot; los míos, como "
+                  "(tema 406) y Desarrollo (tema 71); en el resto, menciónalo."
+                + "\n· Un /comando de Hermes (/new, /status…): /comando@oscarsaoBot; los míos: "
                   "/comando@pildora_carriles_bot."
                 + "\n\n/hazlo crea la tarea ya (prioridad alta, tope 15 min). /desplegar pide dos toques (🚀 y ✅ Sí); "
                   "/promover, doble confirmación."
-                + "\nSi me escribes en texto libre (solo en privado): una pregunta se responde con datos reales; un "
-                  "trabajo pequeño lleva preguntas con botones y se crea; uno largo propone /workflow; producción, "
+                + "\nSi me escribes en texto libre (solo en privado): una pregunta se responde con datos; un "
+                  "trabajo pequeño lleva preguntas con botones; uno largo propone /workflow; producción, "
                   "SQL u otro repo va al integrador.")
+
+    def _equipo_apagado(self, where, args, brand):
+        """Si llega aquí es que Equipo no lo atendió: función apagada o la persona no participa (people.yaml)."""
+        self._send(where, "Las tareas del equipo no están activas para ti (función apagada o no participas).",
+                   html=False)
+
+    cmd_asignar = cmd_tareas_equipo = cmd_mis_tareas = cmd_hecha = _equipo_apagado  # los atiende equipo.Equipo
+
+    def equipo_tick(self):
+        """Recordatorio diario de las tareas del equipo (lo cuelga veto_tick, que ya late cada minuto)."""
+        equipo = getattr(self.desk, "equipo", None)
+        return equipo.tick() if equipo else None
 
     # --- datos ----------------------------------------------------------------------------------------
 
@@ -1369,7 +1385,7 @@ class CommandCenter:
         except Exception as exc:
             log.warning("avisos urgentes: %s", exc)
         for tick in (self.guard_tick, self.daily_tick, self.peticiones_tick, self.al_dia_tick,
-                     self.vigilancia_tick):  # cola, partes de las 9:00, /al_dia, tema 👥 Equipo
+                     self.vigilancia_tick, self.equipo_tick):  # cola, partes de las 9:00, /al_dia, tema 👥 Equipo, tareas del equipo
             try:
                 tick()
             except Exception as exc:

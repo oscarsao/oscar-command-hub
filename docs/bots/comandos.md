@@ -89,6 +89,15 @@ Por eso, en un grupo, escribe siempre `/comando@pildora_carriles_bot` (el menú 
 | `/personal` | Propone sacar tus tarjetas personales del kanban de carriles; confirmas con [✅ Mover] | `/personal` |
 | `/epicas`, `/retenidas`, `/backlog` | Vistas aparte de lo que no entra en la cola de decisiones | `/retenidas` |
 
+### 👥 Equipo (tareas entre personas)
+Para quien está en `people.yaml` (y Oscar), salvo `tareas_equipo: false` (María). Detalle en `docs/telegram-tareas-equipo.md`.
+| Comando | Qué es y para qué sirve | Ejemplo |
+|---|---|---|
+| `/asignar @persona Título \| detalle [!alta] [para:dd-mm]` | Crea una tarea del equipo y la publica en el grupo de la persona | `/asignar @ingerber Crear app de LinkedIn !alta para:28-10` |
+| `/tareas_equipo` | Tareas abiertas, por persona | `/tareas_equipo` |
+| `/mis_tareas` | Las tuyas | `/mis_tareas` |
+| `/hecha t_xxx` | La cierra el asignado, quien la creó u Oscar | `/hecha t_3d4a9c10` |
+
 ### 🔔 Avisos y ajustes
 | Comando | Qué es y para qué sirve | Ejemplo |
 |---|---|---|
