@@ -26,6 +26,7 @@ GRUPOS = (
     ("🚀 Publicar", ("lote", "desplegar", "promover", "al_dia", "aldia", "encolar")),
     ("🧹 Ordenar el kanban", ("prioridad", "agrupar", "personal", "epicas", "retenidas", "backlog")),
     ("🔔 Avisos y ajustes", ("avisos", "silenciar", "ajustes")),
+    ("👥 Equipo", ("asignar", "tareas_equipo", "mis_tareas", "hecha")),
 )
 # La sesión de correcciones acumula el texto libre del DM: en un grupo no sirve, así que no se ofrece en su menú.
 SOLO_DM = ("sesion",)
@@ -53,8 +54,7 @@ def texto_ayuda(commands, solo_todas_las_marcas, docs_url: str | None = None) ->
         "· Oscar y María: todos.\n"
         "· Operador acotado a una marca (Angel): los de su marca, sin "
         + ", ".join(f"/{c}" for c in solo_todas_las_marcas[:4]) + "… (lista en la guía).\n"
-        "· Los demás: ninguno; hablan con Hermes o con Avisos.\n"
-        "Si un comando no responde, dilo: mejor que dejar de usarlo.")
+        "· Los demás: ninguno; hablan con Hermes o con Avisos.")
     guia = f"\nGuía con ejemplos: {docs_url}" if docs_url else f"\nGuía con ejemplos: {DOCS_RELATIVE} (repo del hub)"
     partes.append(guia)
     return "\n".join(partes)

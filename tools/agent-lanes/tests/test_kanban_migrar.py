@@ -200,6 +200,44 @@ def test_origen_en_solo_lectura(tmp_path):
     conn.close()
 
 
+def test_analizar_limpio_coincide_con_el_origen(tmp_path, capsys):
+    hermes_db(tmp_path / "default.db", tasks=3)
+    esperado, problemas = km.analizar(km.descubrir(tmp_path))
+    assert problemas == {}
+    origen = km.recuentos_sqlite(km.descubrir(tmp_path))
+    assert km.comparar(origen, esperado) == []
+    assert km.main(["analizar", "--origen", str(tmp_path)]) == 0
+    assert "ninguna" in capsys.readouterr().out
+
+
+def test_analizar_detecta_huerfanas_y_filas_rechazadas(tmp_path, capsys):
+    db = hermes_db(tmp_path / "default.db", tasks=2)
+    hermes_db(tmp_path / "otro.db", tasks=1)  # mismo id t_00000000 que default: choca entre boards
+    c = sqlite3.connect(db)
+    c.execute("PRAGMA foreign_keys = OFF")
+    c.execute("INSERT INTO task_comments (task_id, author, body, created_at) VALUES ('t_ffffffff', 'x', 'y', 1)")
+    c.execute("UPDATE tasks SET status = 'raro' WHERE id = 't_00000001'")
+    c.commit()
+    c.close()
+    esperado, problemas = km.analizar(km.descubrir(tmp_path))
+    assert problemas["default"]["comentarios_huerfanos"] == 1
+    assert problemas["default"]["estado_no_valido"] == 1
+    assert problemas["otro"]["id_repetido_en_otro_board"] == 1
+    assert esperado["default"]["comentarios"] == 2  # los de sus 2 tareas; la huérfana no cuenta
+    origen = km.recuentos_sqlite(km.descubrir(tmp_path))
+    assert any("comentarios" in d for d in km.comparar(origen, esperado))
+    assert km.main(["analizar", "--origen", str(tmp_path)]) == 1
+    out = capsys.readouterr().out
+    assert "comentarios_huerfanos 1" in out and "cuerpo" not in out
+
+
+def test_analizar_no_escribe_en_el_origen(tmp_path):
+    db = hermes_db(tmp_path / "default.db", tasks=1)
+    antes = db.read_bytes()
+    km.analizar(km.descubrir(tmp_path))
+    assert db.read_bytes() == antes
+
+
 @pytest.mark.skipif(not os.environ.get("KANBAN_COPIA_DIR"), reason="sin KANBAN_COPIA_DIR (copia local del kanban)")
 def test_ida_y_vuelta_sobre_la_copia_real(tmp_path, pg):
     copia = Path(os.environ["KANBAN_COPIA_DIR"])

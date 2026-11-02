@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -28,6 +29,7 @@ import yaml
 
 log = logging.getLogger("agent_lanes")
 
+_USERNAME_RE = re.compile(r"^[A-Za-z0-9_]{4,32}$")
 PEOPLE_ENV = "AGENT_LANES_PEOPLE_FILE"
 PEOPLE_EXAMPLE = Path(__file__).resolve().parents[2] / "telegram" / "people.example.yaml"  # ids ficticios, versionado
 PEOPLE_DEFAULT = Path(__file__).resolve().parents[1] / ".state" / "people.yaml"  # el real; .state/ no se versiona
@@ -74,6 +76,9 @@ class Person:
     permisos: frozenset = field(default_factory=frozenset)  # people.yaml `permisos:` (solo los de PERMISOS_YAML)
     hermes: bool = True  # people.yaml `hermes: false` (estricto): Hermes no le contesta; el bot de carriles le avisa
     solo_menciones: str = ""  # people.yaml `solo_menciones: true` + `mencion: "@usuario"`: solo recibe avisos que la mencionan
+    username: str = ""      # @usuario de Telegram sin @ (opcional): para mencionarlo en las tareas del equipo
+    tareas_equipo: bool = True   # `tareas_equipo: false` = no participa en /asignar (ni asignable ni avisos)
+    grupo_tareas: str = ""  # grupo (clave de lanes.yaml tareas_equipo.grupos) donde se publican sus tareas
 
     def can(self, cap: str) -> bool:
         return cap in self.caps
@@ -142,6 +147,10 @@ class People:
         dice a qué marca apunta y el filtro falla cerrado."""
         return {p.user_id for p in self._by_id.values() if p.operador and TODAS_LAS_MARCAS in p.brands}
 
+    def personas(self) -> list[Person]:
+        """Las personas de people.yaml (sin Oscar), en el orden del fichero."""
+        return list(self._by_id.values())
+
     def collaborator_ids(self) -> set[str]:
         return set(self._by_id)
 
@@ -199,6 +208,9 @@ def load_people(owner_id: str, path: Path | str | None = None) -> People:
         permisos = frozenset(str(x) for x in pedidos) & PERMISOS_YAML
         mencion = _clean(cfg.get("mencion")).lstrip("@")
         solo = f"@{mencion}" if cfg.get("solo_menciones") is True and mencion else ""
+        username = _clean(cfg.get("username"), 32).lstrip("@")
         persons.append(Person(_clean(key), _clean(cfg.get("name") or key) or _clean(key), uid, role, brands, caps,
-                              cfg.get("operador") is True, permisos, cfg.get("hermes") is not False, solo))
+                              cfg.get("operador") is True, permisos, cfg.get("hermes") is not False, solo,
+                              username if _USERNAME_RE.match(username) else "", cfg.get("tareas_equipo") is not False,
+                              _clean(cfg.get("grupo_tareas"))))
     return People(owner_id, persons)
