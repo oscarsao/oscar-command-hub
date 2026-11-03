@@ -83,7 +83,7 @@ Detalle: `decisions/2026-09-27-arquitectura-carriles.md` y `decisions/2026-09-27
 - **Modelos:** Sonnet por defecto; Opus solo para diseño/arquitectura y en los subagentes fijados.
 - **Estado 25-10** (fuente: `tools/agent-lanes/lanes.yaml`; el README de agent-lanes lo comprueba un test):
   - Carriles: `claude-oscarhq`, `claude-migrateam`, `claude-scraper`, `claude-nextjobs`, `claude-hub` (alias
-    `claude-telegram`: «Hub y Telegram» es un solo carril), `claude-ops` y `review`. `max_workers` = 4.
+    `claude-telegram`: «Hub y Telegram» es un solo carril), `claude-ops` y `review`. Tope de workers: `runner.max_workers` de `lanes.yaml` (no se copia aquí).
   - Integrador activo en 4 carriles: `claude-oscarhq`, `claude-migrateam`, `claude-hub` y `claude-scraper`.
   - Las decisiones con botones van al tema 🎯 Decisiones del grupo Gestión; María decide ahí como Oscar.
 - **Actualización 28-09** (histórico; detalle: `decisions/2026-09-28-ramas-bandeja-monitor.md`):
