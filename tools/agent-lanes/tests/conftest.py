@@ -39,6 +39,15 @@ def _personas_respuestas():
 
 
 @pytest.fixture(autouse=True)
+def _lecciones_aisladas(tmp_path, monkeypatch):
+    """Autoaprendizaje: los tests ni leen docs/lecciones/ reales (sin lecciones el prompt no cambia) ni escriben el
+    contador de disparos de .state del hub."""
+    from agent_lanes import lecciones
+    monkeypatch.setattr(lecciones, "LECCIONES_DIR", tmp_path / "_lecciones")
+    monkeypatch.setattr(lecciones, "STATE_DIR", tmp_path / "_lecciones_state")
+
+
+@pytest.fixture(autouse=True)
 def _aprobaciones_aisladas(tmp_path, monkeypatch):
     """P08: el registro local de aprobaciones de cada test vive en su tmp_path (nunca en .state del hub)."""
     from agent_lanes import aprobaciones
