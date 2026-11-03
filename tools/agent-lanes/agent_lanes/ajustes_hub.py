@@ -120,6 +120,17 @@ def _build() -> dict[str, Ajuste]:
         Ajuste("avisos.retro_hora", "Avisos", "Hora de la retro semanal del lunes", 9, "int",
                "Hora (0-23, Madrid) desde la que el lunes sale el informe de fricción de la semana.", 0, 23,
                (8, 9, 10, 12)),
+        Ajuste("retro.umbral_propuesta", "Avisos", "Repeticiones para que la retro proponga una regla", 5, "int",
+               "Un bloqueo sin patrón que se repita al menos tantas veces en la ventana sale como propuesta en una "
+               "tarjeta [DECISIÓN] (nunca se aplica sola).", 2, 50, (3, 5, 10)),
+        Ajuste("retro.ventana_dias", "Avisos", "Días que mira la retro al proponer reglas", 7, "int",
+               "Ventana de los bloqueos que cuentan para una propuesta.", 1, 30, (7, 14)),
+        Ajuste("lecciones.retirar_dias", "Avisos", "Días sin dispararse para proponer retirar una regla", 60, "int",
+               "Una regla con lección que no case en tantos días sale en la retro como candidata a retirar.", 14, 365,
+               (30, 60, 90)),
+        Ajuste("lecciones.resumen_max", "Avisos", "Caracteres del resumen de lecciones en el prompt del worker", 3000,
+               "int", "Tope del resumen de docs/lecciones/ que ven los workers (≈1 página).", 500, 8000,
+               (1500, 3000, 5000), avanzado=True),
         Ajuste("equipo.horas", "Avisos", "Horas del resumen del tema 👥 Equipo", ("9", "17"), "lista",
                "Horas (0-23, Madrid) separadas por comas. La primera lleva además las solicitudes abiertas y la "
                "revisión de permisos."),
@@ -166,6 +177,12 @@ def _build() -> dict[str, Ajuste]:
                "Intervalo entre pasadas del runner.", 10, 600, (30, 60, 120), True),
         Ajuste("carriles.ciego_minutos", "Carriles", "Minutos sin ver tareas para dar la alarma de «runner ciego»",
                None, "int", "Tras ese tiempo avisa a Oscar y hace un restart --drain.", 2, 60, (3, 5, 10, 15), True),
+        Ajuste("carriles.worker_ram_mb", "Carriles", "Memoria máxima por worker (MB, 0 = sin límite)", None, "int",
+               "Si el árbol de procesos de un claude pasa de esto, se corta y se avisa a Oscar.", 0, 16384,
+               (2048, 4096, 6144, 8192), True),
+        Ajuste("carriles.latido_parado_segundos", "Carriles", "Segundos sin latido para dar el runner por colgado",
+               None, "int", "El monitor avisa (y reinicia si no hay workers) pasado este tiempo. Mínimo 60.", 60, 900,
+               (120, 180, 300), False),
         Ajuste("carriles.max_parallel", "Carriles", "Tareas a la vez por carril (valor por defecto)", None, "int",
                "Solo para carriles sin max_parallel propio en lanes.yaml.", 1, 3, (1, 2), True),
     ]
@@ -348,7 +365,8 @@ def aplicar_runner(settings: dict) -> dict:
     """lanes.yaml `runner:` con los valores editados encima (para config.load_runner_settings, que lee el runner al arrancar)."""
     out = dict(settings)
     for key, field in (("carriles.max_workers", "max_workers"), ("carriles.intervalo_segundos", "interval_seconds"),
-                       ("carriles.ciego_minutos", "ciego_minutes")):
+                       ("carriles.ciego_minutos", "ciego_minutes"), ("carriles.worker_ram_mb", "worker_ram_mb"),
+                       ("carriles.latido_parado_segundos", "latido_parado_segundos")):
         v = valor(key)
         if v is not None:
             out[field] = v

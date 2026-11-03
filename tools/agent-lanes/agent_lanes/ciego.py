@@ -52,11 +52,11 @@ def error_key(text: str) -> str:
     return m.group(0) if m else (text or "")[:80]
 
 
-def launch_restart(lanes_py: Path | None = None, log_path: Path = RESTART_LOG) -> None:
+def launch_restart(lanes_py: Path | None = None, log_path: Path = RESTART_LOG, extra: tuple[str, ...] = ()) -> None:
     """`lanes.py restart --drain` en un proceso APARTE: el reinicio drena a ESTE runner (necesita su acuse) y luego lo
     mata con `schtasks /End`; si colgara de él moriría antes de relanzarlo. Se intenta salir del job de la tarea
     programada (CREATE_BREAKAWAY_FROM_JOB) y, si no se permite, se lanza igualmente."""
-    cmd = [sys.executable, str(lanes_py or ROOT / "lanes.py"), "restart", "--drain"]
+    cmd = [sys.executable, str(lanes_py or ROOT / "lanes.py"), "restart", "--drain", *extra]
     log_path.parent.mkdir(parents=True, exist_ok=True)
     flags = 0
     if os.name == "nt":

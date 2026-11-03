@@ -64,7 +64,7 @@ Fecha de referencia: 21-10-2026.
 | Qué carril recibe una tarea | Hermes (reglas de la skill) o Oscar/María (`/hazlo`, `/flujo`); código → `claude-<repo>`, operativo → `claude-ops`, solo-Oscar/irreversible → `oscar` | Tarjeta con `assignee` | `agent-lanes/README.md` § Qué va a cada carril |
 | Decisiones reversibles con recomendada sin respuesta en 48 h | Hoy solo **aviso** (`veto_modo: aviso`); «ejecutar» solo cuando Oscar lo active en `bandeja.yaml` | `bandeja.yaml` | `tools/agent-lanes/bandeja.yaml` |
 | Modelo de IA | Sonnet por defecto (sesión y workers); Opus solo diseño/arquitectura y subagentes `security-auditor`/`cto-audit-360`; Haiku para lookups y respuestas informativas del bot | `lanes.yaml` `model: sonnet`; `explain.py` haiku | `~/.claude/CLAUDE.md` § ESCALACIÓN |
-| Máximo de trabajo paralelo | 3 workstreams de código (sesiones); `max_workers: 1` worker `claude -p` a la vez (hoy el servicio corre con 2) | `lanes.yaml`, `install-service.ps1` | `~/.claude/CLAUDE.md` § ROLES |
+| Máximo de trabajo paralelo | 3 workstreams de código (sesiones); `runner.max_workers` de `lanes.yaml` workers `claude -p` a la vez (el arranque real, en `runner.log`) | `lanes.yaml`, `install-service.ps1` | `~/.claude/CLAUDE.md` § ROLES |
 
 ## 3. Reglas de autonomía vigentes (resumen operativo)
 

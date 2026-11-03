@@ -192,7 +192,9 @@ class Restarter:
                  clock: Callable[[], float] = time.monotonic, now: Callable[[], float] = time.time,
                  out: Callable[[str], None] = print, task_name: str = TASK_NAME, poll: float = 5,
                  repo: Path | None = None, git_run=None, result_file: Path = RESULT_FILE,
-                 active_file: Path = ACTIVE_FILE, alert: Callable[[str], None] | None = None):
+                 active_file: Path = ACTIVE_FILE, alert: Callable[[str], None] | None = None,
+                 colgado: Callable[[], bool] | None = None):
+        self.colgado = colgado  # `--colgado`: latido parado y sin workers; un runner colgado no puede dar el acuse
         self.repo = Path(repo) if repo else None
         self._git_run = git_run or run
         self.result_file, self.active_file, self.alert = Path(result_file), Path(active_file), alert
@@ -255,6 +257,8 @@ class Restarter:
             def drained() -> bool:
                 if not self.pid_alive(old):
                     return True  # murió solo: nada que esperar
+                if self.colgado and self.colgado():
+                    return True  # colgado y sin workers en vuelo (supervisor): el acuse nunca llegaría
                 ack = read_ack(self.ack_file) or {}
                 return ack.get("pid") == old and float(ack.get("at") or 0) >= since and bool(ack.get("idle"))
 

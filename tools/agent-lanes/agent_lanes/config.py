@@ -170,6 +170,8 @@ def load_runner_settings(path: Path | None = None) -> dict:
     """Top-level `runner:` block (global worker cap, poll interval)."""
     from .ajustes_hub import aplicar_runner  # lo editado con /ajustes manda sobre lanes.yaml (rige al arrancar el runner)
     return aplicar_runner({"max_workers": 1, "interval_seconds": 60, "ciego_minutes": 5, "max_big_total": 2,
+                           "latido_parado_segundos": 300, "reinicio_auto_colgado": False, "worker_ram_mb": 0,
+                           "worker_ram_intervalo_segundos": 15,
                            **(_load(path).get("runner") or {})})
 
 

@@ -17,6 +17,9 @@ Zona: <rutas o módulos que tocará, separados por comas>
 Tamaño: S | M | L
 <Sirve para que el runner no lance a la vez dos tarjetas que tocan lo mismo (prevención de choques): ponla siempre, aunque la tarjeta aún no tenga rama. Tamaño ayuda a repartir carga.>
 
+## Lecciones (opcional)
+Lecciones: <ids de docs/lecciones/ que aplican, p. ej. L-0001; si la tarjeta añade una regla nueva, cita su lección>
+
 ## Modo OASP
 Fast-Track | Spec-Lite | Pitch
 
