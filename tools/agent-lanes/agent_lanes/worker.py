@@ -297,8 +297,10 @@ def record_worker_pid(state_path: Path, pid: int) -> None:
 
 
 class ClaudeWorker:
-    def __init__(self, runner=_proc.run, pid_dir: Path | None = None):
+    def __init__(self, runner=_proc.run, pid_dir: Path | None = None, ram_mb: float = 0, ram_intervalo: float = 15.0,
+                 alert=None):
         self._run = runner
+        self._ram_mb, self._ram_intervalo, self._alert = ram_mb, ram_intervalo, alert  # límite de RAM por worker (0 = sin límite)
         self._pid_dir = pid_dir  # carpeta de los estados de tarea; None = no se apunta el PID
         self._ops: dict[str, tuple[dict, list[str]]] = {}  # session_id -> (env, add_dirs) del run() ops, para resume
         self._spent: dict[str, float] = {}   # session_id -> USD gastados en la tarea (run + resumes)
@@ -325,13 +327,27 @@ class ClaudeWorker:
 
     def _exec(self, args: list[str], prompt: str, cwd: str, timeout: float, lane: Lane, task_id: str,
               extra_env: dict | None = None) -> WorkerOutcome:
-        on_start = None
-        if self._pid_dir:
-            state_path = Path(self._pid_dir) / f"{task_id}.json"
-            on_start = lambda pid: record_worker_pid(state_path, pid)  # noqa: E731
-        return run_claude(self._run, args, prompt, cwd, timeout,
-                          {"AGENT_LANES_TASK": task_id, "AGENT_LANES_LANE": lane.name, **(extra_env or {})},
-                          on_start=on_start)
+        state_path = Path(self._pid_dir) / f"{task_id}.json" if self._pid_dir else None
+        limited = bool(self._ram_mb and self._ram_mb > 0)
+        guards: list = []
+
+        def on_start(pid: int) -> None:
+            if state_path:
+                record_worker_pid(state_path, pid)
+            if limited:  # límite de memoria por worker (supervisor.GuardiaRam)
+                from .supervisor import GuardiaRam
+                guards.append(GuardiaRam(pid, task_id, self._ram_mb, intervalo=self._ram_intervalo,
+                                         alert=self._alert).start())
+
+        out = run_claude(self._run, args, prompt, cwd, timeout,
+                         {"AGENT_LANES_TASK": task_id, "AGENT_LANES_LANE": lane.name, **(extra_env or {})},
+                         on_start=on_start if (state_path or limited) else None)
+        for g in guards:
+            g.stop()
+            if g.exceeded is not None:
+                return WorkerOutcome(False, "worker_memoria", None, None,
+                                     f"worker cortado por memoria: {g.exceeded:.0f} MB (límite {g.limite_mb:.0f} MB)")
+        return out
 
     def run(self, lane: Lane, task: dict, cwd: str, session_id: str, timeout: float) -> WorkerOutcome:
         flag = ["--session-id", session_id, "--name", f"task-{task['id']}"]

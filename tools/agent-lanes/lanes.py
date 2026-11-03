@@ -20,7 +20,7 @@
                                                    # nombres de variables, nunca valores); avisa si el hub es público
     py -3.12 lanes.py pendiente [--json]           # todo lo que espera a Oscar en una lista (solo lectura; herramienta
                                                    # de Hermes; los botones están en /pendiente del bot de carriles)
-    py -3.12 lanes.py restart --drain [--timeout 3600]
+    py -3.12 lanes.py restart --drain [--timeout 3600] [--colgado]
                                                    # reinicio ordenado: deja de reclamar, espera a los workers y
                                                    # reinicia la tarea programada "agent-lanes runner"
     py -3.12 lanes.py reload [--timeout 3600]      # alias de `restart --drain`
@@ -122,8 +122,17 @@ def restart(argv: list[str]) -> int:
     ap.add_argument("--drain", action="store_true", required=True,
                     help="obligatorio: nunca se reinicia con workers vivos (incidente 27-09)")
     ap.add_argument("--timeout", type=int, default=3600, help="segundos máximos esperando a los workers")
+    ap.add_argument("--colgado", action="store_true",
+                    help="runner colgado (latido parado) y SIN workers en vuelo: no espera el acuse del drenaje")
     args = ap.parse_args(argv)
-    return drain.Restarter(pid_alive=pid_alive, repo=drain.LIVE_REPO, alert=drain.dm_alert()).restart(timeout=args.timeout)
+    colgado = None
+    if args.colgado:
+        from agent_lanes import supervisor
+        from agent_lanes.config import load_runner_settings
+        parado = float(load_runner_settings().get("latido_parado_segundos") or supervisor.DEFAULT_PARADO_SECS)
+        colgado = lambda: supervisor.colgado_sin_workers(parado_secs=parado, pid_alive=pid_alive)  # noqa: E731
+    return drain.Restarter(pid_alive=pid_alive, repo=drain.LIVE_REPO, alert=drain.dm_alert(),
+                           colgado=colgado).restart(timeout=args.timeout)
 
 
 def main(argv: list[str]) -> int:
