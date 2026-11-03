@@ -125,7 +125,7 @@ def test_comando_estado_lee_el_kanban_simulado(tmp_path):
     cc.peticion_items = lambda proyecto=None: CommandCenter.peticion_items(cc, proyecto)
     cc.estado_peticiones = lambda where, proyecto: CommandCenter.estado_peticiones(cc, where, proyecto)
     assert {r["id"]: e.estado for r, e in cc.peticion_items()} == {rid: "hecha", "req_2": "atascada"}
-    CommandCenter.cmd_estado(cc, ("1", "0"), "hub", None)  # Hub no es marca de la vista antigua: solo peticiones
+    CommandCenter._vista_estado(cc, ("1", "0"), "hub", None)  # Hub no es marca de la vista antigua: solo peticiones
     assert "Estado · 1 petición de Hub" in enviados[0][0] and "hecha" in enviados[0][0] and len(enviados) == 1
 
 

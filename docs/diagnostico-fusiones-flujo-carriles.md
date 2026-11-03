@@ -4,7 +4,7 @@ Tarea t_bd182c83 · 2026-10-01 · solo diagnóstico y propuesta (no se ha cambia
 
 ## 0. Resumen para Oscar (1 minuto)
 
-- Los PRs del hub no chocan porque "varios carriles trabajen a la vez": solo corre **un worker a la vez** (`max_workers: 1`).
+- Los PRs del hub no chocan porque "varios carriles trabajen a la vez": el tope de workers simultáneos es `runner.max_workers` de `lanes.yaml`, y el diagnóstico no depende de ese número.
   Chocan porque el **trabajo se hace en serie pero la integración va muy por detrás**: mientras un PR espera revisión y
   tu aprobación (horas), el siguiente carril arranca desde el mismo `main` y toca los mismos archivos. El segundo en
   fusionar siempre pierde.

@@ -8,6 +8,8 @@ import shutil
 import stat
 import subprocess
 import sys
+import threading
+import time
 
 from . import pnpm_setup
 from . import proc as _proc
@@ -51,9 +53,24 @@ class AlDia:
     detalle: str = ""
 
 
+# Varios workers lanzados a la vez sobre el mismo repo ejecutan `git fetch` y `git worktree add` a la vez; git choca
+# con el lock de .git/config («could not lock config file .git/config: File exists», 31-10, t_5b023060 y t_da805f95).
+# Un lock de proceso por repo serializa esas llamadas y, si aun así git ve el lock de otro proceso, se reintenta.
+_LOCKS_GUARD = threading.Lock()
+_LOCKS: dict[str, threading.Lock] = {}
+_REINTENTOS_BLOQUEO = (0.5, 1.0, 2.0, 4.0)  # espera entre intentos; agotada, un único aviso y GitError
+_MARCAS_BLOQUEO = ("could not lock config", "File exists")
+
+
+def _lock_del_repo(repo) -> threading.Lock:
+    with _LOCKS_GUARD:
+        return _LOCKS.setdefault(_norm(repo), threading.Lock())
+
+
 class GitOps:
-    def __init__(self, runner=_proc.run):
+    def __init__(self, runner=_proc.run, sleep=time.sleep):
         self._run = runner
+        self._sleep = sleep
 
     def _git(self, repo: str, *args: str) -> subprocess.CompletedProcess:
         cp = self._run(["git", "-C", repo, *args], capture_output=True, text=True, encoding="utf-8",
@@ -61,6 +78,25 @@ class GitOps:
         if cp.returncode != 0:
             raise GitError(f"git {' '.join(args[:2])} falló: {cp.stderr.strip()[:300]}")
         return cp
+
+    def _git_con_reintento(self, repo: str, *args: str) -> subprocess.CompletedProcess:
+        """`_git` que reintenta con espera progresiva si el fallo es el bloqueo de .git/config de otro git. Agotados
+        los reintentos registra un único aviso y lanza GitError."""
+        for intento in range(len(_REINTENTOS_BLOQUEO) + 1):
+            cp = self._run(["git", "-C", repo, *args], capture_output=True, text=True, encoding="utf-8",
+                           errors="replace", timeout=300)
+            if cp.returncode == 0:
+                return cp
+            if not any(marca in cp.stderr for marca in _MARCAS_BLOQUEO):
+                break
+            if intento == len(_REINTENTOS_BLOQUEO):
+                log.warning("git %s en %s: .git/config sigue bloqueado tras %d reintentos: %s", " ".join(args[:2]),
+                            repo, intento, cp.stderr.strip()[:200])
+                break
+            log.info("git %s en %s: .git/config bloqueado; reintento %d/%d", " ".join(args[:2]), repo, intento + 1,
+                     len(_REINTENTOS_BLOQUEO))
+            self._sleep(_REINTENTOS_BLOQUEO[intento])
+        raise GitError(f"git {' '.join(args[:2])} falló: {cp.stderr.strip()[:300]}")
 
     def prepare_worktree(self, lane: Lane, task_id: str) -> str:
         path = self._prepare_worktree(lane, task_id)
@@ -70,24 +106,27 @@ class GitOps:
     def _prepare_worktree(self, lane: Lane, task_id: str) -> str:
         branch = f"lane/{task_id}"
         path = Path(lane.worktree_root) / f"lane-{task_id}"
-        self._git(lane.repo, "fetch", lane.remote, lane.base)
-        if path.exists():  # retry of the same task: reuse its worktree and branch
-            current = self._git(str(path), "branch", "--show-current").stdout.strip()
-            if current != branch:
-                raise GitError(f"{path} existe pero está en '{current}', no en {branch}")
+        with _lock_del_repo(lane.repo):
+            self._git_con_reintento(lane.repo, "fetch", lane.remote, lane.base)
+            if path.exists():  # retry of the same task: reuse its worktree and branch
+                current = self._git(str(path), "branch", "--show-current").stdout.strip()
+                if current != branch:
+                    raise GitError(f"{path} existe pero está en '{current}', no en {branch}")
+                return str(path)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            exists = self._run(["git", "-C", lane.repo, "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}"],
+                               capture_output=True, text=True, timeout=60).returncode == 0
+            if exists:
+                self._git_con_reintento(lane.repo, "worktree", "add", str(path), branch)
+            elif self._fetch_remote_lane(lane, branch):
+                # Tarea reabierta tras la limpieza de done (Oscar pidió cambios): la rama local ya no existe pero la
+                # remota conserva el trabajo. Partir de la base lo perdería y el push sería non-fast-forward.
+                self._git_con_reintento(lane.repo, "worktree", "add", str(path), "-b", branch,
+                                        f"{lane.remote}/{branch}")
+            else:
+                self._git_con_reintento(lane.repo, "worktree", "add", str(path), "-b", branch,
+                                        f"{lane.remote}/{lane.base}")
             return str(path)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        exists = self._run(["git", "-C", lane.repo, "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}"],
-                           capture_output=True, text=True, timeout=60).returncode == 0
-        if exists:
-            self._git(lane.repo, "worktree", "add", str(path), branch)
-        elif self._fetch_remote_lane(lane, branch):
-            # Tarea reabierta tras la limpieza de done (Oscar pidió cambios): la rama local ya no existe pero la
-            # remota conserva el trabajo. Partir de la base lo perdería y el push sería non-fast-forward.
-            self._git(lane.repo, "worktree", "add", str(path), "-b", branch, f"{lane.remote}/{branch}")
-        else:
-            self._git(lane.repo, "worktree", "add", str(path), "-b", branch, f"{lane.remote}/{lane.base}")
-        return str(path)
 
     def sync_base(self, lane: Lane, path: str) -> str | None:
         """`fetch` + `merge <remote>/<base>` en la lane antes de repetir el trabajo. None = al día o fusionado sin
@@ -175,15 +214,18 @@ class GitOps:
         """Worktree at the pushed lane/<id>, recreated from the remote branch if it was removed."""
         branch = f"lane/{task_id}"
         path = Path(lane.worktree_root) / f"lane-{task_id}"
-        self._git(lane.repo, "fetch", lane.remote, lane.base, f"+refs/heads/{branch}:refs/remotes/{lane.remote}/{branch}")
-        if path.exists():
+        with _lock_del_repo(lane.repo):
+            self._git_con_reintento(lane.repo, "fetch", lane.remote, lane.base,
+                                    f"+refs/heads/{branch}:refs/remotes/{lane.remote}/{branch}")
+            if path.exists():
+                return str(path)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            if self._branch_exists(lane.repo, branch):
+                self._git_con_reintento(lane.repo, "worktree", "add", str(path), branch)
+            else:
+                self._git_con_reintento(lane.repo, "worktree", "add", str(path), "-b", branch,
+                                        f"{lane.remote}/{branch}")
             return str(path)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        if self._branch_exists(lane.repo, branch):
-            self._git(lane.repo, "worktree", "add", str(path), branch)
-        else:
-            self._git(lane.repo, "worktree", "add", str(path), "-b", branch, f"{lane.remote}/{branch}")
-        return str(path)
 
     def commits_ahead(self, lane: Lane, task_id: str) -> int | None:
         """Commits de <remote>/lane/<id> sobre <remote>/<base> (tras fetch de ambas). None si no se sabe (la rama no

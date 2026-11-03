@@ -58,12 +58,12 @@ def test_pregunta_de_escalada_no_tiene_recomendada():
     assert all(q["recommended"] is None for q in normalize_questions(qs))
 
 
-def test_atencion_invoca_decisiones_con_show_all():
+def test_atencion_es_atajo_de_pendiente():
     calls = []
     cc = object.__new__(CommandCenter)
-    cc.cmd_decisiones = lambda *a, **kw: calls.append((a, kw))
+    cc.cmd_pendiente = lambda *a, **kw: calls.append((a, kw))
     cc.cmd_atencion("w", "", "B")
-    assert calls == [(("w", "", "B"), {"show_all": True})]
+    assert calls == [(("w", "atencion ", "B"), {})]
 
 
 def test_bloqueo_distinto_no_escala():

@@ -9,6 +9,7 @@ import re
 
 from .config import Lane
 
+# Regla nueva (la propone la retro, la acepta Oscar): cita su lección de docs/lecciones/ en un comentario (# L-NNNN).
 # (patrón en el texto de la tarjeta, prefijos de allowed_tools que lo permitirían, qué se pide, qué hace falta)
 _NEEDS_TOOL = (
     (re.compile(r"\b(?:npm|pnpm)\s+(?:install|i|ci|add|update)\b|\byarn\s+(?:add|install)\b|\bpip\s+install\b",
