@@ -23,11 +23,11 @@ runner:
   # Supervisión del runner (agent_lanes/supervisor.py, F0). El planificador escribe un latido en .state/runner-latido.json;
   # el monitor avisa ALTA si lleva `latido_parado_segundos` sin latir con el proceso vivo (runner colgado). Si además no había
   # workers en vuelo, `reinicio_auto_colgado` lanza `lanes.py restart --drain --colgado` (máx. 1/hora); con workers solo avisa.
-  latido_parado_segundos: 180
-  reinicio_auto_colgado: true
+  latido_parado_segundos: 300
+  reinicio_auto_colgado: false  # apagado hasta cubrir el falso positivo de un tick lento (revisión 3-nov)
   # Límite de RAM por worker (MB de RSS del claude y sus hijos). Pasado, se corta el worker y se avisa al DM de Oscar.
   # 0 = sin límite. 4096 × 6 workers cabe en los 32 GB del PC con margen para el sistema; se mide cada N segundos.
-  worker_ram_mb: 4096
+  worker_ram_mb: 0  # apagado: el RSS de Windows cuenta memoria compartida y puede cortar un worker sano
   worker_ram_intervalo_segundos: 15
   # Llamadas a `hermes kanban`, `gh` y git remoto (t_cce5da81, 23-10): tiempo máximo por intento (s) y esperas entre
   # reintentos tras un timeout (solo lecturas e idempotentes; una escritura con timeout no se repite). Agotados, la

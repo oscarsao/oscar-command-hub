@@ -186,4 +186,6 @@ def test_worker_under_limit_or_without_limit_is_untouched(tmp_path, monkeypatch)
 def test_real_lanes_yaml_declares_the_supervision_settings():
     from agent_lanes.config import load_runner_settings
     s = load_runner_settings()
-    assert s["latido_parado_segundos"] < 300 and s["worker_ram_mb"] > 0 and s["reinicio_auto_colgado"] is True
+    # 3-nov (revisión de t_17be712f): reinicio automático y tope de RAM apagados por defecto hasta cubrir el falso
+    # positivo de un tick lento y el RSS compartido de Windows; el aviso de latido parado sigue activo.
+    assert s["latido_parado_segundos"] >= 300 and s["worker_ram_mb"] == 0 and s["reinicio_auto_colgado"] is False
