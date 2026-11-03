@@ -126,7 +126,7 @@ COMMANDS = (
     ("silenciar", "Calla una alerta del monitor un tiempo: /silenciar <clave> <horas>"),
     ("sesion", "Correcciones agrupadas: /sesion [nombre] abre; fin | cancelar | estado"),
     ("flujo", "Una petición → hasta 8 tarjetas encadenadas: /flujo <texto>"),
-    ("pendiente", "Bandeja única con botones: /pendiente [todo|decisiones|atencion|estado|falta]"),
+    ("pendiente", "Bandeja única con botones: /pendiente [filtro]"),
     ("personal", "Saca tu backlog personal del kanban (confirmas con botones)"),
     ("agrupar", "Propone fusionar, encadenar o juntar tarjetas abiertas: /agrupar [proyecto|todo]"),
     ("workflow", "Trabajo largo: plan y coste antes de crear: /workflow <texto>"),
