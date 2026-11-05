@@ -137,8 +137,9 @@ class ReviewRunner:
                  reviewer, verifier, notify, clock: Callable[[], float] = time.monotonic,
                  messages: MessageStore | None = None, links: Callable | None = None, decisions=None,
                  integration=None, tree: Callable | None = None, state_dir: Path | str | None = None,
-                 sleep: Callable[[float], None] = time.sleep):
+                 sleep: Callable[[float], None] = time.sleep, legacy: Callable | None = None):
         self.lane = review_lane
+        self.legacy = legacy  # recolector.legacy_tras_fallo: worktree que no se pudo quitar -> carpeta legacy (una vez)
         self._sleep = sleep
         # Tareas en review que NO se pudieron bloquear (h.block solo mueve running/ready): se recuerda la cabeza ya
         # avisada para no reprocesarlas ni repetir la alerta en cada vuelta. state_dir=None: solo en memoria.
@@ -444,6 +445,11 @@ class ReviewRunner:
                 return self._block(h, task, "transient", f"complete rechazado: {err}",
                                    public="el kanban rechazó el cierre")
             cleaned, msg = self.git.cleanup(lane, tid)
+            if not cleaned and self.legacy:  # en vez de repetir «limpieza pendiente»: a legacy, una sola vez
+                movido, destino = _a_legacy(self.legacy, lane, tid)
+                if movido:
+                    h.comment(tid, f"Worktree no eliminable ({msg[:300]}); movido a la carpeta legacy: {destino}"[:1500])
+                    cleaned = True
             if not cleaned:  # detalle técnico solo al log y a la tarjeta
                 log_limpieza_pendiente(tid, msg)
                 h.comment(tid, f"Limpieza local pendiente: {msg}"[:1500])
@@ -489,7 +495,16 @@ REINTENTO_LIMPIEZA = 6 * 3600  # s entre intentos de limpiar la misma tarjeta tr
 _limpieza_fallida: dict[str, float] = {}  # tid -> instante del último intento fallido
 
 
-def sweep_done(lane: Lane, h, git, clock: Callable[[], float] = time.monotonic) -> list[str]:
+def _a_legacy(legacy: Callable, lane: Lane, tid: str) -> tuple[bool, str]:
+    try:
+        return legacy(lane, tid)
+    except Exception as exc:
+        log.info("%s: mover a legacy falló: %s", tid, exc)
+        return False, ""
+
+
+def sweep_done(lane: Lane, h, git, clock: Callable[[], float] = time.monotonic,
+               legacy: Callable | None = None) -> list[str]:
     """Remove worktree + local branch of done tasks (approved by the review lane or by Oscar). Una limpieza fallida
     no se reintenta hasta pasadas REINTENTO_LIMPIEZA s: una línea de log por intento, no por pasada."""
     cleaned = []
@@ -499,6 +514,8 @@ def sweep_done(lane: Lane, h, git, clock: Callable[[], float] = time.monotonic) 
             if ultimo is not None and clock() - ultimo < REINTENTO_LIMPIEZA:
                 continue
             ok, msg = git.cleanup(lane, task["id"])
+            if not ok and legacy and _a_legacy(legacy, lane, task["id"])[0]:
+                ok = True  # movido a legacy: no queda «limpieza pendiente»
             if ok:
                 _limpieza_fallida.pop(task["id"], None)
                 cleaned.append(task["id"])

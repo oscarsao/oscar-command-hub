@@ -424,8 +424,17 @@ promote:
 # Recolector nocturno de worktrees y ramas locales ya integradas (agent_lanes/recolector.py). APAGADO por defecto.
 # Una vez al día, pasada `hora` (Madrid), quita el worktree lane-<id> y su rama local SOLO si la tarjeta está done/archived,
 # el worktree está limpio, sin commits sin empujar y la rama ya está en la base. Nunca --force ni ramas sin fusionar.
-# seco: true = solo informa (.state/recolector.json); ponlo a false cuando el informe en seco te convenza.
-recolector: {enabled: false, hora: 3, seco: true}
+# Además borra las ramas remotas ya fusionadas (salvo protegidas, con PR abierto o de tarjeta abierta), las ramas locales
+# fusionadas y las refs locales refs/remotes/pr/* de PR fusionados; los worktrees con cambios o sin fusionar van a `legacy`
+# (git worktree move + LEEME.txt) para que Oscar los borre a mano. Un único resumen diario con contadores a Telegram.
+# seco: true = solo informa (.state/recolector.json); ponlo a false (apply) solo con el OK de Oscar.
+recolector:
+  enabled: false          # apagado: no se ejecuta nada
+  hora: 3                 # hora (Madrid) a partir de la cual corre, una vez al día
+  seco: true
+  horas_actividad: 2      # un worktree tocado en las últimas N horas ni se mueve ni se borra
+  legacy: C:/Users/oscar/dev/_legacy    # destino de los worktrees con cambios o sin fusionar
+  protegidas: ["integ/ui-g*", "feat/volcado*", "feat/captura*"]   # nunca se borran (comodines); master/main/develop/staging siempre
 
 # Avisos de producción del monitor (tools/monitor/prodwatch.py): fallo de un despliegue de PRODUCCIÓN en Vercel (las
 # vistas previas de lane/* no avisan; un aviso por despliegue) y salud del servidor (health_url de cada carril de

@@ -123,6 +123,7 @@ class Reconciler:
         self.clock = clock
         self.lane_for = lane_for or (lambda board: "")
         self.peer: Callable[[str], bool] | None = None  # LimpiezaRunner.silenciada: no proponer dos veces lo mismo
+        self.on_merged: Callable[[dict, str, str | None], object] | None = None  # (pr, tid, estado) de un PR fusionado
 
     def silenciada(self, tid: str) -> bool:
         """¿Ya propuesta o en «Mantener»? La consulta la limpieza para no duplicar propuestas."""
@@ -158,6 +159,11 @@ class Reconciler:
                 board, show = found
                 status = (show.get("task") or {}).get("status")
                 self.state.data["resolved"][key] = self.clock()  # aunque ya estuviera cerrada: no se reevalúa
+                if outcome == "merged" and self.on_merged:  # recolector: borra lane/<tid> ya integrada (remota y local)
+                    try:
+                        self.on_merged(pr, tid, status)
+                    except Exception as exc:
+                        log.warning("reconciliación: rama integrada de %s no borrada: %s", tid, exc)
                 if status in CLOSED_STATUSES or status == "running":
                     continue
                 self._resolve(self.hermes_for(board), tid, show, pr, outcome, board)

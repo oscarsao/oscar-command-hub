@@ -34,7 +34,8 @@ from agent_lanes.deps import ShowCache, TreeReader
 from agent_lanes.hermes_answers import HermesAnswers
 from agent_lanes.reminders import Reminders
 from agent_lanes.limpieza import LimpiezaRunner, LimpiezaTicker
-from agent_lanes.recolector import Recolector, RecolectorTicker
+from agent_lanes.recolector import (Recolector, RecolectorTicker, gh_prs_abiertos, gh_prs_fusionados,
+                                    legacy_tras_fallo)
 from agent_lanes import avisos_revision, workflows
 from agent_lanes.avance_workflows import AvanceTicker, AvanceWorkflows
 from agent_lanes.avisos_revision import AvisosRevision, AvisosRevisionTicker
@@ -244,7 +245,7 @@ def main(argv: list[str] | None = None) -> int:
             runners.append(ReviewRunner(lane, all_lanes, hermes_for=hermes_for, git=git, reviewer=ClaudeReviewer(),
                                         verifier=verify, notify=notify, messages=messages, links=links,
                                         decisions=decisions, integration=integration, tree=tree,
-                                        state_dir=ROOT / ".state" / "review-blocked"))
+                                        state_dir=ROOT / ".state" / "review-blocked", legacy=legacy_tras_fallo))
     # Carril Integrador: solo con INTEGRATOR_ENABLED. Sin bot de carriles corre los gates y avisa sin botones.
     integrator = build_integrator(env, all_lanes, hermes_for=hermes_for, links=links, notifier=notify,
                                   messages=messages, desk=decisions)
@@ -284,7 +285,9 @@ def main(argv: list[str] | None = None) -> int:
     guard = None
     reconcile = None
     limpieza = None
-    recolector = RecolectorTicker(Recolector(all_lanes, hermes_for, merged_pr=git.merged_pr))  # apagado salvo lanes.yaml
+    recolector_core = Recolector(all_lanes, hermes_for, merged_pr=git.merged_pr, prs_abiertos=gh_prs_abiertos,
+                                 prs_fusionados=gh_prs_fusionados)
+    recolector = RecolectorTicker(recolector_core)  # apagado salvo lanes.yaml
     paradas = None
     avisos_ticker = None
     wf_ticker = None
@@ -299,6 +302,8 @@ def main(argv: list[str] | None = None) -> int:
                            canal_avisos.emisor(canal, notify, "reconcile", owner_dm),
                            issue=decisions.store.issue, state_path=ROOT / ".state" / "reconcile.json")
         decisions.reconciler = recon
+        recon.on_merged = recolector_core.borrar_rama_integrada  # PR fusionado -> borra lane/<id> (solo con apply)
+        recolector.aviso = canal_avisos.emisor(canal, notify, "limpieza", owner_dm)  # un resumen diario con contadores
         reconcile = ReconcileTicker(recon, minutes=float(env.get("RECONCILE_MINUTES") or 10))
         limpieza_runner = LimpiezaRunner(hermes_for, boards, lambda: gh_prs(slugs),  # propone cierres; nunca cierra sola
                                          canal_avisos.emisor(canal, notify, "limpieza", owner_dm),
@@ -377,7 +382,7 @@ def main(argv: list[str] | None = None) -> int:
         draining_logged = False
         for lane in impl.values():
             try:
-                if cleaned := sweep_done(lane, hermes_for(lane.board), git):
+                if cleaned := sweep_done(lane, hermes_for(lane.board), git, legacy=legacy_tras_fallo):
                     log.info("%s: worktrees limpiados tras done: %s", lane.name, cleaned)
             except Exception as exc:
                 log.warning("%s: limpieza falló: %s", lane.name, exc)
