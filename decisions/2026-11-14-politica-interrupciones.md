@@ -1,8 +1,8 @@
 ---
-estado: propuesta
+estado: parcialmente aplicada (paso 1 instalado el 14-11; verificación pendiente)
 dueño: Oscar
 fecha: 2026-11-14
-opción-por-defecto: aplicar solo el paso 1 (hook por destino) tras la verificación en vivo; el resto sigue pendiente
+opción-por-defecto: verificar el hook en sesión nueva; si no avisa, revertir con los .bak
 ---
 # Que el sistema dependa menos de Oscar: interrupciones, permisos y puertas automáticas
 
@@ -46,7 +46,13 @@ Estimación (no medida): de ≈32 a 18-22 interrupciones al día.
 Métricas: rondas de corrección de Oscar, infracciones del DS por tarea, aprobadas a la primera, tiempo y consumo. Resultado orientativo, no estadístico.
 Hipótesis a contrastar: la puerta y el manifiesto aportan más que el cambio de modelo.
 
+## Estado a 14-11 (tarde)
+- **Instalado** (orden «aplica 1»): hook `destino.mjs` + política en `~/.claude/hooks/`, matchers `Bash|PowerShell` y MCP, retiradas las reglas `gh pr merge` y `apply_migration` de `allow`, regla de emparejamiento en `~/.claude/CLAUDE.md`. Copias `.bak-20261114-hook`.
+- **Sin verificar:** en la sesión que lo instaló, un push a master de prueba pasó sin aviso aunque el script devuelve `ask`; lo probable es que los hooks se carguen al arrancar la sesión. Probar en sesión nueva; si no avisa, revertir.
+- **Lotes de PR preautorizados:** hechos y probados (47 pruebas), sin instalar. Ver README.
+- `develop` de MigraTeam: Oscar decidió que NO es protegida (14-11).
+- Tarjetas: limpieza de Railway t_9ec605aa / t_cdd28df0 / t_e7908d69 (las primeras se bloquearon por el clasificador y se reescribieron) y puerta de UI t_0ee7626e.
+
 ## No hecho / pendiente de decidir
-- No se ha aplicado nada en `~/.claude` (salvo `advisorModel: fable`, pedido expresamente el 14-11).
-- ¿`develop` de MigraTeam es rama protegida (`protegidas_por_repo`)?
+- `advisorModel: fable` aplicado el 14-11 a petición expresa de Oscar.
 - No se analizaron las ~110 sesiones de carriles ni se repitió la medición de esperas en las otras sesiones.

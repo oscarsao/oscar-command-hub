@@ -152,17 +152,41 @@ function destinosPush(args, cwd) {
 }
 
 // ---------- gh ----------
-function baseDelPR(sel, repo, cwd, pol) {
-  if (process.env.HOOK_GH_FAKE_BASE !== undefined) {
-    return process.env.HOOK_GH_FAKE_BASE === "__error__" ? null : process.env.HOOK_GH_FAKE_BASE;
+// Devuelve { base, repo, numero, sha } del PR, o null si no se puede comprobar.
+function infoPR(sel, repo, cwd, pol) {
+  if (process.env.HOOK_GH_FAKE_PR !== undefined) {           // solo pruebas: JSON {base,repo,numero,sha} o '__error__'
+    if (process.env.HOOK_GH_FAKE_PR === "__error__") return null;
+    try { return JSON.parse(process.env.HOOK_GH_FAKE_PR); } catch { return null; }
   }
-  const args = ["pr", "view", ...(sel ? [sel] : []), ...(repo ? ["-R", repo] : []), "--json", "baseRefName", "-q", ".baseRefName"];
+  if (process.env.HOOK_GH_FAKE_BASE !== undefined) {         // solo pruebas (compatibilidad): solo la rama base
+    return process.env.HOOK_GH_FAKE_BASE === "__error__" ? null : { base: process.env.HOOK_GH_FAKE_BASE };
+  }
+  const args = ["pr", "view", ...(sel ? [sel] : []), ...(repo ? ["-R", repo] : []), "--json", "baseRefName,number,headRefOid,url"];
   const r = spawnSync(process.env.HOOK_GH_BIN || "gh", args, { cwd, encoding: "utf8", timeout: pol.gh_timeout_ms || 8000, windowsHide: true });
-  const b = r.status === 0 ? r.stdout.trim() : "";
-  return b || null;
+  if (r.status !== 0) return null;
+  try {
+    const j = JSON.parse(r.stdout);
+    const m = /github\.com\/([^/]+\/[^/]+)\/pull\//i.exec(j.url || "");
+    return j.baseRefName ? { base: j.baseRefName, repo: m ? m[1] : null, numero: j.number, sha: j.headRefOid } : null;
+  } catch { return null; }
+}
+
+// ---------- fusiones preautorizadas por lote ----------
+// Un solo «sí» de Oscar (el aviso de permisos al ESCRIBIR este fichero, que el propio hook protege) preautoriza PRs concretos.
+// Vale solo para el mismo repo, número y SHA de cabeza (un push posterior lo invalida) y hasta `expira`.
+export const PREAUTH_NOMBRE = "pr-preautorizados.json";
+const rutaPreauth = () => process.env.HOOK_PREAUTH_FILE || join(AQUI, PREAUTH_NOMBRE);
+function preautorizado(info, ahora = Date.now()) {
+  if (!info || !info.repo || !info.numero || !info.sha) return null;
+  let f;
+  try { f = JSON.parse(readFileSync(rutaPreauth(), "utf8")); } catch { return null; }
+  const prs = Array.isArray(f && f.prs) ? f.prs : [];
+  return prs.find((p) => p && String(p.repo).toLowerCase() === String(info.repo).toLowerCase()
+    && Number(p.numero) === Number(info.numero) && p.sha === info.sha && Date.parse(p.expira) > ahora) || null;
 }
 
 // ---------- análisis de un comando ----------
+const LECTURA = new Set(["cat", "type", "ls", "dir", "head", "tail", "grep", "rg", "wc", "get-content", "stat"]);
 export function analizaComando(cmd, cwd0, pol, prof = 0) {
   const asks = []; const allows = [];
   let cwd = cwd0;
@@ -172,6 +196,12 @@ export function analizaComando(cmd, cwd0, pol, prof = 0) {
     const c = nombreCmd(w[0]);
 
     if (c === "cd" || c === "pushd") { if (w[1]) cwd = resuelve(w[1], cwd); continue; }
+
+    // El fichero de PR preautorizados solo se lee sin avisar; cualquier otra cosa que lo nombre pide confirmación.
+    if (w.some((x) => x.toLowerCase().includes("pr-preautorizados")) && !LECTURA.has(c)) {
+      asks.push("Preautorizar fusiones a master/main (pr-preautorizados.json): revisa los PR y la caducidad antes de aceptar");
+      continue;
+    }
 
     if (["bash", "sh", "zsh", "pwsh", "powershell", "cmd"].includes(c) && prof < 2) {
       const i = w.findIndex((x) => /^(-c|-command|\/c)$/i.test(x));
@@ -212,10 +242,14 @@ export function analizaComando(cmd, cwd0, pol, prof = 0) {
           if (a.startsWith("-")) continue;
           if (!sel) sel = a;
         }
-        const base = baseDelPR(sel, repo, cwd, pol);
+        const info = infoPR(sel, repo, cwd, pol);
+        const base = info && info.base;
         if (!base) asks.push("gh pr merge: no se pudo comprobar a qué rama apunta el PR; confirma");
-        else if (esProtegida(base, cwd, pol)) asks.push(`Merge de PR hacia «${base}» (producción): requiere tu confirmación`);
-        else allows.push(`PR hacia «${base}» (no protegida)`);
+        else if (esProtegida(base, cwd, pol)) {
+          const pre = preautorizado(info);
+          if (pre) allows.push(`PR ${info.repo}#${info.numero} preautorizado por Oscar${pre.nota ? ` (${pre.nota})` : ""} hasta ${pre.expira}`);
+          else asks.push(`Merge de PR hacia «${base}» (producción): requiere tu confirmación`);
+        } else allows.push(`PR hacia «${base}» (no protegida)`);
       }
       continue;
     }
@@ -301,7 +335,11 @@ export function decide(input, pol) {
   let r;
   if (/^(Bash|PowerShell)$/.test(nombre)) r = analizaComando(e.command || "", input.cwd || process.cwd(), pol);
   else if (nombre.startsWith("mcp__")) r = analizaMcp(nombre, e, pol);
-  else return null;
+  else if (/^(Write|Edit|MultiEdit|NotebookEdit)$/.test(nombre)) {
+    const f = String(e.file_path || e.path || e.notebook_path || "").replace(/\\/g, "/");
+    if (f.split("/").pop().toLowerCase() !== PREAUTH_NOMBRE) return null;
+    return { d: "ask", m: "Preautorizar fusiones a master/main: este fichero decide qué PR se fusionan sin avisar; revisa repo, número, SHA y caducidad antes de aceptar" };
+  } else return null;
   if (r.asks.length) return { d: "ask", m: [...new Set(r.asks)].join(" · ") };
   if (r.allows.length) return { d: "allow", m: r.allows.join(" · ") };
   return null;

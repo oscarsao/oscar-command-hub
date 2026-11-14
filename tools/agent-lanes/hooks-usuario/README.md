@@ -1,7 +1,7 @@
 # hooks-usuario · hook «por destino» (propuesta, sin aplicar)
 
-Estado: **propuesta** (14-11-2026). Nada de esto está instalado. Instalarlo es configuración global y la aplica Oscar
-(o con su OK explícito). Origen y datos: `decisions/2026-11-14-politica-interrupciones.md`.
+Estado (14-11-2026): **instalado en `~/.claude` por orden de Oscar («aplica 1»), verificación en vivo PENDIENTE** (esa sesión no cargó los hooks:
+hay que probar en una sesión nueva, ver paso 6). Los **lotes de PR preautorizados** (sección más abajo) están hechos y probados pero NO instalados. Origen y datos: `decisions/2026-11-14-politica-interrupciones.md`.
 
 ## Qué resuelve
 Las reglas «siempre confirma» (push/merge a master/main, despliegues, migraciones, envíos) estaban en CLAUDE.md pero los
@@ -19,7 +19,7 @@ La política (ramas protegidas, comandos y herramientas que preguntan) vive en `
 
 ## Pruebas
 ```
-node --test tools/agent-lanes/hooks-usuario/destino.test.mjs     # 34 pruebas, ejecutan el archivo real con JSON por stdin
+node --test tools/agent-lanes/hooks-usuario/destino.test.mjs tools/agent-lanes/hooks-usuario/lote.test.mjs   # 47 pruebas (35 + 12 de lotes), ejecutan el archivo real con JSON por stdin
 ```
 Incluyen los 3 casos que fallaban (push a secas, `gh pr merge`) y el despliegue por la API de Dokploy (producción pregunta, staging pasa), el falso positivo del `echo "git push origin master"`
 y rutas con espacios. Comprobado con mutación: con la política vaciada fallan 18 casos.
@@ -64,3 +64,21 @@ Restaurar `settings.json.bak-*` y borrar los dos archivos de `~/.claude/hooks/`.
 - En `claude -p` (carriles) los hooks de usuario también corren y un `ask` se deniega: un worker que intente empujar a master recibe el motivo.
 - El hook no puede saber si la sesión es interactiva (no está documentado).
 - `protegidas_por_repo` está vacío: si `develop` de MigraTeam debe ser protegida (staging con usuarios reales), se añade ahí.
+
+## Lotes: un solo «sí» para varios PR (hecho y probado; NO instalado)
+Problema: con el hook, cada `gh pr merge` a master pide su aviso. Para un lote de N PR aprobados, N avisos es el mismo cuello que se quiere evitar.
+
+Diseño (`destino.mjs` + `preautoriza.mjs` + `lote.test.mjs`):
+1. Oscar aprueba el lote (botones o texto) con la lista de PR.
+2. `node preautoriza.mjs --repo owner/nombre [--horas 24] [--nota "lote"] 482 483` **imprime** el JSON (no lo escribe): por cada PR lee su SHA de cabeza con
+   `gh pr view`, rechaza los que no apuntan a rama protegida o no están abiertos, conserva las entradas vigentes y descarta las caducadas (máx. 72 h).
+3. La herramienta Write guarda ese JSON en `~/.claude/hooks/pr-preautorizados.json`. **Ese Write dispara el aviso de permisos** (el hook protege el propio fichero):
+   ahí Oscar ve repo, números, SHA y caducidad y da el único «sí».
+4. `gh pr merge N` a master/main devuelve `allow` solo si hay entrada con el **mismo repo, número y SHA** y sin caducar. Un push posterior al OK cambia el SHA e invalida la preautorización.
+   Fichero ausente, corrupto, PR no resoluble o comando mezclado con un push a master → `ask`.
+
+Para instalarlo: copiar `destino.mjs` y `preautoriza.mjs` a `~/.claude/hooks/` y añadir en `settings.json`, dentro de `PreToolUse`, una entrada con matcher `Write|Edit|MultiEdit`
+y el mismo comando `node "C:/Users/oscar/.claude/hooks/destino.mjs"` (la entrada actual de `Write|Edit` del escáner de secretos se conserva).
+
+Límites honestos del lote: el guardián del fichero mira el nombre `pr-preautorizados` en el comando o la ruta; no frena a quien construya el nombre en tiempo de ejecución
+(protege contra descuidos y flujos normales, no contra un agente que quiera esquivarlo). Tampoco cubre que la sesión escriba el fichero con un `ask` que Oscar acepte sin leer.
