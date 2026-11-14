@@ -1,7 +1,7 @@
 """/al_dia, tarjeta b (specs/al-dia-prod.md): `prod`, «🛠 Resolver» y la oferta proactiva «🔄 Poner al día».
 
 - `prod` NO despliega por su cuenta: propone la ficha de `/desplegar` y el despliegue lo hace el integrador
-  (`INT_DEPLOY`, Dokploy/Railway según la política) tras «¿Seguro?». Solo Oscar o quien tenga "*" en people.yaml.
+  (`INT_DEPLOY`, Dokploy) tras «¿Seguro?». Solo Oscar o quien tenga "*" en people.yaml.
   Migraciones SQL, infraestructura y variables de entorno nunca se aplican: se listan («pedir al integrador»).
 - Resolver: tarjeta de arreglo en el carril, idempotente por (fallo, SHA).
 - Ofertas: la clave es el hash de HECHOS ESTABLES (conjuntos de PR/tarjetas; nunca cuentas ni edades, que crecen

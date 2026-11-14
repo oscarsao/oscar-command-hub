@@ -461,7 +461,7 @@ def fila_ficha(integ_state: dict | None, policy, en_cola: bool) -> list[dict]:
     if status == "merged" and policy is not None:
         if mig in MIGRATION_KINDS:
             row += [boton(CS_MIG_MARCAR), boton(CS_MIG_APLICAR)]
-        elif not mig and deploy in ("railway_up", "dokploy") and st.get("merge_sha"):
+        elif not mig and deploy == "dokploy" and st.get("merge_sha"):
             row.append(boton(CS_DESPLEGAR))
     if en_cola:
         row.append(boton(CS_REINTENTAR))

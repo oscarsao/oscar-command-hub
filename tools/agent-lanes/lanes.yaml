@@ -452,11 +452,10 @@ integrator:
   lanes:
     claude-oscarhq:
       # Fusionar NO despliega: botón aparte [🚀 Desplegar]. Desde el 22-10 Oscar HQ corre en pildora-01 (Hetzner) con
-      # Dokploy (Railway ya no): application.deploy (no redeploy), sondeo de application.one hasta done/error y GET health_url.
+      # Dokploy: application.deploy (no redeploy), sondeo de application.one hasta done/error y GET health_url.
       # dokploy_url: hoy el túnel SSH al panel (http://localhost:3300); con Cloudflare Access será https://panel.pildoradigital.com.
       # dokploy_application_id: pégalo desde el panel (aplicación oscar-hq → URL/ajustes). Vacío = el 🚀 avisa «deploy no
       # configurado». El TOKEN no va aquí: dokploy_token_env es el NOMBRE de la variable (en agent-lanes/.env).
-      # Para volver a Railway: deploy: railway_up + railway_dir/project/service/environment (ids en el historial de git).
       deploy: dokploy
       dokploy_url: http://localhost:3300
       dokploy_application_id: ""
@@ -472,11 +471,11 @@ integrator:
       batch_frontend_paths: [dashboard/]
       batch_frontend_cmd: cd dashboard && set COREPACK_ENABLE_DOWNLOAD_PROMPT=0&& corepack pnpm@10.18.3 install --frozen-lockfile && npx tsc --noEmit && npx vitest run
       # Infraestructura de arranque/deploy: se puede fusionar, pero sin botón de deploy (lo revisa Oscar).
-      sensitive_paths: [railway.json, railway.toml, nixpacks.toml, Procfile, Dockerfile, .railwayignore, requirements.txt, .github/]
+      sensitive_paths: [Procfile, Dockerfile, requirements.txt, .github/]
       health_url: https://api.pildoradigital.com/api/health   # se verifica tras el done de Dokploy
     claude-migrateam:
-      # 28-09: fusiona en develop, que DESPLIEGA STAGING solo (Railway staging + Vercel develop, alembic contra la BD
-      # de staging). Nunca master: la promoción a producción es release/<fecha> con OK de Oscar, fuera del carril.
+      # 28-09: fusiona en develop, que DESPLIEGA STAGING solo (backend-staging en Dokploy + Vercel develop, alembic
+      # contra la BD de staging). Nunca master: la promoción a producción es release/<fecha> con OK de Oscar, fuera del carril.
       # Con migración de Alembic no hay botón. Se verifica con GET /health de staging hasta que commit_sha sea el del merge.
       deploy: on_merge
       risk: staging                 # 🟢 develop = staging. Un on_merge sin `risk` se trata como 🔴 PRODUCCIÓN.
@@ -484,9 +483,9 @@ integrator:
       merge_label: "🔀 Fusionar en develop (despliega staging)"
       merge_warning: "⚠️ Fusionar despliega STAGING (develop), no producción; a master solo por release/<fecha>"
       alembic_versions: backend/alembic/versions/
-      # alembic/env.py, alembic.ini, Procfile... corren en el arranque de Railway contra la BD de producción: sin botón.
-      sensitive_paths: [backend/alembic/, backend/alembic.ini, backend/Procfile, backend/railway.json, backend/railway.toml, backend/nixpacks.toml, backend/Dockerfile, railway.json, vercel.json, frontend/vercel.json, .github/]
-      health_url: https://migrateam-backend-staging-staging.up.railway.app/health
+      # alembic/env.py, alembic.ini, Procfile... corren en el arranque de backend-prod (Dokploy) contra la BD de producción: sin botón.
+      sensitive_paths: [backend/alembic/, backend/alembic.ini, backend/Procfile, backend/Dockerfile, vercel.json, frontend/vercel.json, .github/]
+      health_url: https://mgrt-staging.2-28-20-203.sslip.io/health   # backend-staging en Dokploy (verificado 14-11, 200 healthy)
       health_commit_key: commit_sha
     claude-hub:
       # 28-09 (plan D): el propio sistema. Fusionar en main NO despliega nada (deploy none). Tras fusionar, botón
@@ -501,13 +500,11 @@ integrator:
       # Hooks y contrato de seguridad de los workers: se puede fusionar, con aviso en la ficha (revísalo tú).
       sensitive_paths: [tools/agent-lanes/contract/, tools/agent-lanes/lanes.yaml]
     claude-scraper:
-      # 01-10: Railway despliega el Scraper desde la rama base: fusionar = producción. Se verifica con GitHub
-      # Deployments del commit fusionado (success), no con /health.
-      # Activo: claude-scraper ya está en INTEGRATOR_LANES de agent-lanes/.env (auditoría del 25-10). Ojo, CF-07 sin
-      # resolver: Railway sigue desplegando el Scraper y pildora-01 también lo ejecuta; un solo entorno lo decide Oscar.
-      deploy: on_merge
-      deploy_check: github_deployments
-      risk: production              # 🔴 PRODUCCIÓN
+      # 14-11: el Scraper corre solo en pildora-01 y se despliega a mano con Dokploy (Railway ya no existe; antes
+      # 01-10 fusionar publicaba solo). Fusionar NO despliega: deploy none, sin id de Dokploy ni botón de deploy.
+      # Activo: claude-scraper ya está en INTEGRATOR_LANES de agent-lanes/.env (auditoría del 25-10).
+      deploy: none
+      risk: none                    # 🟢 SIN DEPLOY (el texto de la cabecera lo da risk_label)
       risk_label: SCRAPER
-      merge_warning: "⚠️ Fusionar DESPLIEGA el Scraper a producción solo (Railway, desde la rama base)"
-      sensitive_paths: [railway.json, railway.toml, nixpacks.toml, Procfile, Dockerfile, requirements.txt, .github/]
+      merge_warning: "⚠️ Fusionar NO despliega; la publicación es manual y con OK de Oscar"
+      sensitive_paths: [Procfile, Dockerfile, requirements.txt, .github/]

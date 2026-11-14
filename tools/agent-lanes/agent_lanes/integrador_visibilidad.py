@@ -1,14 +1,13 @@
 """Visibilidad del integrador en Telegram (t_5624611d; spec en specs/integrador-visibilidad-telegram.md).
 
 Lo que el integrador hace desde Claude Code (merges, migraciones, semillas) no pasa por el kanban y no salía en Telegram.
-Tres piezas, sin un canal de avisos nuevo (se reutilizan /integrador, el parte de las 9:00 y el notificador del bot):
+Dos piezas, sin un canal de avisos nuevo (se reutilizan /integrador, el parte de las 9:00 y el notificador del bot):
 
 1. Estado: `.state/integrador_estado.md`, que escribe el integrador tras cada paso. `parse_estado` lo lee tolerando líneas
    desconocidas; `resumen`/`detalle` lo muestran (corto + «ver más»); si falta o es viejo se dice en una línea.
 2. Cola de PR de sesiones interactivas: `/encolar <repo> <PR>` los anota en `ColaExternos` con el commit exacto. El botón
    de Oscar registra el OK sobre ESE commit; si el PR cambia, el OK deja de valer. Aquí no se fusiona nada.
-3. Incidencia de Railway: `IncidenciaRailway` avisa una vez al abrirse («despliegue en cola…», con repo y SHA) y otra al
-   normalizarse.
+(La antigua pieza 3, la incidencia de Railway, se retiró el 14-11-2026 con la plataforma.)
 
 Todo lo que se puede ajustar (hora del parte, antigüedad máxima, tamaño del resumen, repos, textos) vive en
 `integrador_visibilidad.yaml`; con el fichero ausente o un valor inválido valen los defaults de `Ajustes`.
@@ -34,15 +33,12 @@ log = logging.getLogger("agent_lanes")
 SETTINGS_PATH = ROOT / "integrador_visibilidad.yaml"
 ESTADO_FILE = "integrador_estado.md"
 EXTERNOS_FILE = "integrador_externos.json"
-INCIDENCIA_FILE = "integrador_railway.json"
 KEYS = ("repo", "pr", "sha", "estado", "siguiente")  # lo demás se tolera y se ignora
 PR_RE = re.compile(r"(?:/pull/|#)?(\d{1,6})/?$")
 
 TEXTOS = {
     "estado_falta": "🧑‍💻 Estado del integrador: no hay parte (falta .state/integrador_estado.md). No sé qué ha hecho desde sus consolas.",
     "estado_viejo": "🧑‍💻 Estado del integrador: el último parte tiene {horas} h (límite {max} h); puede haber pasos sin reflejar.",
-    "incidencia_abre": "🚧 Despliegue en cola por incidencia de Railway · {repo} · {sha}. Se reintenta al normalizarse.",
-    "incidencia_cierra": "✅ Railway vuelve a responder · {repo}: ya se puede desplegar {sha}.",
 }
 
 
@@ -248,41 +244,3 @@ def vista_externos(items: dict[str, dict], now: float) -> str:
         horas = int(max(0, now - float(it.get("queued_at") or now)) // 3600)
         lines.append(f"• {it['repo']} #{it['pr']} · {truncate(it.get('title'), 50)} · {it['sha'][:9]} · {ok} · hace {horas} h")
     return "\n".join(lines)
-
-
-# --- 3. incidencia de Railway ----------------------------------------------------------------------------------
-
-class IncidenciaRailway:
-    """Una incidencia abierta por repo: avisa al abrirse y al cerrarse, nunca dos veces seguidas lo mismo."""
-
-    def __init__(self, path: Path | str, aj: Ajustes | None = None, now=time.time):
-        self.path, self.aj, self._now = Path(path), aj or Ajustes(), now
-
-    def _load(self) -> dict:
-        try:
-            data = json.loads(self.path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            return {}
-        return data if isinstance(data, dict) else {}
-
-    def _save(self, data: dict) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(json.dumps(data), encoding="utf-8")
-
-    def abrir(self, repo: str, sha: str) -> str | None:
-        """Texto a enviar la primera vez que un repo tiene el despliegue en cola; None si ya estaba avisado."""
-        data = self._load()
-        if repo in data:
-            return None
-        data[repo] = {"sha": sha, "desde": self._now()}
-        self._save(data)
-        return texto(self.aj, "incidencia_abre", repo=repo, sha=sha[:9])
-
-    def cerrar(self, repo: str) -> str | None:
-        """Texto a enviar cuando Railway responde de nuevo y había incidencia abierta; None si no la había."""
-        data = self._load()
-        abierta = data.pop(repo, None)
-        if abierta is None:
-            return None
-        self._save(data)
-        return texto(self.aj, "incidencia_cierra", repo=repo, sha=str(abierta.get("sha", ""))[:9])

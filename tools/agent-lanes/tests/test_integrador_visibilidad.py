@@ -1,4 +1,4 @@
-"""Visibilidad del integrador en Telegram (t_5624611d): estado, /encolar con OK atado al commit, incidencia de Railway."""
+"""Visibilidad del integrador en Telegram (t_5624611d): estado, /encolar con OK atado al commit."""
 import json
 import subprocess
 from types import SimpleNamespace
@@ -55,11 +55,11 @@ def test_ajustes_defaults_validos_y_textos(tmp_path):
     assert iv.load_ajustes(tmp_path / "no.yaml") == iv.Ajustes()
     f = tmp_path / "a.yaml"
     f.write_text("hora_parte: 7\nestado_max_horas: -3\nresumen_pasos: 'x'\nrepos: {OscarHQ: oscarsao/oscar-hq, mal: x}\n"
-                 "textos: {incidencia_abre: 'Cola {repo} {sha}', rota: 'x', estado_falta: '{nope}'}\n", encoding="utf-8")
+                 "textos: {estado_viejo: 'Cola {horas} {max}', rota: 'x', estado_falta: '{nope}'}\n", encoding="utf-8")
     aj = iv.load_ajustes(f)
     assert aj.hora_parte == 7 and aj.estado_max_horas == 24 and aj.resumen_pasos == 3
     assert aj.repos == {"oscarhq": "oscarsao/oscar-hq"}
-    assert iv.texto(aj, "incidencia_abre", repo="r", sha="s") == "Cola r s"
+    assert iv.texto(aj, "estado_viejo", horas=5, max=2) == "Cola 5 2"
     assert "no hay parte" in iv.texto(aj, "estado_falta")  # plantilla rota: vale el default
 
 
@@ -79,16 +79,6 @@ def test_ok_atado_al_commit(tmp_path):
     cola.add("oscarhq", "o/r", 12, "t", SHA2)   # nuevo commit: el OK viejo no vale
     assert not cola.con_ok(key, SHA) and not cola.con_ok(key, SHA2)
     assert cola.quitar(key) and not cola.quitar(key) and cola.items() == {}
-
-
-def test_incidencia_railway_una_vez_y_se_cierra(tmp_path):
-    inc = iv.IncidenciaRailway(tmp_path / "i.json", iv.Ajustes(), lambda: NOW)
-    aviso = inc.abrir("oscar-hq", SHA)
-    assert "en cola por incidencia de Railway" in aviso and SHA[:9] in aviso and "oscar-hq" in aviso
-    assert inc.abrir("oscar-hq", SHA) is None   # ya avisado
-    assert inc.cerrar("otro") is None
-    assert "vuelve a responder" in inc.cerrar("oscar-hq") and inc.cerrar("oscar-hq") is None
-    assert "incidencia de Railway" in inc.abrir("oscar-hq", SHA)  # incidencia nueva, aviso nuevo
 
 
 # --- comandos ---------------------------------------------------------------------------------------------------
@@ -186,17 +176,3 @@ def test_parte_de_las_9_con_hora_y_lineas_del_integrador():
     texto = rc.render_summary([], [], 0, NOW, extra="🧑‍💻 Estado del integrador (x)", hour=7)
     assert "Resumen de las 7:00" in texto and "Estado del integrador" in texto
     assert "Resumen de las 9:00" in rc.render_summary([], [], 0, NOW)
-
-
-def test_incidencia_en_deploy_avisa_y_cierra(tmp_path):
-    from agent_lanes.integrator import Integrator, IntegratorSettings
-    bot = Bot()
-    lane = SimpleNamespace(repo="C:/x/oscar-hq", name="claude-oscarhq")
-    integ = Integrator(IntegratorSettings(integration_telegram=("-100", "7")), {}, hermes_for=lambda b: None,
-                       notifier=bot, state_dir=tmp_path, now=lambda: NOW)
-    integ._railway_incident(lane, SHA, abrir=True)
-    integ._railway_incident(lane, SHA, abrir=True)
-    assert len(bot.sent) == 1 and "oscar-hq" in bot.sent[0][0] and SHA[:9] in bot.sent[0][0]
-    integ._railway_incident(lane, SHA, abrir=False)
-    integ._railway_incident(lane, SHA, abrir=False)
-    assert len(bot.sent) == 2 and "vuelve a responder" in bot.sent[1][0]

@@ -415,7 +415,7 @@ class Promoter:
             return
         mig = fresh["pending"]
         text = [f"🚀 ÚLTIMO PASO · promover {cfg.key.upper()} a producción (PR #{st['pr']})",
-                f"Se fusionará {cfg.head} en {cfg.base} sin bypass y Railway/Vercel desplegarán solos."]
+                f"Se fusionará {cfg.head} en {cfg.base} sin bypass; el backend de producción se despliega aparte en Dokploy (manual) y el frontend en Vercel."]
         if mig:
             text += [f"Se aplicarán {len(mig)} migración(es) de Alembic, una a una:"] + [f"  {i}. {m}" for i, m in
                                                                                        enumerate(mig, 1)]
@@ -469,4 +469,4 @@ class Promoter:
         self._save(pid, status="unconfirmed")
         self._log(pid, f"/health sin el commit nuevo: {last}")
         self._send(where, f"⚠️ Fusionado ({sha[:7]}) pero /health no confirma el despliegue en "
-                          f"{cfg.health_timeout // 60} min ({last}). Revisa Railway y Vercel; no reintento nada.\n" + revert)
+                          f"{cfg.health_timeout // 60} min ({last}). Revisa Dokploy y Vercel; no reintento nada.\n" + revert)

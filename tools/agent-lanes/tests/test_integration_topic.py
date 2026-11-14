@@ -15,7 +15,7 @@ from agent_lanes.integration import (SUMMARY_EMPTY, IntegrationRoute, PinnedSumm
 from agent_lanes.integrator import Integrator, IntegratorSettings, Policy, load_integrator_settings
 from agent_lanes.notices import MessageStore, TaskNotices
 from agent_lanes.review import ReviewRunner
-from tests.test_integrator import (GH, HEAD, MGT_POLICY, MGT_SLUG, OHQ_POLICY, OHQ_SLUG, RW, Clock, FakeHermes,
+from tests.test_integrator import (GH, HEAD, MGT_POLICY, MGT_SLUG, OHQ_POLICY, OHQ_SLUG, Clock, FakeHermes,
                                    FakeLinks, World, approved, lane, record)
 
 GESTION = "-1003530490339"
@@ -100,7 +100,7 @@ def build(tmp_path, *, name="claude-oscarhq", policy=None, world=None, tg=None, 
     desk = DecisionDesk(tg, CallbackStore(tmp_path / "cb"), lanes={name: ln}, hermes_for=lambda b: h,
                         links=FakeLinks(slug), owner_id=OSCAR, runner=w, spawn=lambda fn: fn(), messages=messages)
     integ = Integrator(settings, {name: ln}, hermes_for=lambda b: h, links=FakeLinks(slug), notifier=tg,
-                       messages=messages, desk=desk, runner=w, gh_exe=GH, railway_exe=RW, clock=clock,
+                       messages=messages, desk=desk, runner=w, gh_exe=GH, clock=clock,
                        sleep=clock.sleep, http_get=lambda url: (200, "{}"), state_dir=tmp_path / "state",
                        now=lambda: NOW)
     desk.integrator = integ
@@ -136,7 +136,7 @@ def test_lanes_yaml_declares_the_integration_topic_and_risks():
     assert load_telegram_settings()["integration"] == INTEG
     s = load_integrator_settings(env={})
     assert s.integration_telegram == INTEG
-    assert risk_of(s.policies["claude-oscarhq"]) == risk_of(Policy(lane="x", deploy="railway_up", risk="manual",
+    assert risk_of(s.policies["claude-oscarhq"]) == risk_of(Policy(lane="x", deploy="dokploy", risk="manual",
                                                                    risk_label="Oscar HQ"))
     assert header(risk_of(s.policies["claude-oscarhq"]), "listo") == "🟠 OSCAR HQ · LISTO"
     assert header(risk_of(s.policies["claude-migrateam"]), "listo") == "🟢 STAGING · LISTO"
@@ -160,8 +160,8 @@ def test_without_integration_key_the_topic_is_off(tmp_path):
 
 @pytest.mark.parametrize("policy,expected", [
     (Policy(lane="m", deploy="on_merge", risk="staging"), "🟢 STAGING"),
-    (Policy(lane="o", deploy="railway_up", risk="manual", risk_label="oscar hq"), "🟠 OSCAR HQ"),
-    (Policy(lane="o", deploy="railway_up"), "🟠 DEPLOY MANUAL"),
+    (Policy(lane="o", deploy="dokploy", risk="manual", risk_label="oscar hq"), "🟠 OSCAR HQ"),
+    (Policy(lane="o", deploy="dokploy"), "🟠 DEPLOY MANUAL"),
     (Policy(lane="p", deploy="on_merge"), "🔴 PRODUCCIÓN"),          # el merge despliega y nadie dijo staging
     (Policy(lane="p", deploy="on_merge", risk="production"), "🔴 PRODUCCIÓN"),
     (Policy(lane="p", deploy="on_merge", risk="loquesea"), "🔴 PRODUCCIÓN"),  # valor desconocido: lo peor
@@ -456,7 +456,7 @@ def test_review_done_card_goes_to_integration_topic_with_dm_mirror(tmp_path):
     old = bot.sent[0]
     rr = ReviewRunner(review, lanes, hermes_for=lambda b: None, git=None, reviewer=None, verifier=None, notify=bot,
                       messages=messages, decisions=desk, integration=IntegrationRoute(INTEG, {"claude-oscarhq": Policy(
-                          lane="claude-oscarhq", deploy="railway_up", risk="manual", risk_label="OSCAR HQ",
+                          lane="claude-oscarhq", deploy="dokploy", risk="manual", risk_label="OSCAR HQ",
                           manual_migrations=("supabase/migrations/",))}))
     body = f"Origen-Telegram: chat={GESTION} thread=231\n\n## Objetivo\nLogin"
     rr.notify("done", {"id": "t_1", "title": "Arreglar login", "body": body, "assignee": "claude-oscarhq"},

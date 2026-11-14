@@ -41,7 +41,7 @@ _IMPOSIBLE = (
     (re.compile(rf"\b{_DEPLOY}\b[^\n]*{_PROD_TARGET}|{_PROD_TARGET}[^\n]*\b{_DEPLOY}\b"
                 r"|\bvercel\s+(?:deploy|promote|--prod)\b|\brailway\s+(?:up|deploy|redeploy)\b",
                 re.IGNORECASE),
-     "producción o despliegue (Dokploy, Vercel, Railway)"),
+     "producción o despliegue (Dokploy, Vercel)"),
     (re.compile(r"\b(?:cambi\w+|a[ñn]ad\w+|actualiz\w+|configur\w+|modific\w+|rota\w*|set|pon\w*)\b[^\n]*"
                 r"(?:variables?\s+de\s+entorno|\benv(?:ironment)?\s+vars?\b)[^\n]*(?:producci[óo]n|\bprod\b)", re.IGNORECASE),
      "variables de entorno de producción"),

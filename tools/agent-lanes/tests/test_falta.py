@@ -201,7 +201,7 @@ def test_falta_with_open_lote_excluded_branch_migration_and_env(env):
 
 def test_falta_deploy_button_asks_for_confirmation(env):
     e = env
-    e.policy = type(e.policy)(**{**e.policy.__dict__, "deploy": "railway_up"})
+    e.policy = type(e.policy)(**{**e.policy.__dict__, "deploy": "dokploy"})
     e.integ.settings.policies["claude-oscarhq"] = e.policy
     e.branch("t_a", {"src/a.py": "a = 2\n"})
     e.queue()

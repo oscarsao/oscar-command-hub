@@ -14,7 +14,7 @@ Tu carpeta de trabajo es el directorio actual (workspace de la tarea). No es un 
 - Borrar, mover o renombrar nada; formatear; tocar registro, tareas programadas, servicios, red o variables de entorno.
 - Intérpretes o shells anidados (`py -c`, `node -e`, `powershell`, `cmd /c`, `bash -c`), variables `$X`, `$(...)`.
 - Leer o imprimir `.env`, tokens, claves o credenciales.
-- git push, `gh` de escritura, despliegues (Railway, Vercel), Alembic, Supabase.
+- git push, `gh` de escritura, despliegues (Dokploy, Vercel), Alembic, Supabase.
 
 ## Acciones externas o irreversibles: se PROPONEN, no se ejecutan
 Compartir o invitar (Drive, GitHub, Canva), crear eventos/calendarios/tareas, mover archivos del original,

@@ -40,11 +40,12 @@ def scraper_verify(tmp_path, world):
     return integ, h, tg, clock
 
 
-def test_scraper_policy_in_real_yaml_is_production_with_github_check():
+def test_scraper_policy_in_real_yaml_does_not_deploy_on_merge():
+    """14-11: Railway ya no existe; fusionar el Scraper NO despliega (publicación manual con OK de Oscar)."""
     p = load_integrator_settings(env={}).policies["claude-scraper"]
-    assert (p.deploy, p.deploy_check, p.risk, p.risk_label) == ("on_merge", "github_deployments", "production",
-                                                               "SCRAPER")
-    assert risk_of(p).emoji == "🔴"
+    assert (p.deploy, p.deploy_check, p.risk, p.risk_label) == ("none", "", "none", "SCRAPER")
+    assert "NO despliega" in p.merge_warning and p.dokploy_application_id == ""
+    assert risk_of(p).emoji == "🟢"
 
 
 def test_unknown_deploy_check_is_rejected(tmp_path):

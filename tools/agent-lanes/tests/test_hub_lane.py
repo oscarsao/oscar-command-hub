@@ -64,7 +64,7 @@ def test_hub_not_active_unless_listed_in_integrator_lanes(monkeypatch):
     assert HUB in load_integrator_settings(env={}).policies
 
 
-@pytest.mark.parametrize("policy", ["{apply: reboot}", "{apply: restart_drain, deploy: railway_up}"])
+@pytest.mark.parametrize("policy", ["{apply: reboot}", "{apply: restart_drain, deploy: dokploy}"])
 def test_apply_only_known_and_with_deploy_none(tmp_path, policy):
     cfg = tmp_path / "lanes.yaml"
     cfg.write_text(f"integrator:\n  lanes:\n    x: {policy}\n", encoding="utf-8")

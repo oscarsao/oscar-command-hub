@@ -148,7 +148,7 @@ def running(tid, assignee, title="En marcha"):
 
 
 def fake_integrator(merged):
-    pol = {"claude-oscarhq": SimpleNamespace(deploy="railway_up"), "claude-nextjobs": SimpleNamespace(deploy="none")}
+    pol = {"claude-oscarhq": SimpleNamespace(deploy="dokploy"), "claude-nextjobs": SimpleNamespace(deploy="none")}
     return SimpleNamespace(settings=SimpleNamespace(policies=pol),
                            _merged_states=lambda lane, ex: merged.get(lane.name, []))
 
@@ -201,7 +201,7 @@ def test_help_lists_new_commands(tmp_path, cmd):
 
 class DeployIntegrator:
     def __init__(self, merged, enabled=True):
-        pol = {"claude-oscarhq": SimpleNamespace(deploy="railway_up"),
+        pol = {"claude-oscarhq": SimpleNamespace(deploy="dokploy"),
                "claude-migrateam": SimpleNamespace(deploy="on_merge")}
         self.settings = SimpleNamespace(enabled=enabled, policies=pol)
         self.merged, self.pressed = merged, []

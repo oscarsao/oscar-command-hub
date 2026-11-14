@@ -13,8 +13,8 @@ from agent_lanes import consola
 from agent_lanes.config import Lane
 from agent_lanes.decisions import NOT_OWNER, CallbackStore, DecisionDesk
 from agent_lanes.hermes import OSCAR_AUTHOR
-from agent_lanes.integrator import (INT_DEPLOY, INT_MERGE, INT_MERGE_DEPLOY, INTEGRATOR_AUTHOR, MIGRATEAM_WARNING,
-                                    NEEDS_MIGRATION, Integrator, IntegratorSettings, Policy, alembic_heads,
+from agent_lanes.integrator import (INT_MERGE, INT_MERGE_DEPLOY, INTEGRATOR_AUTHOR, MIGRATEAM_WARNING,
+                                    NEEDS_MIGRATION, GateResult, Integrator, IntegratorSettings, Policy, alembic_heads,
                                     build_integrator, load_integrator_settings, migration_applied_cli, parse_revision,
                                     scan_secrets)
 from agent_lanes.notices import MessageStore
@@ -22,9 +22,6 @@ from agent_lanes.notices import MessageStore
 OSCAR = 6744452215
 GH, RW = "gh.exe", "railway.exe"
 HEAD, BASE, BASE2, MERGE = "a" * 40, "b" * 40, "c" * 40, "d" * 40
-PROJECT, SERVICE, ENVIRONMENT = "p-1", "s-1", "e-1"
-NEW_DEP = "11111111-2222-3333-4444-555555555555"
-OLD_DEP = "99999999-2222-3333-4444-555555555555"
 SECRET = "sk-ant-api03-" + "Z" * 40
 OHQ_SLUG, MGT_SLUG = "oscarsao/oscar-hq", "PildoraDigital/OCR-PDF-and-images"
 
@@ -38,7 +35,7 @@ def cp(rc=0, out="", err=""):
 
 
 class World:
-    """git + gh + railway + test_cmd simulados. `calls` guarda (argv, kwargs) de todo lo ejecutado."""
+    """git + gh + test_cmd simulados. `calls` guarda (argv, kwargs) de todo lo ejecutado."""
 
     def __init__(self, slug=OHQ_SLUG, tid="t_1"):
         self.calls = []
@@ -55,12 +52,6 @@ class World:
         self.test_rc = 0
         self.alembic_files: dict[str, str] = {}
         self.merge_rc = 0
-        self.linked = PROJECT
-        self.deployments = [{"id": OLD_DEP, "status": "SUCCESS"}]
-        self.after_up = [{"id": NEW_DEP, "status": "BUILDING"}, {"id": NEW_DEP, "status": "SUCCESS"}]
-        self.up_out = f"Build Logs: https://railway.com/project/{PROJECT}/service/{SERVICE}?id={NEW_DEP}&"
-        self.up_rc = 0
-        self.upped = False
         self.not_ancestor: set[tuple[str, str]] = {(MERGE, BASE)}  # la base anterior no contiene el merge. # (viejo, nuevo) con merge-base --is-ancestor != 0
         self.between: list[str] = []  # archivos de `git diff --name-only <fusión> <punta>`
 
@@ -75,9 +66,7 @@ class World:
             return self._git(args)
         if args[0] == GH:
             return self._gh(args)
-        if args[0] == RW:
-            return self._railway(args)
-        raise AssertionError(args)
+        raise AssertionError(args)  # cualquier otro binario (p. ej. el antiguo railway.exe) no debe ejecutarse
 
     def _git(self, args):
         if "fetch" in args:
@@ -124,19 +113,6 @@ class World:
                 self.pr = {**self.pr, "state": "MERGED", "mergeCommit": {"oid": MERGE}}
                 self.base = self.remote_base = MERGE  # el squash queda en la punta de master
             return cp(self.merge_rc, "", "" if self.merge_rc == 0 else "boom")
-        raise AssertionError(args)
-
-    def _railway(self, args):
-        if args[1:2] == ["status"]:
-            return cp(0, json.dumps({"id": self.linked, "name": "Oscar HQ"}))
-        if args[1:2] == ["up"]:
-            self.upped = True
-            return cp(self.up_rc, self.up_out)
-        if args[1:3] == ["deployment", "list"]:
-            if self.upped and self.after_up:
-                state = self.after_up.pop(0) if len(self.after_up) > 1 else self.after_up[0]
-                return cp(0, json.dumps([state, *self.deployments]))
-            return cp(0, json.dumps(self.deployments))
         raise AssertionError(args)
 
 
@@ -230,9 +206,9 @@ def lane(name="claude-oscarhq", tmp=None):
                 test_cmd='py -3.12 "{AGENT_LANES_DIR}/agent_lanes/checks.py" {BASE}', telegram=("-100", "231"))
 
 
-OHQ_POLICY = Policy(lane="claude-oscarhq", deploy="railway_up", manual_migrations=("supabase/migrations/",),
-                    railway_dir="C:/Users/oscar/dev/oscar-hq", railway_project=PROJECT, railway_service=SERVICE,
-                    railway_environment=ENVIRONMENT, health_url="https://ohq/api/health")
+OHQ_POLICY = Policy(lane="claude-oscarhq", deploy="dokploy", manual_migrations=("supabase/migrations/",),
+                    dokploy_url="http://localhost:3300", dokploy_application_id="app-1",
+                    dokploy_token_env="DOKPLOY_API_TOKEN", health_url="https://ohq/api/health")
 MGT_POLICY = Policy(lane="claude-migrateam", deploy="on_merge", alembic_versions="backend/alembic/versions/",
                     health_url="https://mgt/health", health_commit_key="commit_sha")
 
@@ -266,7 +242,7 @@ def make(tmp_path, *, name="claude-oscarhq", comments=None, desk=True, enabled=T
         d = DecisionDesk(tg, CallbackStore(tmp_path / "cb"), lanes={name: ln}, hermes_for=lambda b: h,
                          links=FakeLinks(slug), owner_id=str(OSCAR), runner=w, spawn=lambda fn: fn())
     integ = Integrator(settings, {name: ln}, hermes_for=lambda b: h, links=FakeLinks(slug), notifier=tg,
-                       messages=MessageStore(), desk=d, runner=w, gh_exe=GH, railway_exe=RW, clock=clock,
+                       messages=MessageStore(), desk=d, runner=w, gh_exe=GH, env={"DOKPLOY_API_TOKEN": "t"}, clock=clock,
                        sleep=clock.sleep, http_get=health or (lambda url: (200, "{}")),
                        state_dir=tmp_path / "state", dry_run=dry_run, out=out or (lambda s: None))
     if d:
@@ -564,8 +540,6 @@ def test_migration_applied_button_records_comments_and_offers_deploy(tmp_path):
                for _, t, a in h.comments)
     assert NEEDS_MIGRATION not in tg.edits[-1]["text"] and "migración aplicada" in tg.edits[-1]["text"]
     assert buttons(tg.edits[-1]["markup"]) == ["🚀 Desplegar"]
-    press(d, tg)  # 🚀 Desplegar
-    assert [a for a in w.argv(RW) if a[1] == "up"] and "🚀 desplegado" in tg.edits[-1]["text"]
 
 
 def test_migration_applied_button_only_for_oscar(tmp_path):
@@ -710,99 +684,27 @@ def test_gh_forbidden_flags_and_git_push_raise(tmp_path):
 
 # --- deploy Oscar HQ -----------------------------------------------------------------------------------
 
-def merged_and_press_deploy(tmp_path, world=None, health=None):
-    integ, w, h, tg, d, clock = make(tmp_path, world=world, health=health)
-    integ.run_pass()
-    press(d, tg)
-    press(d, tg)  # 🚀 Desplegar
-    return integ, w, h, tg, d, clock
+def test_railway_up_policy_is_rejected_with_a_clear_error(tmp_path):
+    """14-11-2026: Railway ya no existe; un `deploy: railway_up` (o sus campos railway_*) falla al cargar lanes.yaml."""
+    for lane in ("deploy: railway_up", "deploy: dokploy, railway_dir: C:/x"):
+        cfg = tmp_path / "lanes.yaml"
+        cfg.write_text(f"integrator:\n  lanes:\n    claude-oscarhq: {{{lane}}}\n", encoding="utf-8")
+        with pytest.raises(ValueError, match="railway_up ya no existe"):
+            load_integrator_settings(cfg, {})
 
 
-def test_deploy_railway_up_polls_the_new_deployment(tmp_path):
-    integ, w, h, tg, d, clock = merged_and_press_deploy(tmp_path)
-    up = next(a for a in w.argv(RW) if a[1] == "up")
-    assert "--detach" in up and "-y" not in up and "--new" not in up
-    assert up[up.index("-p") + 1] == PROJECT and up[up.index("-s") + 1] == SERVICE
-    assert up[up.index("-e") + 1] == ENVIRONMENT
-    up_kw = next(kw for a, kw in w.calls if a and a[0] == RW and a[1] == "up")
-    assert str(up_kw["cwd"]).replace("\\", "/").endswith("intdep-t_1")  # desde el worktree limpio del merge
-    assert "🚀 desplegado · ddddddd" in tg.edits[-1]["text"]
-    assert any(t.startswith(f"DESPLEGADO {MERGE} · railway deployment {NEW_DEP} SUCCESS") for _, t, _ in h.comments)
-    assert clock.t > 0  # pasó por BUILDING antes de SUCCESS: no se quedó con el SUCCESS viejo
-
-
-def test_old_success_is_never_taken_as_the_new_deploy(tmp_path):
-    w = World()
-    w.after_up = [{"id": NEW_DEP, "status": "BUILDING"}]  # el nuevo nunca termina; el viejo sigue en SUCCESS
-    integ, w, h, tg, d, clock = merged_and_press_deploy(tmp_path, world=w)
-    assert "⛔ deploy falló · sin terminar en 15 min" in tg.edits[-1]["text"]
-    assert clock.t >= 900
-
-
-@pytest.mark.parametrize("status", ["FAILED", "CRASHED", "REMOVED", "SKIPPED"])
-def test_deploy_failure_statuses(tmp_path, status):
-    w = World()
-    w.after_up = [{"id": NEW_DEP, "status": status}]
-    integ, w, h, tg, d, _ = merged_and_press_deploy(tmp_path, world=w)
-    assert f"⛔ deploy falló · {status}" in tg.edits[-1]["text"]
-    assert any(t.startswith("DEPLOY-FALLIDO") for _, t, _ in h.comments)
-
-
-def test_deploy_id_from_list_diff_when_output_has_none(tmp_path):
-    w = World()
-    w.up_out = "Uploading..."
-    w.after_up = [{"id": NEW_DEP, "status": "SUCCESS"}]
-    integ, w, h, tg, d, _ = merged_and_press_deploy(tmp_path, world=w)
-    assert "🚀 desplegado" in tg.edits[-1]["text"]
-
-
-def test_deploy_refused_if_cli_not_linked_to_project(tmp_path):
-    w = World()
-    w.linked = "otro-proyecto"
-    integ, w, h, tg, d, _ = merged_and_press_deploy(tmp_path, world=w)
-    assert not [a for a in w.argv(RW) if a[1] == "up"]
-    assert "no está enlazada" in tg.edits[-1]["text"] and buttons(tg.markups[-1]) == ["🚀 Desplegar"]
-
-
-def _worktree_sha(w):
-    return next(a[-1] for a, _ in w.calls if a and a[0] == "git" and "worktree" in a and "add" in a
-                and str(a[a.index("--detach") + 1]).replace("\\", "/").endswith("intdep-t_1"))
-
-
-def test_deploy_takes_the_tip_of_the_base_not_the_merge_of_the_card(tmp_path):
-    """28-09: 🚀 de a50b290 dejó fuera la fusión posterior 6f46b0d (/leads). Ahora se despliega la punta."""
-    integ, w, h, tg, d, _ = make(tmp_path)
-    integ.run_pass()
-    press(d, tg)
-    w.base = BASE2  # otra fusión en master después de la de esta ficha
-    press(d, tg)
-    assert _worktree_sha(w) == BASE2
-    assert "🚀 desplegado · ccccccc" in tg.edits[-1]["text"]
-    assert any(t.startswith(f"DESPLEGADO {BASE2} · railway deployment {NEW_DEP} SUCCESS") and MERGE[:12] in t
-               for _, t, _ in h.comments)
-    assert integ._state("t_1")["deployed_sha"] == BASE2
+def test_deploy_none_shows_the_policy_warning_without_deploy_button():
+    """Scraper (14-11): fusionar NO despliega; el aviso de la política sale en la ficha."""
+    pol = Policy(lane="claude-scraper", deploy="none", merge_warning="⚠️ Fusionar NO despliega")
+    res = GateResult(ok=True)
+    assert Integrator._deploy_note(pol, res) == "⚠️ Fusionar NO despliega"
+    assert Integrator._deploy_note(Policy(lane="x", deploy="none"), res) is None
 
 
 def _merged_card(tmp_path, integ, tid="t_2", sha=BASE2, pr=8, migration=None):
     integ._save(tid, status="merged", lane="claude-oscarhq", merge_sha=sha, pr=pr,
                 pr_url=f"https://github.com/{OHQ_SLUG}/pull/{pr}", title="Leads", migration=migration)
     integ._notices.store.put(tid, {"chat_id": "-100", "thread_id": "398", "message_id": 900, "token": "tok2"})
-
-
-def test_deploy_marks_every_merged_card_contained_in_the_tip_as_deployed(tmp_path):
-    integ, w, h, tg, d, _ = make(tmp_path)
-    _merged_card(tmp_path, integ)
-    (tmp_path / "cb").mkdir(exist_ok=True)
-    (tmp_path / "cb" / "tok2.json").write_text("{}", encoding="utf-8")  # su 🚀 Desplegar pendiente
-    integ.run_pass()
-    press(d, tg)
-    w.base = BASE2
-    press(d, tg)
-    assert integ._state("t_2")["status"] == "deployed" and integ._state("t_2")["deployed_sha"] == BASE2
-    assert any(tid == "t_2" and t.startswith(f"DESPLEGADO {BASE2}") and "t_1" in t for tid, t, _ in h.comments)
-    assert any("🚀 desplegado · ccccccc" in e["text"] and "con el deploy de t_1" in e["text"] for e in tg.edits)
-    assert not (tmp_path / "cb" / "tok2.json").exists()  # botón retirado
-    assert "también PR #8" in tg.edits[-1]["text"]
 
 
 def test_merged_card_not_in_the_tip_is_left_alone(tmp_path):

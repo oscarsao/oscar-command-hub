@@ -276,7 +276,7 @@ cambia; cualquier cola, orden o escalada que se escriba aquí debe respetarla.
   mande solo el yaml: reinstalar el servicio SIN `-MaxWorkers` (`instalar_servicio.sh` ya no lo pasa; lo hace Oscar, los
   `.ps1` quedan fuera del alcance de los workers) y reiniciar el runner. El log de arranque
   (`runner: carriles=… max_workers=N`) dice el valor real. `max_parallel` por carril: 1 por defecto (`defaults`); 4 en
-  `claude-oscarhq` (27-10); 2 en `claude-hub`; 1 en `claude-ops`.
+  `claude-oscarhq` (27-10); 2 en `claude-hub`; 1 en `claude-ops`; 2 en el carril `review`.
 
 ## Guarda de tablero (ADR-036)
 `hermes kanban create` sin `--board` cae en `default`, y cada carril solo lee el tablero de su `board:` en `lanes.yaml`.
@@ -328,7 +328,7 @@ proactiva son la tarjeta hija (`specs/al-dia-prod.md`). Alias `/aldia`. Con un p
 a todas las marcas.
 
 ## Tras la migración a Dokploy (22-10, t_ffffc632)
-Oscar HQ y NextJobs corren en el servidor pildora-01 (Hetzner) con Dokploy; MigraTeam sigue en Railway hasta su corte.
+Oscar HQ y NextJobs corren en el servidor pildora-01 (Hetzner) con Dokploy; MigraTeam también (Railway se retiró el 14-11-2026).
 - **Autor de los commits del integrador** (`integrator.commit_author` en lanes.yaml; por defecto
   `oscarsao <oscarsao@users.noreply.github.com>`). Vercel bloquea los despliegues de commits cuyo autor no es del equipo
   («Failed deployment from agent-lanes@localhost»). Si tu noreply lleva el id numérico (`<id>+oscarsao@users.noreply…`,
@@ -336,11 +336,11 @@ Oscar HQ y NextJobs corren en el servidor pildora-01 (Hetzner) con Dokploy; Migr
 - **🚀 Desplegar con Dokploy** (`deploy: dokploy` en `integrator.lanes.<carril>`): `application.deploy` (no `redeploy`), sondeo de
   `application.one` hasta `done`/`error` del despliegue NUEVO y comprobación de `health_url`. Campos: `dokploy_url` (https, o
   `http://localhost:3300` mientras el panel vaya por túnel SSH), `dokploy_application_id` y `dokploy_token_env` (el NOMBRE de
-  la variable de agent-lanes/.env con el token; el token nunca va en lanes.yaml). `railway_up` sigue funcionando para quien lo use.
+  la variable de agent-lanes/.env con el token; el token nunca va en lanes.yaml). El modo `railway_up` se eliminó (14-11-2026): un `deploy: railway_up` da error de validación.
 - **Avisos del monitor** (`monitor_alerts` en lanes.yaml, `tools/monitor/prodwatch.py`, cada 5 min, por Telegram y sin
   repetir): despliegue de PRODUCCIÓN fallido en Vercel (`vercel.token_env` = nombre de la variable con el token de Vercel,
   `vercel.projects`; las vistas previas de lane/* no avisan; un aviso por despliegue) y salud del servidor (`health_url` de
-  cada carril + estado de su aplicación en Dokploy; `skip_health` excluye carriles, p. ej. Railway pausado).
+  cada carril + estado de su aplicación en Dokploy; `skip_health` excluye carriles, p. ej. un servicio pausado).
 - **Silenciar el ruido de Vercel** (lo haces tú en el panel; no hay código): *Project → Settings → Git → Pull Request
   Comments → off* (por proyecto) y *Account → Notifications → Deployments* → deja solo los de producción
   (desmarca vistas previas / «Preview Deployments»).

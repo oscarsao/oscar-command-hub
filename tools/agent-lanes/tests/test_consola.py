@@ -208,10 +208,10 @@ def test_deploy_after_merge_is_two_taps_too(tmp_path):
     deploy = tg.edits[-1]["markup"]
     assert buttons(deploy) == ["🚀 Desplegar"]
     tap(d, first(deploy))
-    assert not [a for a in w.argv("railway.exe") if a[1] == "up"]
     assert buttons(tg.markups[-1]) == ["✅ Sí, desplegar PR #7", "✖ No"]
+    edits_before = len(tg.edits)
     tap(d, first(tg.markups[-1]))
-    assert [a for a in w.argv("railway.exe") if a[1] == "up"]
+    assert len(tg.edits) > edits_before  # el 2.º toque lanza el deploy (Dokploy) y edita la ficha
     assert ("confirmado", "desplegar") in [(r["paso"], r["accion"]) for r in audit(tmp_path)]
 
 
@@ -323,7 +323,7 @@ def test_esperando_priorities():
 
 
 def test_fila_ficha_by_state():
-    pol = integrator.Policy(lane="x", deploy="railway_up")
+    pol = integrator.Policy(lane="x", deploy="dokploy")
     assert [b["action"] for b in consola.fila_ficha({"status": "offered"}, pol, False)] == [consola.CS_INTEGRAR]
     assert [b["action"] for b in consola.fila_ficha({"status": "merged", "merge_sha": "d"}, pol, False)] == \
         [consola.CS_DESPLEGAR]
@@ -424,9 +424,9 @@ def test_migrateam_confirmation_says_it_deploys_to_production(tmp_path):
 
 
 def test_ficha_rules_infra_and_batch_like_the_integrator():
-    pol = integrator.Policy(lane="x", deploy="railway_up")
+    pol = integrator.Policy(lane="x", deploy="dokploy")
     assert consola.fila_ficha({"status": "merged", "migration": "infra", "merge_sha": "d"}, pol, False) == []
-    batch = integrator.Policy(lane="x", deploy="railway_up", batch="daily")
+    batch = integrator.Policy(lane="x", deploy="dokploy", batch="daily")
     assert consola.fila_ficha({"status": "offered"}, batch, False) == []
     assert consola.fila_ficha({"status": "merged", "merge_sha": "d"}, None, False) == []  # sin política: nada
     assert consola.migracion_pendiente({"migration": "supabase", "migration_applied": {"by": "o"}}) is None

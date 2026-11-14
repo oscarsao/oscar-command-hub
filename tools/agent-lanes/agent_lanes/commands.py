@@ -2278,7 +2278,7 @@ class CommandCenter:
                 continue
             vars_ = env_pending(body)
             if vars_:
-                env.append("🔑 Poner en Railway (" + e(label) + "): "
+                env.append("🔑 Poner en Dokploy (" + e(label) + "): "
                            + ", ".join(f"<code>{e(n)}</code>" + (f"=<code>{e(v)}</code>" if v else "") for n, v in vars_))
         return merge + excl + sql + env + deploy + loose, targets[:6]
 
@@ -2767,7 +2767,7 @@ class CommandCenter:
     # --- /desplegar -----------------------------------------------------------------------
 
     def _deploy_target(self, arg: str):
-        """(carril, política) con deploy `railway_up` cuyo nombre, marca o palabra clave es `arg`; None si no hay."""
+        """(carril, política) con deploy `dokploy` cuyo nombre, marca o palabra clave es `arg`; None si no hay."""
         from .integrator import DEPLOY_BUTTON
         integ = getattr(self.desk, "integrator", None)
         if not integ or not integ.settings.enabled:
@@ -2827,7 +2827,7 @@ class CommandCenter:
         self.notifier.edit(where["chat_id"], where["message_id"],
                            f"⚠️ ¿Seguro? Esto despliega {rec.get('lane')} (PR #{rec.get('pr_number')}, "
                            f"{(rec.get('merge_sha') or '')[:7]}) con "
-                           f"{'Dokploy' if policy.deploy == 'dokploy' else '`railway up`'}.", html=False,
+                           "Dokploy.", html=False,
                            reply_markup=markup)
         return True
 
