@@ -82,3 +82,13 @@ y el mismo comando `node "C:/Users/oscar/.claude/hooks/destino.mjs"` (la entrada
 
 Límites honestos del lote: el guardián del fichero mira el nombre `pr-preautorizados` en el comando o la ruta; no frena a quien construya el nombre en tiempo de ejecución
 (protege contra descuidos y flujos normales, no contra un agente que quiera esquivarlo). Tampoco cubre que la sesión escriba el fichero con un `ask` que Oscar acepte sin leer.
+
+## Refuerzo del 14-11 (instalado y verificado en sesión nueva)
+Tras la revisión de los CLAUDE.md (hallazgos del subagente):
+- **Force push de cualquier tipo -> ask**, también a ramas propias (`-f`, `--force`, `--force-with-lease`, `-fu`, `+refspec`). Antes solo lo frenaba el texto.
+- **`gh workflow run|enable|disable` -> ask** (puede lanzar un despliegue o cambiar CI).
+- **`vercel env add|rm|update|pull` -> ask** (`pull` vuelca secretos a un fichero; `env ls` pasa). Límite: la forma `node .../vercel/dist/index.js env add` no empieza por `vercel` y no se ve.
+- **`settings.json`:** deny con la forma `git -C <ruta>` (`reset --hard`, `push --force`, `push -f`, `branch -D`, `clean -f`), que los deny antiguos no cubrían.
+- Pruebas: `node --test refuerzo.test.mjs destino.test.mjs lote.test.mjs` -> 52. Mutación sin la detección de force push -> 2 fallos.
+- Sigue SIN cubrir: `alembic upgrade` remoto, push a `develop` (decisión de Oscar: no protegida), `psql` por Bash y borrados de ficheros.
+

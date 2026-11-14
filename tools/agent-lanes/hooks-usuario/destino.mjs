@@ -218,7 +218,12 @@ export function analizaComando(cmd, cwd0, pol, prof = 0) {
         break;
       }
       if (w[i] === "push") {
-        const r = destinosPush(w.slice(i + 1), dir);
+        const args = w.slice(i + 1);
+        // Force push de cualquier tipo (también a ramas propias): -f, --force, --force-with-lease, +refspec.
+        if (args.some((a) => a === "-f" || /^--force(-with-lease|-if-includes)?(=.*)?$/.test(a) || /^-[a-eg-z]*f[a-z]*$/i.test(a) && !a.startsWith("--") || /^\+\S/.test(a))) {
+          asks.push("Force push (-f / --force / +refspec): siempre con tu OK, también a ramas propias");
+        }
+        const r = destinosPush(args, dir);
         if (r.sinResolver) asks.push(`${r.sinResolver}; confirma el destino`);
         else for (const d of r.destinos) {
           if (esProtegida(d, dir, pol)) asks.push(`Push a «${d}» (rama de producción): requiere tu confirmación`);
@@ -231,6 +236,10 @@ export function analizaComando(cmd, cwd0, pol, prof = 0) {
       const j = w.findIndex((x) => x === "pr");
       if (w.includes("api") && /pulls\/[^\s/]+\/merge|\/merges?\b/.test(w.join(" "))) {
         asks.push("Merge por API de GitHub (gh api): no se puede comprobar la rama de destino");
+        continue;
+      }
+      if (j < 0 && w[1] === "workflow" && /^(run|enable|disable)$/.test(w[2] || "")) {
+        asks.push("gh workflow run/enable/disable: puede lanzar un despliegue o cambiar CI; confirma");
         continue;
       }
       if (j > -1 && w[j + 1] === "merge") {

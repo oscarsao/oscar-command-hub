@@ -6,7 +6,8 @@
   "gh_timeout_ms": 8000,
   "comandos_ask": [
     { "patron": "^vercel\\b.*(--prod\\b|\\bpromote\\b|\\bdeploy\\b)", "motivo": "Despliegue o promoción en Vercel" },
-    { "patron": "^alembic (downgrade|stamp)\\b", "motivo": "Alembic downgrade/stamp: siempre con tu OK" }
+    { "patron": "^alembic (downgrade|stamp)\\b", "motivo": "Alembic downgrade/stamp: siempre con tu OK" },
+    { "patron": "^vercel\\b.*\\benv\\s+(add|rm|remove|update|pull)\\b", "motivo": "Vercel env: cambiar variables o volcarlas a disco (env pull escribe secretos en un fichero)" }
   ],
   "herramientas_ask": [
     { "patron": "^mcp__claude_ai_Supabase__(apply_migration|deploy_edge_function|create_edge_function_secret|create_project|merge_branch|reset_branch|rebase_branch|delete_branch|restore_project|pause_project|delete_notebook|delete_feedback)$",
