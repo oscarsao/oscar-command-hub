@@ -14,6 +14,17 @@ PR), la línea de `TELEGRAM_ALLOWED_CHATS` y la lista de Hermes. Nunca toca `.en
 de Oscar: `python -m agent_lanes.sync_usuarios resolver <id>...` marca las filas como resueltas. `suspendido: true` en
 una entrada de people.yaml la deja sin acceso.
 
+Runner vivo de verdad (14-11-2026): Windows reutiliza los PID, así que un PID vivo no basta. `agent_lanes/procid.py`
+comprueba que el proceso del candado (`.state/runner.lock`, campo `started`) o del latido (`runner-latido.json`, campo
+`desde`) tenga `runner.py` en su línea de comandos y no haya nacido después de escribirse. Un candado cuyo PID es de otro
+proceso se retoma con un aviso en el log («PID reutilizado»); `lanes.py status` lo muestra como PARADO. El latido externo
+a Oscar HQ (`detalle`) lleva `planificador_edad_s`, `principal_edad_s`, `estado` y `colgado` (planificador sin latir más
+de `runner.latido_parado_segundos`, 300 s), y `runner` solo es `true` si el proceso es el runner y no está colgado. Los
+avisos `runner-dead` y `runner-hung` (ALTA, también de noche) no pasan por el tope de 1 aviso al día: se repiten cada 30 min.
+Reinicio automático del runner colgado: `runner.reinicio_auto_colgado` en `lanes.yaml` (por defecto `false`: solo avisa).
+Con `true`, si el latido se para y no hay workers en vuelo, el monitor lanza `lanes.py restart --drain --colgado` (máx. 1
+por hora); con workers en vuelo nunca reinicia.
+
 ## Qué va a cada carril
 
 | Assignee | Para qué | Resultado |
@@ -276,7 +287,7 @@ cambia; cualquier cola, orden o escalada que se escriba aquí debe respetarla.
   mande solo el yaml: reinstalar el servicio SIN `-MaxWorkers` (`instalar_servicio.sh` ya no lo pasa; lo hace Oscar, los
   `.ps1` quedan fuera del alcance de los workers) y reiniciar el runner. El log de arranque
   (`runner: carriles=… max_workers=N`) dice el valor real. `max_parallel` por carril: 1 por defecto (`defaults`); 4 en
-  `claude-oscarhq` (27-10); 2 en `claude-hub`; 1 en `claude-ops`.
+  `claude-oscarhq` (27-10); 2 en `claude-hub`; 1 en `claude-ops`; 2 en `review`.
 
 ## Guarda de tablero (ADR-036)
 `hermes kanban create` sin `--board` cae en `default`, y cada carril solo lee el tablero de su `board:` en `lanes.yaml`.
