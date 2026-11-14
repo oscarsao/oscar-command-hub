@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "_comentario": "Configuración del hook destino.mjs. Fuente única de qué se pregunta y qué no. Se edita aquí, no en el código.",
+  "protegidas": ["master", "main"],
+  "protegidas_por_repo": {},
+  "gh_timeout_ms": 8000,
+  "comandos_ask": [
+    { "patron": "^railway up\\b", "motivo": "Despliegue manual en Railway (railway up)" },
+    { "patron": "^vercel\\b.*(--prod\\b|\\bpromote\\b|\\bdeploy\\b)", "motivo": "Despliegue o promoción en Vercel" },
+    { "patron": "^alembic (downgrade|stamp)\\b", "motivo": "Alembic downgrade/stamp: siempre con tu OK" }
+  ],
+  "herramientas_ask": [
+    { "patron": "^mcp__claude_ai_Supabase__(apply_migration|deploy_edge_function|create_edge_function_secret|create_project|merge_branch|reset_branch|rebase_branch|delete_branch|restore_project|pause_project|delete_notebook|delete_feedback)$",
+      "motivo": "Supabase: cambio de esquema, funciones, secretos o proyecto" },
+    { "patron": "^mcp__claude_ai_Gmail__(send_message|reply|forward|trash_message|trash_thread|delete_draft|delete_label|mark_message_spam|mark_thread_spam)$",
+      "motivo": "Gmail: envío o borrado (los borradores pasan sin avisar)" },
+    { "patron": "^mcp__plugin_resend_resend__(send-.*|reply-to-inbox-thread-email|forward-inbox-thread-email|remove-.*|rotate-webhook-signing-secret|create-api-key|batch-add-suppressions|batch-remove-suppressions)$",
+      "motivo": "Resend: envío real, borrado o claves" },
+    { "patron": "^mcp__claude_ai_Apollo_io__apollo_(emailer_messages_(create|send_now)|emailer_campaigns_(approve|add_contact_ids|update_step_content)|agent_bulk_enrich|people_bulk_match|organizations_bulk_enrich|email_account_purchase_create|phone_calls_create)$",
+      "motivo": "Apollo: envío o gasto de créditos" },
+    { "patron": "^mcp__claude_ai_Vercel__(create_deployment|request_promote|request_rollback|assign_alias|edit_project_env|create_project_env|buy_domain|create_or_transfer_domain|update_firewall_config|put_firewall_config|replace_domain_dns_records|update_record|create_record|cancel_deployment|delete_.*)$",
+      "motivo": "Vercel: despliegue, variables, dominio, DNS o firewall" },
+    { "patron": "^mcp__claude_ai_ClickUp__clickup_(delete_.*|merge_tasks)$", "motivo": "ClickUp: borrado o fusión" },
+    { "patron": "^mcp__claude_ai_Google_Drive__(share_file|trash_file)$", "motivo": "Drive: compartir o borrar" },
+    { "patron": "^mcp__claude_ai_Google_Calendar__delete_event$", "motivo": "Calendar: borrar evento" }
+  ],
+  "sql": { "herramienta": "^mcp__claude_ai_Supabase__execute_sql$" }
+}
