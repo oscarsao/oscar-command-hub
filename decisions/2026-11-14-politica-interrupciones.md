@@ -31,6 +31,9 @@ Estimación (no medida): de ≈32 a 18-22 interrupciones al día.
 
 ## Plan (orden)
 1. **Hook por destino + permisos** — hecho como propuesta en `tools/agent-lanes/hooks-usuario/` (34 pruebas). Lo aplica Oscar.
+   Es un **arreglo de seguridad, no de interrupciones**: cada llamada vigilada costará un aviso de permisos hasta que exista la
+   aprobación por lote. Para no duplicarlo con los botones, se empareja con una regla en CLAUDE.md (ver README, paso 3).
+   Más adelante, el lote necesita que un solo «sí» preautorice PRs concretos para que el hook devuelva `allow` por número de PR.
 2. `policy.yaml` por repo (clases C0-C3 y tabla de qué se pregunta) como fuente única; el hook ya lee `politica-permisos.json`.
 3. Recortar CLAUDE.md (MigraTeam 714 + 600 líneas de AGENTS.md, oscar-hq 360, raíz con «Mayo 2026» y Railway) y corregir que el asesor ya es Fable.
 4. Roles de sesión interactiva (Coordinador / Integrador / Operaciones), formato fijo de pregunta (recomendación, reversible, defecto, plazo) y vista «Hoy».
