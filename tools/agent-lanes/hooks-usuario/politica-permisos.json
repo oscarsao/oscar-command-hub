@@ -5,7 +5,6 @@
   "protegidas_por_repo": {},
   "gh_timeout_ms": 8000,
   "comandos_ask": [
-    { "patron": "^railway up\\b", "motivo": "Despliegue manual en Railway (railway up)" },
     { "patron": "^vercel\\b.*(--prod\\b|\\bpromote\\b|\\bdeploy\\b)", "motivo": "Despliegue o promoción en Vercel" },
     { "patron": "^alembic (downgrade|stamp)\\b", "motivo": "Alembic downgrade/stamp: siempre con tu OK" }
   ],
@@ -24,5 +23,12 @@
     { "patron": "^mcp__claude_ai_Google_Drive__(share_file|trash_file)$", "motivo": "Drive: compartir o borrar" },
     { "patron": "^mcp__claude_ai_Google_Calendar__delete_event$", "motivo": "Calendar: borrar evento" }
   ],
+  "dokploy": {
+      "_comentario": "Despliegue = API de Dokploy por túnel SSH (skill desplegar-dokploy). Pasa solo si el comando nombra una app de staging; producción o un ID no identificado pregunta.",
+      "endpoint": "(:3300|panel\\.pildoradigital\\.com)/api/(application|compose|domain|project|postgres|redis|mysql|mariadb|mongo)\\.(deploy|redeploy|start|stop|reload|delete|remove|saveEnvironment|update|create|save\\w*|cancelDeployment|killBuild|cleanQueues|move)\\b",
+      "libres": [
+          "Mfim9xPHZe8OKSKAUFxqb"
+      ]
+  },
   "sql": { "herramienta": "^mcp__claude_ai_Supabase__execute_sql$" }
 }

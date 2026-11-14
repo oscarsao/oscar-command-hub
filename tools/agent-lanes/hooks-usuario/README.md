@@ -7,7 +7,7 @@ Estado: **propuesta** (14-11-2026). Nada de esto está instalado. Instalarlo es 
 Las reglas «siempre confirma» (push/merge a master/main, despliegues, migraciones, envíos) estaban en CLAUDE.md pero los
 permisos las contradecían, y el hook anterior miraba el texto del comando. Huecos verificados el 14-11:
 `git push` a secas en master **no preguntaba**, `gh pr merge` no tenía hook y estaba en `allow`, y `railway up`/`apply_migration`
-también estaban en `allow`.
+también estaban en `allow` (Railway ya no existe: sus reglas se retiraron el 14-11 y el hook vigila ahora la API de Dokploy).
 
 `destino.mjs` mira el **destino real** (`@{push}`, rama actual, refspec, base del PR con `gh pr view`):
 - **ask** si el destino es `master`/`main`, no se puede resolver, o la herramienta/comando está en `politica-permisos.json`.
@@ -21,14 +21,14 @@ La política (ramas protegidas, comandos y herramientas que preguntan) vive en `
 ```
 node --test tools/agent-lanes/hooks-usuario/destino.test.mjs     # 34 pruebas, ejecutan el archivo real con JSON por stdin
 ```
-Incluyen los 3 casos que fallaban (push a secas, `gh pr merge`, `railway up`), el falso positivo del `echo "git push origin master"`
+Incluyen los 3 casos que fallaban (push a secas, `gh pr merge`) y el despliegue por la API de Dokploy (producción pregunta, staging pasa), el falso positivo del `echo "git push origin master"`
 y rutas con espacios. Comprobado con mutación: con la política vaciada fallan 18 casos.
 
 ## Cómo instalarlo (lo haces tú, o dime «aplica» y lo hago con copia de seguridad)
 1. Copia de seguridad: `cp ~/.claude/settings.json ~/.claude/settings.json.bak-AAAAMMDD`.
 2. Copiar `destino.mjs` y `politica-permisos.json` a `~/.claude/hooks/`.
 3. En `~/.claude/settings.json`:
-   - **Quitar de `permissions.allow`:** las 4 variantes de `gh pr merge`, las 4 de `railway … up` y
+   - **Quitar de `permissions.allow`:** las 4 variantes de `gh pr merge` y
      `mcp__claude_ai_Supabase__apply_migration`. Se mantienen `mcp__claude_ai_Supabase__*`, Gmail, etc.: el hook filtra lo delicado.
    - **Hooks `PreToolUse`:** sustituir el primer comando del matcher `Bash` (el que mira el texto del push) por
      `node "C:/Users/oscar/.claude/hooks/destino.mjs"`, cambiar el matcher a `Bash|PowerShell` (si tu build tiene la herramienta PowerShell)
@@ -37,15 +37,15 @@ y rutas con espacios. Comprobado con mutación: con la política vaciada fallan 
      (solo los servidores de la política; un `mcp__.*` ejecutaría node en cada llamada de Chrome, ≈780 en la Integradora).
      Se conserva `validate-docs-on-push.mjs`.
      El hook viejo añadía un recordatorio de `db-migration-checker` en cada push; ese recordatorio pasa a CLAUDE.md.
-   - Por proyecto: quitar `Bash(railway up *)` de `oscar-hq/.claude/settings.local.json` (Oscar HQ ya está en Dokploy).
+   - Ya hecho el 14-11 (con copia `.bak-20261114*`): quitadas las reglas de Railway de `settings.json` y de `oscar-hq/.claude/settings.local.json`.
      `migrateam/.claude/settings.local.json` puede mantener `git push *` **solo cuando el hook esté instalado**.
    - **Emparejar con CLAUDE.md (obligatorio, si no se duplican los avisos):** hoy el modelo pregunta con botones porque
      CLAUDE.md dice «SIEMPRE confirma» y luego el `allow` deja ejecutar en silencio. Con el hook instalado, la misma acción
      recibiría los botones **y** el aviso de permisos. Regla nueva en `~/.claude/CLAUDE.md` (AUTONOMÍA): *para las acciones que el
      hook vigila (push/merge a master/main, despliegues, migraciones, envíos, SQL de escritura), no preguntar antes con botones:
      mostrar la evidencia como texto y lanzar la acción; el aviso de permisos es la confirmación.*
-4. **Camino automatizado (comprobado en el código, 14-11):** el `gh pr merge` del lote (`batch.py:775`), `git merge` y el
-   despliegue de Railway del integrador (`integrator.py:_railway`) son **subprocesos directos de Python**: el hook no los ve, así
+4. **Camino automatizado (comprobado en el código, 14-11):** el `gh pr merge` del lote (`batch.py:775`), `git merge` y los
+   despliegues del integrador (`integrator.py`, hoy aún con rutas de Railway: ver tarjeta) son **subprocesos directos de Python**: el hook no los ve, así
    que lo aprobado desde Telegram sigue funcionando. Los `claude -p` con herramienta Bash son los workers, ops y revisión (un `ask`
    allí equivale a denegar, y solo ocurre si intentan empujar a master/main); triaje, consulta y explicaciones usan `Read,Grep,Glob`
    o ninguna herramienta. Las skills `integrar-lote` y `cerrar-tarea` mandan merges/pushes por Bash en sesión interactiva: ahí

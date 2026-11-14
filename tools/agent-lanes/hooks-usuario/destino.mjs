@@ -221,6 +221,12 @@ export function analizaComando(cmd, cwd0, pol, prof = 0) {
     }
 
     const norm = `${c} ${w.slice(1).join(" ")}`;
+    if (pol.dokploy && ["curl", "wget", "invoke-restmethod", "irm", "invoke-webrequest", "iwr"].includes(c)
+        && new RegExp(pol.dokploy.endpoint, "i").test(norm)
+        && !(pol.dokploy.libres || []).some((id) => norm.includes(id))) {
+      asks.push("Dokploy: cambio en una app de producción o ID no identificado (despliegue, variables, dominios…)");
+      continue;
+    }
     for (const r of pol.comandos_ask || []) {
       if (new RegExp(r.patron, "i").test(norm)) { asks.push(r.motivo); break; }
     }

@@ -14,7 +14,7 @@ Origen: revisión del 14-11 de 5 sesiones interactivas (Integradora 27 días, 2.
    (87 % en <10 min, ninguna >24 h). El sistema está pensado para conversar en vivo; si Oscar se desconecta, para.
 2. **Aceptas la recomendada el 74 %** de las 1.353 preguntas que la traían (14 % texto libre). Por categoría: producción 86 %,
    borrado 85 %, fusionar PR 83 %, envíos 78 %, dinero y secretos 74 %. Donde el criterio de Oscar cambió el resultado: 353 casos (26 %).
-3. **Reglas escritas que nada aplica.** `settings.json` tenía en `allow` `gh pr merge *`, `railway up *` y `apply_migration`; el hook de push
+3. **Reglas escritas que nada aplica.** `settings.json` tenía en `allow` `gh pr merge *`, `railway up *` y `apply_migration` (Railway ya no existe desde el 14-11 y esas reglas se retiraron); el hook de push
    solo miraba el texto, así que `git push` a secas en master no preguntaba (verificado). Mismo patrón que el 28-ago.
 4. **Mismo problema en el front.** oscar-hq tiene sistema de diseño (49 componentes, tokens) y regla escrita, pero ningún lint la aplica:
    529 `<button>` y 474 `<input>` crudos, 352 colores hex y 597 `style` inline fuera de `ds/`; conviven `DESIGN.md` (Liquid Glass) y el DS nuevo.
@@ -35,7 +35,7 @@ Estimación (no medida): de ≈32 a 18-22 interrupciones al día.
    aprobación por lote. Para no duplicarlo con los botones, se empareja con una regla en CLAUDE.md (ver README, paso 3).
    Más adelante, el lote necesita que un solo «sí» preautorice PRs concretos para que el hook devuelva `allow` por número de PR.
 2. `policy.yaml` por repo (clases C0-C3 y tabla de qué se pregunta) como fuente única; el hook ya lee `politica-permisos.json`.
-3. Recortar CLAUDE.md (MigraTeam 714 + 600 líneas de AGENTS.md, oscar-hq 360, raíz con «Mayo 2026» y Railway) y corregir que el asesor ya es Fable.
+3. Recortar CLAUDE.md (MigraTeam 714 + 600 líneas de AGENTS.md, oscar-hq 360, raíz con «Mayo 2026» y Railway) y corregir que el asesor ya es Fable. **Hecho el 14-11 en los dos CLAUDE.md globales (Railway→Dokploy, regla de Alembic, asesor, fecha); falta recortar y los repos de producto.**
 4. Roles de sesión interactiva (Coordinador / Integrador / Operaciones), formato fijo de pregunta (recomendación, reversible, defecto, plazo) y vista «Hoy».
 5. **Puerta de UI** (lint «ningún fallo nuevo» con lista de excepciones, manifiesto del DS para agentes, un único lenguaje visual) — tarjeta a `claude-oscarhq`.
 6. Código de C0 automático a `develop` y escalera D6 — tarjetas a carriles.

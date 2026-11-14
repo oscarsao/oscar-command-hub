@@ -162,12 +162,23 @@ test("gh pr view / list / create no opinan", () => {
 });
 
 // ---------- despliegues ----------
-test("REGRESIÓN 3: railway up -> ask (ruta completa y .exe también)", () => {
-  assert.equal(bash("railway up", repo).d, "ask");
-  assert.equal(bash("/c/Users/oscar/AppData/Roaming/npm/node_modules/@railway/cli/bin/railway.exe up --detach", repo).d, "ask");
+const PROD = "2ZFE7_x-2MURejAG3Ey7y", STAGING = "Mfim9xPHZe8OKSKAUFxqb";
+const dk = (ep, id) => `curl -s -X POST -H "x-api-key: K" -H "Content-Type: application/json" http://localhost:3300/api/${ep} -d '{"applicationId":"${id}","title":"x"}'`;
+test("Dokploy (sustituye a Railway): desplegar o cambiar variables de PRODUCCIÓN -> ask", () => {
+  assert.equal(bash(dk("application.deploy", PROD), repo).d, "ask");
+  assert.equal(bash(dk("application.redeploy", PROD), repo).d, "ask");
+  assert.equal(bash(dk("application.saveEnvironment", PROD), repo).d, "ask");
+  assert.equal(bash(dk("compose.deploy", "Fho00pG-1pcD4LvkpBl-f"), repo).d, "ask");
 });
-test("railway deployment list / variables y vercel env ls no preguntan", () => {
-  assert.equal(bash("railway.exe deployment list", repo).d, "nada");
+test("Dokploy: staging pasa; lecturas pasan; ID no identificado o cuerpo en fichero -> ask", () => {
+  assert.equal(bash(dk("application.deploy", STAGING), repo).d, "nada");
+  assert.equal(bash(`curl -s http://localhost:3300/api/project.all -H "x-api-key: K"`, repo).d, "nada");
+  assert.equal(bash(`curl -s "http://localhost:3300/api/application.one?applicationId=${PROD}" -H "x-api-key: K"`, repo).d, "nada");
+  assert.equal(bash(`curl -s -X POST http://localhost:3300/api/application.deploy -d @cuerpo.json`, repo).d, "ask");
+  assert.equal(bash(`curl -s -X POST https://panel.pildoradigital.com/api/application.deploy -d '{"applicationId":"APP"}'`, repo).d, "ask");
+});
+test("Railway ya no existe: railway up no opina; vercel env ls tampoco", () => {
+  assert.equal(bash("railway up", repo).d, "nada");
   assert.equal(bash("vercel env ls", repo).d, "nada");
 });
 test("vercel --prod, vercel promote y alembic downgrade -> ask", () => {
