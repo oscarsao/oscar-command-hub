@@ -21,6 +21,7 @@ comentario/aprobación se vea como «no revisada».
 
 | Entrega | Contenido | Appetite |
 |---|---|---|
+| **0. Oscar HQ pasa siempre por staging** | Ver sección 4b: el comentario de pantalla solo en staging, y todo cambio de Oscar HQ se prueba en staging antes de `master`, como en MigraTeam | ~1 semana, por fases |
 | **A. `/decisiones` en Claude Code** | Skill que lee la bandeja existente y muestra UNA tanda de botones (formato fijo de CLAUDE.md §7) | 2-3 días |
 | **B. Comentarios → tarjetas** | Cada comentario nuevo de `ohq_ui_feedback` crea tarjeta: fallo → carril con fix + PR (aprobación de Oscar antes de publicar); idea/cambio → bandeja | ~1 semana |
 | **C. Inventario de revisión de pantallas** | Detecta pantallas cuyo código cambió desde su última aprobación → «pendiente de revisar»; un botón «aprobada» guarda fecha, SHA y captura | ~1 semana |
@@ -48,6 +49,32 @@ comentario/aprobación se vea como «no revisada».
    «Pendiente» = el código de esa ruta cambió después de la última aprobación. Sin obligación de comentar cada pantalla.
 5. **MigraTeam**: mismo componente detrás de un **feature flag por despacho** (empezar con despachos piloto, solo staging).
 
+## 4b. Staging de Oscar HQ (petición de Oscar, 15-11-2026)
+
+Objetivo de Oscar: no «arruinar el panel de un cliente» al probar; separar desarrollo y producción en Píldora igual que en
+MigraTeam (`develop` → staging, `master` → producción), con su propio dominio y datos con los que probar de verdad; poco a poco.
+
+**Qué ya existe (28-10, tarjetas `t_5989f653` y `t_b8b430aa`; no revalidado entero hoy):** un staging de Oscar HQ en
+`https://ohq-stage.2-28-20-203.sslip.io` (health responde 200 el 15-11) con `APP_ENV=staging`, base de datos propia
+`oscar-hq-pruebas`, sin planificador, y una clave X-API-Key de **solo lectura** (403 en escrituras y rutas de secretos).
+La app `oscar-hq-staging` figura en Dokploy.
+
+**Qué falta:**
+1. **Fase 1 (reglas, sin infraestructura nueva):** regla escrita en el CLAUDE.md de oscar-hq: todo cambio de interfaz o de
+   comportamiento se verifica en staging antes de proponer el paso a `master`; la ficha de la tarjeta lleva la URL de staging.
+2. **Fase 2 (comentar solo en staging):** el botón «Comentar esta pantalla» se muestra solo con `APP_ENV=staging` (flag; en
+   producción apagado, con la excepción que decida Oscar). Los comentarios de staging alimentan la entrega B.
+3. **Fase 3 (flujo como MigraTeam):** rama `develop` de oscar-hq que despliega staging solo, y paso a `master` por PR con
+   revisión; la CI (cuando esté estable) corre en ese PR. Mientras tanto, pruebas locales, como hasta ahora.
+4. **Fase 4 (dominio propio):** `stage.<dominio de Píldora>` en lugar del `sslip.io` actual.
+5. **Fase 5 (datos):** la BD de staging hoy es de pruebas. Para probar con datos «reales» hay dos caminos: copia **anonimizada**
+   de producción (recomendada) o datos sintéticos. **No** se copiará producción tal cual a un entorno con menos protección: son
+   datos personales de clientes (RGPD).
+
+**Riesgos:** un staging con datos reales y sin la protección de producción es el hueco RGPD más serio de este plan; la separación
+solo protege si staging **no** comparte claves, webhooks ni envíos con producción (correo, Telegram, Stripe, Apollo deben ir
+a modo prueba o apagados en staging).
+
 ## 5. Riesgos y huecos (a cerrar antes de empezar)
 
 - **Datos personales (RGPD):** una captura en MigraTeam puede mostrar datos de clientes reales. Decidir: staging con datos de
@@ -71,6 +98,10 @@ Oscar; guardar capturas con datos reales sin decisión de RGPD; tocar el runner 
 2. MigraTeam: **solo staging con datos de prueba y flag por despacho piloto** (por defecto) o también producción.
 3. Aprobación de pantallas: **por cambio detectado, un clic** (por defecto) o comentario obligatorio.
 4. Quién aprueba pantallas de MigraTeam: **Oscar** (por defecto) o también Mauredy.
+5. Staging de Oscar HQ: empezar por **fase 1 y 2 (regla + comentar solo en staging)** (por defecto) y dejar el flujo `develop` y el
+   dominio para después de la CI; o ir directo a la fase 3.
+6. Datos de staging: **copia anonimizada** (por defecto) o datos sintéticos. Producción tal cual, no.
+7. Comentarios en producción: **apagados** (por defecto) o dejar un canal solo para ti.
 
 Si no contesta: se parte A en tarjeta de nivel 1 (reversible, solo hub/skill) y el resto espera.
 
