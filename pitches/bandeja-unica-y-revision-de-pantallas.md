@@ -98,10 +98,13 @@ Oscar; guardar capturas con datos reales sin decisión de RGPD; tocar el runner 
 2. MigraTeam: **solo staging con datos de prueba y flag por despacho piloto** (por defecto) o también producción.
 3. Aprobación de pantallas: **por cambio detectado, un clic** (por defecto) o comentario obligatorio.
 4. Quién aprueba pantallas de MigraTeam: **Oscar** (por defecto) o también Mauredy.
-5. Staging de Oscar HQ: empezar por **fase 1 y 2 (regla + comentar solo en staging)** (por defecto) y dejar el flujo `develop` y el
-   dominio para después de la CI; o ir directo a la fase 3.
-6. Datos de staging: **copia anonimizada** (por defecto) o datos sintéticos. Producción tal cual, no.
-7. Comentarios en producción: **apagados** (por defecto) o dejar un canal solo para ti.
+5. Staging de Oscar HQ: **DECIDIDO por Oscar (15-11, botones): fases 1 y 2** (regla + botón de comentar también en staging); el
+   flujo `develop` y el dominio propio quedan para después de la CI.
+6. Datos de staging: **DECIDIDO por Oscar (15-11, botones): copia normal con los datos tal cual** (no anonimizada). Condiciones
+   que se verifican ANTES de copiar (las pone este Pitch, no la decisión): staging sin envíos reales (correo, Telegram, Stripe,
+   Apollo apagados o en modo prueba), sin las claves ni webhooks de producción, y planificador apagado. La copia en sí es una
+   acción aparte (lee producción y sobrescribe la BD de staging) y se confirma con Oscar antes de ejecutarla.
+7. Comentarios en producción: **DECIDIDO por Oscar (15-11, botones): dejarlo como está** (activo en producción); en staging también.
 
 Si no contesta: se parte A en tarjeta de nivel 1 (reversible, solo hub/skill) y el resto espera.
 
