@@ -138,10 +138,10 @@ Oscar; guardar capturas con datos reales sin decisión de RGPD; tocar el runner 
 
 ## 7. Decisiones que necesita de Oscar (opción por defecto marcada)
 
-1. Orden de entregas: **A → B → C → D** (por defecto) o empezar por B (cierra las 21 notas).
-2. MigraTeam: **solo staging con datos de prueba y flag por despacho piloto** (por defecto) o también producción.
-3. Aprobación de pantallas: **por cambio detectado, un clic** (por defecto) o comentario obligatorio.
-4. Quién aprueba pantallas de MigraTeam: **Oscar** (por defecto) o también Mauredy.
+1. Orden de entregas: **DECIDIDO por Oscar (16-11, botones, aceptó las recomendadas): A → B → C → D.** La E (revisor de plataforma) va en paralelo por fases.
+2. MigraTeam: **DECIDIDO (16-11): solo staging con datos de prueba y flag por despacho piloto.**
+3. Aprobación de pantallas: **DECIDIDO (16-11): por cambio detectado, un clic.**
+4. Quién aprueba pantallas de MigraTeam: **DECIDIDO (16-11): Oscar.**
 5. Staging de Oscar HQ: **DECIDIDO por Oscar (15-11, botones): fases 1 y 2** (regla + botón de comentar también en staging); el
    flujo `develop` y el dominio propio quedan para después de la CI.
 6. Datos de staging: **DECIDIDO por Oscar (15-11, botones): copia normal con los datos tal cual** (no anonimizada). Condiciones
