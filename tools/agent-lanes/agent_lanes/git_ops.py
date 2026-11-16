@@ -134,7 +134,7 @@ class GitOps:
                                         f"{lane.remote}/{lane.base}")
             return str(path)
 
-    def _out(self, repo: str, *args: str) -> str | None:
+    def _leer(self, repo: str, *args: str) -> str | None:
         """Salida de un git de solo lectura; None si falla."""
         cp = self._run(["git", "-C", repo, *args], capture_output=True, text=True, encoding="utf-8", errors="replace",
                        timeout=120)
@@ -145,13 +145,13 @@ class GitOps:
         anterior. True = se retiró (limpio y sin commits sin empujar) y hay que crear uno nuevo; False = es del repo
         del carril (o no se puede saber: se reutiliza como siempre). Con cambios o commits sin empujar lanza
         WorktreeAjeno sin tocar nada. La rama lane/<id> del repo anterior no se borra nunca."""
-        actual = self._out(lane.repo, "remote", "get-url", lane.remote)
-        previo_url = self._out(str(path), "remote", "get-url", lane.remote)
+        actual = self._leer(lane.repo, "remote", "get-url", lane.remote)
+        previo_url = self._leer(str(path), "remote", "get-url", lane.remote)
         if actual is None or previo_url is None or actual == previo_url:
             return False
-        comun = self._out(str(path), "rev-parse", "--path-format=absolute", "--git-common-dir")
-        sucio = self._out(str(path), "status", "--porcelain")
-        sin_empujar = self._out(str(path), "rev-list", "--count", branch, "--not", "--remotes")
+        comun = self._leer(str(path), "rev-parse", "--path-format=absolute", "--git-common-dir")
+        sucio = self._leer(str(path), "status", "--porcelain")
+        sin_empujar = self._leer(str(path), "rev-list", "--count", branch, "--not", "--remotes")
         if comun is None or sucio is None or sin_empujar is None or sucio or sin_empujar != "0":
             motivo = ("tiene cambios sin guardar" if sucio else
                       "tiene commits sin empujar" if sin_empujar not in (None, "0") else "no se pudo comprobar su estado")
