@@ -25,6 +25,10 @@ class GitError(RuntimeError):
     pass
 
 
+class WorktreeAjeno(GitError):
+    """El worktree de la tarjeta es de otro repo y no se puede retirar sin perder trabajo."""
+
+
 def _norm(p) -> str:
     return os.path.normcase(os.path.realpath(str(p)))
 
@@ -71,6 +75,7 @@ class GitOps:
     def __init__(self, runner=_proc.run, sleep=time.sleep):
         self._run = runner
         self._sleep = sleep
+        self.rehechos: dict[str, str] = {}  # task_id -> aviso de una línea, lo recoge el runner para la tarjeta
 
     def _git(self, repo: str, *args: str) -> subprocess.CompletedProcess:
         cp = self._run(["git", "-C", repo, *args], capture_output=True, text=True, encoding="utf-8",
@@ -112,7 +117,8 @@ class GitOps:
                 current = self._git(str(path), "branch", "--show-current").stdout.strip()
                 if current != branch:
                     raise GitError(f"{path} existe pero está en '{current}', no en {branch}")
-                return str(path)
+                if not self._rehacer_si_otro_repo(lane, task_id, path, branch):
+                    return str(path)
             path.parent.mkdir(parents=True, exist_ok=True)
             exists = self._run(["git", "-C", lane.repo, "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}"],
                                capture_output=True, text=True, timeout=60).returncode == 0
@@ -127,6 +133,34 @@ class GitOps:
                 self._git_con_reintento(lane.repo, "worktree", "add", str(path), "-b", branch,
                                         f"{lane.remote}/{lane.base}")
             return str(path)
+
+    def _out(self, repo: str, *args: str) -> str | None:
+        """Salida de un git de solo lectura; None si falla."""
+        cp = self._run(["git", "-C", repo, *args], capture_output=True, text=True, encoding="utf-8", errors="replace",
+                       timeout=120)
+        return cp.stdout.strip() if cp.returncode == 0 else None
+
+    def _rehacer_si_otro_repo(self, lane: Lane, task_id: str, path: Path, branch: str) -> bool:
+        """Tarjeta reasignada a un carril de OTRO repo: el worktree existente (de `lane-<id>`) pertenece al repo
+        anterior. True = se retiró (limpio y sin commits sin empujar) y hay que crear uno nuevo; False = es del repo
+        del carril (o no se puede saber: se reutiliza como siempre). Con cambios o commits sin empujar lanza
+        WorktreeAjeno sin tocar nada. La rama lane/<id> del repo anterior no se borra nunca."""
+        actual = self._out(lane.repo, "remote", "get-url", lane.remote)
+        previo_url = self._out(str(path), "remote", "get-url", lane.remote)
+        if actual is None or previo_url is None or actual == previo_url:
+            return False
+        comun = self._out(str(path), "rev-parse", "--path-format=absolute", "--git-common-dir")
+        sucio = self._out(str(path), "status", "--porcelain")
+        sin_empujar = self._out(str(path), "rev-list", "--count", branch, "--not", "--remotes")
+        if comun is None or sucio is None or sin_empujar is None or sucio or sin_empujar != "0":
+            motivo = ("tiene cambios sin guardar" if sucio else
+                      "tiene commits sin empujar" if sin_empujar not in (None, "0") else "no se pudo comprobar su estado")
+            raise WorktreeAjeno(f"el worktree {path} es del repo {previo_url}, no de {actual} (carril {getattr(lane, 'name', '?')}), y "
+                                f"{motivo}: no se toca; hay que resolverlo a mano antes de relanzar la tarjeta")
+        self._git_con_reintento(comun, "worktree", "remove", str(path))  # sin --force; la rama se conserva
+        self.rehechos[task_id] = (f"LANE: worktree rehecho en el repo del carril {getattr(lane, 'name', '?')}: el anterior era de "
+                                  f"{previo_url} (tarjeta reasignada); su rama {branch} se conserva allí.")
+        return True
 
     def sync_base(self, lane: Lane, path: str) -> str | None:
         """`fetch` + `merge <remote>/<base>` en la lane antes de repetir el trabajo. None = al día o fusionado sin

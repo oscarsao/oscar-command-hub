@@ -17,6 +17,7 @@ from . import consulta as _consulta
 from . import deps
 from . import proc as _proc
 from .config import ROOT, Lane
+from .git_ops import WorktreeAjeno
 from .hermes import GUARD_LIMIT_MARK, looks_like_guard_limit
 from .notices import (MessageStore, TaskNotices, files_label, fit_reason, money, next_step, normalize_questions,
                       question_text, questions_block, render, status_line, test_label)
@@ -516,6 +517,9 @@ class LaneRunner:
                                         if feedback else None), branch_link=bool(feedback) and not ops,
                             alert=bool(warns), bullets=[f"⚠️ {w}" for w in warns] or None)
                 cwd = self.git.prepare_worktree(lane, tid, task) if ops else self.git.prepare_worktree(lane, tid)
+                aviso_rehecho = (getattr(self.git, "rehechos", None) or {}).pop(tid, None)
+                if aviso_rehecho:  # tarjeta reasignada a otro repo: worktree anterior retirado (estaba limpio)
+                    self.hermes.comment(tid, aviso_rehecho)
                 if not ops and hasattr(self.git, "sync_base"):
                     # Antes de repetir nada: la lane al día con origin/<base>. Con conflicto se lo pasamos al worker
                     # (t_985109b9 ×7 reintentos inútiles por una base que se había movido).
@@ -534,6 +538,12 @@ class LaneRunner:
                 # insiste, pasa a Oscar con las respuestas previas a la vista (la 2ª llamada solo anota, no relanza).
                 for _ in range(2):
                     outcome, repeated = self._reask_if_answered(lane, tid, cwd, session_id, deadline, outcome)
+            except WorktreeAjeno as exc:  # worktree de otro repo con trabajo sin guardar: no se toca, va al integrador
+                self.hermes.comment(tid, f"LANE: {exc}")
+                return self._block_console(tid, task, str(exc), {
+                    "summary": str(exc),
+                    "for_oscar": "La tarjeta se reasignó a otro repo, pero su carpeta de trabajo anterior tiene cambios "
+                                 "sin guardar; no la he tocado. Necesita al integrador."})
             except Exception as exc:
                 return self._block(tid, "transient", f"error del runner: {exc}", task, public="error del runner")
 
