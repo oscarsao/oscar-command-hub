@@ -1,0 +1,29 @@
+repo: oscarsao/oscar-hq
+ruta_local: C:/Users/oscar/dev/oscar-hq
+rama_produccion: master
+rama_staging: staging
+despliegue:
+  produccion: "Backend: Dokploy (app oscar-hq) con autoDeploy activado desde master. Dashboard: Vercel (proyecto dashboard, app.pildoradigital.com)."
+  staging: "Backend: app oscar-hq-staging (rama staging, autoDeploy desactivado), api-stage.pildoradigital.com. Dashboard de staging: pendiente (necesita antes aislar la cookie SSO, tarjeta t_e6009128)."
+proteccion:
+  master: "sin verificar en esta ficha"
+decide_solo:
+  - "Documentación y tarjetas de limpieza en rama propia"
+  - "Arreglos pequeños de interfaz en rama propia que pasen lint:ds y sus pruebas"
+pregunta_siempre:
+  - "Fusionar o empujar a master (con autoDeploy despliega el backend)"
+  - "Migraciones de Supabase: solo escritas; se aplican con la skill migracion-supabase y el OK de Oscar"
+  - "Variables de entorno en Dokploy o Vercel; claves de la Bóveda"
+  - "Cualquier ejecución de un crew de pago y envíos reales (correo, Telegram, Apollo)"
+nunca:
+  - "Probar en el panel de un cliente real: los cambios se verifican en staging primero (decisión del 15-11)"
+  - "Copiar claves o webhooks de producción a staging"
+verificacion:
+  - "pytest de su delta, vitest, tsc --noEmit, ruff F,E9 y la puerta lint:ds; capturas a 390 px en claro y oscuro para interfaz"
+aviso_a:
+  - "Quien use el panel (Mary, Linda, Andrea y Mauredy): vía Oscar antes de cambiar pantallas que usan"
+verificado: "16-11-2026: autoDeploy y rama de las dos apps de Dokploy (API, solo lectura); cookie SSO y flujo de dashboard (código, origin/master); proyectos Supabase de producción y de pruebas (lista de proyectos)."
+sin_verificar:
+  - "Protección de la rama master en GitHub"
+  - "Qué base de datos usa hoy el backend de staging (la lectura de su entorno se denegó); existe el proyecto oscar-hq-pruebas"
+estado: borrador

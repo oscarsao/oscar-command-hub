@@ -1,0 +1,29 @@
+repo: PildoraDigital/OCR-PDF-and-images
+ruta_local: C:/Users/oscar/dev/migrateam
+rama_produccion: master
+rama_staging: develop
+despliegue:
+  produccion: "Backend: manual en Dokploy (backend-prod), que ejecuta alembic upgrade head al arrancar. Frontend: Vercel publica solo al fusionar a master (verificado)."
+  staging: "Empujar a develop actualiza backend-staging solo (autoDeploy activado en Dokploy) y stage.migrateam.com (Vercel, rama develop)."
+proteccion:
+  master: "PR obligatorio con revisión y enforce_admins; sin comprobaciones obligatorias desde el 14-11 (el CI corre en local por ahora)."
+  develop: "Sin proteger (decisión de Oscar 14-11)."
+decide_solo:
+  - "Documentación y tarjetas de limpieza en rama propia"
+  - "Arreglos pequeños en rama propia con sus pruebas (nivel 1)"
+pregunta_siempre:
+  - "Fusionar o empujar a master (publica el frontend en minutos)"
+  - "Cualquier migración Alembic que llegue a develop o master (staging y producción ejecutan upgrade al arrancar)"
+  - "Despliegue de backend-prod y cambios de variables en Dokploy o Vercel"
+  - "alembic downgrade, stamp, DROP o TRUNCATE"
+nunca:
+  - "Borrar o editar una migración ya aplicada"
+  - "Dos conversaciones sobre la misma rama"
+verificacion:
+  - "Reglas del repo: ruff F,E9, py_compile y las pruebas de su delta; el integrador corre la batería combinada una vez"
+aviso_a:
+  - "Quien use MigraTeam en producción (vía Oscar): hay una operadora y despachos piloto"
+verificado: "16-11-2026: autoDeploy de backend-staging y rama develop (API de Dokploy, solo lectura); 5 despliegues de producción del frontend salen de merges a master (Vercel); protección de master (API de GitHub, 14-11)."
+sin_verificar:
+  - "Quién aprueba pantallas de MigraTeam en el flujo de revisión: decidido que sea Oscar (Pitch de bandeja única), aún sin implementar"
+estado: borrador

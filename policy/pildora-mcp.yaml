@@ -1,0 +1,25 @@
+repo: oscarsao/pildora-mcp
+ruta_local: C:/Users/oscar/dev/pildora-mcp
+rama_produccion: main
+rama_staging: null
+despliegue:
+  produccion: "Ninguno: es un MCP local (stdio) y un modo HTTP tras el túnel de Open Design."
+  staging: null
+proteccion:
+  main: "sin verificar en esta ficha"
+decide_solo:
+  - "Documentación y arreglos pequeños en rama propia con pruebas locales"
+pregunta_siempre:
+  - "Cualquier cambio de autenticación (clave personal ohq_pt_, credencial de Open Design)"
+  - "Lanzar ohq_run_crew (cuesta dinero) y fusionar a main"
+nunca:
+  - "Dejar credenciales en ficheros versionados; el .gitignore cubre .env y .env.*"
+  - "Exponer las herramientas ohq_* por HTTP sin una decisión expresa (OHQ_TOOLS_OVER_HTTP)"
+verificacion:
+  - "node --check de index.mjs, test-ohq-auth.mjs y los test-*.mjs de solo lectura"
+aviso_a:
+  - "Cada persona que lo registre en su equipo usa su propia clave personal"
+verificado: "16-11-2026: README y cliente de Oscar HQ en origin/main (clave personal, tools ohq_* apagadas por HTTP por defecto); conexión del MCP en esta máquina."
+sin_verificar:
+  - "Que las 14 herramientas funcionen contra los servicios reales (solo se probaron ohq_list_crews y ohq_list_executions)"
+estado: borrador

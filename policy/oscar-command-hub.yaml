@@ -1,0 +1,26 @@
+repo: oscarsao/oscar-command-hub
+ruta_local: C:/Users/oscar/oscar-command-hub
+rama_produccion: main
+rama_staging: null
+despliegue:
+  produccion: "No se despliega. Pero tools/agent-lanes lo importa el runner vivo de los carriles."
+  staging: null
+proteccion:
+  main: "protección en GitHub sin verificar; los PR #157-#160 se fusionaron sin revisión obligatoria. El hook de permisos pregunta antes de fusionar o empujar a main"
+decide_solo:
+  - "Documentación (pitches, decisiones, auditorías, README) en rama propia y su PR; Oscar autorizó fusionar solo documentación del hub el 16-11"
+  - "Tarjetas de limpieza en rama propia"
+pregunta_siempre:
+  - "Cualquier cambio de código en tools/agent-lanes: el runner vivo lo importa; prueba de humo en primer plano y ruff F821 antes de reiniciar"
+  - "Reiniciar el runner o el servicio"
+  - "Fusionar código (también herramientas nuevas) a main"
+nunca:
+  - "Escribir, cambiar de rama o stash en el checkout raíz: se trabaja siempre en worktree propio"
+  - "Abrir tools/agent-lanes/.env* (secretos)"
+verificacion:
+  - "pytest de tools/agent-lanes (con reloj inyectado donde aplique), ruff F,E9, prueba de humo del runner en primer plano"
+aviso_a:
+  - "La Integradora (reinicia el runner tras la prueba de humo)"
+verificado: "16-11-2026: el hook de permisos y las PR #157-#161 (GitHub); el runner importa tools/agent-lanes (tarjetas t_a15b2137, t_c587d3e1)."
+sin_verificar: []
+estado: borrador

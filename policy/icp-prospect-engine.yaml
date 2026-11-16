@@ -1,0 +1,25 @@
+repo: oscarsao/icp-prospect-engine
+ruta_local: C:/Users/oscar/dev/Scraper
+rama_produccion: main
+rama_staging: null
+despliegue:
+  produccion: "Manual por el trabajador de Dokploy (signal-worker-pildora, icp-prospect-engine). Un carril no despliega."
+  staging: null
+proteccion:
+  main: "sin verificar en esta ficha"
+decide_solo:
+  - "Documentación y arreglos pequeños en rama propia con sus pruebas, sin llamadas reales a Hunter, SAM.gov, Apollo ni modelos"
+pregunta_siempre:
+  - "Cualquier ejecución que gaste créditos (Apollo, Hunter) o escriba en la base de datos de Signal"
+  - "Variables y claves del motor: se resuelven con la Bóveda de Oscar HQ primero y el entorno después"
+  - "Fusionar o empujar a main"
+nunca:
+  - "Activar fuentes de pago por defecto: las fuentes opcionales nacen apagadas (tarjeta t_43297a78)"
+verificacion:
+  - "pytest de signal_core y ruff F,E9; sin llamadas reales (dobles)"
+aviso_a:
+  - "Quien lleve Multiverse y Signal (vía Oscar)"
+verificado: "16-11-2026: proveedores api_hunter y api_sam_gov y su resolución de claves (código, origin/main)."
+sin_verificar:
+  - "Protección de main y el flujo exacto de despliegue del trabajador"
+estado: borrador
