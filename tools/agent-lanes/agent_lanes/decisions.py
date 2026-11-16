@@ -32,6 +32,7 @@ from . import consola
 from . import deps
 from . import proc as _proc
 from .bandeja import VetoBook
+from .caducidad import Escalera
 from .config import ROOT
 from .card_options import LETTERS as CARD_LETTERS
 from .hermes import (ANSWER_PREFIX, HERMES_ANSWER_PREFIX, OSCAR_AUTHOR, REVIEW_AUTHOR, answer_progress,
@@ -118,6 +119,8 @@ APLAZAR_SET = "aplazar_set"  # elección de días: oculta la tarjeta ese tiempo
 MAS = "mas"                # ➕ Más: despliega los botones menos usados (no consume)
 VOLVER = "volver"          # ↩️ Volver / ✖ No: repone el teclado original (no consume)
 LIBERAR = "liberar"        # 🔓 Liberar: quita la espera de «Esperar a…» y reanuda la tarjeta
+VIG_ARCHIVAR, VIG_APLAZAR, VIG_MANTENER = "vig_archivar", "vig_aplazar", "vig_mantener"  # «¿Sigue vigente?» (caducidad.py)
+VIG_ACTIONS = (VIG_ARCHIVAR, VIG_APLAZAR, VIG_MANTENER)
 MENU_ACTIONS = (OTRO_CARRIL, APLAZAR, MAS, VOLVER)   # cambian el teclado sin gastarlo
 SNOOZE_DAYS = 7
 BUTTON_OPTION_MAX = 22  # caracteres del texto de la opción en su botón ("A · Aprobar el PR")
@@ -567,6 +570,7 @@ class DecisionDesk:
         self.pending = PendingDecisions(Path(store.root).parent / "decisiones_pendientes.json")
         self._sleep = time.sleep  # esperas entre reintentos de gh (los tests la sustituyen)
         self.vetos = VetoBook(Path(store.root).parent / "card_veto.json")  # plazo de veto de las tarjetas reversibles
+        self.caducidad = Escalera(Path(store.root).parent / "caducidad.json")  # recordatorios 24 h y «¿Sigue vigente?»
         # Texto libre = respuesta a la decisión pendiente del tema (`telegram.free_text` de lanes.yaml); None = apagado.
         self.free = FreeText(self, **free_text) if free_text else None
 
@@ -1366,6 +1370,8 @@ class DecisionDesk:
             return self._otro_carril(rec, where, button.get("valor"))
         if action == APLAZAR_SET:
             return self._aplazar(rec, where, button.get("index"))
+        if action in VIG_ACTIONS:
+            return self._vigente(action, rec, where)
         if action == LIBERAR:
             return self._liberar(rec, where)
         if action == GUARD_SNOOZE:
@@ -2017,6 +2023,44 @@ class DecisionDesk:
         label = datetime.fromtimestamp(until).strftime("%d/%m")
         h.comment(tid, f"APLAZADA-OSCAR hasta {label} ({dias} d, desde Telegram){self._by()}", author=OSCAR_AUTHOR)
         self._edit(rec, where, None, f"⏳ aplazada hasta el {label}")
+        return True
+
+    def vigente_markup(self, it: dict, aplazar_dias: float, mantener_dias: float) -> dict:
+        """Teclado del aviso «¿Sigue vigente?» de un ítem de lo_tuyo ({tid, board, title}); botones de botonera.yaml."""
+        dias = {"vigente_aplazar": aplazar_dias, "vigente_mantener": mantener_dias}
+        fila = []
+        for bid in botonera.cargar()["orden"]["vigente"]:
+            b = botonera.boton(bid)
+            fila.append({"text": b["text"].format(dias=f"{dias.get(bid, 0):g}"), "action": b["action"]})
+        rec = {"task_id": it["tid"], "board": it.get("board") or "", "lane": "", "title": it.get("title") or "",
+               "dias": {VIG_APLAZAR: aplazar_dias, VIG_MANTENER: mantener_dias}}
+        return self.store.issue(rec, [fila])[1]
+
+    def _vigente(self, action: str, rec: dict, where: dict) -> bool:
+        """«¿Sigue vigente?»: Archivar (reversible con desarchivar), Aplazar N d (la oculta) o Mantener N d (sigue visible,
+        el contador de avisos reinicia tras ese plazo)."""
+        tid, h = rec["task_id"], self._hermes(rec)
+        dias = (rec.get("dias") or {}).get(action)
+        if action == VIG_ARCHIVAR:
+            h.comment(tid, f"Archivada por {self._who()} al preguntarle si seguía vigente", author=OSCAR_AUTHOR)
+            archive = getattr(h, "archive", None)
+            if not archive or not archive(tid):
+                self._edit(rec, where, "blocked", "no se pudo archivar la tarjeta (mira el panel)")
+                return False
+            self.caducidad.olvidar(tid)
+            self._edit(rec, where, None, "🗄 archivada (se recupera con desarchivar)")
+            return True
+        if not isinstance(dias, (int, float)) or isinstance(dias, bool) or dias <= 0:
+            return False
+        if action == VIG_APLAZAR:
+            until = self.snoozes.add(tid, dias)
+            label = datetime.fromtimestamp(until).strftime("%d/%m")
+            h.comment(tid, f"APLAZADA-OSCAR hasta {label} ({dias:g} d, desde Telegram){self._by()}", author=OSCAR_AUTHOR)
+            self.caducidad.reposo(tid, dias)
+            self._edit(rec, where, None, f"⏳ aplazada hasta el {label}")
+            return True
+        self.caducidad.reposo(tid, dias)
+        self._edit(rec, where, None, f"📌 la mantienes: no te vuelvo a preguntar en {dias:g} d")
         return True
 
     def _liberar(self, rec: dict, where: dict) -> bool:

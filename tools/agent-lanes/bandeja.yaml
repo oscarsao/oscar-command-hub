@@ -28,3 +28,18 @@ resumen_carriles: true
 # Añade el coste estimado de IA (por carril y total de ayer) cuando los datos de las ejecuciones lo traen.
 # false = ni el coste por carril ni la línea "Coste de ayer".
 resumen_coste: true
+
+# Caducidad de lo que espera a Oscar (preguntas, «tuyo» y «decidir»; agent_lanes/caducidad.py). Decisión de Oscar 16-11:
+# una tarjeta se recuerda como mucho una vez cada `recordatorio_cada_horas` h, `recordatorio_veces` veces, contadas desde
+# que empezó a esperarte (cada aviso dice cuántos quedan). Pasadas esas, UN aviso «¿Sigue vigente?» con [Archivar]
+# [Aplazar N d] [Mantener N d]; sin respuesta en `vigente_responde_horas` h se aplaza `vigente_aplazar_dias` días.
+# Las que ya llevaban más de `vigente_legado_dias` días esperando al estrenar esto van directas a «¿Sigue vigente?»,
+# como mucho `vigente_tanda_dia` por día. «Mantener» no las oculta: solo reinicia el contador tras `vigente_mantener_dias`.
+caducidad: true               # false = sin recordatorios por tarjeta ni «¿Sigue vigente?»
+recordatorio_cada_horas: 24
+recordatorio_veces: 3
+vigente_legado_dias: 7
+vigente_tanda_dia: 5
+vigente_responde_horas: 24
+vigente_aplazar_dias: 30
+vigente_mantener_dias: 7

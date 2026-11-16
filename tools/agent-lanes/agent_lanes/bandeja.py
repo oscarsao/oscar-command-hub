@@ -46,6 +46,15 @@ class Bandeja:
     veto_modo: str = VETO_AVISO
     resumen_carriles: bool = True   # /hoy y las 8:00: hecho / bloqueado / esperando a Oscar por carril
     resumen_coste: bool = True      # y el coste estimado de IA (por carril y total) si hay datos
+    # Caducidad de lo que espera a Oscar (caducidad.py): recordatorios cada N h y después «¿Sigue vigente?»
+    caducidad: bool = True
+    recordatorio_cada_horas: float = 24
+    recordatorio_veces: int = 3
+    vigente_tanda_dia: int = 5         # tope de «¿Sigue vigente?» por día
+    vigente_legado_dias: float = 7     # las que ya llevan más que esto al estrenar la escalera van directas a «¿Sigue vigente?»
+    vigente_responde_horas: float = 24
+    vigente_aplazar_dias: float = 30
+    vigente_mantener_dias: float = 7
 
     @property
     def veto_activo(self) -> bool:
@@ -56,6 +65,17 @@ def _num(raw, default, *, lo: float = 0, integer: bool = False):
     if isinstance(raw, bool) or not isinstance(raw, (int, float)) or raw < lo:
         return default
     return int(raw) if integer else raw
+
+
+def fmt_num(v: float) -> str:
+    """30.0 -> "30"; 0.5 -> "0.5" (para los textos de los avisos)."""
+    return f"{v:g}"
+
+
+def _pos(raw, default):
+    """Número estrictamente positivo; si no, el valor por defecto."""
+    v = _num(raw, default)
+    return v if v > 0 else default
 
 
 def load(path: Path | str | None = None) -> Bandeja:
@@ -79,6 +99,14 @@ def load(path: Path | str | None = None) -> Bandeja:
         veto_modo=modo if modo in (VETO_AVISO, VETO_EJECUTAR) else VETO_AVISO,  # ante la duda, solo avisar
         resumen_carriles=raw["resumen_carriles"] if isinstance(raw.get("resumen_carriles"), bool) else d.resumen_carriles,
         resumen_coste=raw["resumen_coste"] if isinstance(raw.get("resumen_coste"), bool) else d.resumen_coste,
+        caducidad=raw["caducidad"] if isinstance(raw.get("caducidad"), bool) else d.caducidad,
+        recordatorio_cada_horas=_pos(raw.get("recordatorio_cada_horas"), d.recordatorio_cada_horas),
+        recordatorio_veces=_num(raw.get("recordatorio_veces"), d.recordatorio_veces, lo=0, integer=True),
+        vigente_tanda_dia=_num(raw.get("vigente_tanda_dia"), d.vigente_tanda_dia, lo=1, integer=True),
+        vigente_legado_dias=_pos(raw.get("vigente_legado_dias"), d.vigente_legado_dias),
+        vigente_responde_horas=_pos(raw.get("vigente_responde_horas"), d.vigente_responde_horas),
+        vigente_aplazar_dias=_pos(raw.get("vigente_aplazar_dias"), d.vigente_aplazar_dias),
+        vigente_mantener_dias=_pos(raw.get("vigente_mantener_dias"), d.vigente_mantener_dias),
     )
 
 

@@ -92,7 +92,8 @@ from .notices import (BOARD_BRANDS, BRANDS, DECISION_CARD_STATUSES, OSCAR_ASSIGN
                       render, status_line, truncate)
 
 log = logging.getLogger("agent_lanes")
-URGENT_EVERY = 120  # s mínimos entre pasadas del aviso inmediato de bloqueos de prioridad alta
+CADUCIDAD_EVERY = 600  # s mínimos entre pasadas de la escalera de caducidad (lee todos los tableros)
+URGENT_EVERY = 120 # s mínimos entre pasadas del aviso inmediato de bloqueos de prioridad alta
 
 COMMANDS = (
     ("ajustes", "Ajustes del hub con botones"),
@@ -1398,6 +1399,61 @@ class CommandCenter:
         ren = self.renotifier()
         return UrgentBlockWatcher(lambda: ren.collect(statuses=("blocked",)), ren.alert_urgent, state).tick()
 
+    def caducidad_tick(self) -> dict | None:
+        """Escalera de caducidad de lo que espera a Oscar (caducidad.py): recordatorios cada 24 h, «¿Sigue vigente?» y
+        aplazado solo a los 30 d. Cuelga de `veto_tick`; una pasada cada CADUCIDAD_EVERY s. Nunca avisa por un tablero que
+        no se pudo leer (una fuente lenta o caída no limpia el estado)."""
+        cfg, esc = self.bandeja, getattr(self.desk, "caducidad", None)
+        now = self._now()
+        if esc is None or not cfg.caducidad or now - getattr(self, "_caducidad_at", 0) < CADUCIDAD_EVERY:
+            return None
+        self._caducidad_at = now
+        items, lentas = self.lo_tuyo_items(None)
+        send = lambda text, **kw: self.notifier.send_to(self.owner_id, None, text, html=False, **kw)
+
+        def linea(it: dict) -> str:
+            marca = BOARD_BRANDS.get(it.get("board") or "", "Otros")
+            return f"{it['tid']} · {marca} · {truncate(it.get('title'), 60)}"
+
+        def recordatorios(its: list[dict]) -> bool:
+            lines = ["⏰ Sigue esperándote (recordatorio de 24 h):"]
+            for it in its:
+                n = it["quedan"]
+                resto = f"quedan {n} recordatorio{'s' if n != 1 else ''}" if n else "último recordatorio; después te preguntaré si sigue vigente"
+                lines.append(f"• {linea(it)} · hace {hours_ago(it.get('since'), now)} h · {resto}")
+            try:
+                send("\n".join(lines))
+                return True
+            except Exception as exc:
+                log.info("recordatorios de caducidad no entregados: %s", exc)
+                return False
+
+        def vigente(it: dict) -> bool:
+            horas = _bandeja.fmt_num(cfg.vigente_responde_horas)
+            text = (f"❓ ¿Sigue vigente?\n{linea(it)}\nLleva {hours_ago(it.get('since'), now) // 24} d esperándote. "
+                    f"Si no contestas en {horas} h la aplazo {_bandeja.fmt_num(cfg.vigente_aplazar_dias)} d.")
+            try:
+                markup = self.desk.vigente_markup(it, cfg.vigente_aplazar_dias, cfg.vigente_mantener_dias)
+                send(text, reply_markup=markup)
+                return True
+            except Exception as exc:
+                log.info("«¿Sigue vigente?» de %s no entregado: %s", it.get("tid"), exc)
+                return False
+
+        def aplazar(it: dict, dias: float) -> None:
+            self.desk.snoozes.add(it["tid"], dias)
+
+        def aplazadas(its: list[dict]) -> None:
+            try:
+                send("⏳ Sin respuesta: aplazadas solas "
+                     f"{_bandeja.fmt_num(cfg.vigente_aplazar_dias)} d (no vuelven a salir hasta entonces):\n"
+                     + "\n".join(f"• {linea(it)}" for it in its[:10]) + (f"\n… y {len(its) - 10} más" if len(its) > 10 else ""))
+            except Exception as exc:
+                log.info("aviso de aplazadas por caducidad no entregado: %s", exc)
+
+        return esc.tick(items, cfg, enviar_recordatorios=recordatorios, enviar_vigente=vigente, aplazar=aplazar,
+                        avisar_aplazadas=aplazadas, ocultas=self._snoozed(), completo=not lentas, now=now)
+
     def veto_tick(self) -> list[str]:
         """Tarjetas reversibles cuyo plazo de veto ha vencido sin respuesta ni veto. Modo `aviso`: solo se lo cuenta a
         Oscar (no ejecuta nada). Modo `ejecutar`: aplica la recomendada. Devuelve los ids tratados. Nunca lanza."""
@@ -1406,7 +1462,7 @@ class CommandCenter:
         except Exception as exc:
             log.warning("avisos urgentes: %s", exc)
         for tick in (self.guard_tick, self.daily_tick, self.peticiones_tick, self.al_dia_tick,
-                     self.vigilancia_tick, self.equipo_tick):  # cola, partes de las 9:00, /al_dia, tema 👥 Equipo, tareas del equipo
+                     self.vigilancia_tick, self.equipo_tick, self.caducidad_tick):  # cola, partes de las 9:00, /al_dia, tema 👥 Equipo, tareas del equipo
             try:
                 tick()
             except Exception as exc:
