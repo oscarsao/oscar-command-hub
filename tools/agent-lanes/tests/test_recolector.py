@@ -263,3 +263,17 @@ def test_ticker_una_vez_al_dia_y_solo_si_esta_activo(tmp_path):
     t[0] += 86400
     assert on.tick() is not None
     assert not git.con("worktree", "remove")  # seco por defecto
+
+
+def test_prs_abiertos_protege_cabezas_y_bases():
+    """Lección del 5-nov: borrar la rama BASE (ya fusionada) de un PR abierto lo cierra; se protege como la cabeza."""
+    from agent_lanes.recolector import gh_prs_abiertos
+    datos = [dict(headRefName="lane/t_a", baseRefName="feat/pool-f0"), dict(headRefName="lane/t_b", baseRefName="main")]
+    visto = {}
+
+    def run(cmd, **kw):
+        visto["cmd"] = cmd
+        return SimpleNamespace(returncode=0, stdout=json.dumps(datos), stderr="")
+
+    assert gh_prs_abiertos(SimpleNamespace(github="o/r"), run) == {"lane/t_a", "feat/pool-f0", "lane/t_b", "main"}
+    assert "headRefName,baseRefName" in visto["cmd"]

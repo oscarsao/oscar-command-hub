@@ -169,9 +169,12 @@ def _gh_json(lane, run, *args: str):
 
 
 def gh_prs_abiertos(lane, run=_proc.run) -> set[str] | None:
-    """Ramas con PR abierto; None si no se pudo saber (entonces no se toca ninguna rama remota)."""
-    data = _gh_json(lane, run, "--state", "open", "--limit", "500", "--json", "headRefName")
-    return None if data is None else {str(p.get("headRefName")) for p in data}
+    """Ramas con PR abierto, cabezas Y bases (el 5-nov borrar una base fusionada cerró el PR 67); None si no se pudo
+    saber (entonces no se toca ninguna rama remota)."""
+    data = _gh_json(lane, run, "--state", "open", "--limit", "500", "--json", "headRefName,baseRefName")
+    if data is None:
+        return None
+    return {str(p[k]) for p in data for k in ("headRefName", "baseRefName") if p.get(k)}
 
 
 def gh_prs_fusionados(lane, run=_proc.run) -> set[int]:
