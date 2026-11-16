@@ -25,13 +25,13 @@
 ## Príncipios de toma de decisión (usados en la sesión de planificación)
 - **80/20**: priorizar funcionamiento para vender/gestionar, no pulidos ni CI caro.
 - **Coste**: créditos agotados; prefiere trabajar en local y desplegar solo al probar. Evitar
-  consumo de recursos en RAM/Cloud. Vigilar presupuestos duros ($10-25 LLM por marca, Railway $12/mes).
+  consumo de recursos en RAM/Cloud. Vigilar presupuestos duros ($10-25 LLM por marca; Railway cerrado el 14-11, antes $12/mes).
 - **Sin preguntas triviales**: Oscar responde decisiones vía CLI/UI. No trancar workstreams esperando
   respuestas: avanzar con lo claro y dejar bloqueado solo lo que depende de él.
 - **Deploys/merges a master·main**: SIEMPRE requieren confirmación de Oscar (un push despliega solo).
 
 ## Presupuesto y spend (señal)
-- Railway: **$12 este mes** (crons incluidos). Se investigó lazy-load y crews.
+- Railway: ya no existe (Oscar, 14-11-2026); hasta entonces ~$12/mes. Se investigó lazy-load y crews.
 - Créditos de LLM: **agotados** → trabajar en local; desplegar solo al probar.
 - Apollo enrich: gasto por lote, tramo a tramo. 2.101 empresas en Píldora.
 - Google/dominios: se están actualizando todos los dominios para usarlos correctamente.
@@ -62,9 +62,9 @@
   hacer UPDATE/stamp de `alembic_version` sin plan, backup y OK de Oscar.
 - Despliegues: siempre con OK de Oscar. **Oscar HQ (backend) en Dokploy de pildora-01** desde la migración del
   21-22 oct (skill `desplegar-dokploy`; también NextJobs, OpenDesign y Postiz); el dashboard sigue en Vercel (push).
-  Railway para Oscar HQ es historia (los CLAUDE.md globales aún lo citan: CF-10, cambio pendiente del OK de Oscar).
-  **Scraper/Signal: sin resolver (CF-07)**: Railway sigue desplegando desde la rama base y pildora-01 también lo
-  ejecuta; un solo entorno lo decide Oscar.
+  Railway ya no existe (Oscar, 14-11-2026). CF-10 hecho el 14-11: los CLAUDE.md globales ya no lo citan (Alembic en producción = backend-prod de Dokploy).
+  **Scraper/Signal (CF-07):** con Railway cerrado (Oscar, 14-11-2026) el único entorno que queda es pildora-01; falta confirmar que
+  el servicio de Signal corre ahí con las variables correctas.
 - Al desplegar: revisar "propagaciones potenciales" y resolver de raíz errores recurrentes.
 
 ## Cómo se conectan los agentes (sistema de carriles, 2026-09-27)

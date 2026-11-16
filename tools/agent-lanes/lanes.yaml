@@ -260,8 +260,9 @@ lanes:
     board: oscarhq
     repo: C:/Users/oscar/dev/Scraper
     github: oscarsao/icp-prospect-engine
-    # Rama de trabajo activa (no main), confirmada con git el 27-09: origin/cambio/multiverse-benchmark-harness.
-    base: cambio/multiverse-benchmark-harness
+    # 8-nov-2026 (Oscar, botón, ronda 11): base main. Los PR #75-#89 se fusionan en main; la antigua rama
+    # cambio/multiverse-benchmark-harness iba 149 commits por detrás (0 por delante).
+    base: main
     test_cmd: py -3.12 "{AGENT_LANES_DIR}/agent_lanes/checks.py" {BASE}
 
   claude-nextjobs:
@@ -401,6 +402,7 @@ lanes:
     max_budget_usd: 1.5
     max_runtime_seconds: 1800
     max_review_rounds: 2
+    max_parallel: 2   # 5-nov-2026 (Oscar, botón): 2 revisiones a la vez para vaciar 15 tarjetas en cola; volver a 1 si hay lentitud o OOM
 
 # Carril Integrador (agent_lanes/integrator.py): fusión determinista de los PR aprobados por Oscar (APROBADO-OSCAR).
 # Solo actúa con INTEGRATOR_ENABLED=true en agent-lanes/.env (por defecto apagado). Nunca fusiona sin el botón de
