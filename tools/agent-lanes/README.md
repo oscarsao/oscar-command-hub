@@ -276,7 +276,7 @@ cambia; cualquier cola, orden o escalada que se escriba aquí debe respetarla.
   mande solo el yaml: reinstalar el servicio SIN `-MaxWorkers` (`instalar_servicio.sh` ya no lo pasa; lo hace Oscar, los
   `.ps1` quedan fuera del alcance de los workers) y reiniciar el runner. El log de arranque
   (`runner: carriles=… max_workers=N`) dice el valor real. `max_parallel` por carril: 1 por defecto (`defaults`); 4 en
-  `claude-oscarhq` (27-10); 2 en `claude-hub`; 1 en `claude-ops`.
+  `claude-oscarhq` (27-10); 2 en `claude-hub`; 1 en `claude-ops`; 2 en `review` (5-nov).
 
 ## Guarda de tablero (ADR-036)
 `hermes kanban create` sin `--board` cae en `default`, y cada carril solo lee el tablero de su `board:` en `lanes.yaml`.
