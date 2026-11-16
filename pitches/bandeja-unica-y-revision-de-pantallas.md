@@ -17,7 +17,7 @@ comentario/aprobación se vea como «no revisada».
 
 ## 2. Appetite
 
-**Grande: ~2-3 semanas en 4 entregas independientes** (cada una útil sola). Si aprieta, se recorta la D.
+**Grande: ~3 semanas en 5 entregas independientes** (cada una útil sola). Si aprieta, se recorta la D (y la E se parte por fases).
 
 | Entrega | Contenido | Appetite |
 |---|---|---|
@@ -26,6 +26,7 @@ comentario/aprobación se vea como «no revisada».
 | **B. Comentarios → tarjetas** | Cada comentario nuevo de `ohq_ui_feedback` crea tarjeta: fallo → carril con fix + PR (aprobación de Oscar antes de publicar); idea/cambio → bandeja | ~1 semana |
 | **C. Inventario de revisión de pantallas** | Detecta pantallas cuyo código cambió desde su última aprobación → «pendiente de revisar»; un botón «aprobada» guarda fecha, SHA y captura | ~1 semana |
 | **D. Otros clientes** | Herramienta de `pildora-mcp` «decisiones pendientes» para Claude chat/Cowork (ver auditoría del MCP) | 2-3 días |
+| **E. Agente revisor de plataforma** | Ver sección 4c: crew semanal en Oscar HQ que recorre el trabajo de crews y agentes, prueba las herramientas en staging y propone mejoras y huecos como tarjetas con botón | Pitch 15-45 min de carril; implementación 4-6 tarjetas feature, por fases |
 
 ## 3. Qué ya existe (se extiende, no se reconstruye)
 
@@ -75,6 +76,49 @@ La app `oscar-hq-staging` figura en Dokploy.
 solo protege si staging **no** comparte claves, webhooks ni envíos con producción (correo, Telegram, Stripe, Apollo deben ir
 a modo prueba o apagados en staging).
 
+## 4c. Entrega E: agente revisor de plataforma (petición de Oscar, 16-11-2026)
+
+Idea de Oscar: un agente que, sin que nadie lo pida, recorra el trabajo de los crews y los agentes y la propia plataforma, la pruebe
+como un smoke y proponga mejoras y huecos; y poder convertir esas recomendaciones en tarjetas desde la misma plataforma, escogiendo
+cuándo y qué se hace automáticamente. Origen: las propuestas buenas de la Ola 6 (Holded, PostHog, Langfuse…) vinieron de sesiones de
+Claude Code (mapa competitivo 24-10 y auditoría de cableado 25-10), no de los crews, y no llegan a su bandeja.
+
+**Dónde vive (decidido por Oscar, 16-11):** en su sistema de pildoradigital.com (Oscar HQ), como un crew más, **y además** una versión
+para Claude Code (skill) que lea los mismos hallazgos. **Sin pantalla de ajustes nueva:** se registra como un programado más en
+**Ajustes › Plataforma › Tareas programadas** (ya existe: cuándo corre, próxima, última con su resultado, pausar o reanudar,
+«Ejecutar ahora»); los prompts y herramientas del agente se editan en `/agents/gestion`. Ajustes nuevos mínimos, en esa misma
+pantalla y con los componentes del sistema de diseño: umbral de gravedad, tope de propuestas por semana, tipos de hallazgo que
+se tratan (bug, mejora, hueco), marcas y herramientas a recorrer, y qué se hace solo con cada tipo.
+
+**Qué hace en cada pasada (semanal, los lunes):**
+1. **Lee:** salidas y ejecuciones recientes de los crews (Centro de crews), las propuestas de `direccion_semanal`, los comentarios de
+   pantalla (`ohq_ui_feedback`), las tarjetas abiertas y los errores recientes.
+2. **Prueba:** recorre cada herramienta **solo en staging**, con un usuario de prueba, y registra por pantalla si carga, qué sale en
+   consola y red, y una captura. Precedentes: el flujo «Recorrido de pantallas» (Playwright) y la skill `smoke-produccion`.
+3. **Deduplica:** contrasta con tarjetas abiertas, decisiones previas y comentarios ya recogidos para no repetir.
+4. **Emite hallazgos tipados** (bug · mejora · hueco) con evidencia (ruta, pasos, captura), gravedad y esfuerzo estimado.
+
+**De hallazgo a tarjeta, desde la misma plataforma:** cada hallazgo llega a «Pendiente de ti» con **Crear tarjeta · Descartar ·
+Aplazar**; «Crear tarjeta» usa el puente «a desarrollo» (`ohq_kanban_dev_requests`) que ya existe. **Primera versión (por defecto,
+Oscar no eligió otra): solo propuestas con botón.** Después, configurable por tipo y marca: por ejemplo, un bug con evidencia crea
+tarjeta solo y el carril lo arregla hasta PR, **sin publicar nunca sin su botón**.
+
+**Piezas que se reutilizan:** el crew `direccion_semanal` (plantilla: catálogo cerrado de acciones, nada se ejecuta sin aprobación),
+el auditor del hub (patrón idempotente: una sola tarjeta resumen por pasada), los comentarios de pantalla, el Centro de crews y la
+pantalla de programados.
+
+**Coste y control:** cada pasada gasta tokens (un crew cuesta 0,5-5 $ por ejecución según el MCP). Tope de coste por pasada y medir con
+1 llamada antes de programarlo. Prueba hecha el 16-11-2026: una ejecución de `direccion_semanal` en MigraTeam (id 91d8f7f8) para ver
+qué recomienda; su coste y resultado se anotan en la tarjeta de la Entrega E.
+
+**Esfuerzo (estimación por analogía, sin referencia exacta de un agente de este tipo):** Pitch o spec 15-45 min de carril y ~100k
+tokens; implementación 4-6 tarjetas feature (mediana 15 min y ~110k tokens generados cada una, p75 35 min) más una sesión de la
+Integradora por entrega. El coste de cada pasada en producción se mide con la primera.
+
+**Riesgos:** ruido (tope + deduplicación + umbral de gravedad); coste; que el smoke toque datos reales (solo staging, usuario de
+prueba, sin envíos: ver la auditoría de salidas exteriores del staging); secretos (la credencial del usuario de prueba va a la Bóveda,
+nunca a tarjetas ni a capturas); falsos positivos (cada hallazgo lleva evidencia y se puede descartar).
+
 ## 5. Riesgos y huecos (a cerrar antes de empezar)
 
 - **Datos personales (RGPD):** una captura en MigraTeam puede mostrar datos de clientes reales. Decidir: staging con datos de
@@ -105,10 +149,16 @@ Oscar; guardar capturas con datos reales sin decisión de RGPD; tocar el runner 
    Apollo apagados o en modo prueba), sin las claves ni webhooks de producción, y planificador apagado. La copia en sí es una
    acción aparte (lee producción y sobrescribe la BD de staging) y se confirma con Oscar antes de ejecutarla.
 7. Comentarios en producción: **DECIDIDO por Oscar (15-11, botones): dejarlo como está** (activo en producción); en staging también.
+8. Revisor de plataforma, dónde vive: **DECIDIDO por Oscar (16-11): en Oscar HQ (pildoradigital.com), y además versión Claude Code.**
+9. Revisor: **DECIDIDO (16-11, botones): solo staging y semanal, los lunes.** Se configura en la pantalla de Tareas programadas.
+10. Revisor, qué se hace solo con cada hallazgo: **PENDIENTE.** Por defecto: solo propuestas con botón (Oscar no eligió otra).
+11. Revisor, umbral de gravedad y tope de propuestas por semana: **PENDIENTE.** Por defecto: gravedad media o más y como mucho 10 a la semana.
 
 Si no contesta: se parte A en tarjeta de nivel 1 (reversible, solo hub/skill) y el resto espera.
 
 ## 8. Cómo se corta
 
 A → 1 tarjeta (claude-hub). B → spec-lite + 2 tarjetas (claude-oscarhq: servicio y job; hub: aviso). C → spec-lite + 2-3 tarjetas
-(oscar-hq; MigraTeam tras decidir RGPD). D → 1 tarjeta (pildora-mcp) tras la auditoría.
+(oscar-hq; MigraTeam tras decidir RGPD). D → 1 tarjeta (pildora-mcp) tras la auditoría. E → spec-lite + fases: (1) crew de lectura y
+propuestas con botón (oscar-hq), (2) recorrido en staging con usuario de prueba, (3) política por tipo y marca, (4) versión skill para
+Claude Code (hub). Las fases 2-3 esperan a que exista el staging del dashboard.
