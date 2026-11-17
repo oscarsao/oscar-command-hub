@@ -185,7 +185,9 @@ def ficha(texto, nivel, tarjetas_fn=None, carpetas=(), prs=(), ramas=()):
     docs = buscar_documentos(texto, carpetas)
     prs_hit, err_p = buscar_prs(texto, prs) if prs else ([], {})
     ramas_hit = buscar_ramas(texto, ramas) if ramas else []
+    # «caído» = no hay datos; «parcial» = faltan tableros o búsquedas de PR: un ✓ exige haber mirado TODO.
     kanban_ok = bool(cards) and len(err_k) < len(BOARDS)
+    faltan = sorted(err_k) + sorted(f"PR {r}" for r in err_p)
     lineas = []
 
     def fila(cod, titulo, estado, detalle):
@@ -198,6 +200,8 @@ def ficha(texto, nivel, tarjetas_fn=None, carpetas=(), prs=(), ramas=()):
         fila("A1", "No existe ya ni está en marcha", "✗", d)
     elif not kanban_ok:
         fila("A1", "No existe ya ni está en marcha", "n/a", "kanban no disponible: " + (json.dumps(err_k) if err_k else "sin datos"))
+    elif faltan:
+        fila("A1", "No existe ya ni está en marcha", "⚠", "sin parecidos en lo que se pudo mirar, pero NO se miró: " + ", ".join(faltan))
     else:
         fila("A1", "No existe ya ni está en marcha", "✓", f"{len(cards)} tarjetas revisadas sin parecido ≥ {UMBRAL_TARJETA}"
              + (f"; {len(prs)} repos de PR" if prs else ""))
@@ -217,6 +221,8 @@ def ficha(texto, nivel, tarjetas_fn=None, carpetas=(), prs=(), ramas=()):
              "; ".join(f"{a['id']} hecha «{a['titulo']}»" for a in recientes[:3]))
     elif not kanban_ok:
         fila("A3", f"Sin tarjeta o PR parecido reciente ({DIAS_RECIENTE} d)", "n/a", "kanban no disponible")
+    elif err_k:
+        fila("A3", f"Sin tarjeta o PR parecido reciente ({DIAS_RECIENTE} d)", "⚠", "sin parecidos en lo que se pudo mirar, pero NO se miró: " + ", ".join(sorted(err_k)))
     else:
         fila("A3", f"Sin tarjeta o PR parecido reciente ({DIAS_RECIENTE} d)", "✓", "ninguna hecha en los últimos 30 días")
     # A4
@@ -248,7 +254,9 @@ def a_texto(f):
         out.append(f"- {l['criterio']} {l['estado']} {l['titulo']}: {l['detalle']}")
     out.append("")
     out.append("RESULTADO: " + ("hay un ✗ → NO se decide solo; pregunta a Oscar con esta evidencia." if f["bloqueo"]
-                                else "sin ✗ en lo comprobable → rellena a mano lo que falte (n/a) y, si todo pasa, decide y avisa en una línea."))
+                                else "sin ✗ en lo comprobable → rellena a mano lo que falte (n/a y ⚠) y, si todo pasa, decide y avisa en una línea."))
+    out.append("LÍMITE: esta ficha NO cubre las reglas duras de §1 ni el hook de permisos. Un push o merge a master/main, un despliegue, "
+               "una migración, un envío real o un cambio de variables NUNCA se decide por la ficha: va con la confirmación de Oscar.")
     if f["fuentes_caidas"]:
         out.append("Fuentes no disponibles: " + json.dumps(f["fuentes_caidas"], ensure_ascii=False))
     return "\n".join(out)

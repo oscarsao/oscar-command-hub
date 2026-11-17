@@ -8,9 +8,12 @@ despliegue:
 proteccion:
   main: "protección en GitHub sin verificar; los PR #157-#160 se fusionaron sin revisión obligatoria. El hook de permisos pregunta antes de fusionar o empujar a main"
 decide_solo:
-  - "Documentación (pitches, decisiones, auditorías, README) en rama propia y su PR; Oscar autorizó fusionar solo documentación del hub el 16-11"
+  - "Escribir documentación (pitches, decisiones, auditorías, README) en rama propia y abrir su PR"
   - "Tarjetas de limpieza en rama propia"
+nota_informativa:
+  - "El 16-11 Oscar autorizó a una sesión concreta a fusionar a main PR de solo documentación del hub. Es una concesión puntual de esa conversación, NO una política: fusionar a main sigue siendo §1 y pide su confirmación."
 pregunta_siempre:
+  - "Fusionar a main, también si es solo documentación, salvo concesión expresa y vigente de Oscar en esa conversación"
   - "Cualquier cambio de código en tools/agent-lanes: el runner vivo lo importa; prueba de humo en primer plano y ruff F821 antes de reiniciar"
   - "Reiniciar el runner o el servicio"
   - "Fusionar código (también herramientas nuevas) a main"

@@ -118,3 +118,32 @@ def test_ramas_exigen_dos_palabras_en_ideas_largas(tmp_path, monkeypatch):
     monkeypatch.setattr(p.subprocess, "run", lambda *a, **k: R())
     hits = p.buscar_ramas("cookie SSO staging dashboard producción", ["x"])
     assert [h["rama"] for h in hits] == ["feat/cookie-sso-staging"]
+
+
+def test_tablero_caido_parcial_no_da_visto_bueno(tmp_path):
+    # 2 de 3 tableros fallan: sin parecidos en el que sí respondió -> ⚠ (no ✓) en A1 y A3, y lo dice
+    f = p.ficha("exportar informes de coste a una hoja de cálculo", 1,
+                fake([card("t_9", "Reservas: política si Google falla")], {"default": "x", "migrateam": "y"}), [], [], [])
+    e = {l["criterio"]: l for l in f["lineas"]}
+    assert e["A1"]["estado"] == "⚠" and "default" in e["A1"]["detalle"] and "migrateam" in e["A1"]["detalle"]
+    assert e["A3"]["estado"] == "⚠"
+    assert f["bloqueo"] is False
+
+
+def test_busqueda_de_pr_caida_no_da_visto_bueno(tmp_path, monkeypatch):
+    monkeypatch.setattr(p, "buscar_prs", lambda texto, repos: ([], {"oscarsao/x": "TimeoutExpired"}))
+    f = p.ficha("exportar informes de coste a una hoja de cálculo", 1, fake([card("t_9", "Reservas")]), [], ["oscarsao/x"], [])
+    a1 = [l for l in f["lineas"] if l["criterio"] == "A1"][0]
+    assert a1["estado"] == "⚠" and "PR oscarsao/x" in a1["detalle"]
+
+
+def test_un_parecido_sigue_bloqueando_aunque_falte_un_tablero(tmp_path):
+    cards = [card("t_1", "Cookie SSO del staging pisa la de producción")]
+    f = p.ficha("cookie SSO del staging pisa producción", 1, fake(cards, {"default": "x"}), [], [], [])
+    assert f["bloqueo"] is True
+
+
+def test_texto_final_avisa_que_no_cubre_las_reglas_duras(tmp_path):
+    f = p.ficha("exportar informes de coste a una hoja", 1, fake([card("t_9", "Reservas")]), [], [], [])
+    t = p.a_texto(f)
+    assert "NO cubre las reglas duras" in t and "NUNCA se decide por la ficha" in t

@@ -25,3 +25,10 @@ Manda siempre `~/.claude/CLAUDE.md` (reglas duras §1, que no se pueden relajar 
 
 Borrador sin revisar por Oscar. Cada dato lleva su comprobación. Si algo cambia en un repo, se actualiza la ficha en el
 mismo PR que lo cambia.
+
+## Regla para el día que algo lea estas fichas (cargador de políticas)
+
+Hoy nada las lee. Si se escribe un cargador: **falla cerrado** (ficha ausente, ilegible o con campos que faltan = se aplica solo
+`~/.claude/CLAUDE.md`, nunca «todo permitido») y el resultado es la **unión de cautelas** con §1: una ficha puede añadir
+preguntas o prohibiciones, jamás quitarlas ni conceder lo que §1 reserva a Oscar. `decide_solo` solo admite trabajo en rama propia
+(lo comprueba `tools/puerta-decision/test_policy.py`); una concesión puntual de Oscar va en `nota_informativa`, nunca en `decide_solo`.
