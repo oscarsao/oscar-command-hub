@@ -149,6 +149,8 @@ defaults:
   model: sonnet
   # Modelo para tarjetas «Tamaño: S»; si una S falla o se bloquea con él, el siguiente intento usa `model`.
   model_small: haiku
+  # Alias que una tarjeta puede fijar con `model_override` (gana sobre model_small y model). Otro valor se ignora.
+  model_permitidos: [sonnet, haiku, fable]
   effort: medium
   max_budget_usd: 3.0
   # Por carril, no global. Se queda en 1: cada carril trabaja un repo y dos workers en el mismo repo/checkout podrían
