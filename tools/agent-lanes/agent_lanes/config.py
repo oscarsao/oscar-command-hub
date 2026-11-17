@@ -25,6 +25,8 @@ class Lane:
     max_parallel: int = 1
     role: str = "roles/implementador.md"
     test_cmd: str = ""
+    # PR en borrador automático al pasar la verificación (agent_lanes/pr_borrador.py). Apagado por defecto.
+    pr_borrador_automatico: bool = False
     max_runtime_seconds: int = 7200
     worktree_root: str = ""
     max_resumes: int = 2

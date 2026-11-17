@@ -138,6 +138,9 @@ notices:
   text_max: 4000             # mensaje de Telegram (admite 4096): se parte por aquí
 
 defaults:
+  # Abre solo un PR en borrador (gh pr create --draft) al terminar una tarjeta verificada. Se enciende por carril
+  # o aquí, tras la decisión de Oscar y una prueba en un carril.
+  pr_borrador_automatico: false
   max_resumes: 2
   heartbeat_seconds: 240
   # hermes 0.21.4: el heartbeat por CLI NO extiende claim_expires (solo last_heartbeat_at), así que el

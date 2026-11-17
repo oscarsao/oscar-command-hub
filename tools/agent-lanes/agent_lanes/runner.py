@@ -14,7 +14,7 @@ from typing import Callable, NamedTuple
 
 from . import avisos_revision, bloqueos, canal_avisos, clasificador, cuota, grandes, holds, lecciones, telegram_lane
 from . import consulta as _consulta
-from . import deps
+from . import deps, pr_borrador
 from . import proc as _proc
 from .config import ROOT, Lane
 from .hermes import GUARD_LIMIT_MARK, looks_like_guard_limit
@@ -124,8 +124,9 @@ class LaneRunner:
                  created_at: Callable[[int], float | None] = _proc.created_at,
                  lanes: dict | None = None, consultor: Callable | None = None, final_only=(), prevencion=None,
                  cuota_path: Path | None = None, cuota_minutos: float = cuota.DEFAULT_MINUTOS,
-                 wall_clock: Callable[[], float] = time.time):
+                 wall_clock: Callable[[], float] = time.time, pr_abrir: Callable | None = None):
         self.lane = lane
+        self._pr_abrir = pr_abrir or pr_borrador.abrir  # (lane, tid, task, result, check) -> nota | None
         # Pausa por cuota de Claude: .state/cuota.json junto al estado de las tareas; minutos si el error no trae la hora.
         self._cuota_path = Path(cuota_path) if cuota_path else Path(state_dir).parent / "cuota.json"
         self._cuota_minutos = cuota_minutos
@@ -613,11 +614,22 @@ class LaneRunner:
                 return self._block(tid, "transient", f"request-review rechazado: {err}", task,
                                    public="el kanban rechazó el paso a review")
             self._clear_retry(tid)
+            self._pr_borrador(tid, task, result, check)
             # El resumen completo queda en la tarjeta (request-review); aquí solo la línea de estado.
             self.notify("review", tid, task, status_line(
                 "en review", files_label(len(result.get("changed_files") or [])), test_label(check.test_exit),
                 money(outcome.cost_usd)), changed_files=result.get("changed_files"), for_oscar=result.get("for_oscar"))
             return "review"
+
+    def _pr_borrador(self, tid: str, task: dict, result: dict, check) -> None:
+        """PR en borrador tras la verificación (interruptor `pr_borrador_automatico`); su URL va a la tarjeta. Un fallo
+        solo se anota: la tarjeta ya está en review."""
+        try:
+            nota = self._pr_abrir(self.lane, tid, task, result, check)
+            if nota:
+                self.hermes.comment(tid, "LANE " + nota)
+        except Exception as exc:
+            log.warning("%s: comentario del PR en borrador no puesto: %s", tid, exc)
 
     def _pausar_por_cuota(self, tid: str, task: dict, raw_error: str | None) -> str:
         """Cuota de Claude agotada: la tarea vuelve a ready (no es un bloqueo repetido ni gasta resumes), se anota la
