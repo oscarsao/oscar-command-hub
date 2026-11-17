@@ -59,7 +59,7 @@ dominios y buzones.
 **Panel de Multiverse (cliente) y siguientes clientes**
 - B1 «Pendientes de aprobar» y «Consumo del mes» (reutiliza la cola de aprobación y el control de créditos que ya existen para el equipo).
 - B2 «Respuestas» (depende del ciclo cerrado, punto D).
-- B3 Servir el portal a otras marcas (hoy solo `portal_brands`): necesario para Pahoy.
+- B3 Servir el portal a otras marcas (hoy solo `portal_brands`): necesario para el siguiente cliente.
 
 **C. Asistente de configuración (5 pasos, mismo modelo de datos; interruptor guiado/avanzado)**
 1. Quién eres: marca, país, idioma y qué vendes, **rellenado leyendo la web** (Firecrawl) y solo revisado.
@@ -104,10 +104,10 @@ Tiempos de referencia disponibles: una tarjeta S/M del carril de dashboard tard�
 **Por defecto (si Oscar no decide):** no se implementa nada de este pitch; solo se mantiene el documento. Cuando T4-T8 estén fusionadas, se propone empezar por
 las entregas 1 y 3 (S-M cada una, reversibles, sin tocar producción hasta el botón).
 
-Decisiones que necesito de Oscar: (a) ¿entregas 1 y 3 como siguientes?; (b) ¿qué modelo de cobro probar con Pahoy?; (c) ¿Smartlead para el envío, o seguir con
+Decisiones que necesito de Oscar: (a) ¿entregas 1 y 3 como siguientes?; (b) ¿qué modelo de cobro probar con el siguiente cliente?; (c) ¿Smartlead para el envío, o seguir con
 Resend/CRM?
 
 ## 8. No verificado
 
 Estado real en producción del motor y de las migraciones; cifras reales de cuentas, créditos y envíos; qué secciones del portal v2 están pintadas; el
-resultado de Signal en el test de cobertura; la política de Meta sobre bots en WhatsApp (si Pahoy lo exige).
+resultado de Signal en el test de cobertura; la política de Meta sobre bots en WhatsApp (si el cliente lo exige).
