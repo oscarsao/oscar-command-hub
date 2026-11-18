@@ -24,7 +24,8 @@ def test_sync_base_fetch_then_merge_and_reports_nothing_when_clean():
         return cp()
 
     assert GitOps(runner=run).sync_base(LANE, "C:/wt/lane-t_1") is None
-    assert calls[0][0] == "fetch" and calls[1][:2] == ["merge", "--no-edit"] and calls[1][-1] == "origin/master"
+    assert calls[0][0] == "fetch" and calls[1][0] == "status"  # limpio: sin WIP, directo al merge
+    assert calls[2][:2] == ["merge", "--no-edit"] and calls[2][-1] == "origin/master" and len(calls) == 3
 
 
 def test_sync_base_returns_conflict_text_for_the_worker():
@@ -68,6 +69,90 @@ def test_runner_hands_conflict_to_worker():
     r = LaneRunner(LANE, hermes=h, git=SyncGit("CONFLICT x"), worker=w, verifier=ok, notify=FakeNotifier())
     r.run_once()
     assert w.task["merge_conflict"] == "CONFLICT x"
+
+
+# --- t_312253c4: worktree sucio al reanudar → commit WIP(runner) antes del merge --------------------------------
+def _git_real(cwd, *args):
+    import subprocess
+    return subprocess.run(["git", "-C", str(cwd), "-c", "user.name=t", "-c", "user.email=t@t", *args],
+                          capture_output=True, text=True, check=True).stdout
+
+
+def _repo_con_remoto(tmp_path):
+    remoto, wt = tmp_path / "remoto.git", tmp_path / "wt"
+    _git_real(tmp_path, "init", "--bare", "-b", "main", str(remoto))
+    _git_real(tmp_path, "clone", str(remoto), str(wt))
+    (wt / "a.txt").write_text("a\n", newline="\n")
+    (wt / "b.txt").write_text("b\n", newline="\n")
+    _git_real(wt, "add", ".")
+    _git_real(wt, "commit", "-m", "base")
+    _git_real(wt, "push", "origin", "HEAD:main")
+    _git_real(wt, "checkout", "-b", "lane/t_1")
+    otro = tmp_path / "otro"  # alguien avanza la base tocando a.txt
+    _git_real(tmp_path, "clone", str(remoto), str(otro))
+    (otro / "a.txt").write_text("a2\n", newline="\n")
+    _git_real(otro, "commit", "-am", "avanza base")
+    _git_real(otro, "push", "origin", "HEAD:main")
+    return wt
+
+
+def test_sync_base_worktree_sucio_hace_wip_y_merge_y_lo_registra(tmp_path, caplog):
+    import logging
+    wt = _repo_con_remoto(tmp_path)
+    (wt / "b.txt").write_text("b editado\n", newline="\n")  # modificado sin commitear
+    (wt / "nuevo.txt").write_text("n\n", newline="\n")      # sin seguimiento
+    lane = SimpleNamespace(remote="origin", base="main")
+    with caplog.at_level(logging.WARNING, logger="agent_lanes"):
+        assert GitOps().sync_base(lane, str(wt)) is None
+    assert _git_real(wt, "status", "--porcelain").strip() == ""
+    assert (wt / "a.txt").read_text() == "a2\n" and (wt / "nuevo.txt").exists()
+    assert "WIP(runner):" in _git_real(wt, "log", "--format=%s", "origin/main..HEAD")
+    sha = _git_real(wt, "log", "--format=%H", "--grep=^WIP(runner):", "-1").strip()
+    assert any("commit WIP(runner)" in r.getMessage() and sha in r.getMessage() for r in caplog.records)
+
+
+def test_sync_base_limpio_no_crea_wip(tmp_path):
+    wt = _repo_con_remoto(tmp_path)
+    assert GitOps().sync_base(SimpleNamespace(remote="origin", base="main"), str(wt)) is None
+    assert "WIP(runner)" not in _git_real(wt, "log", "--format=%s")
+
+
+def test_sync_base_merge_falla_tras_wip_lanza_giterror():
+    import pytest
+    from agent_lanes.git_ops import GitError
+
+    def run(cmd, **kw):
+        sub = cmd[3]
+        if sub == "status":
+            return cp(0, " M b.txt\n")
+        if sub == "merge":
+            return cp(1, err="fatal: refusing to merge unrelated histories")
+        if sub == "rev-parse":
+            return cp(0, "abc1234567890\n")
+        return cp()
+
+    with pytest.raises(GitError, match="tras el commit WIP"):
+        GitOps(runner=run).sync_base(LANE, "x")
+
+
+def test_verify_avisa_de_commits_wip_runner():
+    from agent_lanes.verify import verify
+    sha = "a" * 40
+
+    def run(cmd, **kw):
+        sub = cmd[3]
+        if sub == "ls-remote":
+            return cp(0, f"{sha}\trefs/heads/lane/t_1\n")
+        if sub == "log":
+            return cp(0, "feat: x\nWIP(runner): 2 cambio(s) sin commitear\n")
+        if sub == "rev-list":
+            return cp(0, "2\n")
+        if sub == "rev-parse":
+            return cp(0, sha + "\n")
+        return cp()
+
+    res = verify(LANE, "t_1", "x", {"branch": "lane/t_1", "head_sha": sha}, runner=run)
+    assert not res.ok and any("WIP(runner)" in r and "squash" in r for r in res.reasons)
 
 
 def test_config_failure_blocks_without_retry_button():

@@ -139,6 +139,7 @@ class GitOps:
             if fetch.returncode != 0:
                 log.warning("sync_base %s: fetch falló: %s", path, fetch.stderr.strip()[:200])
                 return None
+            wip = self._commit_wip(path)
             cp = self._run(["git", "-C", path, "merge", "--no-edit", ref], capture_output=True, text=True,
                            encoding="utf-8", errors="replace", timeout=300)
         except (OSError, subprocess.SubprocessError) as exc:
@@ -150,7 +151,29 @@ class GitOps:
         if "CONFLICT" in out:
             return out[-600:]
         log.warning("sync_base %s: merge %s falló sin conflicto: %s", path, ref, out[-200:])
+        if wip:  # ni con el WIP guardado se puede fusionar: la tarjeta se bloquea (el runner captura GitError)
+            raise GitError(f"merge de {ref} falló tras el commit WIP {wip[:10]}: {out[-200:]}")
         return None
+
+    def _commit_wip(self, path: str) -> str | None:
+        """Si el worktree tiene cambios sin commitear, los guarda en un commit «WIP(runner):» (add/commit con pathspec
+        explícito, nunca `commit -a`) para que el merge no falle con «commit your changes or stash them». Devuelve el
+        SHA o None si estaba limpio. GitError si no se pudo guardar. El verificador exige rehacer ese commit (squash)."""
+        st = self._run(["git", "-C", path, "status", "--porcelain", "--untracked-files=all"], capture_output=True,
+                       text=True, encoding="utf-8", errors="replace", timeout=120)
+        if st.returncode != 0 or not (st.stdout or "").strip():
+            return None
+        n = len([l for l in st.stdout.splitlines() if l.strip()])
+        add = self._run(["git", "-C", path, "add", "-A", "--", "."], capture_output=True, text=True,
+                        encoding="utf-8", errors="replace", timeout=120)
+        com = self._run(["git", "-C", path, "commit", "--no-verify", "-m",
+                         f"WIP(runner): {n} cambio(s) sin commitear guardados antes de sincronizar con la base",
+                         "--", "."], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120)
+        if add.returncode != 0 or com.returncode != 0:
+            raise GitError(f"no se pudo guardar el WIP antes del merge: {(add.stderr + com.stderr).strip()[:200]}")
+        sha = (self._out("git", "-C", path, "rev-parse", "HEAD", timeout=60) or "").strip()
+        log.warning("sync_base %s: commit WIP(runner) %s con %d cambio(s) sin commitear", path, sha, n)
+        return sha or "?"
 
     def poner_al_dia(self, lane: Lane, path: str, task_id: str) -> AlDia:
         """P4: antes de pasar a review, la rama al día con <remote>/<base> si esta avanzó y la fusión es limpia.

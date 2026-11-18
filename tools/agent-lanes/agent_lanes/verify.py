@@ -49,6 +49,13 @@ def verify(lane: Lane, task_id: str, cwd: str, result: dict, runner=_proc.run) -
         ahead = _git(cwd, "rev-list", "--count", f"{lane.remote}/{lane.base}..{remote_sha}", runner=runner)
         if ahead.returncode != 0 or ahead.stdout.strip() in ("", "0"):
             reasons.append(f"{branch} no tiene commits sobre {lane.remote}/{lane.base}")
+        # Los commits «WIP(runner):» los crea sync_base al reanudar un worktree sucio: no deben llegar al PR.
+        subjects = _git(cwd, "log", "--format=%s", f"{lane.remote}/{lane.base}..{remote_sha}", runner=runner)
+        wips = [s for s in (subjects.stdout or "").splitlines() if s.startswith("WIP(runner):")] \
+            if subjects.returncode == 0 else []
+        if wips:
+            reasons.append(f"{branch} lleva {len(wips)} commit(s) 'WIP(runner):' sin rehacer: haz squash en la rama "
+                           f"lane (sin force push a ramas ajenas) con un mensaje definitivo antes de cerrar")
         head = _git(cwd, "rev-parse", "HEAD", runner=runner).stdout.strip().lower()
         if head != remote_sha:
             reasons.append(f"HEAD local '{head[:12]}' != remoto '{remote_sha[:12]}' (cambios sin empujar)")
