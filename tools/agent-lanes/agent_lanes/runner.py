@@ -279,7 +279,9 @@ class LaneRunner:
                 return []
         ready = [t for t in self.hermes.list_ready(self.lane.name) if t["id"] not in self.exclude]
         frenadas = getattr(self, "_lento", None) or {}  # worktree lento: no se reclama hasta pasado el freno
-        ready = [t for t in ready if frenadas.get(t["id"], 0) <= self.clock()]
+        if frenadas:
+            ahora = self.clock()
+            ready = [t for t in ready if frenadas.get(t["id"], 0) <= ahora]
         ready = [t for t in ready if not holds.held(t["id"]) and not self._dependency_hold(t["id"])]
         prevencion = getattr(self, "_prevencion", None)  # getattr: algunos tests llaman con un self mínimo
         if prevencion is not None and self.lane.kind == "implement" and ready:
