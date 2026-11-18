@@ -1,0 +1,139 @@
+# Inventario de claves: SOLO metadatos, nunca valores (decisión de Oscar 18-11-2026, t_6a824023).
+# Lo que no se sabe va como "por completar por Oscar". `ultima_rotacion` se rellena con `claves.py rotada <clave>`
+# (queda en registro.jsonl) o a mano con formato AAAA-MM-DD.
+# destinos.tipo: boveda | fichero_env | panel. `fichero` admite %LOCALAPPDATA% y ~; es relativo al repo si no es absoluto.
+# Orden de la guía: proveedor -> destinos (en el orden de esta lista) -> comprobar.
+env_conocidos:
+  - tools/agent-lanes/.env
+  - "%LOCALAPPDATA%/hermes/.env"
+claves:
+  - nombre: CARRILES_BOT_TOKEN
+    para_que: Token del bot de carriles (@pildora_carriles_bot), con botones y escucha de Telegram.
+    proveedor: Telegram (BotFather)
+    url: https://t.me/BotFather
+    pasos:
+      - Abrir el chat con @BotFather.
+      - "Enviar /revoke (o /token) y elegir el bot de carriles."
+      - Copiar el token nuevo sin pegarlo en chats ni en el repo.
+    destinos:
+      - tipo: fichero_env
+        fichero: tools/agent-lanes/.env
+        variable: CARRILES_BOT_TOKEN
+    quien_rota: Oscar
+    cada_dias: 180
+    ultima_rotacion: null
+    depende: Avisos con botones de los carriles y aprobaciones por Telegram.
+    notas: Se guarda con tools/agent-lanes/guardar_token_bot.py (pide el token sin mostrarlo).
+  - nombre: TELEGRAM_BOT_TOKEN
+    para_que: Token del bot de Hermes (@oscarsaoBot); los carriles lo usan para avisos sin botones.
+    proveedor: Telegram (BotFather)
+    url: https://t.me/BotFather
+    pasos:
+      - Abrir el chat con @BotFather.
+      - "Enviar /revoke y elegir @oscarsaoBot."
+      - Copiar el token nuevo.
+    destinos:
+      - tipo: fichero_env
+        fichero: "%LOCALAPPDATA%/hermes/.env"
+        variable: TELEGRAM_BOT_TOKEN
+      - tipo: fichero_env
+        fichero: tools/agent-lanes/.env
+        variable: TELEGRAM_BOT_TOKEN
+    quien_rota: Oscar
+    cada_dias: 180
+    ultima_rotacion: null
+    depende: Gateway de Hermes y avisos de los carriles sin botones.
+    notas: Reiniciar la tarea Hermes_Gateway tras cambiarlo (por completar por Oscar si procede).
+  - nombre: OHQ_API_KEY
+    para_que: Clave de la API de Oscar HQ que usan los carriles (sync de usuarios y demás llamadas).
+    proveedor: Oscar HQ
+    url: por completar por Oscar
+    pasos:
+      - por completar por Oscar
+    destinos:
+      - tipo: fichero_env
+        fichero: tools/agent-lanes/.env
+        variable: OHQ_API_KEY
+      - tipo: panel
+        servicio: Oscar HQ (servidor)
+        variable: por completar por Oscar
+    quien_rota: por completar por Oscar
+    cada_dias: 90
+    ultima_rotacion: null
+    depende: lanes.py sync-usuarios y llamadas del hub a Oscar HQ.
+  - nombre: VERCEL_TOKEN
+    para_que: Token de Vercel para desplegar desde CLI/CI (scope oscarsaos-projects).
+    proveedor: Vercel
+    url: https://vercel.com/account/tokens
+    pasos:
+      - Entrar en la URL y crear un token nuevo con scope oscarsaos-projects.
+      - Copiarlo al momento (no se vuelve a mostrar).
+      - Borrar el token antiguo en la misma pantalla.
+    destinos:
+      - tipo: fichero_env
+        fichero: tools/agent-lanes/.env
+        variable: VERCEL_TOKEN
+      - tipo: boveda
+        nombre: por completar por Oscar
+    quien_rota: Oscar
+    cada_dias: 90
+    ultima_rotacion: null
+    depende: Despliegues y promote de los repos con Vercel.
+  - nombre: GITHUB_TOKEN
+    para_que: Token de GitHub para PR y consultas de los carriles.
+    proveedor: GitHub
+    url: https://github.com/settings/tokens
+    pasos:
+      - Generar un token con el mínimo de permisos que usa el hub (por completar por Oscar).
+      - Copiarlo y revocar el anterior.
+    destinos:
+      - tipo: fichero_env
+        fichero: tools/agent-lanes/.env
+        variable: GITHUB_TOKEN
+    quien_rota: Oscar
+    cada_dias: 90
+    ultima_rotacion: null
+    depende: Integrador y carril review.
+    notas: gh puede usar su propio login (oscarsao); por completar por Oscar si este token se usa de verdad.
+  - nombre: ANTHROPIC_API_KEY
+    para_que: Clave de la API de Anthropic.
+    proveedor: Anthropic
+    url: https://console.anthropic.com/settings/keys
+    pasos:
+      - Crear una clave nueva en la consola.
+      - Copiarla y desactivar la anterior.
+    destinos:
+      - tipo: boveda
+        nombre: por completar por Oscar
+    quien_rota: Oscar
+    cada_dias: 90
+    ultima_rotacion: null
+    depende: por completar por Oscar
+  - nombre: APOLLO_API_KEY
+    para_que: Clave de Apollo (prospección; gasta créditos).
+    proveedor: Apollo
+    url: por completar por Oscar
+    pasos:
+      - por completar por Oscar
+    destinos:
+      - tipo: boveda
+        nombre: por completar por Oscar
+    quien_rota: por completar por Oscar
+    cada_dias: 180
+    ultima_rotacion: null
+    depende: por completar por Oscar
+  - nombre: HUB_DB_DSN
+    para_que: Conexión Postgres (rol hub_core) del kanban en Supabase (backend supabase).
+    proveedor: Supabase
+    url: por completar por Oscar
+    pasos:
+      - Rotar la contraseña del rol hub_core en Supabase (por completar por Oscar).
+      - Reconstruir el DSN con la contraseña nueva.
+    destinos:
+      - tipo: fichero_env
+        fichero: tools/agent-lanes/.env
+        variable: HUB_DB_DSN
+    quien_rota: Oscar
+    cada_dias: 180
+    ultima_rotacion: null
+    depende: Kanban en backend supabase.
