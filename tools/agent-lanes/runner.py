@@ -15,7 +15,7 @@ import threading
 import time
 from logging.handlers import TimedRotatingFileHandler
 
-from agent_lanes import canal_avisos, ciego, consola, cuota, doctor_config, drain, notices, resumen_carriles, supervisor
+from agent_lanes import canal_avisos, ciego, consola, cuota, doctor_config, drain, notices, resumen_carriles, supervisor, tope_memoria
 from agent_lanes.bandeja import load as load_bandeja
 from agent_lanes.board_guard import BoardGuardTicker
 from agent_lanes.choques import ChoquesTicker
@@ -266,7 +266,8 @@ def main(argv: list[str] | None = None) -> int:
                  if decisions and not args.once else None)  # solo con el bot de carriles
     service = Service(runners, max_workers=effective_max_workers(args.max_workers, settings), busy_path=drain.BUSY_FILE,
                       max_big_total=int(settings.get("max_big_total", 0) or 0),
-                      cuota_pausada=lambda: cuota.vigente() is not None)
+                      cuota_pausada=lambda: cuota.vigente() is not None,
+                      memoria_pausada=tope_memoria.TopeMemoria(alert=None if args.once else drain.dm_alert(env)).pausada)
     interval = args.interval or settings["interval_seconds"]
     log.info("runner: carriles=%s max_workers=%s interval=%ss", list(selected), service.max_workers, interval)
 

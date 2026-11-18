@@ -49,8 +49,11 @@ class Service:
     `max_workers` claude processes alive at once. Default 1: one worker in total on this PC."""
 
     def __init__(self, lanes: list, max_workers: int = 1, busy_path: Path | None = None, max_big_total: int = 0,
-                 cuota_pausada: Callable[[], bool] | None = None):
+                 cuota_pausada: Callable[[], bool] | None = None,
+                 memoria_pausada: Callable[[], bool] | None = None):
         self.lanes = lanes
+        # Tope de memoria (tope_memoria.py): mientras sea verdadera no se reclaman tarjetas nuevas (las en vuelo siguen).
+        self.memoria_pausada = memoria_pausada
         # Pausa por cuota de Claude (cuota.py): mientras sea verdadera no se lanza ningún worker (los en vuelo siguen).
         self.cuota_pausada = cuota_pausada
         self.max_workers = max(1, int(max_workers))
@@ -81,7 +84,7 @@ class Service:
         """Lanza (sin esperar) las tareas de los carriles con plaza reservada: nunca más de `reserved_slots` vivas a la
         vez por carril, cuente lo que cuente max_workers. Devuelve los ids lanzados."""
         started = []
-        if self._cuota():
+        if self._pausa():
             return started
         for lane in self.lanes:
             slots = self._slots(lane)
@@ -260,7 +263,7 @@ class Service:
             self._reap()
             if not only_reserved:
                 self.list_errors = []
-            if self._cuota():
+            if self._pausa():
                 self._write_busy()
                 return started
             counts: dict = {"normal": 0, "big": 0, "reserved": 0, "lanes": {}}
@@ -324,8 +327,18 @@ class Service:
             log.warning("pausa por cuota no comprobada: %s", exc)
             return False
 
-    def run_pass(self) -> dict[str, str]:
+    def _pausa(self) -> bool:
+        """¿No se debe reclamar nada ahora? Cuota de Claude o tope de memoria. Un fallo al comprobarla no para al planificador."""
         if self._cuota():
+            return True
+        try:
+            return bool(self.memoria_pausada and self.memoria_pausada())
+        except Exception as exc:  # noqa: BLE001
+            log.warning("tope de memoria no comprobado: %s", exc)
+            return False
+
+    def run_pass(self) -> dict[str, str]:
+        if self._pausa():
             return {}
         jobs, named = [], []
         self.list_errors = []
