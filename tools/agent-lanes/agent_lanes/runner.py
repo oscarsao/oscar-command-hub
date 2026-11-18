@@ -278,6 +278,8 @@ class LaneRunner:
                     self._repo_warned = True
                 return []
         ready = [t for t in self.hermes.list_ready(self.lane.name) if t["id"] not in self.exclude]
+        frenadas = getattr(self, "_lento", None) or {}  # worktree lento: no se reclama hasta pasado el freno
+        ready = [t for t in ready if frenadas.get(t["id"], 0) <= self.clock()]
         ready = [t for t in ready if not holds.held(t["id"]) and not self._dependency_hold(t["id"])]
         prevencion = getattr(self, "_prevencion", None)  # getattr: algunos tests llaman con un self mínimo
         if prevencion is not None and self.lane.kind == "implement" and ready:
@@ -338,7 +340,7 @@ class LaneRunner:
             if self._bloquear(tid, kind, reason):
                 del self._block_pendiente()[tid]
                 log.info("%s: bloqueo (%s) conciliado", tid, kind)
-                if reason.startswith(cuota.MOTIVO_PREFIX) and not self.hermes.unblock(tid):
+                if reason.startswith((cuota.MOTIVO_PREFIX, self.WORKTREE_LENTO_PREFIX)) and not self.hermes.unblock(tid):
                     self._unblock_pendiente().add(tid)
 
     def _dependency_hold(self, tid: str) -> bool:
@@ -543,8 +545,7 @@ class LaneRunner:
                     self.hermes.comment(tid, exc.comentario())
                 except Exception as exc2:
                     log.warning("%s: comentario de worktree lento no escrito: %s", tid, exc2)
-                return self._block(tid, "transient", f"git worktree add sin respuesta: {exc.comentario()}", task,
-                                   public="git tardó demasiado en crear el espacio de trabajo", contar_repeticion=False)
+                return self._devolver_por_worktree_lento(tid, task)
             except Exception as exc:
                 return self._block(tid, "transient", f"error del runner: {exc}", task, public="error del runner")
 
@@ -629,6 +630,38 @@ class LaneRunner:
                 "en review", files_label(len(result.get("changed_files") or [])), test_label(check.test_exit),
                 money(outcome.cost_usd)), changed_files=result.get("changed_files"), for_oscar=result.get("for_oscar"))
             return "review"
+
+    WORKTREE_LENTO_PREFIX = "git worktree add sin respuesta"
+    WORKTREE_LENTO_ESPERA = 600.0  # s que el runner no vuelve a reclamar la tarjeta (freno propio, sin bucle apretado)
+
+    def _devolver_por_worktree_lento(self, tid: str, task: dict) -> str:
+        """git saturado tras todos los reintentos: la tarjeta vuelve a ready (como la pausa por cuota), no queda bloqueada.
+        Hermes cuenta `block_recurrences` si el kind se repite seguido (2 → triage; kanban_api.block): por eso se usa un kind
+        DISTINTO del último bloqueo de la tarjeta (`block_kind` sobrevive al unblock), así la cuenta vuelve a 1 y nunca
+        llega a triage. El comentario completo ya está en la tarjeta; el motivo es corto. Freno propio de 10 min."""
+        self._lento_hasta()[tid] = self.clock() + self.WORKTREE_LENTO_ESPERA
+        try:
+            previo = ((self.hermes.show(tid) or {}).get("task") or {}).get("block_kind")
+        except Exception as exc:
+            previo = None
+            log.info("%s: block_kind previo no leído: %s", tid, exc)
+        kind = "transient" if previo == "capability" else "capability"
+        reason = f"{self.WORKTREE_LENTO_PREFIX} (detalle en el comentario anterior); vuelve a ready sola"
+        log.warning("%s: %s", tid, reason)
+        if self._bloquear(tid, kind, reason):
+            if not self.hermes.unblock(tid):
+                log.error("%s: no se pudo devolver a ready tras el worktree lento; se reintenta en la pasada siguiente", tid)
+                self._unblock_pendiente().add(tid)
+        else:
+            self._block_pendiente()[tid] = (kind, reason)
+        self.notify("running", tid, task, status_line("en pausa", "git tardó demasiado en crear el espacio de trabajo",
+                                                      "se reintenta sola en unos minutos"), alert=True)
+        return "worktree_lento"
+
+    def _lento_hasta(self) -> dict:
+        if not hasattr(self, "_lento"):
+            self._lento: dict[str, float] = {}
+        return self._lento
 
     def _pausar_por_cuota(self, tid: str, task: dict, raw_error: str | None) -> str:
         """Cuota de Claude agotada: la tarea vuelve a ready (no es un bloqueo repetido ni gasta resumes), se anota la
