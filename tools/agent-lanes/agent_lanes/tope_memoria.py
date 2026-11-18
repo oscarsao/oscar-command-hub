@@ -51,8 +51,8 @@ class TopeMemoria:
                  alert: Callable[[str], object] | None = None, now: Callable[[], float] = time.time):
         self.lector, self.umbrales_fn, self.alert, self.now = lector, umbrales_fn, alert, now
         self.activo = False
-        self._ultimo_aviso = 0.0
-        self._ultimo_log = 0.0
+        self._ultimo_aviso: float | None = None
+        self._ultimo_log: float | None = None
 
     def pausada(self) -> bool:
         """¿Hay que dejar de reclamar ahora? Nunca lanza."""
@@ -77,15 +77,15 @@ class TopeMemoria:
             return False
         if not self.activo and pct > tope:
             self.activo = True
-            self._ultimo_log = 0.0
-            self._ultimo_aviso = 0.0
+            self._ultimo_log = None
+            self._ultimo_aviso = None
         if not self.activo:
             return False
-        if ahora - self._ultimo_log >= LOG_CADA_SEGUNDOS:
+        if self._ultimo_log is None or ahora - self._ultimo_log >= LOG_CADA_SEGUNDOS:
             self._ultimo_log = ahora
             log.info("tope de memoria: RAM al %.0f %% (tope %.0f %%, reanuda bajo %.0f %%); no se reclaman tarjetas "
                      "nuevas", pct, tope, reanudar)
-        if self.alert and ahora - self._ultimo_aviso >= AVISO_CADA_SEGUNDOS:
+        if self.alert and (self._ultimo_aviso is None or ahora - self._ultimo_aviso >= AVISO_CADA_SEGUNDOS):
             self._ultimo_aviso = ahora
             try:
                 self.alert(f"🧠 Memoria al {pct:.0f} %: el runner no reclama tarjetas nuevas hasta que baje de "
