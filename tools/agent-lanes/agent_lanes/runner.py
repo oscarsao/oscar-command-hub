@@ -17,6 +17,7 @@ from . import consulta as _consulta
 from . import deps
 from . import proc as _proc
 from .config import ROOT, Lane
+from .git_ops import WorktreeLento
 from .hermes import GUARD_LIMIT_MARK, looks_like_guard_limit
 from .notices import (MessageStore, TaskNotices, files_label, fit_reason, money, next_step, normalize_questions,
                       question_text, questions_block, render, status_line, test_label)
@@ -367,9 +368,10 @@ class LaneRunner:
 
     def _block(self, tid: str, kind: str, reason: str, task: dict | None = None, *, public: str,
                questions: list | None = None, summary: str | None = None, for_oscar: str | None = None,
-               notify_kind: str | None = None, changed_files=None) -> str:
-        """`reason` (detalle técnico) va a la tarjeta y al log; a Telegram solo `public` (+ preguntas si needs_input)."""
-        times = self._same_block_times(tid, kind, reason) if kind == "transient" else 0
+               notify_kind: str | None = None, changed_files=None, contar_repeticion: bool = True) -> str:
+        """`reason` (detalle técnico) va a la tarjeta y al log; a Telegram solo `public` (+ preguntas si needs_input).
+        `contar_repeticion=False`: bloqueo ambiental (git lento) que no escala por «bloqueada N veces por lo mismo»."""
+        times = self._same_block_times(tid, kind, reason) if kind == "transient" and contar_repeticion else 0
         if times:  # 2º bloqueo igual: Hermes la mandaría a triage; se escala a Oscar con otro motivo y botones
             reason = (f"Bloqueada {times + 1} veces por lo mismo ({public}); reintentar sin cambios no sirve.\n"
                       f"Último detalle: {reason}")
@@ -534,6 +536,15 @@ class LaneRunner:
                 # insiste, pasa a Oscar con las respuestas previas a la vista (la 2ª llamada solo anota, no relanza).
                 for _ in range(2):
                     outcome, repeated = self._reask_if_answered(lane, tid, cwd, session_id, deadline, outcome)
+            except WorktreeLento as exc:
+                # Saturación puntual de git, no un fallo del trabajo: se cuenta en la tarjeta y NO cuenta como bloqueo
+                # repetido (sin escalada propia del runner).
+                try:
+                    self.hermes.comment(tid, exc.comentario())
+                except Exception as exc2:
+                    log.warning("%s: comentario de worktree lento no escrito: %s", tid, exc2)
+                return self._block(tid, "transient", f"git worktree add sin respuesta: {exc.comentario()}", task,
+                                   public="git tardó demasiado en crear el espacio de trabajo", contar_repeticion=False)
             except Exception as exc:
                 return self._block(tid, "transient", f"error del runner: {exc}", task, public="error del runner")
 

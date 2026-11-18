@@ -25,6 +25,22 @@ class GitError(RuntimeError):
     pass
 
 
+class WorktreeLento(GitError):
+    """`git worktree add` agotó el tiempo máximo en todos los intentos (saturación del repo, no un fallo permanente).
+    Lleva lo que el runner cuenta en la tarjeta: repo, worktrees registrados y duración de cada intento."""
+
+    def __init__(self, repo: str, registrados: int | None, duraciones: list[float], maximo: float):
+        self.repo, self.registrados, self.duraciones, self.maximo = repo, registrados, list(duraciones), maximo
+        super().__init__(f"git worktree add falló: sin respuesta en {int(maximo)} s en {len(duraciones)} intentos")
+
+    def comentario(self) -> str:
+        tiempos = "; ".join(f"intento {i}: {d:.0f} s" for i, d in enumerate(self.duraciones, 1))
+        reg = "no se pudo contar" if self.registrados is None else str(self.registrados)
+        return (f"git worktree add no respondió en {int(self.maximo)} s tras {len(self.duraciones)} intentos "
+                f"(con `git worktree prune` entre ellos). Repo: {self.repo}. Worktrees registrados: {reg}. "
+                f"Duración: {tiempos}. No cuenta como bloqueo repetido: reintenta cuando el repo esté menos cargado.")
+
+
 def _norm(p) -> str:
     return os.path.normcase(os.path.realpath(str(p)))
 
@@ -60,6 +76,11 @@ _LOCKS_GUARD = threading.Lock()
 _LOCKS: dict[str, threading.Lock] = {}
 _REINTENTOS_BLOQUEO = (0.5, 1.0, 2.0, 4.0)  # espera entre intentos; agotada, un único aviso y GitError
 _MARCAS_BLOQUEO = ("could not lock config", "File exists")
+# `git worktree add` lento (17 y 18-11: 4 tarjetas por superar 300 s con cientos de worktrees acumulados). Máximo por
+# intento configurable (env AGENT_LANES_WORKTREE_TIMEOUT, segundos); por defecto 600. Tras un fallo por tiempo se
+# reintenta hasta 2 veces con espera creciente y un `git worktree prune` (solo entradas ya huérfanas) antes de cada uno.
+WORKTREE_TIMEOUT_DEFECTO = 600.0
+_ESPERAS_WORKTREE = (30.0, 90.0)
 
 
 def _lock_del_repo(repo) -> threading.Lock:
@@ -68,9 +89,20 @@ def _lock_del_repo(repo) -> threading.Lock:
 
 
 class GitOps:
-    def __init__(self, runner=_proc.run, sleep=time.sleep):
+    def __init__(self, runner=_proc.run, sleep=time.sleep, worktree_timeout: float | None = None,
+                 esperas_worktree: tuple[float, ...] = _ESPERAS_WORKTREE):
         self._run = runner
         self._sleep = sleep
+        self._worktree_timeout = worktree_timeout if worktree_timeout else self._timeout_worktree_env()
+        self._esperas_worktree = esperas_worktree
+
+    @staticmethod
+    def _timeout_worktree_env() -> float:
+        try:
+            valor = float(os.environ.get("AGENT_LANES_WORKTREE_TIMEOUT") or 0)
+        except ValueError:
+            valor = 0.0
+        return valor if valor > 0 else WORKTREE_TIMEOUT_DEFECTO
 
     def _git(self, repo: str, *args: str) -> subprocess.CompletedProcess:
         cp = self._run(["git", "-C", repo, *args], capture_output=True, text=True, encoding="utf-8",
@@ -79,12 +111,12 @@ class GitOps:
             raise GitError(f"git {' '.join(args[:2])} falló: {cp.stderr.strip()[:300]}")
         return cp
 
-    def _git_con_reintento(self, repo: str, *args: str) -> subprocess.CompletedProcess:
+    def _git_con_reintento(self, repo: str, *args: str, timeout: float = 300) -> subprocess.CompletedProcess:
         """`_git` que reintenta con espera progresiva si el fallo es el bloqueo de .git/config de otro git. Agotados
         los reintentos registra un único aviso y lanza GitError."""
         for intento in range(len(_REINTENTOS_BLOQUEO) + 1):
             cp = self._run(["git", "-C", repo, *args], capture_output=True, text=True, encoding="utf-8",
-                           errors="replace", timeout=300)
+                           errors="replace", timeout=timeout)
             if cp.returncode == 0:
                 return cp
             if not any(marca in cp.stderr for marca in _MARCAS_BLOQUEO):
@@ -97,6 +129,53 @@ class GitOps:
                      len(_REINTENTOS_BLOQUEO))
             self._sleep(_REINTENTOS_BLOQUEO[intento])
         raise GitError(f"git {' '.join(args[:2])} falló: {cp.stderr.strip()[:300]}")
+
+    def _registrados(self, repo: str) -> int | None:
+        """Worktrees registrados en el repo (solo lectura); None si no se pudo contar."""
+        try:
+            cp = self._run(["git", "-C", repo, "worktree", "list", "--porcelain"], capture_output=True, text=True,
+                           encoding="utf-8", errors="replace", timeout=120)
+        except (OSError, subprocess.SubprocessError):
+            return None
+        if cp.returncode != 0:
+            return None
+        return sum(1 for l in cp.stdout.splitlines() if l.startswith("worktree "))
+
+    def _prune(self, repo: str) -> None:
+        """`git worktree prune`: solo quita entradas ya huérfanas (carpeta inexistente); no borra carpetas ni ramas."""
+        try:
+            cp = self._run(["git", "-C", repo, "worktree", "prune"], capture_output=True, text=True,
+                           encoding="utf-8", errors="replace", timeout=120)
+            if cp.returncode != 0:
+                log.warning("git worktree prune en %s falló: %s", repo, (cp.stderr or "").strip()[:200])
+        except (OSError, subprocess.SubprocessError) as exc:
+            log.warning("git worktree prune en %s: %s", repo, exc)
+
+    def _worktree_add(self, repo: str, *args: str) -> subprocess.CompletedProcess:
+        """`git worktree add` con tiempo máximo configurable. Si se agota, prune y reintento (espera creciente) hasta
+        len(esperas) veces; si sigue sin responder, WorktreeLento con los datos para la tarjeta. Registra en el log lo
+        que tarda cada creación (tendencia)."""
+        duraciones: list[float] = []
+        for intento in range(len(self._esperas_worktree) + 1):
+            t0 = time.monotonic()
+            try:
+                cp = self._git_con_reintento(repo, "worktree", "add", *args, timeout=self._worktree_timeout)
+            except subprocess.TimeoutExpired:
+                duraciones.append(time.monotonic() - t0)
+                log.warning("git worktree add en %s: sin respuesta en %d s (intento %d/%d)", repo,
+                            int(self._worktree_timeout), intento + 1, len(self._esperas_worktree) + 1)
+                if intento == len(self._esperas_worktree):
+                    break
+                self._prune(repo)
+                self._sleep(self._esperas_worktree[intento])
+                continue
+            except GitError:
+                log.info("git worktree add en %s: falló en %.1f s (intento %d)", repo, time.monotonic() - t0,
+                         intento + 1)
+                raise
+            log.info("git worktree add en %s: %.1f s (intento %d)", repo, time.monotonic() - t0, intento + 1)
+            return cp
+        raise WorktreeLento(repo, self._registrados(repo), duraciones, self._worktree_timeout)
 
     def prepare_worktree(self, lane: Lane, task_id: str) -> str:
         path = self._prepare_worktree(lane, task_id)
@@ -117,15 +196,13 @@ class GitOps:
             exists = self._run(["git", "-C", lane.repo, "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}"],
                                capture_output=True, text=True, timeout=60).returncode == 0
             if exists:
-                self._git_con_reintento(lane.repo, "worktree", "add", str(path), branch)
+                self._worktree_add(lane.repo, str(path), branch)
             elif self._fetch_remote_lane(lane, branch):
                 # Tarea reabierta tras la limpieza de done (Oscar pidió cambios): la rama local ya no existe pero la
                 # remota conserva el trabajo. Partir de la base lo perdería y el push sería non-fast-forward.
-                self._git_con_reintento(lane.repo, "worktree", "add", str(path), "-b", branch,
-                                        f"{lane.remote}/{branch}")
+                self._worktree_add(lane.repo, str(path), "-b", branch, f"{lane.remote}/{branch}")
             else:
-                self._git_con_reintento(lane.repo, "worktree", "add", str(path), "-b", branch,
-                                        f"{lane.remote}/{lane.base}")
+                self._worktree_add(lane.repo, str(path), "-b", branch, f"{lane.remote}/{lane.base}")
             return str(path)
 
     def sync_base(self, lane: Lane, path: str) -> str | None:
@@ -221,10 +298,9 @@ class GitOps:
                 return str(path)
             path.parent.mkdir(parents=True, exist_ok=True)
             if self._branch_exists(lane.repo, branch):
-                self._git_con_reintento(lane.repo, "worktree", "add", str(path), branch)
+                self._worktree_add(lane.repo, str(path), branch)
             else:
-                self._git_con_reintento(lane.repo, "worktree", "add", str(path), "-b", branch,
-                                        f"{lane.remote}/{branch}")
+                self._worktree_add(lane.repo, str(path), "-b", branch, f"{lane.remote}/{branch}")
             return str(path)
 
     def commits_ahead(self, lane: Lane, task_id: str) -> int | None:
