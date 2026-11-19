@@ -15,7 +15,7 @@ import threading
 import time
 from logging.handlers import TimedRotatingFileHandler
 
-from agent_lanes import canal_avisos, ciego, consola, cuota, doctor_config, drain, notices, resumen_carriles, supervisor
+from agent_lanes import canal_avisos, ciego, consola, cuota, doctor_config, drain, guard_hash, notices, resumen_carriles, supervisor
 from agent_lanes.bandeja import load as load_bandeja
 from agent_lanes.board_guard import BoardGuardTicker
 from agent_lanes.multiworker import LeaseReaper, reaper_settings, worker_overrides
@@ -150,6 +150,14 @@ def main(argv: list[str] | None = None) -> int:
         log.error("Contrato de la CLI de hermes ROTO; el runner no arranca:\n  - %s", "\n  - ".join(problems))
         return 3
     log.info("contrato hermes OK")
+    if kanban_backend_name() == "supabase":  # H11: el worker de este equipo lleva el MISMO guard y contrato aprobados
+        unfit = guard_hash.problems(worker=worker)
+        if unfit:
+            log.error("guard de los workers NO apto; el runner no arranca:\n  - %s", "\n  - ".join(unfit))
+            return 4
+        log.info("guard de workers OK (sello %s)", (guard_hash.current_digest() or "?")[:12])
+        for warning in guard_hash.user_hook_warnings():
+            log.warning("guard: %s", warning)
     if args.check:
         return 0
     if not acquire_single_instance(LOCK):

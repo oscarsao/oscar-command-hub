@@ -134,6 +134,9 @@ def backend_for(board: str, author: str = "agent-lanes", *, backend: str | None 
     por aquí (con `hermes` devuelve exactamente el HermesCLI de siempre)."""
     name = backend or backend_name()
     if name == "supabase":
+        if "guard_digest" not in kw:  # sello del guard de ESTE checkout: lo anota el runner y lo compara el claim (H11)
+            from .guard_hash import current_digest
+            kw["guard_digest"] = current_digest()
         return SupabaseKanban(board, author=author, **kw)
     if name == "hermes":
         return HermesCLI(board, author=author, **kw)

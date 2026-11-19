@@ -1,0 +1,22 @@
+{
+  "digest": "e057ff19ec5157b8da0ad1aea95d26c7cf6962af2765848e34307c76220d2773",
+  "files": {
+    "contract/guard.py": "79eb113a0c1fc4b79dd07ceaeb9a9e156cbd6dad509c60eb0704675280417ba6",
+    "contract/ops-result.schema.json": "8c8d7fdbfe93d319c194e7072cabdb87bd57fc1f34ad729f486d3fb886efb42b",
+    "contract/ops-worker-settings.json": "ebf068d0334ea1c22df167cae10f0cfa5a0c94950121a0cede5b496206e0a342",
+    "contract/ops_guard.py": "67157ee4a739a4a0b32772c1f950d0c3f36498fd77bce4036eb37421fe503ff1",
+    "contract/result.schema.json": "eb8b0506fee126aa560b2ac0576ddaba123d13e593f53cdea05cc8fd701e46e1",
+    "contract/review.schema.json": "dbe66e753d02d6cb38cc0d5176d682fdcd91e39b8de9b0c6fe5d7a4bfc4afb2d",
+    "contract/reviewer-settings.json": "98c0ad8ae8844e7c705a05457a72491ae9ebcf3cd4bb27f1b526929f6004ad44",
+    "contract/task-template.md": "a0d32d8de1c7f2140d56c582d61a6e55667a1346c986832bbdc833c150e5619f",
+    "contract/worker-settings.json": "3f4184b64b03791efb411ea4da0e497747504cc374e986c8baa2025e468313a7",
+    "hooks-usuario/destino.mjs": "b50f28acc4298fc2cfe3b32b3f5c2b19871fbc798b61f84305121611b1dd711a",
+    "hooks-usuario/politica-permisos.json": "4ac705602d20c063ed8f6d5cdf429a81f8d3748774c3629915cf20eba8c911f3",
+    "hooks-usuario/preautoriza.mjs": "a0aa1306b8b5ea6f4d6d3a71eab95a080818c2979a89c695b22a10adef0c1ebb",
+    "roles/hub.md": "bbaa6323f3c95371e0f8e3f87df4599f5055d952cb73566f2c27afa388250d7d",
+    "roles/implementador.md": "9101d1e08dcca3c2263ee781350cdbdc159930875d95ca37406b6284d9989f03",
+    "roles/ops.md": "30bf405119308d05ac481aa429ab6e7322cee6e28839810f29520ba423a6b1ae",
+    "roles/revisor.md": "cd741ac0f4dfee42aa611c315e9b5f390d5f5f824270946ab1915ecff36785ac"
+  },
+  "version": 1
+}
