@@ -35,6 +35,7 @@ from agent_lanes.hermes_answers import HermesAnswers
 from agent_lanes.reminders import Reminders
 from agent_lanes.limpieza import LimpiezaRunner, LimpiezaTicker
 from agent_lanes.recolector import Recolector, RecolectorTicker
+from agent_lanes.vista_previa import VistaPrevia
 from agent_lanes import avisos_revision, workflows
 from agent_lanes.avance_workflows import AvanceTicker, AvanceWorkflows
 from agent_lanes.avisos_revision import AvisosRevision, AvisosRevisionTicker
@@ -286,6 +287,7 @@ def main(argv: list[str] | None = None) -> int:
     limpieza = None
     recolector = RecolectorTicker(Recolector(all_lanes, hermes_for, merged_pr=git.merged_pr))  # apagado salvo lanes.yaml
     paradas = None
+    vista_previa = None
     avisos_ticker = None
     wf_ticker = None
     solapes = None
@@ -320,6 +322,10 @@ def main(argv: list[str] | None = None) -> int:
                                     chat=str(p_chat), issue=decisions.store.issue)
         avisos_revision.instalar(avisos_rev)
         avisos_ticker = AvisosRevisionTicker(avisos_rev)
+        # Tarjetas de interfaz: enlace a la vista previa y a staging (apagado/en seco salvo `vista_previa:` en lanes.yaml).
+        vista_previa = VistaPrevia(all_lanes, hermes_for,
+                                   lambda text, markup=None: notify.send_to(p_chat, p_thread, text, html=False,
+                                                                            reply_markup=markup))
         # Workflows de Telegram: al terminar una tarjeta se crean los pasos que desbloquea y se avisa a quien lo pidió.
         wf_store = decisions.commands.workflow_store if decisions.commands else workflows.Store()
         wf_ticker = AvanceTicker(AvanceWorkflows(
@@ -403,6 +409,8 @@ def main(argv: list[str] | None = None) -> int:
             paradas.tick()
         if avisos_ticker:
             avisos_ticker.tick()
+        if vista_previa:
+            vista_previa.tick()
         if decisions and decisions.canal:  # tema 🎯 Decisiones: cierra lo ya resuelto y edita el contador fijado
             decisions.canal.refrescar()  # nunca lanza; sin destinos.decisiones no hace nada
         if wf_ticker:

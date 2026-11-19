@@ -431,6 +431,13 @@ promote:
 # seco: true = solo informa (.state/recolector.json); ponlo a false cuando el informe en seco te convenza.
 recolector: {enabled: false, hora: 3, seco: true}
 
+# Vista previa de las tarjetas de interfaz (agent_lanes/vista_previa.py). enabled: false = MODO SECO: mira GitHub pero no
+# comenta ni avisa; deja lo que haría en .state/vista_previa.json. Con true, al pasar a review/done una tarjeta «Tipo: UI»
+# (o cuyo PR toca dashboard/src/app|components) recibe un comentario con la URL de la vista previa y la ruta de cada pantalla,
+# y Oscar un aviso con botón «Abrir». Reintenta la vista previa espera_min minutos y avisa de que falta. staging_url se
+# añade solo si el PR apunta a staging_rama.
+vista_previa: {enabled: false, espera_min: 15, staging_url: "https://stage.pildoradigital.com", staging_rama: staging}
+
 # Avisos de producción del monitor (tools/monitor/prodwatch.py): fallo de un despliegue de PRODUCCIÓN en Vercel (las
 # vistas previas de lane/* no avisan; un aviso por despliegue) y salud del servidor (health_url de cada carril de
 # `integrator.lanes` + estado de su aplicación en Dokploy). Tokens por NOMBRE de variable (agent-lanes/.env), no aquí.
