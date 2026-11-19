@@ -14,12 +14,26 @@ fechas en segundos epoch, `BLOCKED: <motivo>` como comentario al bloquear, 2º b
 (`block_loop_detected`), `review_requested` con `implementer` y `reopen-review` que lo restaura, padres que retienen
 a las hijas en `todo` y las promueven al terminar, `idempotency_key` que devuelve la tarjeta existente.
 Esquema esperado: tests/fixtures/hub_schema_f2.sql (la migración real es F2-01 en oscar-hq).
+
+Varios ordenadores (19-11, auditoría del segundo worker): el kanban es común y cada runner es un `worker` con id propio
+(`HUB_WORKER_ID`). Reglas de este backend para que N equipos convivan sin pisarse:
+- TODO tiempo que se guarda es del SERVIDOR (`now()`): un PC con el reloj mal puesto no acorta ni alarga reservas
+  (H4). `clock` solo queda para lo que no se guarda en la base.
+- Una reserva tiene dueño (`lease_owner`, que ahora salen en cada tarjeta junto con `lease_until` y `server_now`): el
+  latido solo renueva la propia y un worker no cierra (`block`/`complete`/`request_review`) una tarjeta cuya reserva
+  VIVA es de otro (H5). La caducada de otro puede tomarla cualquiera.
+- `claim` comprueba que el worker esté dado de alta y activo en `hub.workers`, el interruptor de workers externos y
+  el sello del guard (H3, H11); `claim_serial` añade un cerrojo transaccional para rutas serializadas (migraciones, H10).
+- `release_stale` libera las reservas caducadas (H6); las llama el runner con un ticker (solo backend supabase).
+Con el backend hermes nada de esto existe: los diccionarios de tarjeta no llevan `lease_owner` y el runner sigue
+exactamente igual.
 """
 from __future__ import annotations
 
 import json
 import logging
 import os
+import re
 import secrets
 import socket
 import threading
@@ -36,6 +50,9 @@ DEFAULT_BACKEND = "hermes"
 ENV_BACKEND = "KANBAN_BACKEND"
 ENV_DSN = "HUB_DB_DSN"
 ENV_WORKER = "HUB_WORKER_ID"
+WORKER_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{1,62}$")  # = CHECK de hub.workers.id
+KEY_EXTERNOS = "workers_externos"  # hub.ajustes: interruptor de los PC de otras personas (María, Ángel)
+KEY_GUARD = "guard_hash_aprobado"  # hub.ajustes: sello(s) del guard que un worker debe llevar para reclamar (H11)
 
 STATUSES = frozenset({"triage", "todo", "scheduled", "ready", "running", "blocked", "review", "done", "archived"})
 BLOCK_KINDS = frozenset({"dependency", "needs_input", "capability", "transient"})
@@ -67,8 +84,22 @@ NOTIFY_KV = "notify:"  # hub.kv: notify:<task_id> -> [suscripciones como las de 
 
 _TASK_SQL = ("SELECT id, title, body, assignee, status, priority, created_by, created_by_worker, "
              "extract(epoch from created_at)::bigint, extract(epoch from started_at)::bigint, "
-             "extract(epoch from completed_at)::bigint, result, extra, alcance, rama, board, block_kind "
+             "extract(epoch from completed_at)::bigint, result, extra, alcance, rama, board, block_kind, "
+             "lease_owner, extract(epoch from lease_until)::bigint, extract(epoch from now())::bigint "
              "FROM hub.tasks")
+
+
+def normalize_worker(raw: str | None) -> str:
+    """Id de worker tal como lo guarda la base: minúsculas y sin espacios (el hostname de Windows va en mayúsculas)."""
+    return (raw or "").strip().lower()
+
+
+def worker_id_problem(worker: str) -> str | None:
+    """Por qué un id de worker no vale (None = válido). Lo mira `runner.py --check`."""
+    if not WORKER_ID_RE.match(worker or ""):
+        return (f"HUB_WORKER_ID={worker!r} no es válido: minúsculas, números, - o _ (2 a 63 caracteres, como "
+                "hub.workers.id)")
+    return None
 
 
 _resolved: str | None = None
@@ -152,16 +183,19 @@ class SupabaseKanban(KanbanComun):
     """Backend `supabase`: misma interfaz y misma forma de JSON que HermesCLI, sobre las tablas `hub.*`."""
 
     def __init__(self, board: str, author: str = "agent-lanes", *, dsn: str | None = None, connect=None,
-                 clock=time.time, worker: str | None = None):
+                 clock=time.time, worker: str | None = None, guard_digest: str | None = None):
         self.board = board
         self.author = author
         self.last_error: str | None = None
         self._dsn = dsn
         self._connect = connect or _default_connect
-        self._clock = clock
+        self._clock = clock  # nada de lo que se guarda en la base usa el reloj del cliente (H4)
         self._local = threading.local()  # una conexión por hilo: el hub lee tarjetas en paralelo (ThreadPoolExecutor)
         # Dueño de la reserva: como Hermes (claimer = host), cualquier proceso del mismo PC/worker puede renovarla.
-        self.worker = worker or os.environ.get(ENV_WORKER) or socket.gethostname()
+        self.worker = normalize_worker(worker or os.environ.get(ENV_WORKER) or socket.gethostname())
+        self.guard_digest = guard_digest  # sello del guard de ESTE checkout (guard_hash.py); None = no se declara
+        self._lost: set[str] = set()  # tarjetas cuya reserva se perdió (latido rechazado por cambio de dueño)
+        self._lost_lock = threading.Lock()
 
     # --- conexión ------------------------------------------------------------------------------------------------
     def _connection(self):
@@ -229,26 +263,50 @@ class SupabaseKanban(KanbanComun):
 
     # --- utilidades SQL ------------------------------------------------------------------------------------------
     def _now(self) -> int:
+        """Reloj LOCAL: solo para lo que no se guarda en la base. Lo guardado usa now() del servidor (H4)."""
         return int(self._clock())
 
+    @staticmethod
+    def _server_now(cur) -> int:
+        cur.execute("SELECT extract(epoch from now())::bigint")
+        return cur.fetchone()[0]
+
+    # created_at de eventos y comentarios se omite a propósito: lo pone el servidor (DEFAULT now()). Así un PC con el
+    # reloj mal puesto no desordena la historia de la tarjeta y encaja con los GRANT de hub_core (sin created_at).
     def _event(self, cur, task_id: str, kind: str, payload=None, run_id=None) -> None:
-        cur.execute("INSERT INTO hub.task_events (task_id, run_id, kind, payload, created_at) "
-                    "VALUES (%s, %s, %s, %s::jsonb, to_timestamp(%s))",
-                    (task_id, run_id, kind, _js(payload), self._now()))
+        cur.execute("INSERT INTO hub.task_events (task_id, run_id, kind, payload) VALUES (%s, %s, %s, %s::jsonb)",
+                    (task_id, run_id, kind, _js(payload)))
 
     def _comment(self, cur, task_id: str, author: str, body: str) -> None:
-        cur.execute("INSERT INTO hub.task_comments (task_id, worker_id, body, created_at) "
-                    "VALUES (%s, %s, %s, to_timestamp(%s))", (task_id, author, body, self._now()))
+        cur.execute("INSERT INTO hub.task_comments (task_id, worker_id, body) VALUES (%s, %s, %s)",
+                    (task_id, author, body))
 
     def _row(self, cur, task_id: str, lock: bool = False):
-        cur.execute("SELECT status, assignee, lease_owner, block_kind, block_recurrences, current_run_id, parents "
-                    "FROM hub.tasks WHERE id = %s AND board = %s" + (" FOR UPDATE" if lock else ""),
-                    (task_id, self.board))
+        cur.execute("SELECT status, assignee, lease_owner, block_kind, block_recurrences, current_run_id, parents, "
+                    "(lease_until IS NOT NULL AND lease_until > now()) FROM hub.tasks WHERE id = %s AND board = %s"
+                    + (" FOR UPDATE" if lock else ""), (task_id, self.board))
         r = cur.fetchone()
         if r is None:
             return None
-        keys = ("status", "assignee", "lease_owner", "block_kind", "block_recurrences", "current_run_id", "parents")
+        keys = ("status", "assignee", "lease_owner", "block_kind", "block_recurrences", "current_run_id", "parents",
+                "lease_live")
         return dict(zip(keys, r))
+
+    def _foreign_lease(self, row: dict) -> str | None:
+        """Dueño de una reserva VIVA que no es de este worker (None = se puede actuar). La caducada de otro no cuenta:
+        está abandonada (la libera `release_stale`) y quien actúe sobre ella no pisa a nadie (H5)."""
+        owner = row.get("lease_owner")
+        if owner is not None and owner != self.worker and row.get("lease_live"):
+            return owner
+        return None
+
+    def _not_mine(self, row: dict, what: str) -> str | None:
+        """Motivo (y last_error) si `what` choca con la reserva viva de otro worker; None si procede."""
+        owner = self._foreign_lease(row)
+        if owner is None:
+            return None
+        self.last_error = f"{what}: la reserva es de {owner} (este worker es {self.worker})"
+        return self.last_error
 
     def _parents_done(self, cur, task_id: str) -> bool:
         cur.execute("SELECT 1 FROM hub.tasks c JOIN hub.tasks p ON p.id = ANY(c.parents) "
@@ -261,6 +319,14 @@ class SupabaseKanban(KanbanComun):
     def _recompute_ready(self, cur) -> int:
         """`todo` con todos los padres terminados -> `ready` (como hermes recompute_ready; los `blocked` explícitos
         siguen bloqueados hasta un unblock)."""
+        # H7: las lecturas no escriben salvo que haya algo que promover (antes un UPDATE en cada list de cada runner,
+        # con contención y updated_at ruidoso).
+        cur.execute(
+            "SELECT 1 FROM hub.tasks c WHERE c.board = %s AND c.status = 'todo' "
+            "AND NOT EXISTS (SELECT 1 FROM hub.tasks p WHERE p.id = ANY(c.parents) "
+            "AND p.status NOT IN ('done', 'archived')) LIMIT 1", (self.board,))
+        if cur.fetchone() is None:
+            return 0
         cur.execute(
             "UPDATE hub.tasks c SET status = 'ready', updated_at = now() WHERE c.board = %s AND c.status = 'todo' "
             "AND NOT EXISTS (SELECT 1 FROM hub.tasks p WHERE p.id = ANY(c.parents) "
@@ -277,13 +343,12 @@ class SupabaseKanban(KanbanComun):
         run_id, assignee = cur.fetchone()
         if run_id is not None:
             cur.execute("UPDATE hub.task_runs SET status = %s, outcome = %s, summary = COALESCE(%s, summary), "
-                        "metadata = COALESCE(%s::jsonb, metadata), ended_at = to_timestamp(%s), lease_until = NULL "
-                        "WHERE id = %s", (status, outcome, summary, _js(metadata), self._now(), run_id))
+                        "metadata = COALESCE(%s::jsonb, metadata), ended_at = now(), lease_until = NULL "
+                        "WHERE id = %s", (status, outcome, summary, _js(metadata), run_id))
         elif synthesize:
             cur.execute("INSERT INTO hub.task_runs (task_id, profile, status, outcome, summary, metadata, "
-                        "started_at, ended_at) VALUES (%s, %s, %s, %s, %s, %s::jsonb, to_timestamp(%s), "
-                        "to_timestamp(%s)) RETURNING id",
-                        (task_id, assignee, status, outcome, summary, _js(metadata), self._now(), self._now()))
+                        "started_at, ended_at) VALUES (%s, %s, %s, %s, %s, %s::jsonb, now(), now()) RETURNING id",
+                        (task_id, assignee, status, outcome, summary, _js(metadata)))
             run_id = cur.fetchone()[0]
         cur.execute("UPDATE hub.tasks SET current_run_id = NULL WHERE id = %s", (task_id,))
         return run_id
@@ -291,7 +356,7 @@ class SupabaseKanban(KanbanComun):
     @staticmethod
     def _task_dict(r) -> dict:
         (tid, title, body, assignee, status, priority, created_by, created_by_worker, created_at, started_at,
-         completed_at, result, extra, alcance, rama, board, block_kind) = r
+         completed_at, result, extra, alcance, rama, board, block_kind, lease_owner, lease_until, server_now) = r
         extra = _obj(extra) or {}
         d = {k: extra.get(k) for k in TASK_FIELDS}
         d.update(id=tid, title=title, body=body, assignee=assignee, status=status, priority=priority,
@@ -303,6 +368,11 @@ class SupabaseKanban(KanbanComun):
             skills = _obj(skills)
         d["skills"] = list(skills) if isinstance(skills, list) else []
         d.update(board=board, alcance=list(alcance or []), rama=rama, block_kind=block_kind)
+        # Reserva (H1): dueño, caducidad y la hora del SERVIDOR con la que compararla (nunca el reloj ni el pid locales).
+        # Las tarjetas del backend hermes no traen estas claves: quien las lee usa .get y sigue como siempre.
+        d.update(lease_owner=lease_owner, lease_until=lease_until, server_now=server_now,
+                 lease_expired=bool(lease_owner is not None and lease_until is not None and server_now is not None
+                                    and lease_until < server_now))
         return d
 
     def _list(self, cur, where: str, params: tuple, sort: str = "priority") -> list[dict]:
@@ -388,11 +458,11 @@ class SupabaseKanban(KanbanComun):
                 cur.execute(
                     "INSERT INTO hub.tasks (id, board, title, body, assignee, status, priority, parents, "
                     "idempotency_key, created_by, created_by_worker, alcance, rama, created_at, updated_at) "
-                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s::text[], %s, %s, %s, %s::text[], %s, to_timestamp(%s), "
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s::text[], %s, %s, %s, %s::text[], %s, now(), "
                     "now()) ON CONFLICT (id) DO NOTHING RETURNING id",
                     (tid, self.board, title.strip(), body, (assignee or "").strip().lower() or None, status,
                      int(priority or 0), parents, key, int(author) if str(author).isdigit() else None, author,
-                     list(alcance or ()), rama, self._now()))
+                     list(alcance or ()), rama))
                 if cur.fetchone():
                     self._event(cur, tid, "created", {"assignee": assignee, "status": status, "parents": parents,
                                                        "created_by": author})
@@ -406,8 +476,128 @@ class SupabaseKanban(KanbanComun):
             _proc.mark_transient(f"kanban create: {exc}")
             raise HermesError(f"create failed: {exc}") from exc
 
-    def claim(self, task_id: str, ttl: int) -> bool:
+    # --- admisión de workers (H3, H11) ---------------------------------------------------------------------------
+    @staticmethod
+    def _regclass(cur, name: str) -> bool:
+        cur.execute("SELECT to_regclass(%s) IS NOT NULL", (name,))
+        return bool(cur.fetchone()[0])
+
+    def _ajuste(self, cur, key: str):
+        if not self._regclass(cur, "hub.ajustes"):
+            return None
+        cur.execute("SELECT valor FROM hub.ajustes WHERE clave = %s", (key,))
+        r = cur.fetchone()
+        return _obj(r[0]) if r else None
+
+    def _admission(self, cur, ttl: int) -> str | None:
+        """Por qué ESTE worker no puede reclamar (None = puede). Replica lo que comprueba `hub.claim` (worker activo,
+        interruptor de workers externos) sin llamarla: `hub.claim` elige ella la tarjeta (se saltaría los filtros del
+        runner: prevención de choques, retenciones, exclusiones), inserta columnas de run que este backend no lee y
+        topa el ttl a 2 h, menos que `claim_ttl_seconds` de los carriles largos (max_runtime + 300 s).
+
+        Falla CERRADO: un worker sin alta, desactivado, externo con el interruptor apagado o con un guard distinto del
+        aprobado no reclama. Un esquema sin `hub.workers` (el de pruebas F2) no registra workers y no se comprueba."""
+        if int(ttl) <= 0:
+            return f"ttl inválido: {ttl}"
+        if not self._regclass(cur, "hub.workers"):
+            return None
+        cur.execute("SELECT activo, externo FROM hub.workers WHERE id = %s", (self.worker,))
+        w = cur.fetchone()
+        if w is None:
+            return f"worker {self.worker!r} sin alta en hub.workers (la da de alta Oscar)"
+        activo, externo = w
+        if not activo:
+            return f"worker {self.worker!r} desactivado en hub.workers"
+        if externo and self._ajuste(cur, KEY_EXTERNOS) is not True:
+            return "los workers externos están apagados (ajuste workers_externos)"
+        aprobado = self._ajuste(cur, KEY_GUARD)
+        if aprobado:  # sin el ajuste no se exige sello (oscar-hq aún no lo define); con él, es obligatorio
+            lista = [aprobado] if isinstance(aprobado, str) else list(aprobado)
+            if self.guard_digest not in lista:
+                return (f"el guard de {self.worker!r} ({(self.guard_digest or 'sin sello')[:12]}) no es el aprobado: "
+                        "actualiza el checkout del hub (git pull) y reinicia el runner")
+        return None
+
+    def register_worker(self) -> bool:
+        """Latido de alta: escribe `version` (sello del guard) y `last_seen` de este worker en hub.workers (hub_core
+        solo puede tocar last_seen, version y hostname). Sin la tabla o sin alta no hace nada. True = escrito."""
         def run(cur):
+            if not self._regclass(cur, "hub.workers"):
+                return False
+            cur.execute("UPDATE hub.workers SET version = COALESCE(%s, version), last_seen = now(), hostname = %s "
+                        "WHERE id = %s", (self.guard_digest, socket.gethostname(), self.worker))
+            return cur.rowcount == 1
+        return self._write("register-worker", run)
+
+    # --- admisión de workers (H3, H11) ---------------------------------------------------------------------------
+    @staticmethod
+    def _regclass(cur, name: str) -> bool:
+        cur.execute("SELECT to_regclass(%s) IS NOT NULL", (name,))
+        return bool(cur.fetchone()[0])
+
+    def _ajuste(self, cur, key: str):
+        if not self._regclass(cur, "hub.ajustes"):
+            return None
+        cur.execute("SELECT valor FROM hub.ajustes WHERE clave = %s", (key,))
+        r = cur.fetchone()
+        return _obj(r[0]) if r else None
+
+    def _admission(self, cur, ttl: int) -> str | None:
+        """Por qué ESTE worker no puede reclamar (None = puede). Replica lo que comprueba `hub.claim` (worker activo,
+        interruptor de workers externos) sin llamarla: `hub.claim` elige ella la tarjeta (se saltaría los filtros del
+        runner: prevención de choques, retenciones, exclusiones), inserta columnas de run que este backend no lee y
+        topa el ttl a 2 h, menos que `claim_ttl_seconds` de los carriles largos (max_runtime + 300 s).
+
+        Falla CERRADO: un worker sin alta, desactivado, externo con el interruptor apagado o con un guard distinto del
+        aprobado no reclama. Un esquema sin `hub.workers` (el de pruebas F2) no registra workers y no se comprueba."""
+        if int(ttl) <= 0:
+            return f"ttl inválido: {ttl}"
+        if not self._regclass(cur, "hub.workers"):
+            return None
+        cur.execute("SELECT activo, externo FROM hub.workers WHERE id = %s", (self.worker,))
+        w = cur.fetchone()
+        if w is None:
+            return f"worker {self.worker!r} sin alta en hub.workers (la da de alta Oscar)"
+        activo, externo = w
+        if not activo:
+            return f"worker {self.worker!r} desactivado en hub.workers"
+        if externo and self._ajuste(cur, KEY_EXTERNOS) is not True:
+            return "los workers externos están apagados (ajuste workers_externos)"
+        aprobado = self._ajuste(cur, KEY_GUARD)
+        if aprobado:  # sin el ajuste no se exige sello (oscar-hq aún no lo define); con él, es obligatorio
+            lista = [aprobado] if isinstance(aprobado, str) else list(aprobado)
+            if self.guard_digest not in lista:
+                return (f"el guard de {self.worker!r} ({(self.guard_digest or 'sin sello')[:12]}) no es el aprobado: "
+                        "actualiza el checkout del hub (git pull) y reinicia el runner")
+        return None
+
+    def register_worker(self) -> bool:
+        """Latido de alta: escribe `version` (sello del guard) y `last_seen` de este worker en hub.workers (hub_core
+        solo puede tocar last_seen, version y hostname). Sin la tabla o sin alta no hace nada. True = escrito."""
+        def run(cur):
+            if not self._regclass(cur, "hub.workers"):
+                return False
+            cur.execute("UPDATE hub.workers SET version = COALESCE(%s, version), last_seen = now(), hostname = %s "
+                        "WHERE id = %s", (self.guard_digest, socket.gethostname(), self.worker))
+            return cur.rowcount == 1
+        return self._write("register-worker", run)
+
+    def claim(self, task_id: str, ttl: int) -> bool:
+        return self._claim(task_id, ttl, ())
+
+    def claim_serial(self, task_id: str, ttl: int, paths) -> bool:
+        """`claim` para una tarjeta que cita rutas serializadas (migraciones): dos PC no reclaman a la vez dos tarjetas
+        así del mismo carril aunque ambos las vieran libres (H10). Cerrojo transaccional por tablero y carril; si otra
+        `running` del carril cita esas rutas, la reserva se rechaza."""
+        return self._claim(task_id, ttl, tuple(paths or ()))
+
+    def _claim(self, task_id: str, ttl: int, serial_paths: tuple) -> bool:
+        def run(cur):
+            why = self._admission(cur, ttl)
+            if why:
+                self.last_error = f"claim rechazado: {why}"
+                log.warning("kanban claim %s (%s): %s", task_id, self.board, why)
+                return False
             row = self._row(cur, task_id, lock=True)
             if row is None or row["status"] != "ready" or row["lease_owner"] is not None:
                 return False
@@ -415,36 +605,102 @@ class SupabaseKanban(KanbanComun):
                 cur.execute("UPDATE hub.tasks SET status = 'todo', updated_at = now() WHERE id = %s", (task_id,))
                 self._event(cur, task_id, "claim_rejected", {"reason": "parents_not_done"})
                 return False
-            now, ttl_s = self._now(), int(ttl)
+            if serial_paths:
+                from .grandes import touches
+                cur.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (f"serial:{self.board}:{row['assignee']}",))
+                cur.execute(f"{_TASK_SQL} WHERE board = %s AND assignee = %s AND status = 'running' AND id <> %s",
+                            (self.board, row["assignee"], task_id))
+                rivals = [t["id"] for t in map(self._task_dict, cur.fetchall()) if touches(t, serial_paths)]
+                if rivals:
+                    self._event(cur, task_id, "claim_rejected", {"reason": "serial_paths", "running": rivals})
+                    return False
+            ttl_s = int(ttl)
             cur.execute("INSERT INTO hub.task_runs (task_id, profile, status, lease_owner, lease_until, started_at) "
-                        "VALUES (%s, %s, 'running', %s, to_timestamp(%s), to_timestamp(%s)) RETURNING id",
-                        (task_id, row["assignee"], self.worker, now + ttl_s, now))
-            run_id = cur.fetchone()[0]
-            cur.execute("UPDATE hub.tasks SET status = 'running', lease_owner = %s, lease_until = to_timestamp(%s), "
-                        "lease_ttl = %s, current_run_id = %s, started_at = COALESCE(started_at, to_timestamp(%s)), "
-                        "updated_at = now() WHERE id = %s AND status = 'ready' AND lease_owner IS NULL",
-                        (self.worker, now + ttl_s, ttl_s, run_id, now, task_id))
+                        "VALUES (%s, %s, 'running', %s, now() + make_interval(secs => %s), now()) RETURNING id, "
+                        "extract(epoch from lease_until)::bigint", (task_id, row["assignee"], self.worker, ttl_s))
+            run_id, expires = cur.fetchone()
+            cur.execute("UPDATE hub.tasks SET status = 'running', lease_owner = %s, "
+                        "lease_until = now() + make_interval(secs => %s), lease_ttl = %s, current_run_id = %s, "
+                        "started_at = COALESCE(started_at, now()), updated_at = now() "
+                        "WHERE id = %s AND status = 'ready' AND lease_owner IS NULL",
+                        (self.worker, ttl_s, ttl_s, run_id, task_id))
             if cur.rowcount != 1:
                 raise _DBFailure("claim perdió la carrera")  # imposible con FOR UPDATE; por si acaso, rollback
-            self._event(cur, task_id, "claimed", {"lock": self.worker, "expires": now + ttl_s, "run_id": run_id},
+            self._event(cur, task_id, "claimed", {"lock": self.worker, "expires": expires, "run_id": run_id},
                         run_id=run_id)
+            with self._lost_lock:
+                self._lost.discard(task_id)
             return True
         return self._write("claim", run)
 
     def heartbeat(self, task_id: str, note: str | None = None) -> bool:
+        """Renueva la reserva SOLO si es de este worker (H5). False por dos motivos distintos: la base falló (queda
+        `last_error`; se reintenta en el siguiente latido) o la reserva ya no es nuestra (`lease_lost(task_id)` pasa a
+        True: otro la tiene o la segó `release_stale`; quien trabajaba debe parar)."""
         def run(cur):
-            now = self._now()
-            cur.execute("UPDATE hub.tasks SET lease_until = to_timestamp(%s + COALESCE(lease_ttl, 0)), "
-                        "updated_at = now() WHERE id = %s AND board = %s AND status = 'running' "
-                        "RETURNING current_run_id, lease_until", (now, task_id, self.board))
+            cur.execute("UPDATE hub.tasks SET lease_until = now() + make_interval(secs => COALESCE(lease_ttl, 0)), "
+                        "updated_at = now() WHERE id = %s AND board = %s AND status = 'running' AND lease_owner = %s "
+                        "RETURNING current_run_id, lease_until", (task_id, self.board, self.worker))
             r = cur.fetchone()
             if r is None:
+                cur.execute("SELECT status, lease_owner FROM hub.tasks WHERE id = %s AND board = %s",
+                            (task_id, self.board))
+                now = cur.fetchone()
+                if now is None or now[0] != "running" or now[1] not in (None, self.worker):
+                    with self._lost_lock:
+                        self._lost.add(task_id)
+                    quien = f"es de {now[1]}" if now and now[1] else f"ya no está en running ({now[0] if now else 'borrada'})"
+                    self.last_error = f"latido rechazado: la reserva de {task_id} ya no es de {self.worker}; {quien}"
                 return False
             if r[0] is not None:
                 cur.execute("UPDATE hub.task_runs SET lease_until = %s WHERE id = %s", (r[1], r[0]))
+            if self._regclass(cur, "hub.workers"):
+                cur.execute("UPDATE hub.workers SET last_seen = now() WHERE id = %s", (self.worker,))
             self._event(cur, task_id, "heartbeat", {"note": note} if note else None, run_id=r[0])
             return True
         return self._write("heartbeat", run)
+
+    def lease_lost(self, task_id: str) -> bool:
+        """¿Un latido de esta tarjeta fue rechazado porque la reserva dejó de ser de este worker? (el runner corta al
+        `claude` y no pasa a review, bloquea ni avisa: la tarjeta ya es de otro)."""
+        with self._lost_lock:
+            return task_id in self._lost
+
+    # --- segador de reservas caducadas (H6) ----------------------------------------------------------------------
+    def release_stale(self, max_attempts: int = 3) -> list[dict]:
+        """Libera las reservas caducadas (`lease_until < now()` del SERVIDOR): attempts+1; al llegar a `max_attempts`
+        la tarjeta va a `triage`, antes a `blocked` (transient), y el run queda `released`. Cada fila liberada deja un
+        evento `lease_expired` y un comentario, en la misma transacción. Usa `hub.release_stale` si existe (esquema real
+        de oscar-hq); si no, la misma lógica en SQL propio. `FOR UPDATE SKIP LOCKED`: varios runners a la vez no se
+        estorban. Devuelve [{task_id, status, attempts, worker_id}]; ante un fallo de base, [] y `last_error`."""
+        limit = max(1, int(max_attempts))
+
+        def run(cur):
+            cur.execute("SELECT to_regprocedure('hub.release_stale(integer)') IS NOT NULL")
+            if cur.fetchone()[0]:
+                cur.execute("SELECT task_id, status, attempts, worker_id FROM hub.release_stale(%s)", (limit,))
+                rows = [dict(zip(("task_id", "status", "attempts", "worker_id"), r)) for r in cur.fetchall()]
+            else:
+                cur.execute("SELECT id, lease_owner, current_run_id, attempts + 1 FROM hub.tasks "
+                            "WHERE status = 'running' AND lease_until < now() ORDER BY lease_until "
+                            "FOR UPDATE SKIP LOCKED")
+                rows = []
+                for tid, owner, run_id, nuevos in cur.fetchall():
+                    status = "triage" if nuevos >= limit else "blocked"
+                    cur.execute("UPDATE hub.tasks SET status = %s, block_kind = 'transient', attempts = %s, "
+                                "lease_owner = NULL, lease_until = NULL, current_run_id = NULL, updated_at = now() "
+                                "WHERE id = %s", (status, nuevos, tid))
+                    cur.execute("UPDATE hub.task_runs SET status = 'released', outcome = 'reclaimed', "
+                                "ended_at = now(), lease_until = NULL WHERE id = %s AND ended_at IS NULL", (run_id,))
+                    rows.append({"task_id": tid, "status": status, "attempts": nuevos, "worker_id": owner})
+            for r in rows:  # hub.release_stale no deja rastro en la tarjeta: se añade aquí, en la misma transacción
+                self._event(cur, r["task_id"], "lease_expired", {"worker": r["worker_id"], "to": r["status"],
+                                                                  "attempts": r["attempts"], "by": self.worker})
+                self._comment(cur, r["task_id"], self.author,
+                              f"BLOCKED: la reserva de {r['worker_id']} caducó sin latido (intento "
+                              f"{r['attempts']}/{limit}); la tarjeta queda en {r['status']}")
+            return rows
+        return self._write("release-stale", run, default=[])
 
     def comment(self, task_id: str, text: str, author: str | None = None) -> bool:
         def run(cur):
@@ -461,6 +717,8 @@ class SupabaseKanban(KanbanComun):
         def run(cur):
             row = self._row(cur, task_id, lock=True)
             if row is None or row["status"] not in ("running", "ready"):
+                return False
+            if self._not_mine(row, "block"):
                 return False
             if reason:
                 self._comment(cur, task_id, self.author, f"BLOCKED: {reason}")
@@ -497,6 +755,8 @@ class SupabaseKanban(KanbanComun):
                 return False, "task not found"
             if row["status"] not in ("running", "ready"):
                 return False, f"cannot request review for {task_id}: not running/ready? (status={row['status']})"
+            if why := self._not_mine(row, "request-review"):
+                return False, why
             if not self._parents_done(cur, task_id):
                 return False, "parent dependencies are not satisfied"
             implementer = row["assignee"]
@@ -515,15 +775,17 @@ class SupabaseKanban(KanbanComun):
             row = self._row(cur, task_id, lock=True)
             if row is None or row["status"] not in ("running", "ready", "blocked", "review"):
                 return False, f"cannot complete {task_id} (unknown id or terminal state)"
+            if why := self._not_mine(row, "complete"):
+                return False, why
             if not self._parents_done(cur, task_id):
                 return False, f"cannot complete {task_id}: unsatisfied parent dependencies"
             if row["status"] != "review" and not (result or "").strip():
                 return False, f"cannot complete {task_id}: empty completion"
             run_id = self._end_run(cur, task_id, status="done", outcome="completed", summary=result,
                                    metadata=metadata, synthesize=True)
-            cur.execute("UPDATE hub.tasks SET status = 'done', result = %s, completed_at = to_timestamp(%s), "
+            cur.execute("UPDATE hub.tasks SET status = 'done', result = %s, completed_at = now(), "
                         "lease_owner = NULL, lease_until = NULL, block_kind = NULL, block_recurrences = 0, "
-                        "updated_at = now() WHERE id = %s", (result, self._now(), task_id))
+                        "updated_at = now() WHERE id = %s", (result, task_id))
             self._event(cur, task_id, "completed", {"result": result, "summary": result}, run_id=run_id)
             self._recompute_ready(cur)
             return True, ""
@@ -534,6 +796,8 @@ class SupabaseKanban(KanbanComun):
         def run(cur):
             row = self._row(cur, task_id, lock=True)
             if row is None or row["status"] != "review":
+                return False
+            if self._not_mine(row, "reopen-review"):
                 return False
             new_status = self._landing(cur, task_id)
             cur.execute("SELECT payload FROM hub.task_events WHERE task_id = %s AND kind = 'review_requested' "
@@ -685,7 +949,7 @@ class SupabaseKanban(KanbanComun):
                     if not (s.get("platform") == "telegram" and s.get("chat_id") == str(chat)
                             and (s.get("thread_id") or "") == thread)]
             subs.append({"task_id": task_id, "platform": "telegram", "chat_id": str(chat), "thread_id": thread,
-                         "delivery_mode": "notify", "created_at": self._now(), "last_event_id": 0})
+                         "delivery_mode": "notify", "created_at": self._server_now(cur), "last_event_id": 0})
             self._save_subs(cur, task_id, subs)
             return True
         return self._write("notify-subscribe", run)
@@ -723,6 +987,8 @@ class SupabaseKanban(KanbanComun):
         "task_runs": ("id", "task_id", "profile", "step_key", "status", "outcome", "summary", "metadata", "error",
                       "worker_pid", "lease_owner", "lease_until", "started_at", "ended_at"),
         "kv": ("key", "value", "updated_at"),
+        "workers": ("id", "activo", "externo", "version", "last_seen"),  # H3/H11: alta, interruptor, sello del guard
+        "ajustes": ("clave", "valor"),  # workers_externos (H3) y guard_hash_aprobado (H11)
     }
 
     def check_contract(self) -> list[str]:
