@@ -1,7 +1,8 @@
 """BD Postgres de PRUEBA para el backend supabase del kanban (F2-02/F2-03).
 
 Solo si HUB_TEST_DSN apunta a una BD desechable (p. ej. `docker run --rm -p 127.0.0.1:55432:5432 postgres:16-alpine`)
-o si está instalado `pgserver` (Postgres embebido en 127.0.0.1); sin ninguno, las pruebas que la necesitan se saltan. Cada prueba recrea el esquema `hub` desde
+o HUB_TEST_EMBEDDED=1 con `pgserver` instalado (Postgres embebido en 127.0.0.1); sin ninguno, las pruebas que la
+necesitan se saltan. Cada prueba recrea el esquema `hub` desde
 tests/fixtures/hub_schema_f2.sql. Nunca apuntar a Supabase de verdad: el fixture borra el esquema `hub`."""
 from __future__ import annotations
 
@@ -18,10 +19,12 @@ _EMBEDDED: dict = {}
 
 
 def _embedded_dsn() -> str | None:
-    """Postgres EMBEBIDO (paquete `pgserver`, solo en 127.0.0.1) cuando no hay HUB_TEST_DSN: así las pruebas de varios
-    workers (dos reservas a la vez, caducidad, reloj desfasado) corren con un Postgres de verdad y no con un doble de SQL.
-    Un servidor por sesión de pytest, en una carpeta temporal que se borra al salir. HUB_TEST_NO_EMBEDDED=1 lo apaga."""
-    if os.environ.get("HUB_TEST_NO_EMBEDDED"):
+    """Postgres EMBEBIDO (paquete `pgserver`, solo en 127.0.0.1) cuando se pide con HUB_TEST_EMBEDDED=1 y no hay
+    HUB_TEST_DSN: las pruebas de varios workers (dos reservas a la vez, caducidad, reloj desfasado) corren con un Postgres
+    de verdad y no con un doble de SQL. Es OPT-IN: el `test_cmd` del carril hub corre toda esta carpeta y arrancar un
+    Postgres en cada verificación pesaría en una máquina justa de RAM. Un servidor por sesión de pytest, en una carpeta
+    temporal que se borra al salir."""
+    if not os.environ.get("HUB_TEST_EMBEDDED"):
         return None
     if "dsn" not in _EMBEDDED:
         try:
@@ -48,7 +51,7 @@ def _embedded_dsn() -> str | None:
 def dsn_or_skip() -> str:
     dsn = os.environ.get("HUB_TEST_DSN", "").strip() or _embedded_dsn() or ""
     if not dsn:
-        pytest.skip("sin HUB_TEST_DSN (BD Postgres de prueba) ni pgserver")
+        pytest.skip("sin HUB_TEST_DSN (BD Postgres de prueba) ni HUB_TEST_EMBEDDED=1 (pgserver)")
     if "supabase" in dsn:
         pytest.fail("HUB_TEST_DSN no puede ser Supabase: el fixture borra el esquema hub")
     try:

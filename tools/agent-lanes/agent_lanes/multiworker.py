@@ -42,8 +42,9 @@ def reaper_settings(backend: str, settings: dict, env: dict | None = None) -> di
     env = {**(env or {}), **{k: v for k, v in os.environ.items() if k in (ENV_MAX_ATTEMPTS, ENV_SECONDS)}}
     attempts = int(_num(env.get(ENV_MAX_ATTEMPTS) or settings.get("release_stale_max_attempts"), DEFAULT_MAX_ATTEMPTS))
     seconds = _num(env.get(ENV_SECONDS) or settings.get("release_stale_seconds"), DEFAULT_SECONDS)
+    requeue = str(settings.get("release_stale_requeue", True)).strip().lower() not in ("0", "false", "no", "off")
     return {"enabled": backend == "supabase" and attempts > 0, "max_attempts": max(0, attempts),
-            "seconds": max(5.0, seconds)}
+            "seconds": max(5.0, seconds), "requeue": requeue}
 
 
 class LeaseReaper:
@@ -51,8 +52,10 @@ class LeaseReaper:
     reintenta). `alert(texto)` solo se usa cuando una tarjeta llega a triage por reservas caducadas repetidas."""
 
     def __init__(self, kanban, *, max_attempts: int = DEFAULT_MAX_ATTEMPTS, seconds: float = DEFAULT_SECONDS,
-                 alert: Callable[[str], None] | None = None, clock: Callable[[], float] = time.monotonic):
+                 alert: Callable[[str], None] | None = None, clock: Callable[[], float] = time.monotonic,
+                 requeue: bool = True):
         self.kanban, self.max_attempts, self.interval = kanban, int(max_attempts), float(seconds)
+        self.requeue = requeue
         self.alert, self._clock = alert, clock
         self._last: float | None = None
 
@@ -62,7 +65,7 @@ class LeaseReaper:
             return []
         self._last = now
         try:
-            rows = self.kanban.release_stale(self.max_attempts) or []
+            rows = self.kanban.release_stale(self.max_attempts, requeue=self.requeue) or []
         except Exception as exc:  # noqa: BLE001 - el segador nunca tumba el bucle
             log.warning("segador de reservas: %s", exc)
             return []

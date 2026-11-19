@@ -125,7 +125,15 @@ class SharedKanban:
             t.update(status="review", lease_owner=None, lease_until=None)
             return True, ""
 
-    def release_stale(self, max_attempts=3):
+    def owns_lease(self, tid):
+        with self.s.lock:
+            t = self.s.tasks[tid]
+            mine = t["status"] == "running" and t["lease_owner"] == self.worker
+            if not mine:
+                self.lost.add(tid)
+            return mine
+
+    def release_stale(self, max_attempts=3, requeue=True):
         with self.s.lock:
             out = []
             for tid, t in self.s.tasks.items():
@@ -362,10 +370,11 @@ def test_segador_apagado_con_hermes_y_encendido_con_supabase():
     assert reaper_settings("hermes", {})["enabled"] is False
     assert reaper_settings("hermes", {"release_stale_max_attempts": 5})["enabled"] is False
     s = reaper_settings("supabase", {})
-    assert s == {"enabled": True, "max_attempts": 3, "seconds": 60.0}
+    assert s == {"enabled": True, "max_attempts": 3, "seconds": 60.0, "requeue": True}
+    assert reaper_settings("supabase", {"release_stale_requeue": False})["requeue"] is False
     assert reaper_settings("supabase", {"release_stale_max_attempts": 0})["enabled"] is False  # 0 = apagado
     assert reaper_settings("supabase", {"release_stale_max_attempts": 5, "release_stale_seconds": 120}) == {
-        "enabled": True, "max_attempts": 5, "seconds": 120.0}
+        "enabled": True, "max_attempts": 5, "seconds": 120.0, "requeue": True}
     assert reaper_settings("supabase", {"release_stale_max_attempts": 5}, {"RELEASE_STALE_MAX_ATTEMPTS": "2"})[
         "max_attempts"] == 2  # el .env manda sobre lanes.yaml
     assert reaper_settings("supabase", {"release_stale_seconds": 1})["seconds"] == 5.0  # suelo: no martillear la base
@@ -376,9 +385,9 @@ def test_segador_cada_n_segundos_con_el_tope_configurado():
     kb, t = SharedKanban(st, "pc-a"), [0.0]
     seen = []
     orig = kb.release_stale
-    kb.release_stale = lambda n=3: (seen.append(n), orig(n))[1]
-    reaper = LeaseReaper(kb, max_attempts=4, seconds=60, clock=lambda: t[0])
-    assert [r["task_id"] for r in reaper.tick()] == ["t_m"] and seen == [4]
+    kb.release_stale = lambda n=3, requeue=True: (seen.append((n, requeue)), orig(n))[1]
+    reaper = LeaseReaper(kb, max_attempts=4, seconds=60, clock=lambda: t[0], requeue=False)
+    assert [r["task_id"] for r in reaper.tick()] == ["t_m"] and seen == [(4, False)]
     assert reaper.tick() == [] and len(seen) == 1  # aún no toca
     t[0] += 61
     reaper.tick()
@@ -392,7 +401,7 @@ def test_segador_avisa_de_las_que_llegan_a_triage_y_nunca_lanza():
     class K:
         last_error = None
 
-        def release_stale(self, n):
+        def release_stale(self, n, requeue=True):
             return [{"task_id": "t_1", "status": "triage", "attempts": 3, "worker_id": "pc-b"},
                     {"task_id": "t_2", "status": "blocked", "attempts": 1, "worker_id": "pc-b"}]
 
@@ -402,7 +411,7 @@ def test_segador_avisa_de_las_que_llegan_a_triage_y_nunca_lanza():
     class Roto:
         last_error = "red caída"
 
-        def release_stale(self, n):
+        def release_stale(self, n, requeue=True):
             raise RuntimeError("base caída")
 
     assert LeaseReaper(Roto(), alert=avisos.append).tick() == []  # el bucle del runner sigue
@@ -436,3 +445,81 @@ def test_estado_de_carriles_distingue_lo_remoto_de_un_huerfano(tmp_path):
     rows = status.lane_rows({"claude-oscarhq": lane}, hermes_for=lambda b: h, state_dir=tmp_path,
                             pid_alive=lambda p: False, runner_is_alive=False)
     assert rows[0]["state"] == "huérfano"
+
+
+# --- H9: lectura fresca antes de lo caro y de empujar --------------------------------------------------------------------------
+class GitConPush(FakeGit):
+    def __init__(self):
+        super().__init__()
+        self.pushes = []
+
+    def poner_al_dia(self, lane, cwd, tid):  # la que EMPUJA lane/<id>
+        self.pushes.append(tid)
+        return None
+
+
+class RobaSinLatido(FakeWorker):
+    """B se queda la tarjeta mientras A trabaja y el latido de A aún no lo ha visto (ni tocó la bandera)."""
+
+    def __init__(self, store):
+        super().__init__([])
+        self.store = store
+
+    def run(self, lane, task, cwd, session_id, timeout):
+        self.store.tasks[task["id"]].update(lease_owner="pc-b", lease_until=self.store.now + 600)
+        return ok_outcome()
+
+
+def test_reserva_perdida_sin_que_el_latido_lo_sepa_no_verifica_ni_empuja(tmp_path):
+    st = Store([{"id": "t_1", "title": "A", "body": ""}])
+    kb, git = SharedKanban(st, "pc-a"), GitConPush()
+    r, _ = runner_for(kb, tmp_path, worker=RobaSinLatido(st))
+    r.git = git
+    verificado = []
+    r.verifier = lambda lane, tid, cwd, result: verificado.append(tid) or FakeVerifier()(lane, tid, cwd, result)
+    assert r.process({"id": "t_1", "title": "A", "body": ""}) == "lease_perdida"
+    assert verificado == [] and git.pushes == [] and "review" not in kb.kinds() and "block" not in kb.kinds()
+
+
+def test_reserva_perdida_durante_la_verificacion_no_empuja_la_rama(tmp_path):
+    st = Store([{"id": "t_1", "title": "A", "body": ""}])
+    kb, git = SharedKanban(st, "pc-a"), GitConPush()
+    r, _ = runner_for(kb, tmp_path)
+    r.git = git
+
+    def tarda_y_pierde(lane, tid, cwd, result):  # minutos de tests: el servidor la caduca y B la reclama
+        st.tasks[tid].update(lease_owner="pc-b", lease_until=st.now + 600)
+        return FakeVerifier()(lane, tid, cwd, result)
+
+    r.verifier = tarda_y_pierde
+    assert r.process({"id": "t_1", "title": "A", "body": ""}) == "lease_perdida"
+    assert git.pushes == [] and "review" not in kb.kinds()
+
+
+def test_con_la_reserva_propia_se_verifica_y_se_empuja_como_siempre(tmp_path):
+    st_ = Store([{"id": "t_1", "title": "A", "body": ""}])
+    kb, git = SharedKanban(st_, "pc-a"), GitConPush()
+    r, _ = runner_for(kb, tmp_path)
+    r.git = git
+    assert r.process({"id": "t_1", "title": "A", "body": ""}) == "review" and git.pushes == ["t_1"]
+
+
+# --- ajustes por equipo de punta a punta (lanes.yaml -> load_runner_settings) ---------------------------------------------------
+def test_ajustes_por_equipo_sobreviven_a_load_runner_settings(tmp_path):
+    from agent_lanes.config import load_runner_settings
+    yml = tmp_path / "lanes.yaml"
+    yml.write_text("runner:\n  max_workers: 6\n  release_stale_max_attempts: 5\n  release_stale_seconds: 90\n"
+                   "  release_stale_requeue: false\n  workers:\n    pc2-casa: {max_workers: 2, lanes: [claude-hub]}\n",
+                   encoding="utf-8")
+    cfg = load_runner_settings(yml)
+    assert worker_overrides(cfg, "pc2-casa") == {"max_workers": 2, "lanes": {"claude-hub"}}
+    assert reaper_settings("supabase", cfg) == {"enabled": True, "max_attempts": 5, "seconds": 90.0, "requeue": False}
+    import runner as main
+    assert main.effective_max_workers(0, cfg, "pc2-casa") == 2 and main.effective_max_workers(0, cfg, None) == 6
+
+
+def test_lanes_yaml_real_sigue_cargando_con_los_ajustes_nuevos():
+    from agent_lanes.config import load_runner_settings
+    cfg = load_runner_settings()
+    assert reaper_settings("hermes", cfg)["enabled"] is False  # sin tocar el yaml real, hermes no cambia
+    assert worker_overrides(cfg, "pc-oscar") == {"max_workers": None, "lanes": None}

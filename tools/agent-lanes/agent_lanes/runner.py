@@ -254,6 +254,17 @@ class LaneRunner:
         except Exception:
             return False
 
+    def _sigue_siendo_mia(self, tid: str) -> bool:
+        """Lectura fresca de la reserva (solo backend supabase) justo antes de lo caro o irreversible: el latido puede ir
+        hasta `heartbeat_seconds` atrasado. Sin esa capacidad o sin poder leer, se sigue como siempre (True)."""
+        if self._lease_lost(tid):
+            return False
+        fn = getattr(self.hermes, "owns_lease", None)
+        try:
+            return fn(tid) is not False if callable(fn) else True
+        except Exception:
+            return True
+
     def _reserva_perdida(self, tid: str) -> str:
         """Desenlace «reserva perdida» (H5/H9): la tarjeta ya es de otro equipo (o la segó el segador). Ni bloquea, ni
         pasa a review, ni avisa por Telegram, ni reintenta: cualquiera de eso pisaría el trabajo del dueño actual."""
@@ -638,6 +649,8 @@ class LaneRunner:
                 return self._block(tid, "transient", f"worker status={result['status']}: {result.get('summary', '')}",
                                    task, public="el worker no pudo completarla")
 
+            if not self._sigue_siendo_mia(tid):  # antes de minutos de tests y del push de «rama al día»
+                return self._reserva_perdida(tid)
             check = self.verifier(lane, tid, cwd, result, task=task) if ops else self.verifier(lane, tid, cwd, result)
             if not check.ok:
                 config = [r for r in check.reasons if r.startswith(CONFIG_REASONS)]
@@ -654,6 +667,8 @@ class LaneRunner:
                 return self._to_review_ops(tid, task, session_id, cwd, resumes, outcome, result)
 
             if hasattr(self.git, "poner_al_dia"):
+                if not self._sigue_siendo_mia(tid):  # poner_al_dia EMPUJA lane/<id>: ni un push si la tarjeta ya es de otro
+                    return self._reserva_perdida(tid)
                 # P4: rama al día con origin/<base> antes de review; el conflicto real vuelve al carril con sus ficheros.
                 try:
                     dia = self.git.poner_al_dia(lane, cwd, tid)

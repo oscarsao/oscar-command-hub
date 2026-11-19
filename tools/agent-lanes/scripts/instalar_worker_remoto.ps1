@@ -303,7 +303,7 @@ if ($ProbarConexion) {
     if (-not $pyOk) { Add-Fila "FALTA" "probar conexion" "necesita py -3.12" }
     else {
         $r = Invoke-Quiet $py @("-3.12", (Join-Path $LanesDir "runner.py"), "--check")
-        $lineas = @($r.Salida -split "`r?`n" | Where-Object { $_ -match "kanban:|contrato|guard|admision|aceptaria|^\s+- " } | ForEach-Object { $_ -replace "(postgres(ql)?://)\S+", '$1<oculto>' })
+        $lineas = @($r.Salida -split "`r?`n" | Where-Object { $_ -match "kanban:|contrato|guard|admisi|aceptar|^\s+- " } | ForEach-Object { $_ -replace "(postgres(ql)?://)\S+", '$1<oculto>' })
         $resumen = ($lineas -join " | ")
         if ($r.Codigo -eq 0) { Add-Fila "OK" "runner.py --check" "contrato del kanban, guard de workers y admision OK. $resumen" }
         else {

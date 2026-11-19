@@ -159,15 +159,25 @@ el comportamiento es idéntico al de siempre, hay pruebas de paridad):
 | H3 admisión | `claim` comprueba en `hub.workers` que el worker existe y está activo, el interruptor `workers_externos` (si es externo) y el sello del guard. Falla cerrado. No llama a `hub.claim` (elige ella la tarjeta y se saltaría los filtros del runner) |
 | H4 reloj | Toda fecha que se guarda (reserva, eventos, comentarios, runs, tarjeta) es `now()` del **servidor**: un PC con el reloj mal puesto no acorta ni alarga reservas |
 | H5 dueño | El latido solo renueva la reserva propia. `block`, `complete`, `request_review` y `reopen_review` se rechazan si la reserva **viva** es de otro. Si el dueño perdió la reserva, el latido lo detecta: el runner **corta su `claude`** y abandona sin bloquear, sin pasar a review y sin avisar por Telegram (esa tarjeta ya es de otro). Detección: hasta un latido (240 s) |
-| H6 segador | Un ticker del runner llama a `release_stale`: lo caducado (hora del servidor) vuelve a `blocked`, y a `triage` al 3.er intento, con un evento `lease_expired` y un comentario en la tarjeta. Varios runners a la vez es seguro |
+| H6 segador | Un ticker del runner llama a `release_stale`: lo caducado (hora del servidor) **vuelve a la cola** (`ready`, como hacía el dispatcher de Hermes con un claim caducado) y a `triage` al 3.er intento para que lo mire una persona, con un evento `lease_expired` y un comentario en la tarjeta. `runner.release_stale_requeue: false` la deja en `blocked` (entonces alguien debe desbloquearla: ningún vigilante anuncia un `blocked` que no nació en el runner). Varios runners a la vez es seguro. Ojo: con el `ttl` de los carriles largos (7500 s) la tarjeta de un equipo muerto tarda hasta ~2 h en liberarse |
 | H7 | Las lecturas ya no escriben si no hay nada que promover. Se acepta que `_assign` deje pasar una `running` sin dueño (solo existe en lo importado de Hermes) |
-| H9 | Misma rama `lane/<id>` para todos (sin sufijo de equipo, para no romper el flujo ni la revisión): la **guarda** es el dueño de la reserva. Un equipo que la pierde deja de escribir (se le corta el `claude`) y el que la reclama sigue desde `origin/lane/<id>`. El comentario de claim lleva `equipo=<id>` |
+| H9 | Misma rama `lane/<id>` para todos (sin sufijo de equipo, para no romper el flujo ni la revisión): la **guarda** es el dueño de la reserva. Un equipo que la pierde deja de escribir (se le corta el `claude`) y el que la reclama sigue desde `origin/lane/<id>`. Antes de verificar y de poner la rama al día con la base (el único push que hace el runner) se **lee la reserva fresca**: no depende de que el latido, que puede ir 240 s atrasado, lo haya visto. El comentario de claim lleva `equipo=<id>` |
 | H10 | `serialize_paths` (migraciones) tiene ahora un cerrojo transaccional entre equipos (`claim_serial`); topes y carriles por equipo en `lanes.yaml` (sección 5); el estado local `.state` sigue siendo por PC (cada checkout el suyo) y se anota el equipo en el estado de cada tarea. Un claim rechazado por admisión pausa el carril 5 min en vez de martillear |
 | H11 guard | `runner.py --check` comprueba el **sello** (sha256 de hook, settings, política, esquemas y roles contra `contract/guard-manifest.json`) y una **sonda** que ejecuta el hook real (un push a master y un alembic remoto deben dar exit 2). El sello se anota en `hub.workers.version` y, si existe el ajuste `guard_hash_aprobado`, `claim` lo exige |
+
+**Riesgo abierto: el carril `review` no reserva.** `ReviewRunner` lee las tarjetas en `review` sin reclamarlas (el `claim` de
+Hermes solo coge `ready`): dos equipos que corran el carril de revisión revisarían la misma tarjeta a la vez y uno podría
+cerrar o reabrir lo que el otro acaba de tocar. **Que solo el equipo principal corra `review`**: en los demás equipos limita
+`runner.workers.<id>.lanes` a carriles de implementación (sin `claude-review`). Lo mismo para el integrador
+(`INTEGRATOR_ENABLED`, ya prohibido en el instalador). Los hilos que arrancan en todo runner (`HermesAnswers`,
+`reasignar_abiertas`) son idempotentes: el segundo equipo los repite sin efecto.
 
 **Si cambias el guard** (`contract/guard.py`, settings, política, esquemas, roles): regenera el sello con
 `py -3.12 -m agent_lanes.guard_hash --write` y commitéalo en el mismo cambio; un test falla si se olvida y el runner no
 arranca con un sello roto (salida 4).
+
+**Dos equipos con el mismo `HUB_WORKER_ID`** no están protegidos: se verían como el mismo dueño y reabrirían H1 (cada uno
+reconciliaría y renovaría las reservas del otro). El id es único por PC; el instalador avisa si coincide con el nombre del equipo.
 
 **Quién actúa sobre una tarjeta `running` de otro equipo.** Oscar desde Telegram, el integrador y el revisor usan el mismo
 cliente: una reserva **viva** de otro equipo no se puede cerrar ni bloquear desde fuera (se rechaza con el motivo y queda

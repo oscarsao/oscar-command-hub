@@ -418,6 +418,7 @@ del servidor, `reconcile` solo toca reservas propias y `runner.py --check` compr
 `comparar`, `exportar`/`volver` (hub.* -> SQLite con el esquema exacto de Hermes, en una carpeta nueva fuera de la de
 Hermes) y `exportar --espejo --retener 14` (espejo nocturno). Solo imprime recuentos agregados e ids.
 
-Pruebas con Postgres: `HUB_TEST_DSN` a una BD desechable (p. ej. `docker run --rm -p 127.0.0.1:55432:5432
+Pruebas con Postgres: `HUB_TEST_EMBEDDED=1` (paquete `pgserver`, Postgres embebido solo en 127.0.0.1, `pip install pgserver`) o
+`HUB_TEST_DSN` a una BD desechable (p. ej. `docker run --rm -p 127.0.0.1:55432:5432
 -e POSTGRES_PASSWORD=... postgres:16-alpine`); sin ella se saltan. Con `KANBAN_COPIA_DIR` (copia local, nunca la carpeta
 de Hermes) se repiten la ida y vuelta y el contrato entre backends con datos reales.

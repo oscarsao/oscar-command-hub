@@ -502,11 +502,11 @@ class SupabaseKanban(KanbanComun):
         topa el ttl a 2 h, menos que `claim_ttl_seconds` de los carriles largos (max_runtime + 300 s).
 
         Falla CERRADO: un worker sin alta, desactivado, externo con el interruptor apagado o con un guard distinto del
-        aprobado no reclama. Un esquema sin `hub.workers` (el de pruebas F2) no registra workers y no se comprueba."""
+        aprobado no reclama. Sin la tabla `hub.workers` tampoco (`check_contract` ya la exige)."""
         if int(ttl) <= 0:
             return f"ttl inválido: {ttl}"
         if not self._regclass(cur, "hub.workers"):
-            return None
+            return "falta la tabla hub.workers: sin registro de workers no se reclama"
         cur.execute("SELECT activo, externo FROM hub.workers WHERE id = %s", (self.worker,))
         w = cur.fetchone()
         if w is None:
@@ -518,7 +518,9 @@ class SupabaseKanban(KanbanComun):
             return "los workers externos están apagados (ajuste workers_externos)"
         aprobado = self._ajuste(cur, KEY_GUARD)
         if aprobado:  # sin el ajuste no se exige sello (oscar-hq aún no lo define); con él, es obligatorio
-            lista = [aprobado] if isinstance(aprobado, str) else list(aprobado)
+            if not isinstance(aprobado, (str, list)):  # un valor que no es texto ni lista no se interpreta: se rechaza
+                return f"el ajuste {KEY_GUARD} no es un texto ni una lista de sellos: no se puede comprobar el guard"
+            lista = [aprobado] if isinstance(aprobado, str) else aprobado
             if self.guard_digest not in lista:
                 return (f"el guard de {self.worker!r} ({(self.guard_digest or 'sin sello')[:12]}) no es el aprobado: "
                         "actualiza el checkout del hub (git pull) y reinicia el runner")
@@ -623,6 +625,25 @@ class SupabaseKanban(KanbanComun):
             return True
         return self._write("heartbeat", run)
 
+    def owns_lease(self, task_id: str) -> bool | None:
+        """Lectura FRESCA: ¿la tarjeta sigue en running con la reserva de este worker? (el latido puede ir 240 s atrasado
+        y el runner la usa antes de empujar a lane/<id>). None = no se pudo leer (el llamador sigue como siempre)."""
+        try:
+            with self._tx() as cur:
+                row = self._row(cur, task_id)
+        except _DBFailure as exc:
+            self.last_error = str(exc)
+            return None
+        if row is None:
+            return False
+        if row["status"] == "running" and row["lease_owner"] in (None, self.worker):
+            return True
+        with self._lost_lock:
+            self._lost.add(task_id)
+        self.last_error = (f"la reserva de {task_id} ya no es de {self.worker}: "
+                           f"{row['status']}{', de ' + row['lease_owner'] if row['lease_owner'] else ''}")
+        return False
+
     def lease_lost(self, task_id: str) -> bool:
         """¿Un latido de esta tarjeta fue rechazado porque la reserva dejó de ser de este worker? (el runner corta al
         `claude` y no pasa a review, bloquea ni avisa: la tarjeta ya es de otro)."""
@@ -630,12 +651,15 @@ class SupabaseKanban(KanbanComun):
             return task_id in self._lost
 
     # --- segador de reservas caducadas (H6) ----------------------------------------------------------------------
-    def release_stale(self, max_attempts: int = 3) -> list[dict]:
+    def release_stale(self, max_attempts: int = 3, requeue: bool = True) -> list[dict]:
         """Libera las reservas caducadas (`lease_until < now()` del SERVIDOR): attempts+1; al llegar a `max_attempts`
-        la tarjeta va a `triage`, antes a `blocked` (transient), y el run queda `released`. Cada fila liberada deja un
-        evento `lease_expired` y un comentario, en la misma transacción. Usa `hub.release_stale` si existe (esquema real
+        la tarjeta va a `triage` (la mira una persona), antes a `blocked` (transient) y el run queda `released`. Con
+        `requeue` (por defecto) las `blocked` vuelven solas a la cola (`ready`, o `todo` si espera a un padre), como el
+        dispatcher de Hermes con un claim caducado: sin eso nadie las anunciaría y se quedarían paradas. Cada fila deja
+        un evento `lease_expired` y un comentario, en la misma transacción. Usa `hub.release_stale` si existe (esquema real
         de oscar-hq); si no, la misma lógica en SQL propio. `FOR UPDATE SKIP LOCKED`: varios runners a la vez no se
-        estorban. Devuelve [{task_id, status, attempts, worker_id}]; ante un fallo de base, [] y `last_error`."""
+        estorban. Devuelve [{task_id, status, attempts, worker_id}] con el estado FINAL; ante un fallo de base, [] y
+        `last_error`."""
         limit = max(1, int(max_attempts))
 
         def run(cur):
@@ -657,11 +681,18 @@ class SupabaseKanban(KanbanComun):
                                 "ended_at = now(), lease_until = NULL WHERE id = %s AND ended_at IS NULL", (run_id,))
                     rows.append({"task_id": tid, "status": status, "attempts": nuevos, "worker_id": owner})
             for r in rows:  # hub.release_stale no deja rastro en la tarjeta: se añade aquí, en la misma transacción
+                if requeue and r["status"] == "blocked":
+                    r["status"] = self._landing(cur, r["task_id"])
+                    cur.execute("UPDATE hub.tasks SET status = %s, current_run_id = NULL, updated_at = now() "
+                                "WHERE id = %s AND status = 'blocked'", (r["status"], r["task_id"]))
                 self._event(cur, r["task_id"], "lease_expired", {"worker": r["worker_id"], "to": r["status"],
                                                                   "attempts": r["attempts"], "by": self.worker})
+                # Sin el prefijo BLOCKED: no es un bloqueo de worker (no cuenta para reintentos ni respuestas de Oscar).
+                destino = {"triage": "pasa a triage: alguien debe mirarla", "ready": "vuelve a la cola",
+                           "todo": "vuelve a esperar a su padre"}.get(r["status"], f"queda en {r['status']}")
                 self._comment(cur, r["task_id"], self.author,
-                              f"BLOCKED: la reserva de {r['worker_id']} caducó sin latido (intento "
-                              f"{r['attempts']}/{limit}); la tarjeta queda en {r['status']}")
+                              f"LANE segador: la reserva de {r['worker_id']} caducó sin latido (intento "
+                              f"{r['attempts']}/{limit}); la tarjeta {destino}")
             return rows
         return self._write("release-stale", run, default=[])
 

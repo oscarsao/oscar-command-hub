@@ -199,7 +199,7 @@ def test_dueno_que_perdio_la_reserva_se_entera_y_no_cierra_la_tarjeta_de_otro(a,
     assert a.claim(tid, 600)
     envejecer(a, tid)  # A se cuelga (suspensión, red) y su reserva caduca
     assert [r["task_id"] for r in b.release_stale(3)] == [tid]
-    assert b.unblock(tid) and b.claim(tid, 600)  # reintento: ahora es de B
+    assert b.claim(tid, 600)  # el segador la devolvió a la cola: ahora la reclama B
     assert a.heartbeat(tid) is False and a.lease_lost(tid) is True
     assert "pc-b" in a.last_error
     assert a.block(tid, "transient", "tarde") is False and "pc-b" in a.last_error
@@ -262,20 +262,21 @@ def test_release_stale_libera_solo_lo_caducado_con_rastro_en_la_tarjeta(a, b):
     b.claim(muerto, 600)
     envejecer(a, muerto)
     rows = a.release_stale(3)
-    assert rows == [{"task_id": muerto, "status": "blocked", "attempts": 1, "worker_id": "pc-b"}]
-    assert status_owner(a, vivo) == ("running", "pc-a") and status_owner(a, muerto) == ("blocked", None)
+    assert rows == [{"task_id": muerto, "status": "ready", "attempts": 1, "worker_id": "pc-b"}]
+    assert status_owner(a, vivo) == ("running", "pc-a") and status_owner(a, muerto) == ("ready", None)
     show = a.show(muerto)
     assert show["events"][-1]["kind"] == "lease_expired" and show["events"][-1]["payload"]["worker"] == "pc-b"
-    assert show["comments"][-1]["body"].startswith("BLOCKED: la reserva de pc-b caducó")
+    assert show["comments"][-1]["body"].startswith("LANE segador: la reserva de pc-b caducó")
+    assert "BLOCKED" not in show["comments"][-1]["body"]  # no es un bloqueo de worker (no cuenta para respuestas)
+    assert "lease_expired" in [e["kind"] for e in show["events"]]
+    assert b.claim(muerto, 600)  # y cualquier equipo la reclama sin que nadie la desbloquee
     assert show["runs"][-1]["status"] == "released" and show["runs"][-1]["outcome"] == "reclaimed"
     assert a.release_stale(3) == []  # idempotente
 
 
 def test_release_stale_sube_a_triage_con_el_tope_configurable(a):
     tid = nueva(a)
-    for esperado in ("blocked", "blocked", "triage"):
-        if status_owner(a, tid)[0] == "blocked":
-            assert a.unblock(tid)
+    for esperado in ("ready", "ready", "triage"):
         assert a.claim(tid, 600)
         envejecer(a, tid)
         [r] = a.release_stale(3)
@@ -303,7 +304,7 @@ def test_dos_segadores_a_la_vez_liberan_cada_tarjeta_una_vez(a, hub_dsn):  # noq
     [t.join() for t in ts]
     liberadas = [r["task_id"] for rows in out for r in rows]
     assert sorted(liberadas) == sorted(ids)  # ninguna dos veces (SKIP LOCKED)
-    assert all(a.show(t)["task"]["status"] == "blocked" for t in ids)
+    assert all(a.show(t)["task"]["status"] == "ready" for t in ids)
     assert len([e for t in ids for e in a.show(t)["events"] if e["kind"] == "lease_expired"]) == len(ids)
 
 
@@ -420,3 +421,43 @@ def test_admission_report_dice_si_el_kanban_aceptaria_reclamar(a, hub_dsn):  # n
     assert any("guard" in m for m in maria.admission_report())
     assert make(hub_dsn, "pc-maria", guard_digest="ok").admission_report() == []
     assert not sql(a, "SELECT 1 FROM hub.task_events", fetch=True)  # solo lectura: no dejó rastro
+
+
+def test_release_stale_sin_requeue_deja_la_tarjeta_bloqueada(a):
+    tid = nueva(a)
+    a.claim(tid, 600)
+    envejecer(a, tid)
+    assert a.release_stale(3, requeue=False)[0]["status"] == "blocked"
+    assert status_owner(a, tid) == ("blocked", None)
+    assert a.unblock(tid) and a.claim(tid, 600)  # el camino de siempre: alguien la desbloquea
+
+
+def test_release_stale_requeue_respeta_a_los_padres(a):
+    padre = nueva(a, "[Hub] padre")
+    hijo = a.create("[Hub] hijo", "b", "claude-hub", parents=[padre])
+    sql(a, "UPDATE hub.tasks SET status = 'running', lease_owner = 'pc-a', lease_until = now() - interval '1 minute' "
+           "WHERE id = %s", (hijo,))  # caso raro (hija en running con el padre sin terminar)
+    assert a.release_stale(3)[0]["status"] == "todo"  # espera a su padre en vez de pasar a ready
+
+
+def test_owns_lease_lee_fresco_y_marca_la_perdida(a, b):
+    tid = nueva(a)
+    assert a.claim(tid, 600)
+    assert a.owns_lease(tid) is True and b.owns_lease(tid) is False and b.lease_lost(tid) is True
+    assert "pc-a" in b.last_error
+    envejecer(a, tid)
+    a.release_stale(3)
+    assert a.owns_lease(tid) is False  # ya no está en running
+    assert a.owns_lease("t_00000000") is False  # desconocida
+
+
+def test_admision_falla_cerrada_sin_tabla_de_workers_o_con_sello_ilegible(a, hub_dsn):  # noqa: F811
+    tid = nueva(a)
+    sql(a, "INSERT INTO hub.ajustes (clave, valor) VALUES ('guard_hash_aprobado', '{\"a\": 1}'::jsonb)")
+    assert a.claim(tid, 60) is False and "no es un texto ni una lista" in a.last_error  # sin TypeError
+    sql(a, "UPDATE hub.ajustes SET valor = '5'::jsonb WHERE clave = 'guard_hash_aprobado'")
+    assert a.claim(tid, 60) is False and "no es un texto ni una lista" in a.last_error
+    sql(a, "DELETE FROM hub.ajustes WHERE clave = 'guard_hash_aprobado'")
+    sql(a, "DROP TABLE hub.workers")
+    assert a.claim(tid, 60) is False and "falta la tabla hub.workers" in a.last_error
+    assert status_owner(a, tid) == ("ready", None)
