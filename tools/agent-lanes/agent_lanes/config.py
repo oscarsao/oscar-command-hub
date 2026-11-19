@@ -22,7 +22,7 @@ class Lane:
     effort: str = "medium"
     model_small: str = ""  # modelo barato para tarjetas `Tamaño: S` (grandes.es_pequena); "" = siempre `model`
     # Lista blanca de alias que una tarjeta puede fijar con `model_override` (worker.choose_model); otro valor se ignora.
-    model_permitidos: tuple[str, ...] = ("sonnet", "haiku", "fable")
+    model_permitidos: tuple[str, ...] = ("sonnet", "haiku")
     max_budget_usd: float = 3.0
     max_parallel: int = 1
     role: str = "roles/implementador.md"

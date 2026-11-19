@@ -40,7 +40,7 @@ class WorkerOutcome:
     raw_error: str | None
 
 
-MODELOS_PERMITIDOS = ("sonnet", "haiku", "fable")  # por defecto de Lane.model_permitidos (lanes.yaml)
+MODELOS_PERMITIDOS = ("sonnet", "haiku")  # por defecto de Lane.model_permitidos (lanes.yaml)
 
 
 def model_override(lane: Lane, task: dict) -> str:
