@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import logging
+import subprocess
 
 from . import avisos_revision, canal_avisos, resumen_carriles
 from . import proc as _proc
@@ -489,16 +490,28 @@ REINTENTO_LIMPIEZA = 6 * 3600  # s entre intentos de limpiar la misma tarjeta tr
 _limpieza_fallida: dict[str, float] = {}  # tid -> instante del último intento fallido
 
 
-def sweep_done(lane: Lane, h, git, clock: Callable[[], float] = time.monotonic) -> list[str]:
+def sweep_done(lane: Lane, h, git, clock: Callable[[], float] = time.monotonic, *,
+               max_tarjetas: int = 0, max_segundos: float = 0) -> list[str]:
     """Remove worktree + local branch of done tasks (approved by the review lane or by Oscar). Una limpieza fallida
-    no se reintenta hasta pasadas REINTENTO_LIMPIEZA s: una línea de log por intento, no por pasada."""
+    no se reintenta hasta pasadas REINTENTO_LIMPIEZA s: una línea de log por intento, no por pasada.
+    `max_tarjetas` / `max_segundos` (0 = sin tope): tope por pasada; el resto queda para la siguiente. Un
+    `TimeoutExpired` de `git.cleanup` cuenta como fallo (antes atravesaba la función y la tarjeta se reintentaba
+    cada minuto otros 300 s)."""
     cleaned = []
+    inicio, intentadas = clock(), 0
     for task in h.list_status(lane.name, "done"):
         if (Path(lane.worktree_root) / f"lane-{task['id']}").exists():
             ultimo = _limpieza_fallida.get(task["id"])
             if ultimo is not None and clock() - ultimo < REINTENTO_LIMPIEZA:
                 continue
-            ok, msg = git.cleanup(lane, task["id"])
+            if (max_tarjetas and intentadas >= max_tarjetas) or (max_segundos and clock() - inicio >= max_segundos):
+                break
+            intentadas += 1
+            try:
+                ok, msg = git.cleanup(lane, task["id"])
+            except subprocess.TimeoutExpired as exc:
+                ok, msg = False, f"el borrado agotó el tiempo ({getattr(exc, 'timeout', '?')} s)"
+                log.warning("%s: limpieza de %s: %s", lane.name, task["id"], msg)
             if ok:
                 _limpieza_fallida.pop(task["id"], None)
                 cleaned.append(task["id"])

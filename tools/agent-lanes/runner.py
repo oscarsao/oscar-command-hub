@@ -55,6 +55,7 @@ from agent_lanes.runner import MESSAGES_DIR, STATE_DIR, LaneRunner
 from agent_lanes.service import Service, acquire_single_instance
 from agent_lanes.telegram import notifier_from_env
 from agent_lanes.verify import verify
+from agent_lanes.vuelta import Cronometro, HiloAparte
 from agent_lanes.worker import ClaudeWorker
 
 LOCK = ROOT / ".state" / "runner.lock"
@@ -355,14 +356,40 @@ def main(argv: list[str] | None = None) -> int:
         # no reclamó nada tras el reinicio de las 12:23). Un hueco libre o un worker que termina se atienden al momento.
         threading.Thread(target=run_scheduler, args=(service, drain.active, interval, None, latido), name="lane-scheduler",
                          daemon=True).start()
+    # Limpieza de worktrees e integrador en su PROPIO hilo (t_11ee04e0): un `git worktree remove` colgado o un test_cmd de
+    # 30 min ya no alargan la vuelta principal. Cada uno no se solapa consigo mismo. `--once` los ejecuta en línea.
+    def barrer_worktrees() -> None:
+        for lane in impl.values():
+            try:
+                if cleaned := sweep_done(lane, hermes_for(lane.board), git,
+                                         max_tarjetas=int(settings.get("sweep_max_tarjetas", 5) or 0),
+                                         max_segundos=float(settings.get("sweep_max_segundos", 300) or 0)):
+                    log.info("%s: worktrees limpiados tras done: %s", lane.name, cleaned)
+            except Exception as exc:
+                log.warning("%s: limpieza falló: %s", lane.name, exc)
+
+    def pasada_integrador() -> None:
+        try:
+            if integrated := integrator.run_pass():
+                log.info("integrador: %s", integrated)
+        except Exception as exc:
+            log.warning("integrador falló: %s", exc)
+
+    hilo_limpieza = HiloAparte("sweep-done", barrer_worktrees)
+    hilo_integrador = HiloAparte("integrador-pasada", pasada_integrador) if integrator else None
+
+    def hilos_activos() -> list[str]:
+        return [h.nombre for h in (hilo_limpieza, hilo_integrador) if h is not None and h.activo()]
+
     while True:
+        crono = Cronometro()
         if latido:
             latido.beat("principal")
         shows.clear()
         # Reinicio ordenado (lanes.py restart --drain): entre pasadas, sin reclamar nada; el acuse dice si queda
         # algo en marcha fuera del pool (deploy/gates lanzados por un botón de Oscar).
         if drain.active():
-            busy = service.busy_tasks() + (integrator.busy() if integrator else [])
+            busy = service.busy_tasks() + (integrator.busy() if integrator else []) + hilos_activos()
             drain.write_ack(busy=busy)
             if not draining_logged:
                 log.info("drenando: no se reclaman tareas; esperando el reinicio%s",
@@ -375,34 +402,23 @@ def main(argv: list[str] | None = None) -> int:
             time.sleep(min(interval, 5))
             continue
         draining_logged = False
-        for lane in impl.values():
-            try:
-                if cleaned := sweep_done(lane, hermes_for(lane.board), git):
-                    log.info("%s: worktrees limpiados tras done: %s", lane.name, cleaned)
-            except Exception as exc:
-                log.warning("%s: limpieza falló: %s", lane.name, exc)
+        with crono.paso("limpieza"):
+            if args.once:
+                barrer_worktrees()
+            else:
+                hilo_limpieza.lanzar()
         if integrator:
-            try:
-                if integrated := integrator.run_pass():
-                    log.info("integrador: %s", integrated)
-            except Exception as exc:
-                log.warning("integrador falló: %s", exc)
-        if guard:
-            guard.tick()
-        if solapes:
-            solapes.tick()
-        if choques:
-            choques.tick()
-        if reconcile:
-            reconcile.tick()
-        if limpieza:
-            limpieza.tick()
-        if recolector:
-            recolector.tick()
-        if paradas:
-            paradas.tick()
-        if avisos_ticker:
-            avisos_ticker.tick()
+            with crono.paso("integrador"):
+                if args.once:
+                    pasada_integrador()
+                else:
+                    hilo_integrador.lanzar()
+        for nombre, ticker in (("guard", guard), ("solapes", solapes), ("choques", choques), ("reconcile", reconcile),
+                               ("limpieza-ticker", limpieza), ("recolector", recolector), ("paradas", paradas),
+                               ("avisos", avisos_ticker)):
+            if ticker:
+                with crono.paso(nombre):
+                    ticker.tick()
         if decisions and decisions.canal:  # tema 🎯 Decisiones: cierra lo ya resuelto y edita el contador fijado
             decisions.canal.refrescar()  # nunca lanza; sin destinos.decisiones no hace nada
         if wf_ticker:
@@ -432,7 +448,8 @@ def main(argv: list[str] | None = None) -> int:
             service.reserved_pass()
             results.update(service.wait_reserved())
         else:  # el hilo del planificador lanza; aquí solo se recogen los resultados
-            results = service.pop_results()
+            with crono.paso("resultados"):
+                results = service.pop_results()
         if watch:
             watch.observe(service.list_errors)
         if results:
@@ -442,6 +459,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.max_minutes and time.monotonic() - started > args.max_minutes * 60 and not service.busy_tasks():
             log.info("max-minutes alcanzado sin más trabajo")
             return 0
+        crono.cerrar()
         time.sleep(interval)
 
 
