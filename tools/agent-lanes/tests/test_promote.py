@@ -312,5 +312,5 @@ def test_real_lanes_yaml_has_oscarhq_promotion_from_staging():
 
 def test_oscarhq_promotion_stops_without_health_url_and_names_its_branches(tmp_path):
     p, gh, tg, *_ = build(tmp_path, cfg=PromoteConfig(key="claude-oscarhq", repo=REPO, head="staging", base="master"))
-    p.start("claude-oscarhq", WHERE)
+    p.start("migrateam", WHERE)  # build() registra la config bajo esa clave
     assert "health_url" in tg.last["text"] and not gh.calls
