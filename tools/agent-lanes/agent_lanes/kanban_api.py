@@ -300,12 +300,15 @@ class SupabaseKanban(KanbanComun):
             return owner
         return None
 
-    def _not_mine(self, row: dict, what: str) -> str | None:
-        """Motivo (y last_error) si `what` choca con la reserva viva de otro worker; None si procede."""
+    def _not_mine(self, row: dict, what: str, task_id: str) -> str | None:
+        """Motivo (y last_error) si `what` choca con la reserva viva de otro worker; None si procede. Deja anotado que
+        la reserva se perdió (`lease_lost`): el runner no debe insistir ni avisar por una tarjeta que ya es de otro."""
         owner = self._foreign_lease(row)
         if owner is None:
             return None
         self.last_error = f"{what}: la reserva es de {owner} (este worker es {self.worker})"
+        with self._lost_lock:
+            self._lost.add(task_id)
         return self.last_error
 
     def _parents_done(self, cur, task_id: str) -> bool:
@@ -718,7 +721,7 @@ class SupabaseKanban(KanbanComun):
             row = self._row(cur, task_id, lock=True)
             if row is None or row["status"] not in ("running", "ready"):
                 return False
-            if self._not_mine(row, "block"):
+            if self._not_mine(row, "block", task_id):
                 return False
             if reason:
                 self._comment(cur, task_id, self.author, f"BLOCKED: {reason}")
@@ -755,7 +758,7 @@ class SupabaseKanban(KanbanComun):
                 return False, "task not found"
             if row["status"] not in ("running", "ready"):
                 return False, f"cannot request review for {task_id}: not running/ready? (status={row['status']})"
-            if why := self._not_mine(row, "request-review"):
+            if why := self._not_mine(row, "request-review", task_id):
                 return False, why
             if not self._parents_done(cur, task_id):
                 return False, "parent dependencies are not satisfied"
@@ -775,7 +778,7 @@ class SupabaseKanban(KanbanComun):
             row = self._row(cur, task_id, lock=True)
             if row is None or row["status"] not in ("running", "ready", "blocked", "review"):
                 return False, f"cannot complete {task_id} (unknown id or terminal state)"
-            if why := self._not_mine(row, "complete"):
+            if why := self._not_mine(row, "complete", task_id):
                 return False, why
             if not self._parents_done(cur, task_id):
                 return False, f"cannot complete {task_id}: unsatisfied parent dependencies"
@@ -797,7 +800,7 @@ class SupabaseKanban(KanbanComun):
             row = self._row(cur, task_id, lock=True)
             if row is None or row["status"] != "review":
                 return False
-            if self._not_mine(row, "reopen-review"):
+            if self._not_mine(row, "reopen-review", task_id):
                 return False
             new_status = self._landing(cur, task_id)
             cur.execute("SELECT payload FROM hub.task_events WHERE task_id = %s AND kind = 'review_requested' "

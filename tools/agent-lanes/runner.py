@@ -18,6 +18,7 @@ from logging.handlers import TimedRotatingFileHandler
 from agent_lanes import canal_avisos, ciego, consola, cuota, doctor_config, drain, notices, resumen_carriles, supervisor
 from agent_lanes.bandeja import load as load_bandeja
 from agent_lanes.board_guard import BoardGuardTicker
+from agent_lanes.multiworker import LeaseReaper, reaper_settings, worker_overrides
 from agent_lanes.choques import ChoquesTicker
 from agent_lanes.fusion import Fusion
 from agent_lanes.prevencion import Prevencion
@@ -71,9 +72,10 @@ COLLAB_STATE = ROOT / ".state" / "collab_reject.json"  # DM de desconocidos ya r
 EQUIPO_STATE = ROOT / ".state" / "equipo.json"  # tareas del equipo: mensajes recordados y recordatorio diario
 
 
-def effective_max_workers(arg: int, settings: dict) -> int:
-    """`--max-workers N` (>0) pisa a lanes.yaml `runner.max_workers`; 0 = lo que diga lanes.yaml."""
-    return arg or settings["max_workers"]
+def effective_max_workers(arg: int, settings: dict, worker: str | None = None) -> int:
+    """`--max-workers N` (>0) pisa a todo; después `runner.workers.<id>.max_workers` de ESTE equipo (kanban compartido,
+    cada PC con su RAM, H10); por último `runner.max_workers` de lanes.yaml."""
+    return arg or worker_overrides(settings, worker)["max_workers"] or settings["max_workers"]
 
 
 def run_scheduler(service, paused, interval: float, stop=None, latido=None) -> None:
@@ -128,7 +130,22 @@ def main(argv: list[str] | None = None) -> int:
         return hermes_cache.setdefault(board, backend_for(board))
 
     log.info("kanban: backend=%s", kanban_backend_name())  # el humo del corte F2-07 mira esta línea
-    problems = hermes_for(next(l.board for l in all_lanes.values() if l.board)).check_contract()
+    first_board = next(l.board for l in all_lanes.values() if l.board)
+    # Id de ESTE equipo en el kanban compartido (None con hermes: un solo runner). Decide caps y carriles propios (H10).
+    worker = getattr(hermes_for(first_board), "worker", None)
+    if worker:
+        log.info("kanban: worker=%s", worker)
+    mine = worker_overrides(settings, worker)
+    if args.all and mine["lanes"]:
+        unknown = sorted(mine["lanes"] - set(all_lanes))
+        if unknown:
+            log.warning("runner.workers.%s.lanes cita carriles que no existen: %s", worker, ", ".join(unknown))
+        selected = {n: l for n, l in all_lanes.items() if n in mine["lanes"]}
+        if not selected:
+            log.error("runner.workers.%s.lanes no deja ningún carril; el runner no arranca", worker)
+            return 3
+        log.info("carriles de este equipo (%s): %s", worker, ", ".join(selected))
+    problems = hermes_for(first_board).check_contract()
     if problems:
         log.error("Contrato de la CLI de hermes ROTO; el runner no arranca:\n  - %s", "\n  - ".join(problems))
         return 3
@@ -139,6 +156,9 @@ def main(argv: list[str] | None = None) -> int:
         log.warning("ya hay un runner vivo (%s); salgo", LOCK)
         return 0
     atexit.register(lambda: log.info("runner detenido"))  # una parada deja rastro en runner.log
+    registered = getattr(hermes_for(first_board), "register_worker", None)
+    if worker and registered and not registered():  # alta + sello del guard + last_seen en hub.workers
+        log.warning("kanban: no se pudo anotar el latido de alta de %s en hub.workers (¿sin alta?)", worker)
 
     env = load_env()
     tg_settings = load_telegram_settings()
@@ -264,7 +284,8 @@ def main(argv: list[str] | None = None) -> int:
                                            ROOT / ".state", busy_path=drain.BUSY_FILE,
                                            run_async=True)
                  if decisions and not args.once else None)  # solo con el bot de carriles
-    service = Service(runners, max_workers=effective_max_workers(args.max_workers, settings), busy_path=drain.BUSY_FILE,
+    service = Service(runners, max_workers=effective_max_workers(args.max_workers, settings, worker),
+                      busy_path=drain.BUSY_FILE,
                       max_big_total=int(settings.get("max_big_total", 0) or 0),
                       cuota_pausada=lambda: cuota.vigente() is not None)
     interval = args.interval or settings["interval_seconds"]
@@ -285,6 +306,12 @@ def main(argv: list[str] | None = None) -> int:
     reconcile = None
     limpieza = None
     recolector = RecolectorTicker(Recolector(all_lanes, hermes_for, merged_pr=git.merged_pr))  # apagado salvo lanes.yaml
+    # Segador de reservas caducadas (H6): solo con el kanban compartido (supabase); con hermes lo hace su dispatcher.
+    reap = reaper_settings(kanban_backend_name(), settings, env)
+    reaper = LeaseReaper(hermes_for(first_board), max_attempts=reap["max_attempts"], seconds=reap["seconds"],
+                         alert=drain.dm_alert(env)) if reap["enabled"] else None
+    if reaper:
+        log.info("segador de reservas activo: cada %ss, triage al %sº intento", int(reap["seconds"]), reap["max_attempts"])
     paradas = None
     avisos_ticker = None
     wf_ticker = None
@@ -375,6 +402,8 @@ def main(argv: list[str] | None = None) -> int:
             time.sleep(min(interval, 5))
             continue
         draining_logged = False
+        if reaper:
+            reaper.tick()  # nunca lanza; antes de sweep_done y de lo demás: lo caducado vuelve a estar disponible
         for lane in impl.values():
             try:
                 if cleaned := sweep_done(lane, hermes_for(lane.board), git):

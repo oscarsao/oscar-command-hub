@@ -88,9 +88,16 @@ def lane_rows(lanes: dict[str, Lane], *, hermes_for: Callable[[str], object], st
         if lane.kind not in ("implement", "ops"):
             continue
         h = hermes_for(lane.board)
-        running = h.list_status(name, "running")
+        running_all = h.list_status(name, "running")
+        # Kanban compartido: una running cuya reserva es de OTRO equipo la ejecuta otro ordenador; aquí no hay pid que
+        # mirar y no es un huérfano (H1/H10). Con hermes no hay lease_owner y todo cuenta como propio, como siempre.
+        mine = getattr(h, "worker", None)
+        remote = [t for t in running_all if mine and t.get("lease_owner") not in (None, mine)]
+        running = [t for t in running_all if t not in remote]
         live = [t["id"] for t in running if (pid := _state_pid(Path(state_dir), t["id"])) and pid_alive(pid)]
-        if not running:
+        if not running and remote:
+            state = "remoto"
+        elif not running:
             state = "libre"
         elif live:
             state = "ocupado"
@@ -100,7 +107,8 @@ def lane_rows(lanes: dict[str, Lane], *, hermes_for: Callable[[str], object], st
             state = "huérfano"  # running in the kanban but no live runner: reconcile will block it on start
         done = h.list_status(name, "done", sort="completed-desc")
         last = f"{done[0]['id']} {_when(done[0].get('completed_at'))} {done[0].get('title', '')[:40]}" if done else "-"
-        rows.append({"lane": name, "board": lane.board, "state": state, "running": [t["id"] for t in running],
+        rows.append({"lane": name, "board": lane.board, "state": state,
+                     "running": [t["id"] for t in running] + [f"{t['id']}@{t['lease_owner']}" for t in remote],
                      "ready": len(h.list_status(name, "ready")), "review": len(h.list_status(name, "review")),
                      "last": last})
     return rows
