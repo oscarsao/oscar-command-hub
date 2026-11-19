@@ -111,6 +111,62 @@ def _check_git_merge(tokens: list[str], allowed: list[str] | None = None) -> str
     return None
 
 
+def _paths_ok(paths: list[str]) -> str | None:
+    if not paths:
+        return "git checkout/restore: indica al menos una ruta concreta del worktree"
+    for p in paths:
+        norm = p.replace("\\", "/")
+        if (norm.startswith(("/", "~", ":", "-")) or re.match(r"^[a-z]:", norm) or ".." in norm.split("/")
+                or norm.strip("./") == "" or WORKFLOWS.search(p)):
+            return f"git checkout/restore: ruta no permitida ({p}); solo rutas concretas dentro del worktree"
+    return None
+
+
+def _check_git_checkout_restore(tokens: list[str], origin_ok: list[str] | None = None,
+                                raw: list[str] | None = None) -> str | None:
+    """19-11 (decisión de Oscar): traer RUTAS desde una rama citada en `Rama-origen: <rama>` de la propia tarjeta
+    (`git checkout origin/<rama> -- <rutas>`, `git restore --source=origin/<rama> <rutas>`). El runner pasa esas ramas
+    en AGENT_LANES_ORIGIN_OK (nunca main/master). Nada más: ni cambiar de rama, ni -f/-b, ni restaurar desde el índice."""
+    if "git" not in tokens:
+        return None
+    rest = tokens[tokens.index("git") + 1:]
+    # `raw` conserva mayúsculas: `-C <ruta>` (inocuo) frente a `-c clave=valor` (config arbitraria).
+    raw_rest = (raw or tokens)[tokens.index("git") + 1:]
+    k = 0  # subcomando = primer token que no es opción de git (`git -C <ruta> checkout …`)
+    while k < len(rest) and rest[k].startswith("-"):
+        k += 2 if rest[k] in ("-c", "--git-dir", "--work-tree") and "=" not in rest[k] else 1
+    if k >= len(rest) or rest[k] not in ("checkout", "restore", "switch"):
+        return None
+    sub = rest[k]
+    if sub == "switch":
+        return "git switch prohibido para workers: tu rama es lane/<id>"
+    if any(t.split("=")[0] in ("-c", "--git-dir", "--work-tree") for t in raw_rest[:k]):
+        return "git con -c/--git-dir/--work-tree prohibido para workers"
+    args = rest[k + 1:]
+    ok = origin_ok or []
+    msg = ("git checkout/restore solo de rutas desde una rama declarada en la tarea con `Rama-origen: <rama>`"
+           + (f" (permitidas: {', '.join(ok)})" if ok else " (esta tarea no declara ninguna)"))
+    if sub == "checkout":
+        if len(args) < 3 or args[1] != "--" or args[0] not in ok:
+            return msg
+        return _paths_ok(args[2:])
+    ref, paths, j = None, [], 0
+    while j < len(args):
+        a = args[j]
+        if a.startswith("--source="):
+            ref = a[len("--source="):]
+        elif a == "--source" and j + 1 < len(args):
+            ref, j = args[j + 1], j + 1
+        elif a in ("--staged", "--worktree", "--"):
+            pass
+        elif a.startswith("-"):
+            return msg  # -s/-S (en minúsculas no se distinguen), -p, --ours/--theirs...: fuera
+        else:
+            paths.append(a)
+        j += 1
+    return msg if ref not in ok else _paths_ok(paths)
+
+
 PKG_DIR_FLAGS = {"-c", "--dir", "--prefix", "--workspace-root", "--cwd"}
 PKG_BAD_CMDS = {"add", "dlx", "link", "unlink", "publish", "remove", "rm", "uninstall", "update", "up", "upgrade",
                 "create"}
@@ -329,14 +385,16 @@ def secret_scan_push(cwd: str | None, base: str | None, run=None) -> str | None:
 
 
 def check_bash(command: str, env_db_url: str | None, task: str | None = None,
-               merge_ok: list[str] | None = None, push_ok: list[str] | None = None) -> str | None:
+               merge_ok: list[str] | None = None, push_ok: list[str] | None = None,
+               origin_ok: list[str] | None = None) -> str | None:
     for segment in SEGMENT_SPLIT.split(command):
         seg = segment.strip()
         if not seg:
             continue
         tokens = _tokens(seg)
         low = [t.lower() for t in tokens]
-        reason = _check_git_push(low, task, push_ok) or _check_git_merge(low, merge_ok)
+        reason = (_check_git_push(low, task, push_ok) or _check_git_merge(low, merge_ok)
+                  or _check_git_checkout_restore(low, origin_ok, tokens))
         if reason:
             return reason
         reason = _check_pkg_manager(low)
@@ -378,8 +436,13 @@ def check(payload: dict, env: dict | None = None) -> str | None:
             push_ok = [str(r).lower() for r in json.loads(env.get("AGENT_LANES_PUSH_OK") or "[]")]
         except (ValueError, TypeError):
             push_ok = []  # ilegible: ninguna rama extra (falla cerrado)
+        try:
+            origin_ok = [str(r).lower() for r in json.loads(env.get("AGENT_LANES_ORIGIN_OK") or "[]")]
+        except (ValueError, TypeError):
+            origin_ok = []  # ilegible: ninguna rama (falla cerrado)
+        origin_ok = [r for r in origin_ok if r.rsplit("/", 1)[-1] not in ("main", "master")]
         command = ti.get("command", "")
-        reason = check_bash(command, env.get("DATABASE_URL"), env.get("AGENT_LANES_TASK"), merge_ok, push_ok)
+        reason = check_bash(command, env.get("DATABASE_URL"), env.get("AGENT_LANES_TASK"), merge_ok, push_ok, origin_ok)
         if reason or not (env.get("AGENT_LANES_TASK") and _is_push(command)):
             return reason
         return secret_scan_push(env.get("AGENT_LANES_WORKTREE") or payload.get("cwd"), env.get("AGENT_LANES_BASE"))

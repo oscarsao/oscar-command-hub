@@ -101,6 +101,16 @@ def merge_refs(lane: Lane, task: dict) -> list[str]:
     return refs
 
 
+def origin_refs(lane: Lane, task: dict) -> list[str]:
+    """Ramas de las líneas `Rama-origen:` de la tarjeta (`<remote>/<rama>`) de las que el guard deja traer RUTAS con
+    `git checkout <ref> -- <rutas>` / `git restore --source=<ref>`. Nunca main/master ni la base del carril."""
+    refs = []
+    for ref in merge_refs(lane, task)[1:]:
+        if ref.rsplit("/", 1)[-1].lower() not in ("main", "master", lane.base.lower()):
+            refs.append(ref)
+    return list(dict.fromkeys(refs))
+
+
 def render_settings(template: Path = SETTINGS_TEMPLATE) -> Path:
     """Settings template with the absolute agent-lanes path substituted (hook command needs it)."""
     STATE_DIR.mkdir(exist_ok=True)
@@ -391,6 +401,7 @@ class ClaudeWorker:
         args = base_args(lane, flag, budget, model)
         env = {"AGENT_LANES_MERGE_OK": json.dumps(merge_refs(lane, task)),
                "AGENT_LANES_PUSH_OK": json.dumps(push_refs(task)),
+               "AGENT_LANES_ORIGIN_OK": json.dumps(origin_refs(lane, task)),
                # F1-07: el guard veta escribir fuera de aquí y pasa el secret-scan frente a la base antes del push
                "AGENT_LANES_WORKTREE": str(cwd), "AGENT_LANES_BASE": f"{lane.remote}/{lane.base}"}
         self._ops[session_id] = (env, [])

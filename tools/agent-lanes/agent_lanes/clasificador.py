@@ -11,6 +11,7 @@ Dos usos, mismas reglas:
 
 Y el tipo «consulta» (`es_consulta`): tarjeta sin rama ni verificación mecánica; la atiende `consulta.py`.
 
+Las reglas de bloqueo solo miran la sección «Hacer» de la tarjeta (ver `texto_accion`); sin ella, todo el texto.
 Salidas de emergencia (línea del cuerpo, como `Rama-origen:`): `Clasificador: omitir` desactiva todo el chequeo. Tampoco
 se aplica si Oscar/el coordinador/la revisión ya han decidido algo en la tarjeta (lo gestiona el runner).
 """
@@ -34,6 +35,31 @@ ORIGIN_LINE = re.compile(r"^\s*Rama-origen:\s*\S+\s*$", re.M | re.I)
 LANE_BRANCH = re.compile(r"\blane/t_[0-9a-f]{8}\b", re.I)
 CONSULTA_LINE = re.compile(r"^\s*Tipo:\s*consulta\b", re.M | re.I)
 CONSULTA_TITLE = re.compile(r"^\s*\[\s*consulta\s*\]", re.I)
+
+# Secciones de una tarjeta bien formada (skill tarjeta-carril). Solo «Hacer» pide actuar; las demás describen.
+HACER_HEAD = re.compile(r"^\s*(?:#{1,6}\s+)?\**Hacer\**\s*(:?)\**\s*(.*)$", re.I)
+OTRA_SECCION = re.compile(r"^\s*(?:#{1,6}\s+)?\**(?:L[ií]mites|Contexto(?: verificado)?|Criterio de hecho|Pruebas|"
+                          r"Relacionadas?|An[aá]lisis|Origen|Alcance)\**\s*(?::|$)", re.I)
+LINEA_IGNORADA = re.compile(r"^\s*(?:Rama-origen|Rama-push|Decisi[oó]n)\b", re.I)
+
+
+def texto_accion(body: str) -> str | None:
+    """Líneas que piden hacer algo: la sección «Hacer» y sus puntos, sin las líneas Rama-origen/Rama-push/Decisión ni
+    las demás secciones (Límites, Contexto, Criterio de hecho, Pruebas, Relacionadas…). None si no hay sección «Hacer»
+    (entonces se evalúa todo el texto, como antes)."""
+    dentro, vistas, hecho = False, False, []
+    for linea in (body or "").splitlines():
+        cabecera = HACER_HEAD.match(linea)
+        if cabecera and (cabecera.group(1) or not cabecera.group(2)):
+            dentro = vistas = True
+            if cabecera.group(2):
+                hecho.append(cabecera.group(2))
+        elif OTRA_SECCION.match(linea):
+            dentro = False
+        elif dentro and not LINEA_IGNORADA.match(linea):
+            hecho.append(linea)
+    return "\n".join(hecho) if vistas else None
+
 
 DEFAULTS: dict = {
     "enabled": True,
@@ -181,6 +207,9 @@ def evaluar(lane: Lane | None, task: dict | None, *, lanes: dict | None = None, 
         text = f"{task.get('title') or ''}\n{task.get('body') or ''}"
         if not cfg.get("enabled") or getattr(lane, "kind", "implement") != "implement" or SKIP_LINE.search(text):
             return veredicto
+        # Las reglas de bloqueo miran solo lo que pide actuar («Hacer»); sin esa sección, todo el texto como siempre.
+        solo_hacer = texto_accion(task.get("body") or "")
+        zona = text if solo_hacer is None else solo_hacer
         for regla in cfg.get("reglas") or ():
             if not isinstance(regla, dict):
                 continue
@@ -197,13 +226,13 @@ def evaluar(lane: Lane | None, task: dict | None, *, lanes: dict | None = None, 
                 if any(re.search(p, text, re.I | re.S) for p in patrones):
                     veredicto.avisos.append((rid, motivo))
                 continue
-            estado = _intencion(text, patrones, cfg)
+            estado = _intencion(zona, patrones, cfg)
             if estado == "accion":
                 veredicto.integrador.append((rid, motivo))
             elif estado:
                 veredicto.dudas.append((rid, motivo))
         for repo in _otros_repos(lane, lanes, cfg):
-            estado = _intencion(text, [rf"(?<![\w-]){re.escape(repo)}(?![\w-])"], cfg)
+            estado = _intencion(zona, [rf"(?<![\w-]){re.escape(repo)}(?![\w-])"], cfg)
             if estado == "accion":
                 veredicto.integrador.append(("otro_repo", str(cfg["motivo_otro_repo"]).format(repo=repo)))
                 break
