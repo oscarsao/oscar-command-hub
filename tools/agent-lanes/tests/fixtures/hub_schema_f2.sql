@@ -98,3 +98,22 @@ CREATE TABLE hub.kv (
     value      jsonb NOT NULL,
     updated_at timestamptz NOT NULL DEFAULT now()
 );
+
+-- Alta de workers y ajustes (H3/H11 de la auditoría del segundo worker, 19-11). Reflejan hub.workers y hub.ajustes de
+-- la migración real (20261108_hub_kanban.sql): el backend lee activo/externo/version/last_seen y `ajustes.valor`.
+CREATE TABLE hub.workers (
+    id          text PRIMARY KEY CHECK (id ~ '^[a-z0-9][a-z0-9_-]{1,62}$'),
+    nombre      text NOT NULL DEFAULT '',
+    hostname    text,
+    externo     boolean NOT NULL DEFAULT false,
+    activo      boolean NOT NULL DEFAULT false,
+    version     text,
+    last_seen   timestamptz
+);
+CREATE TABLE hub.ajustes (
+    clave  text PRIMARY KEY,
+    valor  jsonb NOT NULL
+);
+-- Los workers de las pruebas (activos; el principal es interno). Cada prueba añade los que necesite.
+INSERT INTO hub.workers (id, nombre, activo) VALUES ('pc-oscar', 'PC de Oscar', true), ('pc', 'PC', true);
+INSERT INTO hub.ajustes (clave, valor) VALUES ('workers_externos', 'false'::jsonb);

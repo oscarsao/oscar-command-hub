@@ -26,6 +26,7 @@ from .worker import choose_model, model_override
 
 log = logging.getLogger("agent_lanes")
 
+ADMISSION_PAUSE_SECONDS = 300  # tras un claim rechazado por admisión, el carril no vuelve a intentarlo en 5 min
 STATE_DIR = ROOT / ".state" / "tasks"
 MESSAGES_DIR = ROOT / ".state" / "messages"  # message_id de Telegram por tarea (persiste entre carriles y reinicios)
 
@@ -161,6 +162,7 @@ class LaneRunner:
         self._subs_dropped: set[str] = set()  # tareas con la suscripción de Hermes ya quitada (listado o claim)
         self._held: set[str] = set()  # tareas retenidas por «Esperar a…» (se registra una sola vez)
         self._reasked: set[str] = set()  # tareas relanzadas UNA vez porque el worker repitió una pregunta ya respondida
+        self._admission_pause_until = 0.0  # no reclamar hasta esta hora (clock) tras un claim rechazado por admisión
 
     def notify(self, state: str, tid: str, task: dict | None, status: str, *, alert: bool = False,
                bullets: list[str] | None = None, branch_link: bool = True, changed_files=None,
@@ -238,14 +240,67 @@ class LaneRunner:
             return None  # el PID lo tiene ahora otro proceso
         return pid
 
+    def worker_id(self) -> str | None:
+        """Id de ESTE equipo en el kanban compartido (`HUB_WORKER_ID`, backend supabase). None con el backend hermes
+        (un solo runner): en ese caso nada de lo que depende del dueño de la reserva cambia."""
+        wid = getattr(self.hermes, "worker", None)
+        return wid if isinstance(wid, str) and wid else None
+
+    def _lease_lost(self, tid: str) -> bool:
+        """¿La reserva de la tarjeta ya no es de este equipo? (latido o cierre rechazados por cambio de dueño)."""
+        fn = getattr(self.hermes, "lease_lost", None)
+        try:
+            return bool(fn(tid)) if callable(fn) else False
+        except Exception:
+            return False
+
+    def _sigue_siendo_mia(self, tid: str) -> bool:
+        """Lectura fresca de la reserva (solo backend supabase) justo antes de lo caro o irreversible: el latido puede ir
+        hasta `heartbeat_seconds` atrasado. Sin esa capacidad o sin poder leer, se sigue como siempre (True)."""
+        if self._lease_lost(tid):
+            return False
+        fn = getattr(self.hermes, "owns_lease", None)
+        try:
+            return fn(tid) is not False if callable(fn) else True
+        except Exception:
+            return True
+
+    def _reserva_perdida(self, tid: str) -> str:
+        """Desenlace «reserva perdida» (H5/H9): la tarjeta ya es de otro equipo (o la segó el segador). Ni bloquea, ni
+        pasa a review, ni avisa por Telegram, ni reintenta: cualquiera de eso pisaría el trabajo del dueño actual."""
+        log.warning("%s: la reserva ya no es de %s (%s); se abandona sin tocar la tarjeta", tid, self.worker_id(),
+                    getattr(self.hermes, "last_error", None) or "otro dueño")
+        self._block_pendiente().pop(tid, None)
+        return "lease_perdida"
+
+    def _beat(self, tid: str) -> bool:
+        """Latido de la reserva. Si el kanban dice que ya no es nuestra, se corta el `claude` (sigue empujando a
+        lane/<id> y chocaría con el dueño nuevo) y `_work` abandona al volver."""
+        ok = self.hermes.heartbeat(tid)
+        if not ok and self._lease_lost(tid):
+            worker = self._live_worker(self._read_state(tid))
+            log.warning("%s: latido rechazado, la reserva es de otro equipo; %s", tid,
+                        f"mato el worker (pid {worker})" if worker else "no hay worker vivo que cortar")
+            if worker:
+                self._kill(worker)
+        return ok
+
     def reconcile(self) -> list[str]:
         """At startup: block this lane's `running` tasks whose runner is gone, instead of waiting for the TTL.
 
         Only this runner consumes the lane's assignee, so a running task without a live owner PID is orphaned.
+        Con el kanban compartido (supabase) eso solo vale para las reservas PROPIAS: una `running` cuyo `lease_owner` es
+        otro equipo la está ejecutando otro ordenador; su pid no existe aquí y no hay nada que matar ni bloquear. Si su
+        reserva caducó, la libera el segador (`release_stale`, hora del servidor), no este arranque (H1).
         """
         orphans = []
+        mine = self.worker_id()
         for task in self.hermes.list_status(self.lane.name, "running"):
             tid = task["id"]
+            owner = task.get("lease_owner")
+            if mine is not None and owner is not None and owner != mine:
+                log.info("%s: reserva de otro equipo (%s); no se toca", tid, owner)
+                continue
             path = self._state_path(tid)
             state = self._read_state(tid)
             pid = state.get("pid")
@@ -270,6 +325,9 @@ class LaneRunner:
         los huecos (normal / grande / reservado). `big` = tarjeta grande (grandes.py); `serial` = cita rutas de
         `serialize_paths` (migraciones): dos así en este carril no corren a la vez, ni con una ya en curso."""
         self._conciliar_bloqueos()  # el Service llama a candidates() (no a jobs()): aquí se reintentan los block fallidos
+        pause = getattr(self, "_admission_pause_until", 0.0)  # getattr: algunos tests llaman con un self mínimo
+        if pause and self.clock() < pause:  # el kanban rechazó a este equipo (sin alta, apagado, guard distinto)
+            return []
         if self._repo_guard and self.lane.kind == "implement":
             problem = self._repo_guard(self.lane)
             if problem:
@@ -370,6 +428,8 @@ class LaneRunner:
                questions: list | None = None, summary: str | None = None, for_oscar: str | None = None,
                notify_kind: str | None = None, changed_files=None) -> str:
         """`reason` (detalle técnico) va a la tarjeta y al log; a Telegram solo `public` (+ preguntas si needs_input)."""
+        if self._lease_lost(tid):
+            return self._reserva_perdida(tid)
         times = self._same_block_times(tid, kind, reason) if kind == "transient" else 0
         if times:  # 2º bloqueo igual: Hermes la mandaría a triage; se escala a Oscar con otro motivo y botones
             reason = (f"Bloqueada {times + 1} veces por lo mismo ({public}); reintentar sin cambios no sirve.\n"
@@ -437,7 +497,19 @@ class LaneRunner:
         if alive and alive != os.getpid():
             log.warning("%s: ya hay un worker vivo (pid %s) sobre la tarea; no se lanza otro", tid, alive)
             return "worker_vivo"
-        if not self.hermes.claim(tid, lane.claim_ttl_seconds):
+        paths = getattr(lane, "serialize_paths", ()) or ()
+        serial_claim = getattr(self.hermes, "claim_serial", None)  # solo el backend supabase (cerrojo entre equipos, H10)
+        if paths and serial_claim and grandes.touches(task, paths):
+            claimed = serial_claim(tid, lane.claim_ttl_seconds, paths)
+        else:
+            claimed = self.hermes.claim(tid, lane.claim_ttl_seconds)
+        if not claimed:
+            why = getattr(self.hermes, "last_error", None)
+            if isinstance(why, str) and why.startswith("claim rechazado:"):
+                self._admission_pause_until = self.clock() + ADMISSION_PAUSE_SECONDS
+                log.error("%s: el kanban no deja reclamar a este equipo (%s); el carril %s no reclama durante %d min",
+                          tid, why, lane.name, ADMISSION_PAUSE_SECONDS // 60)
+                return "claim_rechazado"
             log.info("%s: claim perdido (otro runner o ya no está ready)", tid)
             return "claim_lost"
         deadline = self.clock() + lane.max_runtime_seconds
@@ -447,7 +519,9 @@ class LaneRunner:
         # status` veía la tarea en running sin PID y la daba por huérfana (incidente 27-09, tarjeta t_bdee05fe).
         self.state_dir.mkdir(parents=True, exist_ok=True)
         state_path.write_text(json.dumps({"task_id": tid, "lane": lane.name, "pid": os.getpid(),
-                                          "session_id": session_id, "started": time.time()}), encoding="utf-8")
+                                          "session_id": session_id, "started": time.time(),
+                                          **({"worker": self.worker_id()} if self.worker_id() else {})}),
+                              encoding="utf-8")
         self._active[tid] = task
         try:
             self._drop_hermes_subs(tid)
@@ -476,10 +550,11 @@ class LaneRunner:
         task = self._model_fallback(tid, task)  # antes del claim: el comentario lleva el modelo realmente usado
         modelo = choose_model(lane, task)
         log.info("%s: modelo=%s", tid, modelo)
-        self.hermes.comment(tid, f"LANE claim por {lane.name} · session_id={session_id} · {where} · modelo={modelo}")
+        equipo = f" · equipo={self.worker_id()}" if self.worker_id() else ""  # solo con el kanban compartido
+        self.hermes.comment(tid, f"LANE claim por {lane.name} · session_id={session_id} · {where} · modelo={modelo}{equipo}")
 
         repeated = ""  # nota con las respuestas previas si el worker insiste en una pregunta ya respondida
-        with Heartbeat(lambda: self.hermes.heartbeat(tid), lane.heartbeat_seconds):
+        with Heartbeat(lambda: self._beat(tid), lane.heartbeat_seconds):
             try:
                 feedback = self.hermes.review_feedback(tid)  # non-empty when the review lane reopened it
                 if feedback:
@@ -540,6 +615,8 @@ class LaneRunner:
             except Exception as exc:
                 return self._block(tid, "transient", f"error del runner: {exc}", task, public="error del runner")
 
+            if self._lease_lost(tid):  # el latido vio que la tarjeta ya es de otro: lo hecho se queda en la rama
+                return self._reserva_perdida(tid)
             if not outcome.ok and cuota.es_cuota(outcome.raw_error):
                 return self._pausar_por_cuota(tid, task, outcome.raw_error)
             if not outcome.ok:
@@ -572,6 +649,8 @@ class LaneRunner:
                 return self._block(tid, "transient", f"worker status={result['status']}: {result.get('summary', '')}",
                                    task, public="el worker no pudo completarla")
 
+            if not self._sigue_siendo_mia(tid):  # antes de minutos de tests y del push de «rama al día»
+                return self._reserva_perdida(tid)
             check = self.verifier(lane, tid, cwd, result, task=task) if ops else self.verifier(lane, tid, cwd, result)
             if not check.ok:
                 config = [r for r in check.reasons if r.startswith(CONFIG_REASONS)]
@@ -588,6 +667,8 @@ class LaneRunner:
                 return self._to_review_ops(tid, task, session_id, cwd, resumes, outcome, result)
 
             if hasattr(self.git, "poner_al_dia"):
+                if not self._sigue_siendo_mia(tid):  # poner_al_dia EMPUJA lane/<id>: ni un push si la tarjeta ya es de otro
+                    return self._reserva_perdida(tid)
                 # P4: rama al día con origin/<base> antes de review; el conflicto real vuelve al carril con sus ficheros.
                 try:
                     dia = self.git.poner_al_dia(lane, cwd, tid)
@@ -625,6 +706,8 @@ class LaneRunner:
     def _pausar_por_cuota(self, tid: str, task: dict, raw_error: str | None) -> str:
         """Cuota de Claude agotada: la tarea vuelve a ready (no es un bloqueo repetido ni gasta resumes), se anota la
         pausa en cuota.json y el planificador no lanza más workers hasta la hora de reset. UN aviso por pausa."""
+        if self._lease_lost(tid):
+            return self._reserva_perdida(tid)
         now = self._wall()
         until = cuota.pausa_hasta(raw_error, now, self._cuota_minutos)
         nueva = cuota.escribir(self._cuota_path, until, str(raw_error or ""), now)
@@ -733,6 +816,8 @@ class LaneRunner:
     def _block_console(self, tid: str, task: dict | None, detail: str, result: dict) -> str:
         """Limitación PERMANENTE del guard (no es una pregunta): bloqueo needs_input con motivo estructurado. Ni la
         autocuración ni Reintentar la devuelven al carril; el aviso (una vez) dice qué comando usar."""
+        if self._lease_lost(tid):
+            return self._reserva_perdida(tid)
         reason = f"{GUARD_LIMIT_MARK} el worker no puede hacerlo con el guard del carril:\n{detail}"
         log.warning("%s bloqueada (limitacion_guard): %s", tid, reason)
         blocked = self.hermes.block(tid, "needs_input", fit_reason(reason))

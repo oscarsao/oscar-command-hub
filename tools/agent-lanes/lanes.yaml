@@ -17,6 +17,13 @@ runner:
   # Pausa por cuota de Claude: si el reset no se lee del error, minutos sin lanzar workers (agent_lanes/cuota.py).
   cuota_pausa_minutos: 60
   interval_seconds: 60
+  # Varios equipos sobre el mismo kanban (backend supabase; docs/segundo-ordenador.md, sección 7). Todo opcional:
+  # - release_stale_max_attempts / release_stale_seconds: segador de reservas caducadas (agent_lanes/multiworker.py).
+  #   Por defecto 3 intentos y cada 60 s con supabase; 0 lo apaga; con el backend hermes va siempre apagado.
+  # - workers: ajustes POR EQUIPO (id = HUB_WORKER_ID del .env de ese PC). `max_workers` pisa al global y `lanes` limita
+  #   qué carriles corre ese equipo con --all. Ejemplo:
+  #     workers:
+  #       pc2-casa: {max_workers: 2, lanes: [claude-hub, claude-scraper]}
   # Vigilante de «runner ciego» (agent_lanes/ciego.py): si no se pueden listar tareas (p. ej. WinError 4551 de App
   # Control) durante estos minutos seguidos, aviso ALTA al DM de Oscar y un `restart --drain` automático (máx. 1/hora).
   ciego_minutes: 5

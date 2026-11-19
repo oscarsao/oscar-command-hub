@@ -3,6 +3,7 @@
 Reproduce lo que el hub lee de Hermes: forma del JSON de show/list, ciclo ready->running->review->done, bloqueos con
 `BLOCKED:` y bucle a triage, respuestas de Oscar que desbloquean, padres que retienen a las hijas, idempotencia."""
 import threading
+import time
 
 import pytest
 
@@ -97,6 +98,8 @@ def test_ciclo_completo_ready_running_review_done(kb, clock):
 
 
 def test_dos_claims_concurrentes_solo_gana_uno(kb):
+    with kb._tx() as cur:  # cada worker necesita su alta en hub.workers (H3)
+        cur.executemany("INSERT INTO hub.workers (id, activo) VALUES (%s, true)", [(f"w{i}",) for i in range(8)])
     tid = kb.create("[Hub] carrera", "b", "claude-hub")
     results = []
     barrier = threading.Barrier(8)
@@ -118,9 +121,9 @@ def test_bloqueo_respuesta_y_bucle_a_triage(kb, clock):
     assert kb.block(tid, "needs_input", "¿A o B?")
     show = kb.show(tid)
     assert show["task"]["status"] == "blocked"
-    assert show["comments"][-1] == {"author": "agent-lanes", "body": "BLOCKED: ¿A o B?",
-                                    "created_at": clock.t}
-    clock.t += 5
+    ahora = int(time.time())  # H4: la hora la pone el servidor (no el reloj inyectado, que se ignora)
+    assert show["comments"][-1]["body"] == "BLOCKED: ¿A o B?" and abs(show["comments"][-1]["created_at"] - ahora) <= 5
+    time.sleep(1.2)  # la respuesta cuenta si es POSTERIOR al bloqueo (fechas epoch en segundos)
     kb.comment(tid, "Respuesta de Oscar: ¿A o B? → A", author=OSCAR_AUTHOR)
     show = kb.show(tid)
     answers, nxt = hermes.answer_progress(show, [{"question": "¿A o B?"}])
