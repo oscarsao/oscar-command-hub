@@ -1,0 +1,5 @@
+{
+  "version": 1,
+  "ayuda": "Lista curada a mano de fallos de tests/build ya conocidos, para que el preflight del lote (agent_lanes/preflight_lote.py) distinga fallos viejos de nuevos. Cada entrada: id, repo (nombre de la carpeta del repo, opcional = todos), patron (texto contenido en la firma «FAIL archivo > test» o «archivo error TSnnnn»), desde (fecha) y nota.",
+  "fallos": []
+}

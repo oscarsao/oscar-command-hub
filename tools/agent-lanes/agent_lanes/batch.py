@@ -44,6 +44,7 @@ from .integrator import (INT_BATCH_CONSOLE, INT_BATCH_DISCARD, INT_BATCH_FIX, IN
                          MERGE_RETRY_WAITS, NEEDS_MIGRATION, PR_URL_RE, TID_RE, GateResult, Policy, alembic_heads,
                          safe_env)
 from .notices import TEXT_MAX, status_line, truncate
+from .preflight_lote import analizar, cargar_fallos_previos, clasificar_fallos
 from .titulos import proyecto_de_carril
 from .verify import render_test_cmd
 
@@ -93,6 +94,7 @@ def render_batch_ficha(*, risk, phase: str, rec: dict, status: str, repo: str, b
             f"Lote {e(rec.get('batch_brand') or '')} · {e(rec.get('batch_date') or '')}",
             f"{e(repo or '?')} · {e(rec.get('batch_branch') or '')} → {e(base or '?')}"]
     gates, risks = list(rec.get("gates") or ()), list(rec.get("risks") or ())
+    avisos = list(rec.get("avisos") or ())
     tail = [e(status)] if status else []
     if links:
         tail.append(" · ".join(f'<a href="{e(url, quote=True)}">{e(label)}</a>' for label, url in links))
@@ -104,13 +106,15 @@ def render_batch_ficha(*, risk, phase: str, rec: dict, status: str, repo: str, b
             out += [f"• #{e(str(n))} · {e(truncate(t, 40))} — {e(plain_reason(r))}" for n, t, r in excluded]
         if gates:
             out.append("Gates: " + e(" · ".join(gates)))
+        if avisos:
+            out.append("Avisos: " + e(" · ".join(avisos)))
         out.append("Riesgos: " + (e(" · ".join(risks)) if risks else "ninguno"))
         if rec.get("deploy_note"):
             out.append("Deploy: " + e(rec["deploy_note"]))
         return out
 
     while len("\n".join(head + body() + tail)) > TEXT_MAX and (members or excluded or gates or risks):
-        for lst in (gates, risks, excluded, members):
+        for lst in (avisos, gates, risks, excluded, members):
             if len(lst) > (1 if lst is members else 0):
                 lst.pop()
                 break
@@ -444,6 +448,7 @@ class BatchPlanner:
     def _build_in(self, w: str, wt: Path, lane, policy: Policy, cands: list[dict], out: dict) -> None:
         i, base_sha = self.i, out["base_sha"]
         members: list[dict] = []
+        cands = self._preflight(lane, policy, cands, out)
         for c in cands:
             prev = self._head(w)
             m = self._merge(w, c["head_sha"])
@@ -492,6 +497,57 @@ class BatchPlanner:
                [f"frontend sin fallos nuevos ({out['known_failures']} ya presentes en {lane.base})"])
         out["members"], out["ok"] = members, True
 
+    def _preflight(self, lane, policy: Policy, cands: list[dict], out: dict) -> list[dict]:
+        """Paso informativo (preflight_lote.py, ajuste `lotes.preflight`): choques de numeración de esquemas SQL (la
+        rama sale del lote con su motivo) y solapes de ficheros con otras ramas o PR abiertos (solo `out["avisos"]`).
+        Solo lee git y `gh pr list`; un fallo aquí nunca frena el lote."""
+        if not valor("lotes.preflight") or not cands:
+            return cands
+        try:
+            i = self.i
+            etiqueta = {c["pr"]: f"#{c['pr']} ({c['tid']})" for c in cands}
+            otros = self._otros_pr(lane, set(etiqueta))
+            inf = analizar(lane.repo, out["base_sha"], [f"{etiqueta[c['pr']]}=refs/integrator/pr-{c['pr']}" for c in cands],
+                           prefijos=policy.manual_migrations, otros=[f"#{n}=refs/integrator/pr-{n}" for n in otros],
+                           nombre_repo=repo_name(lane), run=lambda cmd, **kw: i._exec(cmd, timeout=kw.get("timeout", 120)))
+        except Exception as exc:
+            log.warning("lote: preflight no disponible: %s", exc)
+            return cands
+        if inf.error:
+            log.warning("lote: preflight: %s", inf.error)
+            return cands
+        bloq = inf.bloqueadas
+        out["avisos"] = [f"solape {s.fichero}: {', '.join(s.ramas)}" for s in inf.solapes][:8]
+        out["preflight"] = inf.render()
+        live = []
+        for c in cands:
+            why = bloq.get(etiqueta[c["pr"]])
+            if why:
+                out["excluded"].append({**c, "reason": f"choque de numeración: {why}"})
+            else:
+                live.append(c)
+        return live
+
+    def _otros_pr(self, lane, propios: set[int]) -> list[int]:
+        """Otros PR abiertos del repo (traídos a refs/integrator/pr-N) para comparar ficheros. [] si algo falla."""
+        i = self.i
+        slug = i.links.repo_slug(lane) if i.links else None
+        if not slug:
+            return []
+        try:
+            cp = i._gh("pr", "list", "--repo", slug, "--state", "open", "--base", lane.base, "--limit", "30",
+                       "--json", "number")
+            nums = [int(x["number"]) for x in json.loads(cp.stdout or "[]")] if cp.returncode == 0 else []
+        except Exception as exc:
+            log.warning("lote: gh pr list falló: %s", exc)
+            return []
+        nums = [n for n in nums if n not in propios][:20]
+        if nums:
+            cp = i._git(lane.repo, "fetch", lane.remote, *[f"+refs/pull/{n}/head:refs/integrator/pr-{n}" for n in nums])
+            if cp.returncode != 0:
+                return []
+        return nums
+
     def _frontend(self, policy: Policy, files: list[str]) -> bool:
         return bool(policy.batch_frontend_cmd and any(f.startswith(p) for p in policy.batch_frontend_paths
                                                       for f in files))
@@ -522,6 +578,11 @@ class BatchPlanner:
                     continue
                 if mine and known:
                     text = "Fallos nuevos frente a la base:\n" + "\n".join(sorted(mine - known)[:40]) + "\n\n" + text
+                if mine:  # lista curada (docs/fallos_previos.json): separa fallos nuevos de viejos conocidos
+                    nuevos, viejos = clasificar_fallos(mine, cargar_fallos_previos(repo=repo_name(lane)))
+                    if viejos:
+                        text = (f"Fallos nuevos: {len(nuevos)} · ya conocidos (fallos_previos.json): {len(viejos)}\n"
+                                + "\n".join(nuevos[:20]) + "\n\n" + text)
             reasons.append(why)
             log.warning("lote: %s (exit %s): %s", cmd[:80], t.returncode, text[-1500:])
             if out is not None:
@@ -587,6 +648,8 @@ class BatchPlanner:
         out = ["## Incluye", *rows]
         if build["excluded"]:
             out += ["", "## Fuera del lote", *[f"- #{x['pr']} · {x['title']} — {x['reason']}" for x in build["excluded"]]]
+        if build.get("preflight"):
+            out += ["", "## Comprobación previa", "```", build["preflight"], "```"]
         out += ["", "Gates del lote combinado: " + ", ".join(build["passed"])]
         return "\n".join(out)
 
@@ -612,7 +675,7 @@ class BatchPlanner:
                "batch_date": day, "batch_branch": branch, "batch_tids": tids,
                "batch_members": [[x["pr"], x["title"]] for x in members],
                "batch_excluded": [[x["pr"], x["title"], x["reason"]] for x in excluded],
-               "gates": [f"✔ {p}" for p in build["passed"]],
+               "gates": [f"✔ {p}" for p in build["passed"]], "avisos": build.get("avisos") or [],
                "risks": i._risk_lines(GateResult(ok=True, migration=build["migration"], sensitive=build["sensitive"])),
                "deploy_note": i._deploy_note(policy, GateResult(ok=True, migration=build["migration"]))}
         self._save(bid, lane=lane.name, brand=brand, date=day, branch=branch, pr=number, pr_url=url, status="offered",

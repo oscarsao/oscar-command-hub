@@ -161,7 +161,10 @@ def _build() -> dict[str, Ajuste]:
         Ajuste("lotes.hora", "Lotes", "Hora de montaje del lote diario", "", "hora",
                "HH:MM. Vacío = la de cada proyecto en lanes.yaml (08:30).", opciones=("", "07:30", "08:30", "09:30",
                                                                                      "12:00")),
-        Ajuste("integracion_auto.activa", "Lotes", "Integración automática de lo pequeño (0 = apagada, 1 = encendida)", 0,
+        Ajuste("lotes.preflight", "Lotes", "Comprobación previa del lote (0 = apagada, 1 = encendida)", 1, "int",
+               "Antes de montar el lote mira choques de numeración de esquemas SQL (la rama choca queda fuera) y "
+               "ficheros tocados por varias ramas o PR abiertos (solo aviso en la ficha).", 0, 1, (0, 1)),
+        Ajuste("integracion_auto.activa","Lotes", "Integración automática de lo pequeño (0 = apagada, 1 = encendida)", 0,
                "int", "Con 1, los PR de tamaño S o solo documentación con suite verde y revisor conforme se fusionan solos "
                "tras la ventana de veto. El despliegue sigue siendo tu botón. MigraTeam queda siempre fuera.", 0, 1,
                (0, 1)),

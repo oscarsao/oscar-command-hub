@@ -40,6 +40,7 @@ class Gh:
         self.merge_rc = 0
         self.update_mode = "ok"  # update-branch simulado: ok | conflict
         self.updates: list[int] = []
+        self.others: list[int] = []  # PR abiertos ajenos al lote (gh pr list)
 
     def add(self, n, tid, sha):
         self.prs[n] = {"number": n, "url": f"https://github.com/{SLUG}/pull/{n}", "state": "OPEN", "isDraft": False,
@@ -71,6 +72,8 @@ class Gh:
             return subprocess.CompletedProcess(args, self.merge_rc, "", "" if self.merge_rc == 0 else "boom")
         if args[1] == "api" and "update-branch" in " ".join(args):
             return self._update_branch(args)
+        if args[1:3] == ["pr", "list"]:  # preflight: otros PR abiertos (los registrados en `others`)
+            return subprocess.CompletedProcess(args, 0, json.dumps([{"number": n} for n in self.others]), "")
         if args[1:3] == ["pr", "close"]:
             self.prs[int(args[3])]["state"] = "CLOSED"
             return subprocess.CompletedProcess(args, 0, "", "")
