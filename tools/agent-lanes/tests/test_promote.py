@@ -293,3 +293,24 @@ def test_unknown_project_and_missing_health_url(tmp_path):
 def test_real_lanes_yaml_has_migrateam_promotion():
     cfg = load_promote_configs()["migrateam"]
     assert (cfg.head, cfg.base) == ("develop", "master") and cfg.health_url.startswith("https://")
+
+
+def test_real_lanes_yaml_has_oscarhq_promotion_from_staging():
+    """19-11: Oscar HQ integra en staging y promueve staging → master; sin health_url no se promueve nada."""
+    from agent_lanes.config import load_lanes
+    from agent_lanes.integrator import load_integrator_settings
+
+    cfg = load_promote_configs()["claude-oscarhq"]
+    lane = load_lanes()["claude-oscarhq"]
+    assert (cfg.head, cfg.base) == ("staging", "master")
+    assert cfg.repo == lane.github and lane.base == "staging"
+    assert not cfg.health_url  # hasta que exista una API de pruebas verificada
+    pol = load_integrator_settings(lane_filter=False).policies["claude-oscarhq"]
+    assert pol.risk == "staging" and pol.batch == "daily" and pol.merge_label == "🔀 Fusionar en staging"
+    assert pol.manual_migrations == ("supabase/migrations/",) and pol.health_url == ""
+
+
+def test_oscarhq_promotion_stops_without_health_url_and_names_its_branches(tmp_path):
+    p, gh, tg, *_ = build(tmp_path, cfg=PromoteConfig(key="claude-oscarhq", repo=REPO, head="staging", base="master"))
+    p.start("claude-oscarhq", WHERE)
+    assert "health_url" in tg.last["text"] and not gh.calls

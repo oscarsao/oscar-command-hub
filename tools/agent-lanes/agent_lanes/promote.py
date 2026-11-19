@@ -203,7 +203,7 @@ class Promoter:
             return "sin health_url"
         pr = self._open_pr(cfg)
         if not pr:
-            self._fail(pid, dest, "no pude abrir ni actualizar el PR develop → master (¿gh o permisos?)")
+            self._fail(pid, dest, f"no pude abrir ni actualizar el PR {cfg.head} → {cfg.base} (¿gh o permisos?)")
             return "sin PR"
         head = pr["headRefOid"]
         self._save(pid, pr=pr["number"], pr_url=pr["url"], head=head)
@@ -215,7 +215,7 @@ class Promoter:
             return "checks"
         info = self._compare(cfg, head)
         if info is None:
-            self._fail(pid, dest, "no pude leer la comparación develop → master")
+            self._fail(pid, dest, f"no pude leer la comparación {cfg.head} → {cfg.base}")
             return "sin comparación"
         verdict = self._migrations(cfg, head)
         if verdict.get("problem"):
@@ -368,7 +368,7 @@ class Promoter:
 
     def _reject(self, st: dict, where: dict, why: str) -> None:
         self._log(st.get("id", "?"), f"RECHAZADO: {why}")
-        self._send(where, f"⛔ Esa confirmación no vale: {why}. Vuelve a lanzar /promover migrateam.")
+        self._send(where, f"⛔ Esa confirmación no vale: {why}. Vuelve a lanzar /promover {st.get('key') or 'migrateam'}.")
 
     def _on_button(self, action: str, rec: dict, where: dict) -> None:
         pid, step = str(rec.get("promo") or ""), str(rec.get("step") or "")
@@ -411,7 +411,7 @@ class Promoter:
             self._log(pid, "PARADA: la lista de migraciones cambió antes del último paso")
             self._send(where, "⛔ Las migraciones pendientes han cambiado desde el resumen"
                               + (f" ({fresh['problem']})" if fresh.get("problem") else "")
-                              + ". No se ha tocado producción. Vuelve a lanzar /promover migrateam.")
+                              + f". No se ha tocado producción. Vuelve a lanzar /promover {cfg.key}.")
             return
         mig = fresh["pending"]
         text = [f"🚀 ÚLTIMO PASO · promover {cfg.key.upper()} a producción (PR #{st['pr']})",
@@ -444,7 +444,7 @@ class Promoter:
             self._save(pid, status="stopped")
             self._log(pid, f"gh pr merge rechazado: {(cp.stderr or '').strip()[:200]}")
             self._send(where, "⛔ GitHub no ha aceptado la fusión (protección de rama o PR cambiado). No se fuerza nada: "
-                              "revisa el PR y vuelve a lanzar /promover migrateam.")
+                              f"revisa el PR y vuelve a lanzar /promover {cfg.key}.")
             return
         view = self._json("pr", "view", str(st["pr"]), "--repo", cfg.repo, "--json", "mergeCommit") or {}
         sha = str((view.get("mergeCommit") or {}).get("oid") or "").lower()
