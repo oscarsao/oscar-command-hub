@@ -26,6 +26,7 @@ import json
 import logging
 import os
 import re
+import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime
@@ -46,6 +47,9 @@ PREFIJO = "Desatascador:"
 RAMA_RE = re.compile(r"^lane/t_[0-9a-f]{8}$")
 RAMA_EN_TEXTO = re.compile(r"Rama-origen:?\s*`?(lane/t_[0-9a-f]{8})\b", re.I)
 RAMA_PADRE = re.compile(r"\blane/(t_[0-9a-f]{8})\b")
+REF_SUELTA = re.compile(r"\b[A-Z]{1,6}-\d+\b")   # OH-12, OH-09…: referencias a tarjetas/ramas que no dan una rama
+PLURAL_RAMAS = re.compile(r"\b(otras|ambas|ambos|todas|todos|varias|dos|tres)\b.{0,40}\b(ramas?|padres?|PRs?)\b|"
+                          r"\b(ramas|padres|PRs)\b", re.I)
 LINEA_ORIGEN = re.compile(r"^\s*Rama-origen:", re.M | re.I)
 REINTENTO_RE = re.compile(rf"^{PREFIJO} reintento (\d+)/(\d+)")
 
@@ -68,6 +72,7 @@ class Ajustes:
     espera_base_min: float = 10      # espera antes del reintento n (0-based): base * 2**n minutos desde el bloqueo
     max_por_pasada: int = 5          # tope de acciones reales por pasada (freno ante un bucle)
     resumen_hora: int = 8            # hora Madrid del resumen de la mañana
+    tope_pasada_s: float = 120       # tope de tiempo de una pasada (corre en su propio hilo; al pasarse, corta y sigue luego)
     transitorios: str = TRANSITORIOS
     espera: str = ESPERA
     fuera_del_repo: str = FUERA_DEL_REPO
@@ -103,6 +108,7 @@ def load(path: Path | str | None = None) -> Ajustes:
         espera_base_min=_num(raw.get("espera_base_min"), d.espera_base_min, 0),
         max_por_pasada=int(_num(raw.get("max_por_pasada"), d.max_por_pasada, 1)),
         resumen_hora=hora if isinstance(hora, int) and not isinstance(hora, bool) and 0 <= hora <= 23 else d.resumen_hora,
+        tope_pasada_s=_num(raw.get("tope_pasada_s"), d.tope_pasada_s, 1),
         transitorios=rx("transitorios", d.transitorios), espera=rx("espera", d.espera),
         fuera_del_repo=rx("fuera_del_repo", d.fuera_del_repo))
 
@@ -143,6 +149,33 @@ def motivo(show: dict) -> tuple[str, float]:
         if e.get("kind") == "blocked" and _epoch(e.get("created_at")) >= when:
             best, when = str((e.get("payload") or {}).get("reason") or ""), _epoch(e.get("created_at"))
     return best, when
+
+
+def kind_bloqueo(show: dict) -> str:
+    """`kind` del ÚLTIMO evento `blocked` (needs_input | transient | …); si no hay evento, el `block_kind` de la tarjeta.
+    Solo esto marca un fallo como transitorio: el texto del motivo puede ser una decisión del worker que cite «timeout»."""
+    best, when = "", -1.0
+    for e in (show or {}).get("events") or []:
+        if e.get("kind") == "blocked" and _epoch(e.get("created_at")) >= when:
+            best, when = str((e.get("payload") or {}).get("kind") or ""), _epoch(e.get("created_at"))
+    return best or str(((show or {}).get("task") or {}).get("block_kind") or "")
+
+
+def ramas_padre(razon: str, show: dict) -> tuple[list[str], str]:
+    """(ids de TODAS las tarjetas padre de las que depende, motivo de duda). Une las `lane/t_…` del motivo y los padres
+    enlazados de la tarjeta. Si el motivo habla de varias ramas o cita otras referencias (OH-12…) que no se pueden
+    traducir a una rama, devuelve duda: el desatascador no actúa con una lista incompleta."""
+    padres: list[str] = []
+    for p in RAMA_PADRE.findall(razon) + list((show or {}).get("parents") or []):
+        p = p if isinstance(p, str) else str((p or {}).get("id"))
+        if p and p not in padres:
+            padres.append(p)
+    sueltas = sorted(set(REF_SUELTA.findall(RAMA_PADRE.sub("", razon))))
+    if len(sueltas) > len(padres):   # más referencias que ramas: alguna no se ha podido traducir
+        return padres, f"el motivo cita {', '.join(sueltas)} sin rama identificable"
+    if PLURAL_RAMAS.search(razon) and len(padres) < 2:
+        return padres, "el motivo habla de varias ramas pero solo se identifica una"
+    return padres, ""
 
 
 def reintentos_hechos(show: dict) -> tuple[int, bool]:
@@ -186,27 +219,33 @@ def decidir(card: dict, show: dict, cfg: Ajustes, *, now: float, board: str = ""
                       rama=rama)
     # 3. Espera a una rama sin fusionar
     if re.search(cfg.espera, razon, re.I):
-        padres = RAMA_PADRE.findall(razon) or list((show or {}).get("parents") or [])
-        padres = [p if isinstance(p, str) else str((p or {}).get("id")) for p in padres]
+        padres, duda = ramas_padre(razon, show)
         if not padres:
             return nada("espera a una rama pero no se sabe cuál (sin padre ni lane/t_ en el motivo)")
-        padre = padres[0]
+        if duda:
+            return nada(f"espera a varias ramas y no se identifican todas ({duda}): se deja")
+        estados = {p: padre_en_base(f"lane/{p}", base) for p in padres}
+        if any(e is None for e in estados.values()):
+            falta = next(p for p, e in estados.items() if e is None)
+            return nada(f"no se pudo comprobar lane/{falta} en {base}; se reintenta en la próxima pasada")
+        pendientes = [p for p, e in estados.items() if e is False]
+        estado = False if pendientes else True
+        padre = pendientes[0] if pendientes else padres[0]
         rama = f"lane/{padre}"
-        estado = padre_en_base(rama, base)
+        todas = ", ".join(f"lane/{p}" for p in padres)
         n_esperas = sum(1 for c in (show or {}).get("comments") or []
                         if str(c.get("body") or "").startswith(f"{PREFIJO} espera cumplida"))
         if estado is True:
             if n_esperas >= max(cfg.max_reintentos, 1):
                 return nada("la espera ya se cumplió y se reencoló antes: no se repite (aviso a la Integradora)")
             return Accion(tid, board, lane_name, "espera_cumplida",
-                          f"{PREFIJO} espera cumplida: {rama} ya está en {base}; reencolada")
-        if estado is None:
-            return nada(f"no se pudo comprobar {rama} en {base}; se reintenta en la próxima pasada")
+                          f"{PREFIJO} espera cumplida: {todas} ya {'está' if len(padres) == 1 else 'están'} en {base}; reencolada")
         return Accion(tid, board, lane_name, "espera_sha",
-                      f"{PREFIJO} espera a que el SHA de {rama} esté en {base}; se reencola solo al cumplirse",
-                      pasa_a_scheduled=True, espera={"padre": padre, "rama": rama, "base": base})
-    # 2. Transitorio
-    if re.search(cfg.transitorios, razon, re.I):
+                      f"{PREFIJO} espera a que el SHA de {todas} esté en {base}; se reencola solo al cumplirse",
+                      pasa_a_scheduled=True,
+                      espera={"padre": padre, "rama": rama, "base": base, "ramas": [f"lane/{p}" for p in padres]})
+    # 2. Transitorio: solo si el evento de bloqueo lo marca (kind=transient) y además el texto es de los conocidos
+    if kind_bloqueo(show) == "transient" and re.search(cfg.transitorios, razon, re.I):
         hechos, agotado = reintentos_hechos(show)
         if hechos >= cfg.max_reintentos:
             if agotado:
@@ -292,7 +331,7 @@ class Desatascador:
                 vistos[name] = lane
         return vistos
 
-    def planificar(self, cfg: Ajustes | None = None) -> list[Accion]:
+    def planificar(self, cfg: Ajustes | None = None, *, limite: float | None = None) -> list[Accion]:
         """Solo lectura: lo que haría ahora sobre las bloqueadas (y las `scheduled` con espera de SHA registrada)."""
         cfg, now = cfg or self.ajustes(), self.clock()
         state, out, carriles = _State(self.state_path), [], self._carriles()
@@ -306,6 +345,9 @@ class Desatascador:
                 except Exception as exc:
                     log.warning("desatascador: no se pudo listar %s en %s: %s", status, board, exc)
             for card in cards:
+                if limite is not None and time.monotonic() > limite:
+                    log.warning("desatascador: tope de tiempo de la pasada; el resto queda para la siguiente")
+                    return out
                 lane = carriles.get(str(card.get("assignee") or ""))
                 if lane is None or lane.board != board:
                     continue
@@ -336,7 +378,7 @@ class Desatascador:
         cfg = cfg or self.ajustes()
         if not cfg.activo:
             return []
-        plan = self.planificar(cfg)
+        plan = self.planificar(cfg, limite=time.monotonic() + cfg.tope_pasada_s)
         state = _State(self.state_path)
         if cfg.seco:
             state.data["informe_seco"] = [a.__dict__ for a in plan]
@@ -393,13 +435,30 @@ class Desatascador:
 
 
 class DesatascadorTicker:
-    """Bucle del runner: cada `minutos` una pasada y, pasada la hora, un resumen al día. Un fallo no tumba el runner."""
+    """Bucle del runner: cada `minutos` una pasada y, pasada la hora, un resumen al día. Un fallo no tumba el runner.
+
+    `tick()` NO bloquea el bucle principal: la pasada (una lectura de Hermes por tarjeta y consultas de git remoto) corre
+    en su propio hilo y, si la anterior sigue viva, no se lanza otra. Cada pasada lleva un tope de tiempo (`tope_pasada_s`)."""
 
     def __init__(self, des: Desatascador, clock: Callable[[], float] = time.time):
         self.des, self.clock = des, clock
         self._last = 0.0
+        self._hilo: threading.Thread | None = None
 
     def tick(self) -> list[Accion]:
+        if self._hilo is not None and self._hilo.is_alive():
+            return []
+        try:
+            if not self.des.ajustes().activo:
+                return []
+        except Exception as exc:
+            log.warning("desatascador falló: %s", exc)
+            return []
+        self._hilo = threading.Thread(target=self.tick_sync, name="desatascador", daemon=True)
+        self._hilo.start()
+        return []
+
+    def tick_sync(self) -> list[Accion]:
         from .resumen_carriles import MADRID
         now = self.clock()
         try:
