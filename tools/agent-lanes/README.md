@@ -230,6 +230,16 @@ Oscar. El recordatorio no aprueba ni ejecuta nada: el silencio nunca es OK.
 En el runner de oscar-hq la prioridad va invertida respecto a lo habitual: **mayor número = más prioritario**. El hub no la
 cambia; cualquier cola, orden o escalada que se escriba aquí debe respetarla.
 
+## Aviso «hilo principal sin latir, planificador vivo» (t_564166df, `supervisor.principal_sin_latir`)
+El runner tiene dos hilos que latían en `.state/runner-latido.json`: el planificador (reclama tareas) y el principal
+(mantenimiento: limpieza de worktrees, avisos, integración). Si el principal se queda atascado (p. ej. un
+`git worktree remove` que agota 300 s) pero el planificador sigue al día, el runner parece sano y nadie se enteraba.
+Regla: si el principal lleva más de `runner.principal_parado_segundos` (por defecto **600 s**, en `lanes.yaml`) sin
+latir mientras el planificador está al día, el monitor avisa ALTA con «hilo principal sin latir, planificador vivo».
+La alerta no se repite más de una vez cada 30 min por la misma causa (y el tope diario de avisos del monitor sigue
+aplicando). Solo avisa: no reinicia el runner. Si es el planificador el que está parado, aplica el aviso de runner
+colgado de siempre.
+
 ## Otros
 - Tests: `cd tools/agent-lanes && py -3.12 -m pytest -q`.
 - Una pasada de un carril: `py -3.12 runner.py --lane claude-ops --once`. Estado: `py -3.12 lanes.py status`

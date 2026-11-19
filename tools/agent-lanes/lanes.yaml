@@ -24,6 +24,9 @@ runner:
   # el monitor avisa ALTA si lleva `latido_parado_segundos` sin latir con el proceso vivo (runner colgado). Si además no había
   # workers en vuelo, `reinicio_auto_colgado` lanza `lanes.py restart --drain --colgado` (máx. 1/hora); con workers solo avisa.
   latido_parado_segundos: 300
+  # Hilo principal sin latir con el planificador al día: pasados estos segundos el monitor avisa «hilo principal sin latir,
+  # planificador vivo» (una vez cada 30 min). Solo avisa: no reinicia nada.
+  principal_parado_segundos: 600
   reinicio_auto_colgado: false  # apagado hasta cubrir el falso positivo de un tick lento (revisión 3-nov)
   # Límite de RAM por worker (MB de RSS del claude y sus hijos). Pasado, se corta el worker y se avisa al DM de Oscar.
   # 0 = sin límite. 4096 × 6 workers cabe en los 32 GB del PC con margen para el sistema; se mide cada N segundos.

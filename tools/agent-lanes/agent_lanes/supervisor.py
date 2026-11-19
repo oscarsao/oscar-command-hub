@@ -14,8 +14,12 @@ Qué cubre cada pieza (el reloj y los procesos se inyectan: sin red, sin Telegra
   `claude`; si pasa del límite, lo corta y avisa. Con 6 workers a la vez, uno desbocado se llevaba a los demás por
   delante (OOM del 27-09).
 
-Todo se configura en lanes.yaml `runner:` (`latido_parado_segundos`, `reinicio_auto_colgado`, `worker_ram_mb`,
-`worker_ram_intervalo_segundos`).
+- **Hilo principal sin latir** (`principal_sin_latir`): el planificador late pero el bucle principal (mantenimiento,
+  `git worktree remove`...) lleva más de `principal_parado_segundos` (600 s) sin latir. No reinicia nada: solo avisa
+  (el monitor, como mucho una vez cada 30 min por la misma causa).
+
+Todo se configura en lanes.yaml `runner:` (`latido_parado_segundos`, `principal_parado_segundos`, `reinicio_auto_colgado`,
+`worker_ram_mb`, `worker_ram_intervalo_segundos`).
 """
 from __future__ import annotations
 
@@ -36,6 +40,8 @@ RESTART_FILE = ROOT / ".state" / "supervisor.json"
 DEFAULT_PARADO_SECS = 180.0      # sin latir más de esto = runner colgado (el aviso sale en < 5 min con el sondeo del monitor)
 DEFAULT_RAM_MB = 0               # 0 = sin límite; lanes.yaml fija el valor real
 DEFAULT_RAM_INTERVALO = 15.0
+DEFAULT_PRINCIPAL_PARADO_SECS = 600.0   # hilo principal sin latir con el planificador vivo = aviso
+AVISO_COOLDOWN = 1800.0          # misma causa, como mucho un aviso cada 30 min
 RESTART_COOLDOWN = 3600.0        # máximo un reinicio automático por hora (como ciego.py)
 
 
@@ -91,6 +97,19 @@ def evaluar(data: dict | None, now: float, parado_secs: float = DEFAULT_PARADO_S
         return "colgado", (f"el planificador lleva {int(edad // 60)} min {int(edad % 60)} s sin latir"
                            + (f" (workers en vuelo: {', '.join(busy)})" if busy else ""))
     return "ok", ""
+
+
+def principal_sin_latir(data: dict | None, now: float, umbral: float = DEFAULT_PRINCIPAL_PARADO_SECS,
+                        parado_secs: float = DEFAULT_PARADO_SECS) -> tuple[bool, str]:
+    """(avisar, detalle): `principal_edad_s` > `umbral` mientras el planificador sigue al día (`parado_secs`). Si el
+    planificador también está parado es otro caso («colgado», `evaluar`), no este. Sin marca principal no avisa."""
+    if not data or not data.get("pid") or not data.get("principal_at") or not data.get("planificador_at"):
+        return False, ""
+    principal_edad_s = now - float(data["principal_at"])
+    if now - float(data["planificador_at"]) > parado_secs or principal_edad_s <= umbral:
+        return False, ""
+    return True, (f"hilo principal sin latir, planificador vivo: {int(principal_edad_s // 60)} min "
+                  f"{int(principal_edad_s % 60)} s sin latir el principal")
 
 
 def colgado_sin_workers(now: float | None = None, parado_secs: float = DEFAULT_PARADO_SECS, path: Path = FILE,

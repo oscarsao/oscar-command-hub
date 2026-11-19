@@ -57,7 +57,7 @@ WATCH_PROCS = ("claude", "python", "pythonw", "node", "chrome", "hermes", "cloud
 LOG_LEVEL_RE = re.compile(r"\b(WARNING|ERROR|CRITICAL)\b")
 # Silencio del DM de 23:00 a 08:00 (30-09): solo pasan las caídas reales (runner, Hermes, servicios, listado de tareas).
 QUIET_START, QUIET_END = 23, 8
-OUTAGE_KEYS = ("runner-dead", "runner-hung", "gw-dead", "health-", "list-fail", "db-down", "db-slow", "vercel-prod", "battery-low")
+OUTAGE_KEYS = ("runner-dead", "runner-hung", "runner-principal", "gw-dead", "health-", "list-fail", "db-down", "db-slow", "vercel-prod", "battery-low")
 PROD_EVERY = 300      # s entre comprobaciones de Vercel (producción) y del servidor (health + Dokploy)
 DB_EVERY = 300        # s entre sondas de la base de Supabase (01-10: saturada 30-09 y 01-10)
 DB_MAX_CONNS = 45     # AVISO por encima (el plan Micro admite 60)
@@ -594,6 +594,13 @@ class Monitor:
                     self._colgado_accion = accion
             else:
                 self._colgado_accion = ""
+            sin_latir, det_principal = supervisor.principal_sin_latir(
+                data, time.time(), float(cfg.get("principal_parado_segundos") or supervisor.DEFAULT_PRINCIPAL_PARADO_SECS), parado)
+            self.condition("runner-principal-parado", sin_latir and not draining,
+                           f"El runner de carriles: {det_principal}. Sigue reclamando tareas, pero no hace el "
+                           "mantenimiento (limpieza de worktrees, avisos, integración).",
+                           "mira el log del runner; si no hay workers en vuelo, Programador de tareas → "
+                           "'agent-lanes runner' → Finalizar y Ejecutar.", min_hits=1, every=supervisor.AVISO_COOLDOWN)
             self.condition("runner-hung", estado == "colgado" and not draining,
                            f"El runner de carriles está colgado: {detalle}. No reclama tareas nuevas."
                            + (f"\n🔧 {self._colgado_accion}." if getattr(self, "_colgado_accion", "") else ""),
