@@ -1,8 +1,10 @@
 # Segundo ordenador como worker de agent-lanes
 
-Estado: **borrador (19-nov-2026)**. Esta guía y `scripts/instalar_worker_remoto.ps1` dejan un segundo PC Windows 11
-**listo para trabajar**, pero hay un bloqueo conocido del runner (sección 7) que impide arrancarlo a la vez que el
-equipo principal. Hasta que ese bloqueo se arregle, todo lo de aquí es preparación sin riesgo.
+Estado: **19-nov-2026, el código del hub ya soporta varios equipos** (sección 7). Esta guía y
+`scripts/instalar_worker_remoto.ps1` dejan un PC Windows 11 **listo para trabajar** como un equipo más del mismo kanban.
+Lo que falta no es código del hub: es el **alta del equipo en `hub.workers`** y los cambios del esquema que lista la
+sección 7 (los hace Oscar en oscar-hq). Está pensado para **N equipos** (el de Oscar, el de Ángel, el de María…), no
+para uno solo: cada equipo es un `worker` con su id, sus topes y, si hace falta, sus propios carriles.
 
 Este fichero es público (el repo del hub lo es): no contiene secretos, cuentas, correos ni ids de chat, y no debe
 llegar a tenerlos. Donde hace falta un dato privado, dice **de dónde sale**, no cuál es.
@@ -15,6 +17,8 @@ llegar a tenerlos. Donde hace falta un dato privado, dice **de dónde sale**, no
   y no se puede compartir. En el `.env` del equipo principal, a 19-nov, no hay `KANBAN_BACKEND` (es decir, `hermes`
   salvo que lo fije el entorno del servicio): **antes de nada hay que confirmar que el corte F2 a supabase está hecho**
   (`decisions/2026-11-02-kanban-supabase-espejo.md`, pasos 1 a 3). Si no lo está, esto no se puede usar todavía.
+- Cada equipo reclama con **su id** (`HUB_WORKER_ID`): el kanban sabe de quién es cada reserva, solo el dueño la renueva
+  o la cierra, y una reserva sin latido caduca sola (sección 7). Sirve igual para un tercero y un cuarto equipo.
 - El segundo equipo **no** es un segundo cerebro: no lleva bots de Telegram, ni integrador, ni despliegues. Solo
   reclama tarjetas, trabaja en worktrees `lane/<id>` y empuja esas ramas. Fusionar, desplegar y las migraciones siguen
   siendo del equipo principal y de Oscar (CLAUDE.md global, sección 1).
@@ -93,15 +97,17 @@ el script solo lo lee y dice qué nombres están rellenos, nunca imprime un valo
 |---|---|---|
 | `KANBAN_BACKEND` | sí | `supabase` (no es un secreto) |
 | `HUB_DB_DSN` | sí | Cadena de conexión Postgres del rol `hub_core` del proyecto Supabase de Oscar HQ. **Sale del gestor de contraseñas de Oscar** (o del panel de Supabase, apartado de conexión; el rol `hub_core` viene del esquema F2-01 y su contraseña la maneja Oscar). No está en el repo, ni en lanes.yaml ni en ningún chat. Pásala por un canal privado y pégala directamente en el `.env` |
-| `HUB_WORKER_ID` | sí | Nombre **único** de este equipo (p. ej. `pc2-<lugar>`). No es secreto. Es el dueño que queda escrito en cada reserva (`lock=` en el evento `claimed`). Sin él se usa el nombre del equipo; ponlo explícito para que no cambie si renombras el PC |
+| `HUB_WORKER_ID` | sí | Nombre **único** de este equipo (p. ej. `pc2-<lugar>`): **minúsculas, números, `-` o `_`, de 2 a 63 caracteres** (el mismo formato que `hub.workers.id`; el hostname de Windows va en mayúsculas y se pasa a minúsculas, pero ponlo explícito para que no cambie si renombras el PC). No es secreto. Es el dueño que queda escrito en cada reserva (`lock=` en el evento `claimed`) y **debe existir y estar activo en `hub.workers`: el alta la hace Oscar** (si es un PC de otra persona, además `externo = true` y el ajuste `workers_externos` encendido). Sin alta, el kanban rechaza reclamar y el carril se pausa 5 min entre intentos |
 | `TELEGRAM_BOT_TOKEN` y `TELEGRAM_CHAT_ID` | no | Solo si quieres que este equipo **envíe** avisos de inicio/fin. Salen del `.env` del equipo principal (mismo canal privado). Sin ellos, este equipo trabaja en silencio y el estado se ve en el kanban y en el panel de Telegram del principal |
 
 **No pongas en este equipo**: `CARRILES_BOT_TOKEN` (dos procesos escuchando al mismo bot se pisan), `INTEGRATOR_ENABLED=true`
 (el integrador solo corre en el principal), `BOARD_GUARD_APPLY=true`, ni claves de Oscar HQ (`OHQ_API_KEY`). El script
 marca como FALTA las dos primeras.
 
-Prueba de la conexión, solo lectura: `-ProbarConexion` (ejecuta `runner.py --check`, que comprueba el contrato del
-esquema `hub.*`, sin reclamar nada).
+Prueba de la conexión, solo lectura: `-ProbarConexion` (ejecuta `runner.py --check`, sin reclamar nada). Comprueba, en
+este orden: el contrato del esquema `hub.*` (sale 3 si falla), el **guard de los workers** (sello y sonda, sale 4) y si el
+kanban **aceptaría hoy reclamar** a este equipo (alta y activo en `hub.workers`, interruptor de externos y sello
+aprobado, sale 5).
 
 ## 5. `lanes.yaml` y la RAM de este equipo
 
@@ -112,13 +118,23 @@ No hay un `lanes.yaml` propio por equipo. Lo que **sí** se ajusta por equipo si
   `pnpm`/`tsc` ronda varios GB; hubo un OOM el 27-09): **16 GB → 2**, 32 GB → 3 (el script imprime la cifra de tu
   equipo). Empieza en **1** durante la prueba.
 - `max_parallel` por carril (oscarhq 4, hub 2, review 2) no hace falta tocarlo: manda el tope global.
+- **Ajustes por equipo dentro del propio `lanes.yaml`** (versionado, sin editarlo a mano en cada PC), por id de worker:
 
-Lo que **no** se puede por equipo hoy (no existe en el código): elegir qué carriles corren. `runner.py --all` los
-corre todos; `runner.py --lane X` corre uno solo, pero el candado `.state/runner.lock` impide dos procesos. Si quieres
-limitar carriles, la salida provisional es una **edición local** de `lanes.yaml` (rutas, o quitar carriles) marcada con
-`git update-index --skip-worktree tools/agent-lanes/lanes.yaml`; cuesta un conflicto en cada `git pull` que toque ese
-fichero, así que es mejor evitarlo con el mismo usuario `oscar` y todos los repos. Mejora propuesta (no hecha): una
-variable `LANES_ONLY` en el `.env` del equipo.
+  ```yaml
+  runner:
+    max_workers: 6                     # el del equipo principal (el global)
+    workers:
+      pc2-casa:   {max_workers: 2, lanes: [claude-hub, claude-scraper]}
+      pc-angel:   {max_workers: 1}
+  ```
+
+  Orden de prioridad del tope: `--max-workers N` > `runner.workers.<id>.max_workers` > `runner.max_workers`. `lanes`
+  limita qué carriles corre ese equipo con `--all` (sin la clave, todos; un carril que no existe se avisa y, si no queda
+  ninguno, el runner no arranca). Así un equipo sin el repo de NextJobs, por ejemplo, no tiene que tocar el fichero.
+  Cada equipo cuenta SUS workers: con dos PC el límite real de la suma es la suma de los topes, no el global.
+- **Segador de reservas caducadas:** cada runner lo ejecuta cada 60 s (`runner.release_stale_seconds`) con tope 3
+  (`runner.release_stale_max_attempts`; 0 lo apaga; el `.env` manda con `RELEASE_STALE_MAX_ATTEMPTS` y
+  `RELEASE_STALE_SECONDS`). Solo con el backend `supabase`; con `hermes` va apagado (su dispatcher ya lo hacía).
 
 ## 6. Comprobar antes de arrancar
 
@@ -126,42 +142,64 @@ variable `LANES_ONLY` en el `.env` del equipo.
 powershell -NoProfile -ExecutionPolicy Bypass -File tools\agent-lanes\scripts\instalar_worker_remoto.ps1 -Comprobar -ProbarConexion -ProbarClaude
 ```
 
-Debe terminar en `Resumen: LISTO` (o, mientras exista el bloqueo de la sección 7, en `PREPARADO ... bloqueo conocido`;
-nunca en `NO LISTO`). Sin `-Comprobar` escribe además `tools\agent-lanes\.state\informe-segundo-worker.txt`. Códigos de
-salida: 0 listo; 1 hay FALTA o BLOQ.
+Debe terminar en `Resumen: LISTO` (nunca en `NO LISTO`). Sin `-Comprobar` escribe además
+`tools\agent-lanes\.state\informe-segundo-worker.txt`. Códigos de salida: 0 listo; 1 hay FALTA. Además de las
+herramientas, los repos y el `.env`, comprueba (sin escribir nada) el **sello y la sonda del guard** de este clon
+(sección 7, H11) y, con `-ProbarConexion`, la admisión en el kanban.
 
-## 7. Bloqueo conocido del runner: `reconcile()` (hay que arreglarlo antes de arrancar)
+## 7. Cómo conviven varios equipos en el mismo kanban (resuelto en el código, 19-nov)
 
-Al arrancar, cada carril ejecuta `LaneRunner.reconcile()` (`agent_lanes/runner.py`): bloquea toda tarjeta en `running`
-de su carril que **no tenga un PID vivo en el `.state/` local**, porque da por hecho que «solo este runner consume el
-carril». Con dos equipos eso es falso: el segundo runner vería las tarjetas que está ejecutando el principal, no
-encontraría su PID y las **bloquearía** («runner reiniciado: la tarea quedó en running sin proceso vivo»); y al revés,
-cada reinicio del principal bloquearía las del segundo. El diccionario de tarjeta del backend supabase tampoco expone
-`lease_owner`, así que hoy no hay forma de distinguirlas.
+La auditoría del 19-nov (`integrador-docs/AUDITORIA_SEGUNDO_WORKER_2026-11-19.markdown`) encontró que el claim era
+atómico pero el runner asumía un solo proceso. Lo que hace ahora el código (todo con el backend `supabase`; con `hermes`
+el comportamiento es idéntico al de siempre, hay pruebas de paridad):
 
-Arreglo propuesto (tarjeta aparte, carril claude-hub, con pruebas; **no incluido en esta rama**):
+| Hallazgo | Qué hace ahora |
+|---|---|
+| H1 `reconcile` | La tarjeta trae `lease_owner`, `lease_until` y la hora del servidor. Al arrancar, un runner solo da por huérfanas **sus** reservas sin proceso vivo; una `running` de otro equipo ni se mira, ni se mata un pid, ni se bloquea. `lanes status` la muestra como `remoto` (`t_xxxx@pc2-casa`), no como huérfana |
+| H3 admisión | `claim` comprueba en `hub.workers` que el worker existe y está activo, el interruptor `workers_externos` (si es externo) y el sello del guard. Falla cerrado. No llama a `hub.claim` (elige ella la tarjeta y se saltaría los filtros del runner) |
+| H4 reloj | Toda fecha que se guarda (reserva, eventos, comentarios, runs, tarjeta) es `now()` del **servidor**: un PC con el reloj mal puesto no acorta ni alarga reservas |
+| H5 dueño | El latido solo renueva la reserva propia. `block`, `complete`, `request_review` y `reopen_review` se rechazan si la reserva **viva** es de otro. Si el dueño perdió la reserva, el latido lo detecta: el runner **corta su `claude`** y abandona sin bloquear, sin pasar a review y sin avisar por Telegram (esa tarjeta ya es de otro). Detección: hasta un latido (240 s) |
+| H6 segador | Un ticker del runner llama a `release_stale`: lo caducado (hora del servidor) vuelve a `blocked`, y a `triage` al 3.er intento, con un evento `lease_expired` y un comentario en la tarjeta. Varios runners a la vez es seguro |
+| H7 | Las lecturas ya no escriben si no hay nada que promover. Se acepta que `_assign` deje pasar una `running` sin dueño (solo existe en lo importado de Hermes) |
+| H9 | Misma rama `lane/<id>` para todos (sin sufijo de equipo, para no romper el flujo ni la revisión): la **guarda** es el dueño de la reserva. Un equipo que la pierde deja de escribir (se le corta el `claude`) y el que la reclama sigue desde `origin/lane/<id>`. El comentario de claim lleva `equipo=<id>` |
+| H10 | `serialize_paths` (migraciones) tiene ahora un cerrojo transaccional entre equipos (`claim_serial`); topes y carriles por equipo en `lanes.yaml` (sección 5); el estado local `.state` sigue siendo por PC (cada checkout el suyo) y se anota el equipo en el estado de cada tarea. Un claim rechazado por admisión pausa el carril 5 min en vez de martillear |
+| H11 guard | `runner.py --check` comprueba el **sello** (sha256 de hook, settings, política, esquemas y roles contra `contract/guard-manifest.json`) y una **sonda** que ejecuta el hook real (un push a master y un alembic remoto deben dar exit 2). El sello se anota en `hub.workers.version` y, si existe el ajuste `guard_hash_aprobado`, `claim` lo exige |
 
-1. `SupabaseKanban._task_dict` expone `lease_owner` (ya se guarda en `hub.tasks`).
-2. `reconcile()` (y el equivalente del carril review, si lo tiene) solo tratan como huérfanas las `running` cuyo `lease_owner` es **este**
-   `HUB_WORKER_ID` (o `None`).
-3. Revisar el resto de lectores de `list_status(..., "running")` y de `.state/tasks/<id>.json` por si asumen un solo runner
-   (`status`, `drain`, `atascos`, el panel).
-4. Prueba con dos `HUB_WORKER_ID` contra el Postgres desechable (`HUB_TEST_DSN`, ver README, «Backend del kanban»).
+**Si cambias el guard** (`contract/guard.py`, settings, política, esquemas, roles): regenera el sello con
+`py -3.12 -m agent_lanes.guard_hash --write` y commitéalo en el mismo cambio; un test falla si se olvida y el runner no
+arranca con un sello roto (salida 4).
 
-Hasta que esté fusionado, el script marca `BLOQ` y devuelve 1. Mientras tanto, solo se puede hacer la **fase A**: todo
-lo de las secciones 1 a 6 (no reclama nada).
+**Quién actúa sobre una tarjeta `running` de otro equipo.** Oscar desde Telegram, el integrador y el revisor usan el mismo
+cliente: una reserva **viva** de otro equipo no se puede cerrar ni bloquear desde fuera (se rechaza con el motivo y queda
+en el log); una **caducada** sí (está abandonada y la libera el segador de todos modos). Para parar a un equipo vivo:
+`workers_externos` a `false` (kill-switch de los PC de otras personas), `lanes.py restart --drain` en ese PC, o esperar a
+que su reserva caduque.
+
+**Lo que este código espera del esquema real de oscar-hq** (no está en este repo; lo hace Oscar en su carril):
+
+- H2: `hub.task_runs.profile/lease_owner/lease_until` y `hub.tasks.lease_ttl/block_recurrences/created_by_worker/extra`
+  (la migración 20261108 no los tiene; `check_contract()` lo dice y el corte no debe hacerse sin esto).
+- `hub.workers` con el alta de cada equipo (`id`, `activo`, `externo`) y `hub.ajustes` con `workers_externos`; el rol
+  `hub_core` ya puede actualizar `last_seen`, `version` y `hostname` (el runner los escribe al arrancar).
+- Opcional: la clave `guard_hash_aprobado` en `hub.ajustes` (texto o lista de sellos; sin ella no se exige sello) y darla de
+  alta en `hub.ajuste_valido`. Sin esa clave el control queda en `--check`.
+- H8: un rol por equipo (`hub_worker_<id>`) con GRANT por columnas en lugar de compartir `hub_core`. Hoy cualquier DSN de
+  `hub_core` puede escribir cualquier tarjeta: **no repartas el DSN a un equipo en el que no confíes**.
+- Nota: `hub.claim` topa el ttl a 2 h y `claim_ttl_seconds` de los carriles largos es 7500 s; el claim de este backend
+  no usa esa función por eso (acepta cualquier ttl > 0).
 
 ## 8. Arrancar y comprobar que reclama una tarjeta de prueba
 
-Solo con la sección 7 resuelta y el script en `LISTO`.
+Solo con el script en `LISTO` y el alta del equipo hecha por Oscar (sección 7).
 
 1. **Una pasada en primer plano, un solo worker** (no registra nada):
    ```powershell
    cd C:\Users\oscar\oscar-command-hub\tools\agent-lanes
    py -3.12 runner.py --all --once --max-workers 1
    ```
-   Debe escribir `kanban: backend=supabase` y `contrato hermes OK` (el mensaje es histórico: es el contrato del
-   kanban), y salir sin bloquear ninguna tarjeta ajena.
+   Debe escribir `kanban: backend=supabase`, `kanban: worker=<tu id>`, `contrato hermes OK` (el mensaje es histórico: es
+   el contrato del kanban), `guard de workers OK`, `segador de reservas activo` y salir sin bloquear ninguna tarjeta
+   ajena (verás `reserva de otro equipo (...); no se toca` por cada tarjeta del principal).
 2. **Tarjeta de prueba** (la crea Oscar o el integrador con la skill `tarjeta-carril`): carril `claude-hub`, título
    `[PRUEBA segundo worker]`, tamaño S, cuerpo: «No cambies ningún fichero. Comenta el valor de HUB_WORKER_ID de tu
    entorno si lo conoces, y termina». Crea 2 o 3 iguales: reclama el primer runner que las vea, así que verás repartirse
@@ -193,6 +231,9 @@ Todo es reversible y no borra datos de nadie:
 
 ## 10. Lo que queda por decidir (para Oscar)
 
-- Confirmar que el corte F2 a supabase está hecho (sección 0) y, si no, cuándo se hace.
-- Autorizar la tarjeta del bloqueo de la sección 7 (tamaño M, tocan `runner.py` y `kanban_api.py`).
-- Si el segundo equipo ha de tener rol de base de datos propio (`hub_core_<equipo>`) en vez de compartir `hub_core`.
+- Confirmar que el corte F2 a supabase está hecho (sección 0) y, si no, cuándo se hace, junto con los cambios de esquema
+  de la sección 7 (H2: columnas; alta de cada equipo en `hub.workers`; ajuste `guard_hash_aprobado`).
+- Si cada equipo ha de tener rol de base de datos propio (`hub_worker_<id>`, H8) en vez de compartir `hub_core`: recomendado
+  antes de dar un DSN a una persona que no sea Oscar.
+- Revisar la PR que cierra el bloqueo de la sección 7 antes de integrarla (toca `runner.py`, `kanban_api.py`, un módulo
+  nuevo y el guard; es del carril hub, y integrar es del integrador).

@@ -20,8 +20,11 @@
 .PARAMETER Informe
   Ruta donde escribir el informe tambien en modo -Comprobar (opcional). En modo normal se escribe siempre.
 .PARAMETER ProbarConexion
-  Ejecuta `runner.py --check` (contrato del kanban, solo lectura) para probar HUB_DB_DSN. Es opcional porque
-  abre una conexion real con la base del hub; imprime solo el codigo de salida y las lineas 'kanban:' y 'contrato'.
+  Ejecuta `runner.py --check` (solo lectura) para probar HUB_DB_DSN: contrato del esquema hub.*, sello y sonda del
+  guard de los workers y si el kanban aceptaria reclamar a ESTE equipo (alta y activo en hub.workers, interruptor de
+  workers externos). Es opcional porque abre una conexion real con la base del hub; imprime solo el codigo de salida y
+  las lineas relevantes (nunca el DSN). Codigos de runner.py --check: 3 contrato roto, 4 guard no apto, 5 el kanban
+  no aceptaria reclamar.
 .PARAMETER EnvFile
   Ruta alternativa del .env a validar (por defecto tools/agent-lanes/.env). Solo se lee.
 .PARAMETER ProbarClaude
@@ -57,7 +60,7 @@ function Add-Fila([string]$Nivel, [string]$Que, [string]$Detalle = "") {
     if ($Detalle) { $linea += " - $Detalle" }
     Write-Host $linea -ForegroundColor $color
 }
-# Niveles: OK, HECHO (accion realizada en modo normal), AVISO (revisar), FALTA (hay que arreglarlo), BLOQ (limite conocido del codigo)
+# Niveles: OK, HECHO (accion realizada en modo normal), AVISO (revisar), FALTA (hay que arreglarlo)
 
 function Get-Cmd([string]$Nombre) {
     $c = Get-Command $Nombre -ErrorAction SilentlyContinue | Select-Object -First 1
@@ -273,8 +276,13 @@ if (-not (Test-Path -LiteralPath $EnvFile)) {
     if ($vars.ContainsKey("HUB_DB_DSN") -and $vars["HUB_DB_DSN"] -and ($vars["HUB_DB_DSN"] -notmatch "^postgres(ql)?://")) {
         Add-Fila "AVISO" "HUB_DB_DSN" "no empieza por postgresql:// (formato no reconocido)"
     }
-    if ($vars.ContainsKey("HUB_WORKER_ID") -and $vars["HUB_WORKER_ID"] -and ($vars["HUB_WORKER_ID"] -eq $env:COMPUTERNAME)) {
-        Add-Fila "AVISO" "HUB_WORKER_ID" "igual al nombre del equipo: vale si es unico entre todos los workers"
+    if ($vars.ContainsKey("HUB_WORKER_ID") -and $vars["HUB_WORKER_ID"]) {
+        # Mismo formato que el CHECK de hub.workers.id: minusculas, numeros, - o _ (2 a 63 caracteres). Distinto = el kanban lo rechaza.
+        if ($vars["HUB_WORKER_ID"] -cnotmatch "^[a-z0-9][a-z0-9_-]{1,62}$") {
+            Add-Fila "FALTA" "HUB_WORKER_ID con formato no valido" "usa solo minusculas, numeros, - o _ (por ejemplo pc2-casa); debe coincidir con el alta que hace Oscar en hub.workers"
+        } elseif ($vars["HUB_WORKER_ID"] -eq $env:COMPUTERNAME.ToLowerInvariant()) {
+            Add-Fila "AVISO" "HUB_WORKER_ID" "igual al nombre del equipo: vale si es unico entre todos los workers"
+        }
     }
     # Variables que NO deben estar en un worker secundario (duplicarian al equipo principal).
     foreach ($n in @("CARRILES_BOT_TOKEN")) {
@@ -295,24 +303,31 @@ if ($ProbarConexion) {
     if (-not $pyOk) { Add-Fila "FALTA" "probar conexion" "necesita py -3.12" }
     else {
         $r = Invoke-Quiet $py @("-3.12", (Join-Path $LanesDir "runner.py"), "--check")
-        $lineas = @($r.Salida -split "`r?`n" | Where-Object { $_ -match "kanban:|contrato" } | ForEach-Object { $_ -replace "(postgres(ql)?://)\S+", '$1<oculto>' })
+        $lineas = @($r.Salida -split "`r?`n" | Where-Object { $_ -match "kanban:|contrato|guard|admision|aceptaria|^\s+- " } | ForEach-Object { $_ -replace "(postgres(ql)?://)\S+", '$1<oculto>' })
         $resumen = ($lineas -join " | ")
-        if ($r.Codigo -eq 0) { Add-Fila "OK" "runner.py --check" "contrato del kanban OK. $resumen" }
-        else { Add-Fila "FALTA" "runner.py --check" "codigo $($r.Codigo). $resumen" }
+        if ($r.Codigo -eq 0) { Add-Fila "OK" "runner.py --check" "contrato del kanban, guard de workers y admision OK. $resumen" }
+        else {
+            $que = switch ($r.Codigo) { 3 { "contrato del esquema roto o sin conexion" } 4 { "guard de los workers no apto (sello o sonda)" } 5 { "el kanban no aceptaria reclamar a este equipo (pidele a Oscar el alta en hub.workers)" } default { "fallo" } }
+            Add-Fila "FALTA" "runner.py --check" "codigo $($r.Codigo): $que. $resumen"
+        }
     }
 }
 
-# ---------------------------------------------------------------- 4. Limite conocido del codigo y tarea programada
+# ---------------------------------------------------------------- 4. Guard de los workers y tarea programada
 Write-Host ""
-Write-Host "-- 4. Estado del runner" -ForegroundColor White
-$runnerPy = Join-Path $LanesDir "agent_lanes\runner.py"
-if (Test-Path -LiteralPath $runnerPy) {
-    $txt = Get-Content -LiteralPath $runnerPy -Raw -Encoding UTF8
-    if ($txt -notmatch "lease_owner") {
-        Add-Fila "BLOQ" "reconcile() no distingue workers" "este codigo bloquearia al arrancar las tarjetas 'running' de OTRO equipo (guia, seccion 7). No registres la tarea programada hasta que ese limite se arregle"
-    } else {
-        Add-Fila "OK" "reconcile() consciente del dueno de la reserva" "el runner menciona lease_owner"
-    }
+Write-Host "-- 4. Guard de los workers y estado del runner" -ForegroundColor White
+$manifest = Join-Path $LanesDir "contract\guard-manifest.json"
+if (-not (Test-Path -LiteralPath (Join-Path $LanesDir "agent_lanes\multiworker.py")) -or -not (Test-Path -LiteralPath $manifest)) {
+    Add-Fila "FALTA" "clon del hub desactualizado" "falta el soporte de varios equipos (agent_lanes\multiworker.py o contract\guard-manifest.json): git -C $HubRoot pull --ff-only"
+} elseif (-not $pyOk) {
+    Add-Fila "FALTA" "guard de los workers sin comprobar" "hace falta py -3.12"
+} else {
+    # Solo lectura: recalcula el sello de los ficheros del guard y ejecuta el hook real con una orden prohibida (push a master).
+    Push-Location $LanesDir
+    try { $g = Invoke-Quiet $py @("-3.12", "-m", "agent_lanes.guard_hash") } finally { Pop-Location }
+    $detalle = (($g.Salida -split "`r?`n" | Where-Object { $_ -match "^- |^aviso:" } | ForEach-Object { $_.Trim() }) -join " | ")
+    if ($g.Codigo -eq 0) { Add-Fila "OK" "guard de los workers" "sello y sonda OK (este equipo lleva el mismo guard aprobado). $detalle" }
+    else { Add-Fila "FALTA" "guard de los workers NO apto" "$detalle (git pull y, si sigue, avisa a Oscar: este equipo no debe ejecutar workers)" }
 }
 $task = Get-ScheduledTask -TaskName "agent-lanes runner" -ErrorAction SilentlyContinue
 if ($task) { Add-Fila "AVISO" "tarea 'agent-lanes runner'" "ya existe (estado $($task.State)). El script no la toca" }
@@ -320,10 +335,9 @@ else { Add-Fila "OK" "tarea 'agent-lanes runner'" "no registrada (el registro es
 
 # ---------------------------------------------------------------- Resumen e informe
 $faltas = @($script:Filas | Where-Object { $_.Nivel -eq "FALTA" }).Count
-$bloq   = @($script:Filas | Where-Object { $_.Nivel -eq "BLOQ" }).Count
 $avisos = @($script:Filas | Where-Object { $_.Nivel -eq "AVISO" }).Count
 Write-Host ""
-$veredicto = if ($faltas -gt 0) { "NO LISTO: $faltas por arreglar" } elseif ($bloq -gt 0) { "PREPARADO, pero con $bloq bloqueo(s) conocido(s) del codigo: no arrancar el runner" } else { "LISTO para el paso 8 de la guia" }
+$veredicto = if ($faltas -gt 0) { "NO LISTO: $faltas por arreglar" } else { "LISTO para el paso 8 de la guia" }
 Write-Host "Resumen: $veredicto ($avisos aviso(s))" -ForegroundColor White
 
 $destino = $Informe
@@ -335,4 +349,4 @@ if ($destino) {
     [System.IO.File]::WriteAllText($destino, ((@($cab) + @($cuerpo)) -join "`n") + "`n", (New-Object System.Text.UTF8Encoding($false)))
     Write-Host "Informe: $destino"
 }
-if ($faltas -gt 0 -or $bloq -gt 0) { exit 1 } else { exit 0 }
+if ($faltas -gt 0) { exit 1 } else { exit 0 }

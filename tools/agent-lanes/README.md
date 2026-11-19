@@ -409,6 +409,11 @@ Todo el hub crea su cliente del kanban con `kanban_api.backend_for(board, author
   `hermes`. Se resuelve una vez por proceso (rige al reiniciar) y el runner lo escribe al arrancar: `kanban: backend=…`.
   Vuelta atrás = una variable y un reinicio.
 
+Varios equipos sobre el mismo kanban (`supabase`): cada runner es un `worker` (`HUB_WORKER_ID`, dado de alta en `hub.workers`);
+solo el dueño renueva o cierra una reserva viva, una caducada la libera el segador de cada runner, toda fecha guardada es
+del servidor, `reconcile` solo toca reservas propias y `runner.py --check` comprueba el sello y la sonda del guard
+(`py -3.12 -m agent_lanes.guard_hash --write` tras cambiarlo). Guía completa: `docs/segundo-ordenador.md`.
+
 `tools/kanban_migrar.py` (F2-03): `copiar` (copia coherente en solo lectura), `recuentos`, `importar [--seco]`,
 `comparar`, `exportar`/`volver` (hub.* -> SQLite con el esquema exacto de Hermes, en una carpeta nueva fuera de la de
 Hermes) y `exportar --espejo --retener 14` (espejo nocturno). Solo imprime recuentos agregados e ids.
