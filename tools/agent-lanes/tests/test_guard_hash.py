@@ -180,3 +180,21 @@ def test_lanes_por_equipo_filtran_lo_que_corre_y_un_carril_inexistente_no_arranc
     monkeypatch.setattr(runner, "load_runner_settings", lambda: {
         "max_workers": 6, "workers": {"pc-b": {"max_workers": 2, "lanes": ["no-existe"]}}})
     assert runner.main(["--check", "--all"]) == 3  # ningún carril de este equipo existe: no arranca callado
+
+
+def test_check_supabase_sin_alta_en_el_kanban_no_arranca(humo, monkeypatch):
+    class SinAlta(_Kanban):
+        def admission_report(self):
+            return ["worker 'pc-b' sin alta en hub.workers (la da de alta Oscar)"]
+
+    monkeypatch.setattr(runner, "backend_for", lambda board, **kw: SinAlta())
+    assert runner.main(["--check"]) == 5
+
+
+def test_check_supabase_con_alta_sale_0(humo, monkeypatch):
+    class ConAlta(_Kanban):
+        def admission_report(self):
+            return []
+
+    monkeypatch.setattr(runner, "backend_for", lambda board, **kw: ConAlta())
+    assert runner.main(["--check"]) == 0

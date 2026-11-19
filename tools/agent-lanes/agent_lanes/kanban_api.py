@@ -524,58 +524,15 @@ class SupabaseKanban(KanbanComun):
                         "actualiza el checkout del hub (git pull) y reinicia el runner")
         return None
 
-    def register_worker(self) -> bool:
-        """Latido de alta: escribe `version` (sello del guard) y `last_seen` de este worker en hub.workers (hub_core
-        solo puede tocar last_seen, version y hostname). Sin la tabla o sin alta no hace nada. True = escrito."""
-        def run(cur):
-            if not self._regclass(cur, "hub.workers"):
-                return False
-            cur.execute("UPDATE hub.workers SET version = COALESCE(%s, version), last_seen = now(), hostname = %s "
-                        "WHERE id = %s", (self.guard_digest, socket.gethostname(), self.worker))
-            return cur.rowcount == 1
-        return self._write("register-worker", run)
-
-    # --- admisión de workers (H3, H11) ---------------------------------------------------------------------------
-    @staticmethod
-    def _regclass(cur, name: str) -> bool:
-        cur.execute("SELECT to_regclass(%s) IS NOT NULL", (name,))
-        return bool(cur.fetchone()[0])
-
-    def _ajuste(self, cur, key: str):
-        if not self._regclass(cur, "hub.ajustes"):
-            return None
-        cur.execute("SELECT valor FROM hub.ajustes WHERE clave = %s", (key,))
-        r = cur.fetchone()
-        return _obj(r[0]) if r else None
-
-    def _admission(self, cur, ttl: int) -> str | None:
-        """Por qué ESTE worker no puede reclamar (None = puede). Replica lo que comprueba `hub.claim` (worker activo,
-        interruptor de workers externos) sin llamarla: `hub.claim` elige ella la tarjeta (se saltaría los filtros del
-        runner: prevención de choques, retenciones, exclusiones), inserta columnas de run que este backend no lee y
-        topa el ttl a 2 h, menos que `claim_ttl_seconds` de los carriles largos (max_runtime + 300 s).
-
-        Falla CERRADO: un worker sin alta, desactivado, externo con el interruptor apagado o con un guard distinto del
-        aprobado no reclama. Un esquema sin `hub.workers` (el de pruebas F2) no registra workers y no se comprueba."""
-        if int(ttl) <= 0:
-            return f"ttl inválido: {ttl}"
-        if not self._regclass(cur, "hub.workers"):
-            return None
-        cur.execute("SELECT activo, externo FROM hub.workers WHERE id = %s", (self.worker,))
-        w = cur.fetchone()
-        if w is None:
-            return f"worker {self.worker!r} sin alta en hub.workers (la da de alta Oscar)"
-        activo, externo = w
-        if not activo:
-            return f"worker {self.worker!r} desactivado en hub.workers"
-        if externo and self._ajuste(cur, KEY_EXTERNOS) is not True:
-            return "los workers externos están apagados (ajuste workers_externos)"
-        aprobado = self._ajuste(cur, KEY_GUARD)
-        if aprobado:  # sin el ajuste no se exige sello (oscar-hq aún no lo define); con él, es obligatorio
-            lista = [aprobado] if isinstance(aprobado, str) else list(aprobado)
-            if self.guard_digest not in lista:
-                return (f"el guard de {self.worker!r} ({(self.guard_digest or 'sin sello')[:12]}) no es el aprobado: "
-                        "actualiza el checkout del hub (git pull) y reinicia el runner")
-        return None
+    def admission_report(self) -> list[str]:
+        """¿Aceptaría hoy el kanban un `claim` de este worker? Vacío = sí; si no, los motivos (sin alta, desactivado,
+        externos apagados, guard distinto del aprobado). Solo lectura: lo usa `runner.py --check` y el instalador."""
+        try:
+            with self._tx() as cur:
+                why = self._admission(cur, 1)
+        except _DBFailure as exc:
+            return [f"kanban supabase no disponible: {exc}"]
+        return [why] if why else []
 
     def register_worker(self) -> bool:
         """Latido de alta: escribe `version` (sello del guard) y `last_seen` de este worker en hub.workers (hub_core

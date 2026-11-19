@@ -158,6 +158,13 @@ def main(argv: list[str] | None = None) -> int:
         log.info("guard de workers OK (sello %s)", (guard_hash.current_digest() or "?")[:12])
         for warning in guard_hash.user_hook_warnings():
             log.warning("guard: %s", warning)
+        if args.check:  # H3: ¿aceptaría hoy el kanban un claim de este equipo? (alta, activo, externos, sello del guard)
+            report = getattr(hermes_for(first_board), "admission_report", None)
+            refused = report() if report else []
+            if refused:
+                log.error("el kanban NO aceptaría reclamar a este equipo (%s):\n  - %s", worker, "\n  - ".join(refused))
+                return 5
+            log.info("admisión OK: %s está dado de alta y puede reclamar", worker)
     if args.check:
         return 0
     if not acquire_single_instance(LOCK):

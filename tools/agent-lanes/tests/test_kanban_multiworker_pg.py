@@ -406,3 +406,17 @@ def test_check_contract_pide_las_tablas_de_workers(a):
     assert a.check_contract() == []
     sql(a, "DROP TABLE hub.ajustes")
     assert any("ajustes" in p for p in a.check_contract())
+
+
+def test_admission_report_dice_si_el_kanban_aceptaria_reclamar(a, hub_dsn):  # noqa: F811
+    assert a.admission_report() == []
+    assert any("sin alta" in m for m in make(hub_dsn, "pc-nuevo").admission_report())
+    add_worker(a, "pc-maria", externo=True)
+    maria = make(hub_dsn, "pc-maria")
+    assert any("externos" in m for m in maria.admission_report())  # interruptor apagado
+    sql(a, "UPDATE hub.ajustes SET valor = 'true'::jsonb WHERE clave = 'workers_externos'")
+    assert maria.admission_report() == []
+    sql(a, "INSERT INTO hub.ajustes (clave, valor) VALUES ('guard_hash_aprobado', '[\"ok\"]'::jsonb)")
+    assert any("guard" in m for m in maria.admission_report())
+    assert make(hub_dsn, "pc-maria", guard_digest="ok").admission_report() == []
+    assert not sql(a, "SELECT 1 FROM hub.task_events", fetch=True)  # solo lectura: no dejó rastro
