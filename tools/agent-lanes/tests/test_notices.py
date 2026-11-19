@@ -262,7 +262,7 @@ def test_review_status_line_has_files_tests_and_cost():
     n = FakeNotifier()
     LaneRunner(LANE, hermes=FakeHermes(tasks=[{"id": "t_1", "title": "T", "body": "B"}]), git=FakeGit(),
                worker=FakeWorker([out]), verifier=FakeVerifier(), notify=n).run_once()
-    assert n.edits[-1][1].split("\n")[2] == "en review · 2 archivos · tests OK · 1,7 $ · paso 4/6"
+    assert n.edits[-1][1].split("\n")[2] == "en review · 2 archivos · tests OK · modelo sonnet · 1,7 $ · paso 4/6"
     assert "ok" not in n.edits[-1][1].split("\n")[1:]  # el resumen del worker no va a Telegram
 
 
@@ -320,7 +320,7 @@ def test_review_done_is_a_new_alert_and_cleanup_error_goes_to_card_only(tmp_path
     assert r.run_once() == {"t_1": "done"}
     assert n.silent == [False] and n.deleted == [77]
     text = n.msgs[0]
-    assert text.startswith("✅ t_1") and "review aprobada · 2 archivos · tests OK · 1,4 $" in text
+    assert text.startswith("✅ t_1") and "review aprobada · 2 archivos · tests OK · revisó sonnet · 1,4 $" in text
     assert "lista para merge" in text and "limpieza local pendiente" in text
     assert_clean(text)
     assert any(c[0] == "comment" and RAW_GIT in c[2] for c in rh.calls)

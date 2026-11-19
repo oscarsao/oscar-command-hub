@@ -150,7 +150,7 @@ defaults:
   # Modelo para tarjetas «Tamaño: S»; si una S falla o se bloquea con él, el siguiente intento usa `model`.
   model_small: haiku
   # Alias que una tarjeta puede fijar con `model_override` (gana sobre model_small y model). Otro valor se ignora.
-  model_permitidos: [sonnet, haiku]
+  model_permitidos: [sonnet, haiku, fable]
   effort: medium
   max_budget_usd: 3.0
   # Por carril, no global. Se queda en 1: cada carril trabaja un repo y dos workers en el mismo repo/checkout podrían
@@ -399,9 +399,9 @@ lanes:
     kind: review
     reviews: [claude-oscarhq, claude-migrateam, claude-scraper, claude-nextjobs, claude-hub]
     role: roles/revisor.md
-    model: sonnet
+    model: fable   # 19-nov-2026 (Oscar): la revisión la hace Fable; la implementación sigue en sonnet
     effort: medium
-    max_budget_usd: 1.5
+    max_budget_usd: 3.0   # tope por tarjeta revisada (configurable); medir la primera con Fable antes de abrir el lote
     max_runtime_seconds: 1800
     max_review_rounds: 2
     max_parallel: 2   # 5-nov-2026 (Oscar, botón): 2 revisiones a la vez para vaciar 15 tarjetas en cola; volver a 1 si hay lentitud o OOM

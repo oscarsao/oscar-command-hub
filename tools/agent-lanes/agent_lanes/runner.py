@@ -516,7 +516,8 @@ class LaneRunner:
                 warns = [] if tid in self._preflighted else self._preflight(lane, tid, task)
                 warns += list(task.get("clasificador_avisos") or [])
                 self.notify("running", tid, task,
-                            status_line("en curso", f"aplicando cambios de revisión (ronda {len(feedback)})"
+                            status_line("en curso", f"modelo {modelo}",
+                                        f"aplicando cambios de revisión (ronda {len(feedback)})"
                                         if feedback else None), branch_link=bool(feedback) and not ops,
                             alert=bool(warns), bullets=[f"⚠️ {w}" for w in warns] or None)
                 cwd = self.git.prepare_worktree(lane, tid, task) if ops else self.git.prepare_worktree(lane, tid)
@@ -619,7 +620,7 @@ class LaneRunner:
             # El resumen completo queda en la tarjeta (request-review); aquí solo la línea de estado.
             self.notify("review", tid, task, status_line(
                 "en review", files_label(len(result.get("changed_files") or [])), test_label(check.test_exit),
-                money(outcome.cost_usd)), changed_files=result.get("changed_files"), for_oscar=result.get("for_oscar"))
+                f"modelo {modelo}", money(outcome.cost_usd)), changed_files=result.get("changed_files"), for_oscar=result.get("for_oscar"))
             return "review"
 
     def _pausar_por_cuota(self, tid: str, task: dict, raw_error: str | None) -> str:

@@ -226,7 +226,7 @@ def test_runner_marca_el_fallback_solo_con_fallos_reales(tmp_path):
 def test_choose_model_override_de_la_tarjeta(caplog):
     assert choose_model(LANE, {"id": "t_1", "model_override": "haiku"}) == "haiku"
     assert choose_model(LANE, {"id": "t_1", "model_override": " Haiku "}) == "haiku"  # normaliza
-    assert choose_model(LANE, {"id": "t_1", "model_override": "fable"}) == LANE.model  # fable ya no está en la lista blanca por defecto
+    assert choose_model(LANE, {"id": "t_1", "model_override": "fable"}) == "fable"  # fable está en la lista por defecto (19-11)
     assert choose_model(LANE, {"id": "t_1", "model_override": ""}) == LANE.model
     assert choose_model(LANE, {"id": "t_1", "model_override": None}) == LANE.model
     assert choose_model(LANE_S, {**PEQUENA, "model_override": "sonnet"}) == "sonnet"  # gana sobre model_small
@@ -260,7 +260,25 @@ def test_runner_fallback_con_override_y_modelo_en_el_claim(tmp_path):
 
 def test_load_lanes_model_permitidos_por_defecto():
     from agent_lanes.config import load_lanes
-    assert all(set(l.model_permitidos) >= {"sonnet", "haiku"} and "fable" not in l.model_permitidos for l in load_lanes().values())
+    lanes = load_lanes()
+    assert all(set(l.model_permitidos) >= {"sonnet", "haiku", "fable"} for l in lanes.values())
+    # implementación sigue en sonnet; el carril review carga fable con tope de 3 USD
+    assert all(l.model == "sonnet" for l in lanes.values() if l.kind != "review")
+    assert lanes["review"].model == "fable" and lanes["review"].max_budget_usd == 3.0
+
+
+def test_override_fable_se_respeta_solo_si_esta_en_la_lista():
+    sin_fable = Lane(**{**LANE.__dict__, "model_permitidos": ("sonnet", "haiku")})
+    assert choose_model(LANE, {"id": "t_1", "model_override": "fable"}) == "fable"
+    assert choose_model(sin_fable, {"id": "t_1", "model_override": "fable"}) == sin_fable.model
+
+
+def test_prompt_de_review_de_interfaz_pide_manifiesto():
+    from agent_lanes.review import review_prompt
+    meta = {"branch": "lane/t_1", "head_sha": "abc"}
+    ui = review_prompt(LANE, {"id": "t_1", "title": "Nueva pantalla de ajustes", "body": ""}, meta)
+    otra = review_prompt(LANE, {"id": "t_2", "title": "Arreglar el runner", "body": "bug"}, meta)
+    assert "ds-manifiesto" in ui and "ds-manifiesto" not in otra
 
 
 class FakeHermesFalla(FakeHermesCuota):

@@ -87,7 +87,22 @@ def implementation_metadata(show: dict) -> dict:
     return {}
 
 
+INTERFAZ_MARCAS = ("interfaz", "pantalla", "dashboard", "componente", "frontend", "sistema de diseño", "[ui", " ui ")
+COMPROBACION_INTERFAZ = (
+    "\n# Comprobación extra (tarjeta de interfaz)\n"
+    "Verifica que la pantalla usa SOLO componentes del manifiesto del sistema de diseño "
+    "(`dashboard/docs/ds-manifiesto.md`) y que no define componentes propios nuevos. Si define alguno, "
+    "es un hallazgo `major` y pide sustituirlo por el componente del manifiesto.\n"
+)
+
+
+def es_tarjeta_interfaz(task: dict) -> bool:
+    texto = f" {task.get('title') or ''} {task.get('body') or ''} ".lower()
+    return any(m in texto for m in INTERFAZ_MARCAS)
+
+
 def review_prompt(lane: Lane, task: dict, meta: dict) -> str:
+    extra = COMPROBACION_INTERFAZ if es_tarjeta_interfaz(task) else ""
     return (
         f"Revisa la tarea {task['id']} del carril {lane.name} (repo {lane.repo}).\n"
         f"Estás en su worktree, en la rama {meta['branch']} @ {meta['head_sha']}. Base: {lane.base_ref}.\n"
@@ -95,6 +110,7 @@ def review_prompt(lane: Lane, task: dict, meta: dict) -> str:
         f"Resumen del implementador: {meta.get('summary') or task.get('result') or '(sin resumen)'}\n"
         f"Archivos declarados: {', '.join(meta.get('changed_files') or []) or '(ninguno)'}\n\n"
         f"# Tarea: {task.get('title', '')}\n\n{task.get('body') or ''}\n"
+        f"{extra}"
     )
 
 
@@ -450,7 +466,7 @@ class ReviewRunner:
             cost = sum(float(c or 0) for c in (meta.get("cost_usd"), outcome.cost_usd))
             self.notify("done", task, status_line(
                 "review aprobada", files_label(len(meta.get("changed_files") or [])),
-                test_label(check.test_exit), money(cost), "lista para merge",
+                test_label(check.test_exit), f"revisó {self.lane.model}", money(cost), "lista para merge",
                 None if cleaned else "limpieza local pendiente"), alert=True,
                 changed_files=meta.get("changed_files"), buttons=True,
                 summary=verdict.get("summary") or meta.get("summary"), for_oscar=meta.get("for_oscar"),
