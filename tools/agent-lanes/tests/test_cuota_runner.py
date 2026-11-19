@@ -223,6 +223,46 @@ def test_runner_marca_el_fallback_solo_con_fallos_reales(tmp_path):
     assert r._model_fallback("t_1", PEQUENA) is PEQUENA
 
 
+def test_choose_model_override_de_la_tarjeta(caplog):
+    assert choose_model(LANE, {"id": "t_1", "model_override": "haiku"}) == "haiku"
+    assert choose_model(LANE, {"id": "t_1", "model_override": " Haiku "}) == "haiku"  # normaliza
+    assert choose_model(LANE, {"id": "t_1", "model_override": "fable"}) == LANE.model  # fable ya no está en la lista blanca por defecto
+    assert choose_model(LANE, {"id": "t_1", "model_override": ""}) == LANE.model
+    assert choose_model(LANE, {"id": "t_1", "model_override": None}) == LANE.model
+    assert choose_model(LANE_S, {**PEQUENA, "model_override": "sonnet"}) == "sonnet"  # gana sobre model_small
+    with caplog.at_level(logging.WARNING, logger="agent_lanes"):  # fuera de la lista: se ignora y se anota
+        assert choose_model(LANE, {"id": "t_1", "model_override": "opus; rm -rf"}) == LANE.model
+        assert choose_model(LANE_S, {**PEQUENA, "model_override": "gpt"}) == "haiku"
+    assert "no está en model_permitidos" in caplog.text
+    estrecha = Lane(**{**LANE.__dict__, "model_permitidos": ("haiku",)})  # lista blanca por carril
+    assert choose_model(estrecha, {"id": "t_1", "model_override": "fable"}) == LANE.model
+    assert choose_model(estrecha, {"id": "t_1", "model_override": "haiku"}) == "haiku"
+
+
+def test_choose_model_override_con_fallback_vuelve_a_lane_model():
+    assert choose_model(LANE, {"id": "t_1", "model_override": "haiku", "model_fallback": True}) == LANE.model
+    assert choose_model(LANE_S, {**PEQUENA, "model_override": "haiku", "model_fallback": True}) == LANE.model
+
+
+def test_runner_fallback_con_override_y_modelo_en_el_claim(tmp_path):
+    bloqueo = {"kind": "blocked", "payload": {"kind": "transient", "reason": "verificación mecánica fallida"}}
+    tarea = {"id": "t_1", "title": "T", "body": "B", "model_override": "haiku"}
+    for events, esperado in (([], False), ([bloqueo], True)):
+        h = FakeHermesCuota([tarea], events=events)
+        r, *_ = runner_cuota(tmp_path, [ok_outcome()], lane=LANE, hermes=h)
+        assert bool(r._model_fallback("t_1", tarea).get("model_fallback")) is esperado
+    h = FakeHermesCuota([tarea])
+    r, *_ = runner_cuota(tmp_path, [ok_outcome()], lane=LANE, hermes=h)
+    r.run_once()
+    claims = [c[2] for c in h.calls if c[0] == "comment" and "LANE claim" in c[2]]
+    assert claims and "modelo=haiku" in claims[0]
+
+
+def test_load_lanes_model_permitidos_por_defecto():
+    from agent_lanes.config import load_lanes
+    assert all(set(l.model_permitidos) >= {"sonnet", "haiku"} and "fable" not in l.model_permitidos for l in load_lanes().values())
+
+
 class FakeHermesFalla(FakeHermesCuota):
     """block falla `block_fallos` veces y unblock `unblock_fallos` veces antes de funcionar (el estado sigue en running)."""
 

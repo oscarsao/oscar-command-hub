@@ -40,9 +40,33 @@ class WorkerOutcome:
     raw_error: str | None
 
 
+MODELOS_PERMITIDOS = ("sonnet", "haiku")  # por defecto de Lane.model_permitidos (lanes.yaml)
+
+
+def model_override(lane: Lane, task: dict) -> str:
+    """`model_override` de la tarjeta si es un alias de la lista blanca del carril (`model_permitidos`); si no, "".
+    Un valor fuera de la lista se ignora y se anota: texto libre de una tarjeta nunca llega como argumento a claude."""
+    raw = task.get("model_override")
+    valor = raw.strip().lower() if isinstance(raw, str) else ""
+    if not valor:
+        return ""
+    if valor in tuple(getattr(lane, "model_permitidos", MODELOS_PERMITIDOS)):
+        return valor
+    log.warning("%s: model_override %r no está en model_permitidos; se ignora", task.get("id"), str(raw)[:40])
+    return ""
+
+
 def choose_model(lane: Lane, task: dict) -> str:
-    """Modelo del worker: `model_small` (haiku) para una tarjeta `Tamaño: S`, salvo que ya haya fallado o se haya
-    bloqueado con él (el runner marca `model_fallback` en la tarea): entonces `lane.model`."""
+    """Modelo del worker. Gana el `model_override` de la tarjeta (si está en la lista blanca del carril), salvo que ya
+    haya fallado con él (el runner marca `model_fallback`): entonces `lane.model`. Sin override: `model_small` (haiku)
+    para una tarjeta `Tamaño: S`, salvo que ya haya fallado o se haya bloqueado con él: entonces `lane.model`."""
+    override = model_override(lane, task)
+    if override:
+        if task.get("model_fallback"):
+            log.info("%s: falló con el modelo fijado %s; este intento usa %s", task.get("id"), override, lane.model)
+            return lane.model
+        log.info("%s: modelo fijado en la tarjeta: %s", task.get("id"), override)
+        return override
     small = getattr(lane, "model_small", "")
     if small and grandes.es_pequena(task):
         if task.get("model_fallback"):
