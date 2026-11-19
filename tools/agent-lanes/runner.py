@@ -324,7 +324,7 @@ def main(argv: list[str] | None = None) -> int:
     # Segador de reservas caducadas (H6): solo con el kanban compartido (supabase); con hermes lo hace su dispatcher.
     reap = reaper_settings(kanban_backend_name(), settings, env)
     reaper = LeaseReaper(hermes_for(first_board), max_attempts=reap["max_attempts"], seconds=reap["seconds"],
-                         alert=drain.dm_alert(env)) if reap["enabled"] else None
+                         alert=drain.dm_alert(env), requeue=reap["requeue"]) if reap["enabled"] else None
     if reaper:
         log.info("segador de reservas activo: cada %ss, triage al %sº intento", int(reap["seconds"]), reap["max_attempts"])
     paradas = None
