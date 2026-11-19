@@ -21,6 +21,8 @@ class Lane:
     model: str = "sonnet"
     effort: str = "medium"
     model_small: str = ""  # modelo barato para tarjetas `Tamaño: S` (grandes.es_pequena); "" = siempre `model`
+    # Lista blanca de alias que una tarjeta puede fijar con `model_override` (worker.choose_model); otro valor se ignora.
+    model_permitidos: tuple[str, ...] = ("sonnet", "haiku")
     max_budget_usd: float = 3.0
     max_parallel: int = 1
     role: str = "roles/implementador.md"
@@ -118,6 +120,10 @@ def load_lanes(path: Path | None = None) -> dict[str, Lane]:
         merged = {**defaults, **cfg}
         for f in TUPLE_FIELDS:
             merged[f] = tuple(merged.get(f) or ())
+        if merged.get("model_permitidos"):
+            merged["model_permitidos"] = tuple(str(m).strip().lower() for m in merged["model_permitidos"])
+        else:
+            merged.pop("model_permitidos", None)  # ausente o vacía: la de fábrica (nunca sin lista blanca)
         merged["telegram"] = _chat_thread(merged.get("telegram"))
         merged["serialize_paths"] = tuple(merged.get("serialize_paths") or ())
         lanes[name] = Lane(name=name, **merged)

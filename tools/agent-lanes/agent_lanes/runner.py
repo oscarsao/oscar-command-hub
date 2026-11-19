@@ -22,6 +22,7 @@ from .notices import (MessageStore, TaskNotices, files_label, fit_reason, money,
                       question_text, questions_block, render, status_line, test_label)
 from .preflight import pide_lo_imposible, preflight_warnings
 from .telegram import in_scope, telegram_target
+from .worker import choose_model, model_override
 
 log = logging.getLogger("agent_lanes")
 
@@ -472,7 +473,10 @@ class LaneRunner:
         ops = lane.kind == "ops"
         where = "workspace ops (sin git)" if ops else \
             "consulta (sin rama)" if clasificador.es_consulta(task) else f"rama lane/{tid}"
-        self.hermes.comment(tid, f"LANE claim por {lane.name} · session_id={session_id} · {where}")
+        task = self._model_fallback(tid, task)  # antes del claim: el comentario lleva el modelo realmente usado
+        modelo = choose_model(lane, task)
+        log.info("%s: modelo=%s", tid, modelo)
+        self.hermes.comment(tid, f"LANE claim por {lane.name} · session_id={session_id} · {where} · modelo={modelo}")
 
         repeated = ""  # nota con las respuestas previas si el worker insiste en una pregunta ya respondida
         with Heartbeat(lambda: self.hermes.heartbeat(tid), lane.heartbeat_seconds):
@@ -522,7 +526,6 @@ class LaneRunner:
                     conflict = self.git.sync_base(lane, cwd)
                     if conflict:
                         task = {**task, "merge_conflict": conflict}
-                task = self._model_fallback(tid, task)
                 outcome = self.worker.run(lane, task, cwd, session_id, timeout=max(60.0, deadline - self.clock()))
                 resumes = 0
                 while (not outcome.ok and not cuota.es_cuota(outcome.raw_error) and resumes < lane.max_resumes
@@ -643,10 +646,11 @@ class LaneRunner:
         return "cuota"
 
     def _model_fallback(self, tid: str, task: dict) -> dict:
-        """Tarjeta `Tamaño: S` con model_small: si la tarjeta ya se bloqueó (transient) o falló antes con ese modelo, el
-        intento siguiente va con lane.model (`model_fallback` en la tarea; lo lee worker.choose_model). Las devoluciones
-        por cuota no cuentan. Sin poder leer el historial, se queda con el modelo barato."""
-        if not (getattr(self.lane, "model_small", "") and grandes.es_pequena(task)):
+        """Tarjeta con `model_override` válido o `Tamaño: S` con model_small: si la tarjeta ya se bloqueó (transient) o
+        falló antes con ese modelo, el intento siguiente va con lane.model (`model_fallback` en la tarea; lo lee
+        worker.choose_model). Las devoluciones por cuota no cuentan. Sin poder leer el historial, se queda con el
+        modelo elegido."""
+        if not (model_override(self.lane, task) or (getattr(self.lane, "model_small", "") and grandes.es_pequena(task))):
             return task
         try:
             events = (self.hermes.show(tid) or {}).get("events") or []
