@@ -41,6 +41,7 @@ from agent_lanes.config import ROOT, load_lanes
 from agent_lanes.git_ops import GitOps, github_slug_problem
 from agent_lanes.hermes import HermesCLI
 from agent_lanes.kanban_api import backend_for
+from agent_lanes.procid import es_el_runner
 from agent_lanes.runner import STATE_DIR, pid_alive
 from agent_lanes.status import format_rows, lane_rows, runner_alive
 from agent_lanes.status import runner_line as _runner_line
@@ -112,7 +113,7 @@ LOCK = ROOT / ".state" / "runner.lock"
 
 
 def runner_line() -> str:
-    line = _runner_line(LOCK, pid_alive, drain.active(), drain.BUSY_FILE)
+    line = _runner_line(LOCK, pid_alive, drain.active(), drain.BUSY_FILE, identidad=es_el_runner)
     pausa = cuota.texto_estado()  # pausa por cuota de Claude vigente (.state/cuota.json)
     return f"{line} · {pausa}" if pausa else line
 
@@ -178,7 +179,7 @@ def main(argv: list[str]) -> int:
         return 2
     cache: dict[str, HermesCLI] = {}
     rows = lane_rows(load_lanes(), hermes_for=lambda b: cache.setdefault(b, backend_for(b)), state_dir=STATE_DIR,
-                     pid_alive=pid_alive, runner_is_alive=runner_alive(LOCK, pid_alive))
+                     pid_alive=pid_alive, runner_is_alive=runner_alive(LOCK, pid_alive, es_el_runner))
     print(format_rows(rows, runner_line()))
     return 0
 

@@ -47,7 +47,9 @@ def runner_pid_vivo(lock: Path, pid_exists: Callable[[int], bool] | None = None)
     cuenta). Es el mismo criterio que usa `lanes.py status` para decir VIVO: sirve cuando `status` va lento o falla.
     Sin lock legible = False (no se sabe: manda `status`)."""
     try:
-        pid = int(json.loads(Path(lock).read_text(encoding="utf-8")).get("pid") or 0)
+        datos = json.loads(Path(lock).read_text(encoding="utf-8"))
+        pid = int(datos.get("pid") or 0)
+        started = datos.get("started")
     except (OSError, ValueError, AttributeError):
         return False
     if pid <= 0:
@@ -57,7 +59,19 @@ def runner_pid_vivo(lock: Path, pid_exists: Callable[[int], bool] | None = None)
             import psutil
 
             def pid_exists(p: int) -> bool:
-                return psutil.pid_exists(p) and "python" in psutil.Process(p).name().lower()
+                # 14-11-2026: Windows reutilizó el PID del runner para otro programa. Además de ser Python, su línea
+                # de comandos debe llevar runner.py y no haber nacido después de escribirse el candado.
+                if not psutil.pid_exists(p):
+                    return False
+                proc = psutil.Process(p)
+                if "python" not in proc.name().lower():
+                    return False
+                try:
+                    if "runner.py" not in " ".join(proc.cmdline()).replace("\\", "/").lower():
+                        return False
+                except (psutil.AccessDenied, OSError):
+                    pass
+                return not (started and proc.create_time() > float(started) + 5.0)
         return bool(pid_exists(pid))
     except Exception:
         return False

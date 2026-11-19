@@ -47,16 +47,24 @@ def busy_slots(busy: Path | None, pid: int | None = None) -> dict | None:
     return b.get("slots") if isinstance(b, dict) and (pid is None or b.get("pid") == pid) else None
 
 
+def _lock_data(lock: Path) -> tuple[int, float | None]:
+    d = json.loads(Path(lock).read_text(encoding="utf-8"))
+    return int(d["pid"]), d.get("started")
+
+
 def runner_line(lock: Path, pid_alive: Callable[[int], bool], drain: dict | None = None,
-                busy: Path | None = None) -> str:
+                busy: Path | None = None, identidad: Callable[[int, float | None], bool | None] | None = None) -> str:
     """Estado del runner-servicio desde .state/runner.lock (+ workers de la pasada en curso, incluido el carril
-    review, desde .state/busy.json; + drenaje en curso, si lo hay)."""
+    review, desde .state/busy.json; + drenaje en curso, si lo hay). `identidad(pid, started)`: si dice False, el PID
+    lo usa otro proceso (reutilizado, 14-11-2026) y el runner está PARADO aunque el PID exista."""
     try:
-        pid = int(json.loads(Path(lock).read_text(encoding="utf-8"))["pid"])
-    except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError):
+        pid, started = _lock_data(lock)
+    except (OSError, ValueError, KeyError, TypeError, AttributeError, json.JSONDecodeError):
         return "runner: no arrancado (sin .state/runner.lock)"
     alive = pid_alive(pid)
-    line = f"runner: {'VIVO' if alive else 'PARADO'} (pid {pid})"
+    reutilizado = bool(alive and identidad and identidad(pid, started) is False)
+    alive = alive and not reutilizado
+    line = f"runner: {'VIVO' if alive else 'PARADO'} (pid {pid}{', PID reutilizado por otro proceso' if reutilizado else ''})"
     try:
         b = json.loads(Path(busy).read_text(encoding="utf-8")) if busy else {}
     except (OSError, ValueError):
@@ -71,11 +79,13 @@ def runner_line(lock: Path, pid_alive: Callable[[int], bool], drain: dict | None
     return line
 
 
-def runner_alive(lock: Path, pid_alive: Callable[[int], bool]) -> bool:
+def runner_alive(lock: Path, pid_alive: Callable[[int], bool],
+                 identidad: Callable[[int, float | None], bool | None] | None = None) -> bool:
     try:
-        return pid_alive(int(json.loads(Path(lock).read_text(encoding="utf-8"))["pid"]))
-    except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError):
+        pid, started = _lock_data(lock)
+    except (OSError, ValueError, KeyError, TypeError, AttributeError, json.JSONDecodeError):
         return False
+    return bool(pid_alive(pid)) and not (identidad and identidad(pid, started) is False)
 
 
 def lane_rows(lanes: dict[str, Lane], *, hermes_for: Callable[[str], object], state_dir: Path,

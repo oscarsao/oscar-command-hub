@@ -76,14 +76,29 @@ class Latido:
                 log.warning("latido: no se pudo escribir (%s)", exc)
 
 
+def edades(data: dict | None, now: float) -> dict[str, int | None]:
+    """Segundos desde el último latido del planificador y del bucle principal (None = nunca latió / sin fichero)."""
+    out: dict[str, int | None] = {}
+    for parte in ("planificador", "principal"):
+        try:
+            out[f"{parte}_edad_s"] = max(0, int(now - float((data or {}).get(f"{parte}_at"))))
+        except (TypeError, ValueError):
+            out[f"{parte}_edad_s"] = None
+    return out
+
+
 def evaluar(data: dict | None, now: float, parado_secs: float = DEFAULT_PARADO_SECS,
-            pid_alive: Callable[[int], bool] | None = None) -> tuple[str, str]:
+            pid_alive: Callable[[int], bool] | None = None,
+            identidad: Callable[[int, float | None], bool | None] | None = None) -> tuple[str, str]:
     """(estado, detalle). Estados: `ok`; `colgado` (proceso vivo, planificador sin latir); `parado` (el proceso del
-    último latido ya no existe: lo cubre «runner-dead» del monitor); `sin_latido` (no hay fichero o es ilegible)."""
+    último latido ya no existe, o su PID lo usa ya otro programa: lo cubre «runner-dead» del monitor); `sin_latido`
+    (no hay fichero o es ilegible). `identidad(pid, desde)` distingue el runner de un PID reutilizado (14-11-2026)."""
     if not data or not data.get("pid"):
         return "sin_latido", "no hay latido del runner"
     if pid_alive is not None and not pid_alive(int(data["pid"])):
         return "parado", f"el proceso {data['pid']} del último latido ya no existe"
+    if identidad is not None and identidad(int(data["pid"]), data.get("desde")) is False:
+        return "parado", f"el PID {data['pid']} del último latido lo usa ahora otro proceso (PID reutilizado)"
     ultimo = data.get("planificador_at") or data.get("desde") or 0
     edad = now - float(ultimo)
     if edad > parado_secs:
