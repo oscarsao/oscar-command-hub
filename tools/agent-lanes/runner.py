@@ -34,6 +34,7 @@ from agent_lanes.deps import ShowCache, TreeReader
 from agent_lanes.hermes_answers import HermesAnswers
 from agent_lanes.reminders import Reminders
 from agent_lanes.limpieza import LimpiezaRunner, LimpiezaTicker
+from agent_lanes.desatascador import Desatascador, DesatascadorTicker
 from agent_lanes.recolector import Recolector, RecolectorTicker
 from agent_lanes import avisos_revision, workflows
 from agent_lanes.avance_workflows import AvanceTicker, AvanceWorkflows
@@ -286,6 +287,13 @@ def main(argv: list[str] | None = None) -> int:
     limpieza = None
     recolector = RecolectorTicker(Recolector(all_lanes, hermes_for, merged_pr=git.merged_pr))  # apagado salvo lanes.yaml
     paradas = None
+    desatascador = None
+    if not args.once:  # reencola solo los bloqueos estándar; apagado y en seco por defecto (bloque `desatascador:`)
+        _des_dm = env.get("OWNER_TELEGRAM_ID") or OWNER_TELEGRAM_ID
+        _des_canal = canal_avisos.de(decisions) if decisions else None
+        desatascador = DesatascadorTicker(Desatascador(
+            all_lanes, hermes_for, send=canal_avisos.emisor(_des_canal, notify, "desatascador", _des_dm),
+            state_path=ROOT / ".state" / "desatascador.json"))
     avisos_ticker = None
     wf_ticker = None
     solapes = None
@@ -401,6 +409,8 @@ def main(argv: list[str] | None = None) -> int:
             recolector.tick()
         if paradas:
             paradas.tick()
+        if desatascador:
+            desatascador.tick()
         if avisos_ticker:
             avisos_ticker.tick()
         if decisions and decisions.canal:  # tema 🎯 Decisiones: cierra lo ya resuelto y edita el contador fijado

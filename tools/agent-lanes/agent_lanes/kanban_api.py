@@ -587,6 +587,29 @@ class SupabaseKanban(KanbanComun):
             return True
         return self._write("edit", run)
 
+    def append_body_line(self, task_id: str, line: str) -> bool:
+        """Añade una línea al final del cuerpo (desatascador: `Rama-origen: lane/t_…`). Solo en blocked/scheduled."""
+        def run(cur):
+            cur.execute("UPDATE hub.tasks SET body = COALESCE(body, '') || %s, updated_at = now() "
+                        "WHERE id = %s AND board = %s AND status IN ('blocked', 'scheduled')",
+                        ("\n\n" + line.strip() + "\n", task_id, self.board))
+            if cur.rowcount != 1:
+                return False
+            self._event(cur, task_id, "edited", {"fields": ["body"]})
+            return True
+        return self._write("edit", run)
+
+    def schedule(self, task_id: str) -> bool:
+        """blocked -> scheduled (espera programada; `unblock` la saca de ahí)."""
+        def run(cur):
+            row = self._row(cur, task_id, lock=True)
+            if row is None or row["status"] != "blocked":
+                return False
+            cur.execute("UPDATE hub.tasks SET status = 'scheduled', updated_at = now() WHERE id = %s", (task_id,))
+            self._event(cur, task_id, "scheduled")
+            return True
+        return self._write("schedule", run)
+
     def link(self, parent_id: str, child_id: str) -> bool:
         from .hermes import _TID_RE
         if not (_TID_RE.match(parent_id or "") and _TID_RE.match(child_id or "")) or parent_id == child_id:

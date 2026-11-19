@@ -524,6 +524,15 @@ class HermesCLI(KanbanComun):
     def unblock(self, task_id: str) -> bool:
         return self._call("unblock", task_id).returncode == 0
 
+    def append_body_line(self, task_id: str, line: str) -> bool:
+        """Añade una línea al cuerpo (desatascador). Lee el cuerpo, lo amplía y usa `kanban edit --body`; si esta
+        versión de Hermes no lo admite devuelve False y el desatascador deja la tarjeta como está."""
+        try:
+            body = str((self.show(task_id).get("task") or {}).get("body") or "")
+        except (HermesError, json.JSONDecodeError):
+            return False
+        return self._call("edit", task_id, "--body", f"{body.rstrip()}\n\n{line.strip()}\n").returncode == 0
+
     def link(self, parent_id: str, child_id: str) -> bool:
         """Dependencia real padre -> hija (`kanban link`): la hija espera (todo) hasta que el padre esté hecho."""
         if not (_TID_RE.match(parent_id or "") and _TID_RE.match(child_id or "")):

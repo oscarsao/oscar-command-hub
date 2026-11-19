@@ -429,6 +429,14 @@ promote:
 # seco: true = solo informa (.state/recolector.json); ponlo a false cuando el informe en seco te convenza.
 recolector: {enabled: false, hora: 3, seco: true}
 
+# Desatascador (agent_lanes/desatascador.py): cada `minutos` mira las tarjetas bloqueadas y reencola solo lo estándar:
+# «Rama-origen: lane/t_…» pedida por el worker, fallos transitorios (máx. `max_reintentos` por tarjeta, espera creciente
+# desde `espera_base_min`) y espera a que el SHA del padre llegue a la base. Resumen de la mañana a `resumen_hora` (Madrid).
+# APAGADO por defecto; con enabled: true arranca en seco (solo informe en .state/desatascador.json, sin tocar nada).
+# Pon seco: false cuando `python -m agent_lanes.desatascador --dry-run` te convenza. Lo que dependa de algo fuera del repo
+# (producción, env vars, migraciones, workflows, rutas vetadas) nunca se toca: es de la Integradora.
+desatascador: {enabled: false, seco: true, minutos: 15, max_reintentos: 2, espera_base_min: 10, max_por_pasada: 5, resumen_hora: 8}
+
 # Avisos de producción del monitor (tools/monitor/prodwatch.py): fallo de un despliegue de PRODUCCIÓN en Vercel (las
 # vistas previas de lane/* no avisan; un aviso por despliegue) y salud del servidor (health_url de cada carril de
 # `integrator.lanes` + estado de su aplicación en Dokploy). Tokens por NOMBRE de variable (agent-lanes/.env), no aquí.
