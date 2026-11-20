@@ -185,6 +185,12 @@ def _build() -> dict[str, Ajuste]:
                (120, 180, 300), False),
         Ajuste("carriles.max_parallel", "Carriles", "Tareas a la vez por carril (valor por defecto)", None, "int",
                "Solo para carriles sin max_parallel propio en lanes.yaml.", 1, 3, (1, 2), True),
+        Ajuste("carriles.ocioso_aviso", "Carriles", "Avisar si los carriles de código están ociosos", "si", "opcion",
+               "Con el runner sano, sin ninguna tarjeta en running y con trabajo pendiente, avisa una vez por episodio.",
+               opciones=("si", "no")),
+        Ajuste("carriles.ocioso_minutos", "Carriles", "Minutos de ociosidad para avisar", 30, "int",
+               "Minutos sin running ni lanzamientos de los carriles de código (con pendientes) antes del aviso.", 5, 480,
+               (15, 30, 60, 120)),
     ]
     return {x.key: x for x in a + _topes()}
 

@@ -56,6 +56,8 @@ INTERVALO_S = 600             # una pasada completa (OHQ + kanban) cada 10 min c
 BOTONES_POR_MENSAJE = 8
 FINALES = ("entregada", "rechazada", "archivada")
 ESTADOS_ABIERTOS_HERMES = ("todo", "ready", "running", "blocked", "triage", "review")
+OCIOSO_PENDIENTES = ("ready", "todo", "triage", "blocked")
+OCIOSO_ETIQUETA = {"ready": "ready", "todo": "todo", "triage": "triage", "blocked": "bloqueadas"}
 PROYECTO_DE_MARCA = {"migrateam": "MigraTeam", "pildora": "Pildora", "pildora_digital_inbound": "Pildora",
                      "píldora": "Pildora", "oscarhq": "OHQ", "signal": "Signal", "nextjobs": "NextJobs",
                      "scraper": "Scraper"}
@@ -325,7 +327,10 @@ class Vigilancia:
                  hermes_tasks: Callable[[], list], show_card: Callable[[str], dict | None],
                  send: Callable[[str, list, int], dict | None], edit: Callable[[str, object, str, list], bool],
                  create_topic: Callable[[str, str], int | None] | None = None, cfg: Config | None = None,
-                 now: Callable[[], float] = time.time, triaje_cfg: dict | None = None):
+                 now: Callable[[], float] = time.time, triaje_cfg: dict | None = None,
+                 carriles_codigo: Callable[[], object] | None = None, runner_sano: Callable[[], bool] | None = None):
+        self.carriles_codigo = carriles_codigo or (lambda: [v for v in self.cfg.carriles.values() if v])
+        self.runner_sano = runner_sano or (lambda: True)
         self.estado, self.registro, self.people = estado, registro, people
         self.fetch_ohq, self.hermes_tasks, self.show_card = fetch_ohq, hermes_tasks, show_card
         self.send, self.edit, self.create_topic = send, edit, create_topic
@@ -371,7 +376,7 @@ class Vigilancia:
     def tick(self) -> dict:
         """Una pasada. Devuelve un resumen (para tests y el log). Nunca lanza por una fuente caída."""
         ahora = self._now()
-        out = {"fichas": [], "urgentes": [], "editadas": [], "resumen": None}
+        out = {"fichas": [], "urgentes": [], "editadas": [], "resumen": None, "ocioso": None}
         with self.estado._lock:
             data = self.estado.load()
             primera = not data.get("iniciado")
@@ -399,6 +404,7 @@ class Vigilancia:
             if not primera:
                 out["urgentes"] = self._urgentes(data, items, ahora)
             out["resumen"] = self._resumen(data, items, ahora)
+            out["ocioso"] = self._ociosos(data, tasks, ahora)
             data["iniciado"] = True
             self.estado.save(data)
         return out
@@ -688,6 +694,67 @@ class Vigilancia:
                 textos.append("\n".join(lines))
         data["slots"] = (data["slots"] + [key])[-30:]
         return "\n\n".join(textos)
+
+    # carriles ociosos ----------------------------------------------------------------------------------------------
+    def _ociosos(self, data: dict, tasks: list[dict], ahora: float) -> str | None:
+        """Aviso único por episodio de ociosidad de los carriles de código con el runner sano (t_c0cb5658).
+        Episodio = desde la primera pasada sin tarjeta en running ni lanzamiento reciente (`started_at`) y con pendientes
+        (ready, todo, triage o blocked) hasta que vuelve a haber una en running. Solo lee el kanban ya cargado; la única
+        lectura extra (`show_card`) es de las bloqueadas, y solo en el momento de avisar. Con el runner parado no avisa:
+        eso lo cubre el aviso de «runner parado» del monitor."""
+        est = data.setdefault("ocioso", {})
+        if str(valor("carriles.ocioso_aviso") or "si") == "no":
+            est.clear()
+            return None
+        minutos = int(valor("carriles.ocioso_minutos") or 30)
+        carriles = set(self.carriles_codigo() or ())
+        propias = [t for t in tasks if t.get("assignee") in carriles]
+        try:
+            sano = bool(self.runner_sano())
+        except Exception as exc:
+            log.info("vigilancia: salud del runner no leída: %s", exc)
+            sano = False
+        if any(t.get("status") == "running" or (_epoch(t.get("started_at")) or 0) >= ahora - minutos * 60
+               for t in propias):
+            est.clear()
+            return None
+        pend = [t for t in propias if t.get("status") in OCIOSO_PENDIENTES]
+        if not sano or not pend:
+            est.clear()
+            return None
+        est.setdefault("desde", ahora)
+        if est.get("avisado") or ahora - est["desde"] < minutos * 60:
+            return None
+        texto = self._texto_ocioso(pend, est["desde"], ahora)
+        if self._enviar(data, texto, []):
+            est["avisado"] = ahora
+            return texto
+        return None
+
+    def _texto_ocioso(self, pend: list[dict], desde: float, ahora: float) -> str:
+        from . import deps
+        por = {st: [t for t in pend if t.get("status") == st] for st in OCIOSO_PENDIENTES}
+        estado_de = {t.get("id"): t.get("status") for t in pend}
+        espera, pregunta = [], []
+        for t in por["blocked"]:
+            try:
+                show = self.show_card(t["id"]) or {}
+            except Exception:
+                show = {}
+            ids = set(deps.declared_waits(show)) | set(deps._parent_ids(show))
+            # Un padre que no está entre los pendientes (hecho o archivado) ya no retiene la tarjeta.
+            (espera if any(i in estado_de for i in ids) else pregunta).append(t)
+        lines = [f"💤 Carriles de código ociosos desde hace {hace(desde, ahora).removeprefix('hace ')}: ninguna tarjeta "
+                 "en running ni lanzamientos, y el runner late bien.",
+                 "Pendientes de esos carriles: " + ", ".join(
+                     f"{len(por[st])} {OCIOSO_ETIQUETA[st]}" for st in OCIOSO_PENDIENTES if por[st]) + "."]
+        if por["blocked"]:
+            linea = f"De las {len(por['blocked'])} bloqueadas, {len(pregunta)} esperan una respuesta tuya"
+            if pregunta:
+                vieja = min(pregunta, key=lambda t: _epoch(t.get("created_at")) or ahora)
+                linea += f" (la más antigua, {corto(vieja['id'])}, creada {hace(_epoch(vieja.get('created_at')), ahora)})"
+            lines.append(linea + f" y {len(espera)} esperan otra tarjeta.")
+        return "\n".join(lines)
 
     # permisos ----------------------------------------------------------------------------------------------------
     def permisos(self) -> list[str]:

@@ -693,8 +693,18 @@ class CommandCenter:
             estado=vg.Estado(path), registro=store, people=self.desk._people(),
             fetch_ohq=(lambda: api.vigilancia()) if api else (lambda: None), hermes_tasks=hermes_tasks,
             show_card=self._show_card, send=send, edit=edit, create_topic=getattr(self.notifier, "create_topic", None),
-            cfg=cfg, now=self._now)
+            cfg=cfg, now=self._now, carriles_codigo=self._carriles_codigo, runner_sano=self._runner_sano)
         return self._vigilancia
+
+    def _carriles_codigo(self) -> list[str]:
+        """Carriles con repo propio (los que escriben código): sin review, integrador ni los de Oscar."""
+        return [n for n, l in self.lanes.items() if getattr(l, "repo", "") and n.startswith("claude-")
+                and n != "claude-ops"]
+
+    def _runner_sano(self) -> bool:
+        from . import supervisor
+        from .runner import pid_alive
+        return supervisor.evaluar(supervisor.leer(), self._now(), pid_alive=pid_alive)[0] == "ok"
 
     def _equipo_botones(self):
         from .vigilancia_botones import EquipoBotones
