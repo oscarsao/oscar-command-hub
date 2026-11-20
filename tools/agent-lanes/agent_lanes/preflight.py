@@ -6,6 +6,7 @@ Solo avisa: nunca bloquea ni cambia la config. Un aviso de más cuesta una líne
 from __future__ import annotations
 
 import re
+from typing import Callable
 
 from .config import Lane
 
@@ -103,3 +104,118 @@ def preflight_warnings(lane: Lane, task: dict) -> list[str]:
         if path not in covered and path.strip("/").lower() in low:
             warnings.append(f"la tarjeta menciona {path}, vetado al worker; hará falta el integrador o ajustar el carril")
     return warnings
+
+
+# --- Deriva de la zona (t_6e4a5029) -------------------------------------------------------------------------------
+# Una tarjeta redactada hace días puede apuntar a una zona que ya cambió en la base (movida, borrada, reescrita) o a algo
+# ya resuelto. La tarjeta nueva lleva «SHA base de comprobación: <sha>» y «Zona: <rutas>»; aquí se compara esa zona entre
+# el SHA y origin/<base>. Solo lectura sobre git. Un fallo propio (SHA inexistente, git roto) NUNCA frena: avisa y deja pasar.
+DERIVA_DEFAULTS = {"deriva_activa": True, "dias_revalidar": 5, "deriva_max_lineas": 200}
+_SHA_LINE = re.compile(r"^[ \t>*\-]*SHA\s+base(?:\s+de\s+comprobaci[óo]n)?\s*:\s*`?([0-9a-f]{7,40})`?",
+                       re.IGNORECASE | re.MULTILINE)
+_ZONA_LINE = re.compile(r"^[ \t>*\-]*Zonas?\s*:\s*(.+)$", re.IGNORECASE | re.MULTILINE)
+
+
+def parse_deriva(body: str | None) -> tuple[str | None, list[str]]:
+    """(sha, zonas) leídos del cuerpo. Sin línea de SHA o sin zona: (None, []) → no hay comprobación y tampoco error.
+    La zona admite varias rutas separadas por comas; se limpian comillas y comillas invertidas."""
+    text = body or ""
+    sha = _SHA_LINE.search(text)
+    zona = _ZONA_LINE.search(text)
+    if not sha or not zona:
+        return None, []
+    paths = [p.strip().strip("`'\"").strip() for p in zona.group(1).split(",")]
+    return sha.group(1).lower(), [p for p in paths if p and not p.startswith("-")]
+
+
+def load_deriva_settings(raw: dict | None) -> dict:
+    """Ajustes del bloque `preflight:` de lanes.yaml con sus valores por defecto; un valor inválido cae al por defecto."""
+    raw = raw or {}
+    out = dict(DERIVA_DEFAULTS)
+    if isinstance(raw.get("deriva_activa"), bool):
+        out["deriva_activa"] = raw["deriva_activa"]
+    for key in ("dias_revalidar", "deriva_max_lineas"):
+        v = raw.get(key)
+        if isinstance(v, (int, float)) and not isinstance(v, bool) and v >= 0:
+            out[key] = v
+    return out
+
+
+class Deriva:
+    """Resultado de comparar la zona: `derivada` (hay que revalidar), `motivos` (texto llano) y `aviso` (fallo propio)."""
+
+    def __init__(self, derivada: bool = False, motivos: list[str] | None = None, aviso: str = "", sha: str = "",
+                 ref: str = ""):
+        self.derivada, self.motivos, self.aviso, self.sha, self.ref = derivada, motivos or [], aviso, sha, ref
+
+    def texto(self) -> str:
+        return f"la zona cambió en {self.ref} desde el SHA base {self.sha}: " + "; ".join(self.motivos)
+
+
+def calcular_deriva(repo: str, sha: str, ref: str, zonas: list[str], max_lineas: int, run) -> Deriva:
+    """`git diff <sha>..<ref> -- <zonas>` (solo lectura; el fetch lo hace quien llama). Deriva si hay ficheros borrados o
+    movidos, o más de `max_lineas` líneas cambiadas. `run(cmd, ...)` = subprocess.run (inyectable). Si git falla o el SHA
+    no existe: Deriva(derivada=False, aviso=...)."""
+    def git(*args):
+        return run(["git", "-C", repo, *args], capture_output=True, text=True, encoding="utf-8", errors="replace",
+                   timeout=120)
+    res = Deriva(sha=sha, ref=ref)
+    try:
+        if git("cat-file", "-e", f"{sha}^{{commit}}").returncode != 0:
+            res.aviso = f"no pude comprobar la deriva: el SHA base {sha} no existe en el repo"
+            return res
+        names = git("diff", "--name-status", "-M", f"{sha}..{ref}", "--", *zonas)
+        nums = git("diff", "--numstat", "-M", f"{sha}..{ref}", "--", *zonas)
+        if names.returncode != 0 or nums.returncode != 0:
+            err = (names.stderr or nums.stderr or "").strip()[:150]
+            res.aviso = f"no pude comprobar la deriva: git diff falló ({err})"
+            return res
+        borrados, movidos = [], []
+        for line in (names.stdout or "").splitlines():
+            parts = line.split("\t")
+            if parts[0].startswith("D") and len(parts) > 1:
+                borrados.append(parts[1])
+            elif parts[0].startswith("R") and len(parts) > 2:
+                movidos.append(f"{parts[1]} → {parts[2]}")
+        lineas = 0
+        for line in (nums.stdout or "").splitlines():
+            cols = line.split("\t")
+            if len(cols) >= 3:  # los binarios dan «-»
+                lineas += (int(cols[0]) if cols[0].isdigit() else 0) + (int(cols[1]) if cols[1].isdigit() else 0)
+    except Exception as exc:  # nunca frena por un fallo propio
+        res.aviso = f"no pude comprobar la deriva: {exc}"
+        return res
+    if borrados:
+        res.motivos.append(f"ficheros borrados ({len(borrados)}): " + ", ".join(borrados[:5]))
+    if movidos:
+        res.motivos.append(f"ficheros movidos ({len(movidos)}): " + ", ".join(movidos[:5]))
+    if lineas > max_lineas:
+        res.motivos.append(f"{lineas} líneas cambiadas (umbral {max_lineas})")
+    res.derivada = bool(res.motivos)
+    return res
+
+
+def revisar_deriva(task: dict, repo: str, ref: str, ajustes: dict, ahora: float, run,
+                   fetch: Callable[[], object] | None = None) -> tuple[str, str]:
+    """(accion, texto) para una tarjeta: «ok» (nada que decir), «aviso» (derivó pero es reciente, o fallo propio: se
+    lanza) o «bloquear» (derivó y lleva más de `dias_revalidar` días: NO se lanza). Sin línea de SHA/zona: ok."""
+    if not ajustes.get("deriva_activa", True):
+        return "ok", ""
+    sha, zonas = parse_deriva(task.get("body"))
+    if not sha or not zonas:
+        return "ok", ""
+    if fetch is not None:
+        try:
+            fetch()
+        except Exception:
+            pass  # sin fetch se compara con lo que haya; calcular_deriva avisa si falla
+    d = calcular_deriva(repo, sha, ref, zonas, int(ajustes["deriva_max_lineas"]), run)
+    if d.aviso:
+        return "aviso", d.aviso
+    if not d.derivada:
+        return "ok", ""
+    creada = task.get("created_at")
+    dias = (ahora - float(creada)) / 86400 if isinstance(creada, (int, float)) and not isinstance(creada, bool) else None
+    if dias is not None and dias > ajustes["dias_revalidar"]:
+        return "bloquear", f"tarjeta de {dias:.0f} días en cola: {d.texto()}"
+    return "aviso", d.texto()

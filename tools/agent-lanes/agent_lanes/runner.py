@@ -20,7 +20,7 @@ from .config import ROOT, Lane
 from .hermes import GUARD_LIMIT_MARK, looks_like_guard_limit
 from .notices import (MessageStore, TaskNotices, files_label, fit_reason, money, next_step, normalize_questions,
                       question_text, questions_block, render, status_line, test_label)
-from .preflight import pide_lo_imposible, preflight_warnings
+from .preflight import pide_lo_imposible, preflight_warnings, revisar_deriva
 from .telegram import in_scope, telegram_target
 from .worker import choose_model, model_override
 
@@ -125,8 +125,11 @@ class LaneRunner:
                  created_at: Callable[[int], float | None] = _proc.created_at,
                  lanes: dict | None = None, consultor: Callable | None = None, final_only=(), prevencion=None,
                  cuota_path: Path | None = None, cuota_minutos: float = cuota.DEFAULT_MINUTOS,
-                 wall_clock: Callable[[], float] = time.time):
+                 wall_clock: Callable[[], float] = time.time, run_git: Callable = _proc.run,
+                 deriva_settings: dict | None = None):
         self.lane = lane
+        self._run_git = run_git  # solo lectura: deriva de la zona (preflight.revisar_deriva)
+        self._deriva_cfg = deriva_settings  # None = se lee de lanes.yaml la primera vez
         # Pausa por cuota de Claude: .state/cuota.json junto al estado de las tareas; minutos si el error no trae la hora.
         self._cuota_path = Path(cuota_path) if cuota_path else Path(state_dir).parent / "cuota.json"
         self._cuota_minutos = cuota_minutos
@@ -511,10 +514,23 @@ class LaneRunner:
                     return self._block_console(tid, task, f"(preflight) {imposible} — lo hace el integrador", {
                         "summary": f"LIMITACION-GUARD (preflight): {imposible} — lo hace el integrador",
                         "for_oscar": "Detectado antes de lanzar el worker: esta tarjeta necesita al integrador."})
+                # Deriva de la zona (preflight.revisar_deriva): una tarjeta antigua cuya zona cambió en la base no se lanza.
+                deriva = "", ""
+                if not ops and not (feedback or answers or notes):
+                    deriva = self._deriva(lane, tid, task)
+                    if deriva[0] == "bloquear":
+                        self.hermes.comment(tid, "LANE revalidación previa: no se lanza. " + deriva[1])
+                        return self._block(tid, "needs_input", "(preflight) " + deriva[1], task,
+                                           public="la zona de la tarjeta cambió desde que se redactó",
+                                           for_oscar="La zona cambió en la base desde que se escribió la tarjeta: "
+                                                     "revísala (¿ya resuelta o invalidada?) antes de lanzarla.")
                 # Aviso previo (antes de gastar la pasada): lo que pide la tarjeta y los límites del carril no
                 # permiten. Solo informa, una vez por tarea y arranque; no bloquea ni toca la config.
                 warns = [] if tid in self._preflighted else self._preflight(lane, tid, task)
                 warns += list(task.get("clasificador_avisos") or [])
+                if deriva[0] == "aviso":
+                    warns.append(deriva[1])
+                    self.hermes.comment(tid, "LANE aviso previo: " + deriva[1])
                 self.notify("running", tid, task,
                             status_line("en curso", f"aplicando cambios de revisión (ronda {len(feedback)})"
                                         if feedback else None), branch_link=bool(feedback) and not ops,
@@ -679,6 +695,20 @@ class LaneRunner:
         except Exception as exc:  # el chequeo nunca impide trabajar
             log.warning("%s: chequeo previo falló: %s", tid, exc)
             return []
+
+    def _deriva(self, lane: Lane, tid: str, task: dict) -> tuple[str, str]:
+        """(accion, texto) de la comprobación de deriva; cualquier fallo propio es «ok» (nunca impide trabajar)."""
+        try:
+            if self._deriva_cfg is None:
+                from .config import load_preflight_settings
+                self._deriva_cfg = load_preflight_settings()
+            ref = f"{lane.remote}/{lane.base}"
+            fetch = lambda: self._run_git(["git", "-C", lane.repo, "fetch", lane.remote, lane.base],  # noqa: E731
+                                          capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120)
+            return revisar_deriva(task, lane.repo, ref, self._deriva_cfg, self._wall(), self._run_git, fetch)
+        except Exception as exc:
+            log.warning("%s: comprobación de deriva falló: %s", tid, exc)
+            return "ok", ""
 
     def _reask_if_answered(self, lane: Lane, tid: str, cwd: str, session_id: str, deadline: float, outcome):
         """(outcome, nota). Si el worker pide decisión sobre algo que Oscar YA contestó en la tarjeta (otra redacción),

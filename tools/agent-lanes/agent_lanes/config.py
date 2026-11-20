@@ -181,6 +181,16 @@ def load_runner_settings(path: Path | None = None) -> dict:
                            **(_load(path).get("runner") or {})})
 
 
+def load_preflight_settings(path: Path | None = None) -> dict:
+    """Bloque `preflight:` de lanes.yaml (deriva de la zona, preflight.py): deriva_activa, dias_revalidar,
+    deriva_max_lineas. Faltan o son inválidos = valores por defecto; un lanes.yaml ilegible tampoco frena nada."""
+    from .preflight import load_deriva_settings
+    try:
+        return load_deriva_settings(_load(path).get("preflight"))
+    except (OSError, AttributeError, yaml.YAMLError):
+        return load_deriva_settings(None)
+
+
 def kanban_backend(env: dict | None = None, path: Path | None = None, env_file: Path | None = None) -> str:
     """Backend del kanban (F2-02): `KANBAN_BACKEND` del entorno (o de `env`) > el de `.env` del hub >
     `runner.kanban_backend` de lanes.yaml > `hermes` (la CLI de Hermes de siempre). Lo valida y fija

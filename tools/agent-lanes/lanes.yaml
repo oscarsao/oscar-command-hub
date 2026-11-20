@@ -137,6 +137,16 @@ notices:
   reason_max: 1500           # motivo del bloqueo en la tarjeta (hermes block)
   text_max: 4000             # mensaje de Telegram (admite 4096): se parte por aquí
 
+# Chequeo previo (agent_lanes/preflight.py). Deriva de la zona: la tarjeta lleva «SHA base de comprobación: <sha>» y
+# «Zona: <rutas>»; antes de lanzarla se compara esa zona entre el SHA y origin/<base> (solo lectura). Si hay ficheros
+# movidos o borrados, o más de deriva_max_lineas líneas cambiadas, deriva: con la tarjeta reciente solo avisa; con más de
+# dias_revalidar días en cola NO se lanza y queda bloqueada con el motivo. Sin esas líneas en la tarjeta, no se comprueba.
+# Si el SHA no existe o git falla, avisa y deja pasar. Valores por defecto si faltan (los de abajo).
+preflight:
+  deriva_activa: true      # false = apagar la comprobación entera
+  dias_revalidar: 5        # días en cola (desde la creación) a partir de los cuales una tarjeta que derivó se frena
+  deriva_max_lineas: 200   # líneas añadidas+borradas en la zona por encima de las cuales hay deriva
+
 defaults:
   max_resumes: 2
   heartbeat_seconds: 240
