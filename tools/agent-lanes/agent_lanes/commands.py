@@ -575,7 +575,7 @@ class CommandCenter:
             lambda: rc.collect_rows(self.lanes, self.hermes_for), lambda: self.pending_decisions() + self.stuck_tasks(),
             lambda: len(queue.entries()) if queue else 0, send, path, who=who,
             now=lambda: datetime.fromtimestamp(self._now(), rc.MADRID), hour=hour,
-            extra=lambda: self.integrador_resumen()[0]).tick()
+            extra=lambda: "\n".join(x for x in (self.integrador_resumen()[0], self.linea_entrega()) if x)).tick()
 
     # --- visibilidad del integrador (t_5624611d): estado, PR de sesiones interactivas, «ver más» ---------------
 
@@ -1398,6 +1398,17 @@ class CommandCenter:
         ren = self.renotifier()
         return UrgentBlockWatcher(lambda: ren.collect(statuses=("blocked",)), ren.alert_urgent, state).tick()
 
+    def salida_tick(self) -> None:
+        """Reintenta la cola de salida de Telegram (cola_salida); sin cola instalada no hace nada."""
+        drenar = getattr(self.notifier, "drenar_salida", None)
+        if callable(drenar) and getattr(self.notifier, "salida", None) is not None:
+            drenar()
+
+    def linea_entrega(self) -> str:
+        """Una línea con el registro de entrega de ayer para el parte de las 9:00 (vacía sin cola)."""
+        salida = getattr(self.notifier, "salida", None)
+        return salida.linea_resumen() if salida is not None and hasattr(salida, "linea_resumen") else ""
+
     def veto_tick(self) -> list[str]:
         """Tarjetas reversibles cuyo plazo de veto ha vencido sin respuesta ni veto. Modo `aviso`: solo se lo cuenta a
         Oscar (no ejecuta nada). Modo `ejecutar`: aplica la recomendada. Devuelve los ids tratados. Nunca lanza."""
@@ -1405,7 +1416,7 @@ class CommandCenter:
             self.urgent_tick()
         except Exception as exc:
             log.warning("avisos urgentes: %s", exc)
-        for tick in (self.guard_tick, self.daily_tick, self.peticiones_tick, self.al_dia_tick,
+        for tick in (self.salida_tick, self.guard_tick, self.daily_tick, self.peticiones_tick, self.al_dia_tick,
                      self.vigilancia_tick, self.equipo_tick):  # cola, partes de las 9:00, /al_dia, tema 👥 Equipo, tareas del equipo
             try:
                 tick()

@@ -130,6 +130,7 @@ class TelegramNotifier:
         self.owner_id: str | None = None
         self.solo_menciones: dict[str, str] = {}  # {chat_id: "@usuario"}: ese DM solo recibe avisos que lo mencionan
         self.sleep = time.sleep  # inyectable en tests (espera del reintento ante 429)
+        self.salida = None  # cola de salida persistente (cola_salida.ColaSalida); la instala el runner
 
     def _is_collab_chat(self, chat_id) -> bool:
         """Falla ABIERTO es lo que hay que evitar: con el filtro activo, todo chat privado (id positivo) que no sea el de
@@ -219,16 +220,33 @@ class TelegramNotifier:
             payload["reply_markup"] = reply_markup
         if reply_to:
             payload["reply_parameters"] = {"message_id": int(reply_to), "allow_sending_without_reply": True}
+        salida = getattr(self, "salida", None)  # ColaSalida | None: sin ella, un fallo sube como siempre
         try:
-            result = self._api("sendMessage", payload)
+            result = self._enviar_payload(payload)
+        except Exception as exc:
+            if salida is not None and salida.retener(payload, exc):
+                return None  # fallo transitorio: queda en la cola de salida y se reintenta con espera creciente
+            raise
+        if salida is not None:
+            salida.entregado(payload)
+        return {"chat_id": str(chat_id), "thread_id": str(thread_id or "0"), "message_id": result.get("message_id")}
+
+    def _enviar_payload(self, payload: dict):
+        """sendMessage con el reintento del 429; devuelve `result`. Lo usa también la cola de salida."""
+        try:
+            return self._api("sendMessage", payload)
         except TelegramAPIError as exc:
             # 429 (TG-07): se espera lo que pide Telegram (con tope) y se reintenta UNA vez; si vuelve a fallar, sube.
             wait = retry_after(exc.description)
             if wait is None:
                 raise
             getattr(self, "sleep", time.sleep)(min(wait, RETRY_AFTER_MAX) + 0.5)
-            result = self._api("sendMessage", payload)
-        return {"chat_id": str(chat_id), "thread_id": str(thread_id or "0"), "message_id": result.get("message_id")}
+            return self._api("sendMessage", payload)
+
+    def drenar_salida(self) -> dict:
+        """Una pasada de la cola de salida (la llama CommandCenter.salida_tick cada minuto). {} sin cola."""
+        salida = getattr(self, "salida", None)
+        return salida.drenar(self._enviar_payload) if salida is not None else {}
 
     def edit(self, chat_id: str, message_id, text: str, *, html: bool = True,
              reply_markup: dict | None = None) -> bool:

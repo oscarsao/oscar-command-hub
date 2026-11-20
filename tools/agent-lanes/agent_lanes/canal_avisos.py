@@ -36,6 +36,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from . import proc as _proc
+from .cola_salida import contexto
 from .integration import PinnedSummary, age_label, topic_link
 from .nivel_avisos import activo
 from .resumen_carriles import TIPOS_RESUMEN
@@ -190,8 +191,10 @@ class CanalAvisos:
             return None  # F1-04: INFO sin botones del resumen diario; sale una vez al día (URGENTE nunca entra aquí)
         if not self.es_decision(tipo, markup):
             chat, thread = defecto or (self.owner_dm, None)
-            return self.notifier.send_to(chat, thread, text, html=html_text, **extra)
-        sent = self.notifier.send_to(self.destino[0], self.destino[1], text, html=html_text, **extra)
+            with contexto(tipo):
+                return self.notifier.send_to(chat, thread, text, html=html_text, **extra)
+        with contexto(tipo):
+            sent = self.notifier.send_to(self.destino[0], self.destino[1], text, html=html_text, **extra)
         if sent and sent.get("message_id"):
             self._registrar({"tipo": tipo, "rol": "solo", "token": markup_token(markup),
                              "head": cabecera(text, html_text), **_donde(sent)})
@@ -736,12 +739,13 @@ def publicar(canal: CanalAvisos | None, notices, tipo: str, tid: str, text: str,
     """Punto único de los avisos por tarea (runner, review, integrador). Sin canal (sin bot de carriles): como antes."""
     if not activo(tipo):  # nivel «esencial»: este tipo no manda mensaje (sigue estando a demanda por comando)
         return
-    if canal is None:
-        notices.publish(tid, text, target, lane_target, alert=alert, reply_markup=reply_markup,
-                        **({"mirror_to": mirror} if mirror else {}), **kw)
-        return
-    canal.publicar(notices, tipo, tid, text, target, lane_target, alert=alert, reply_markup=reply_markup,
-                   mirror=mirror, **kw)
+    with contexto(tipo, tid):  # la cola de salida de Telegram clasifica y deduplica por tarjeta y tipo
+        if canal is None:
+            notices.publish(tid, text, target, lane_target, alert=alert, reply_markup=reply_markup,
+                            **({"mirror_to": mirror} if mirror else {}), **kw)
+            return
+        canal.publicar(notices, tipo, tid, text, target, lane_target, alert=alert, reply_markup=reply_markup,
+                       mirror=mirror, **kw)
 
 
 def emisor(canal: CanalAvisos | None, notifier, tipo: str, owner_dm, defecto: tuple | None = None) -> Callable:

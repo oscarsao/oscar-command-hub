@@ -17,6 +17,7 @@ from logging.handlers import TimedRotatingFileHandler
 
 from agent_lanes import canal_avisos, ciego, consola, cuota, doctor_config, drain, notices, resumen_carriles, supervisor
 from agent_lanes.bandeja import load as load_bandeja
+from agent_lanes.cola_salida import ColaSalida
 from agent_lanes.board_guard import BoardGuardTicker
 from agent_lanes.choques import ChoquesTicker
 from agent_lanes.fusion import Fusion
@@ -154,6 +155,8 @@ def main(argv: list[str] | None = None) -> int:
     decisions = None
     if lanes_bot and notify.enabled and not args.once:
         owner = env.get("OWNER_TELEGRAM_ID") or OWNER_TELEGRAM_ID
+        # Cola de salida (t_695e44b1): un aviso que falla por red/Telegram se guarda y se reintenta (CommandCenter.salida_tick).
+        notify.salida = ColaSalida(ROOT / ".state" / "cola_salida.json", owner_dm=str(owner))
         decisions = DecisionDesk(notify, CallbackStore(CALLBACKS_DIR), lanes=all_lanes, hermes_for=hermes_for,
                                  links=links, owner_id=owner, messages=messages, free_text=tg_settings["free_text"])
         username = None
