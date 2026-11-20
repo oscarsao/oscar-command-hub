@@ -71,9 +71,9 @@ Principio: todo fallo de **transporte** es del host, no de la tarjeta. Se distin
 ## 5. Seguridad
 
 1. **Usuario sin administrador** en el host (`agentlanes`, cuenta local estándar, sin sudo ni UAC elevable). El servicio OpenSSH Server lo instala Oscar una vez como administrador; ninguna otra cosa necesita elevación.
-2. **Clave SSH dedicada solo para esto**: par ed25519 `hub-a-host` sin reutilizar ninguna otra. En el host, `authorized_keys` con `restrict`, y `from="<IP del hub>"`. Idealmente `command=` apuntando a un wrapper que solo acepte un conjunto cerrado de verbos (`prepare`, `run`, `tests`, `kill`, `status`, `cleanup`) y no una shell libre. En el hub, `IdentityFile` propio y `IdentitiesOnly yes` en `~/.ssh/config`; la clave privada vive en `~/.ssh` del hub, nunca en el repo ni en `.state/`.
+2. **Clave SSH dedicada solo para esto**: par ed25519 `hub-a-host` sin reutilizar ninguna otra. En el host, `authorized_keys` con `restrict`, y `from="<IP del hub>"`. **Decidido por Oscar (20-11): `restrict` + `from`, sin `command=` en el piloto.** Queda como endurecimiento futuro un wrapper de verbos cerrados (`prepare`, `run`, `tests`, `kill`, `status`, `cleanup`) si el piloto sale bien. En el hub, `IdentityFile` propio y `IdentitiesOnly yes` en `~/.ssh/config`; la clave privada vive en `~/.ssh` del hub, nunca en el repo ni en `.state/`.
 3. **Cero credenciales de producción en el host**: sin `.env` del hub, sin tokens de Telegram, Hermes, Vercel, Dokploy, Supabase, Resend, Gmail ni Apollo; sin MCP (ya es así por diseño, `worker.py:232`). El host solo ve: su sesión de Claude, la clave de GitHub y el repo. Los secretos que el prompt pueda necesitar no viajan: el prompt es el de un carril sin acceso a producción.
-4. **Clave de GitHub limitada a los repos del carril**: *deploy key* de escritura **por repo** (o un fine-grained PAT de una cuenta técnica con solo esos repos y solo `contents: write`/`pull_requests: write`). Nunca el `gh` de oscarsao. La protección de ramas de `main`/`master` sigue siendo la barrera real; el push de `lane/*` es lo único que hace falta. Sin `workflows` (no puede tocar `.github/workflows/`).
+4. **Clave de GitHub limitada a los repos del carril**: **decidido por Oscar (20-11): token fine-grained de una cuenta técnica** (no deploy key), limitado a los repos del carril y solo `contents: write` y `pull_requests: write`; idealmente con regla de repositorio (ruleset) que solo le permita empujar a `lane/*`. Nunca el `gh` de oscarsao. La protección de ramas de `main`/`master` sigue siendo la barrera real; el push de `lane/*` es lo único que hace falta. Sin `workflows` (no puede tocar `.github/workflows/`).
 5. **Mismo guard, misma versión.** El host ejecuta el contrato (`contract/*guard*`, `worker-settings.json`, schemas) desde su clon de `oscar-command-hub`, que el hub fija al **mismo SHA** de su `main` antes de despachar (`git fetch` + `checkout --detach <sha>`); si el hash de los ficheros de `contract/` no coincide con el del hub, el host no recibe tarjetas. Esta spec **no cambia el contrato**; solo exige que viaje íntegro. Las variables `AGENT_LANES_*` las pone el hub por SSH (nunca se heredan del entorno del host).
 6. **El hub no se fía del host**: verifica contra GitHub (§2), el resultado `result` se valida con el mismo schema, y el secret-scan del diff y las rutas vetadas se repiten en el hub.
 7. **Quién rota qué:**
@@ -113,13 +113,14 @@ Principio: todo fallo de **transporte** es del host, no de la tarjeta. Se distin
 | **E3** | Latido, panel, aviso de 5 min, resumen diario, ajustes en `/ajustes`; piloto de 3 tarjetas y medición. | Bajo: monitor y avisos. |
 Orden fijo: E1 no empieza hasta que t_e3018aaf y t_312253c4 estén integradas, para no resolver conflictos en `runner.py`/`worker.py`.
 
-## 10. Decisiones que quedan para Oscar
-1. **¿Aprobar el diseño y el reparto de §2?** (recomendada: sí). Si no contesta, no se implementa nada.
-2. **Mecanismo de la clave de GitHub**: deploy key por repo (recomendada: más estrecha, revocable por repo) o PAT fine-grained de cuenta técnica (más cómodo, una sola credencial para varios repos).
-3. **Restricción de la clave SSH**: solo `restrict`+`from` (recomendada para el piloto, más simple) o además `command=` con wrapper de verbos cerrados (más seguro; más trabajo en E1).
-4. **Tope diario del host** `host_gasto_dia_usd` (propuesta: 15 USD durante el piloto) y si los 3 USD por tarjeta se quedan igual.
-5. **Qué carril trabaja el host**: la spec propone un carril nuevo `claude-hub-remoto` (recomendada, no mezcla); alternativa, mover un carril existente.
-6. **Orden frente a t_e3018aaf y t_312253c4**: esperar a que se integren (recomendada) o coordinar antes con quien las tiene.
-7. **Quién hace los pasos manuales del host** (usuario sin admin, OpenSSH Server, clave, login de Claude de Hola@, clon del repo): lo hace Oscar (solo él puede instalar OpenSSH con admin y entrar con la cuenta de Hola@). Pasos exactos se darán en E1.
-8. **Cadencia de rotación** (propuesta: 90 días) y si quiere recordatorios automáticos como tarjetas.
+## 10. Decisiones de Oscar (botones, 20-11-2026)
+1. **Diseño y reparto de §2: APROBADOS.** E1 espera a que se integren t_e3018aaf y t_312253c4.
+2. **Clave de GitHub del host:** token fine-grained de una cuenta técnica (no deploy key), solo los repos del carril, solo `contents` y `pull requests` en escritura; ideal con regla que solo permita empujar a `lane/*`.
+3. **Clave SSH:** `restrict` + `from`, sin `command=` en el piloto.
+4. **Carril nuevo `claude-hub-remoto`**, tope diario `host_gasto_dia_usd: 15` y 3 USD por tarjeta.
+5. **Orden:** esperar a t_e3018aaf y t_312253c4 antes de E1.
+6. **Pasos manuales del host** (usuario sin admin, OpenSSH Server, clave, login de Claude de Hola@, clon del repo): los hace Oscar; los pasos exactos se darán en E1.
+
+**Pendiente menor:** cadencia de rotación (propuesta 90 días) y recordatorios automáticos como tarjetas; no contestado, se asume 90 días y sin recordatorio automático.
+
 Todo lo anterior es reversible: sin `host:` en el carril no hay SSH, y borrar la línea de `authorized_keys` corta el acceso.
