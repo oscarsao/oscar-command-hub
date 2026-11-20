@@ -30,15 +30,32 @@ def _canal(tmp_path, tarjetas, *, ahora=10 * DIA, vigentes=None, **kw):
     return c, tg
 
 
-def test_choque_con_una_tarjeta_done_se_cierra_solo(tmp_path):
-    c, tg = _canal(tmp_path, {"t_a": {"status": "done"}, "t_b": {"status": "running"}})
+def test_choque_con_una_tarjeta_done_e_integrada_se_cierra_solo(tmp_path):
+    c, tg = _canal(tmp_path, {"t_a": {"status": "done", "rama_integrada": True}, "t_b": {"status": "running"}})
     _par(c, 801, "choque", ["t_a", "t_b"], at=9 * DIA)
     assert c.cerrar_obsoletas() == 1
     assert c.pendientes() == []
-    assert tg.edits(801)[0]["text"].startswith("↪️ Ya no aplica: la tarjeta t_a está done")
+    assert tg.edits(801)[0]["text"].startswith("↪️ Ya no aplica: la tarjeta t_a está done e integrada")
     assert "reply_markup" not in tg.edits(801)[0]
     log = [json.loads(x) for x in c.cierres_path.read_text(encoding="utf-8").splitlines()]
     assert log[0]["key"] == f"{TEMA[0]}:801" and log[0]["entrada"]["tids"] == ["t_a", "t_b"]
+
+
+def test_done_sin_constancia_de_integracion_no_cierra_el_choque(tmp_path):
+    for n, info in enumerate(({"status": "done", "rama_integrada": False}, {"status": "done", "rama_integrada": None},
+                              {"status": "done", "comentarios": ["INTEGRADOR: revisando"]})):
+        c, tg = _canal(tmp_path / str(n), {"t_a": info, "t_b": {"status": "running"}})
+        _par(c, 900 + n, "choque", ["t_a", "t_b"], at=9 * DIA)
+        assert c.cerrar_obsoletas() == 0 and not tg.edits()
+    c, tg = _canal(tmp_path / "ok", {"t_a": {"status": "done", "comentarios": ["INTEGRADO abc123 en main"]}})
+    _par(c, 910, "choque", ["t_a", "t_b"], at=9 * DIA)
+    assert c.cerrar_obsoletas() == 1
+
+
+def test_tarjeta_archivada_cierra_el_choque(tmp_path):
+    c, tg = _canal(tmp_path, {"t_a": {"status": "archived"}, "t_b": {"status": "running"}})
+    _par(c, 920, "choque", ["t_a", "t_b"], at=9 * DIA)
+    assert c.cerrar_obsoletas() == 1 and "archived" in tg.edits(920)[0]["text"]
 
 
 def test_choque_entre_dos_tarjetas_activas_con_conflicto_real_no_se_cierra(tmp_path):
@@ -59,10 +76,16 @@ def test_el_par_que_ya_no_comparte_ficheros_se_cierra(tmp_path):
     assert "ya no comparten ficheros" in tg.edits(804)[0]["text"]
 
 
+def test_el_choque_no_caduca_en_la_pasada_automatica(tmp_path):
+    c, tg = _canal(tmp_path, {"t_a": {"status": "running"}, "t_b": {"status": "running"}}, caducan_dias=3)
+    _par(c, 808, "choque", ["t_a", "t_b"], at=1 * DIA)  # 9 días: una decisión de Oscar sin contestar no se cierra sola
+    assert c.cerrar_obsoletas() == 0 and not tg.edits()
+
+
 def test_caduca_a_los_n_dias_configurables(tmp_path):
     c, tg = _canal(tmp_path, {"t_a": {"status": "running"}, "t_b": {"status": "running"}}, caducan_dias=3)
-    _par(c, 805, "choque", ["t_a", "t_b"], at=10 * DIA - 2 * DIA)
-    _par(c, 806, "choque", ["t_a", "t_b"], at=10 * DIA - 4 * DIA)
+    _par(c, 805, "solape", ["t_a", "t_b"], at=10 * DIA - 2 * DIA)
+    _par(c, 806, "solape", ["t_a", "t_b"], at=10 * DIA - 4 * DIA)
     assert c.cerrar_obsoletas() == 1
     assert [e["message_id"] for e in c.pendientes()] == [805]
     assert "4 días" in tg.edits(806)[0]["text"]
@@ -75,7 +98,7 @@ def test_los_antiguos_sin_tids_no_los_toca_la_pasada_automatica(tmp_path):
 
 
 def test_tope_por_pasada(tmp_path):
-    c, tg = _canal(tmp_path, {"t_a": {"status": "done"}})
+    c, tg = _canal(tmp_path, {"t_a": {"status": "archived"}})
     for n in range(30):
         _par(c, 1000 + n, "choque", ["t_a", "t_b"], at=9 * DIA)
     assert c.cerrar_obsoletas() == canal_avisos.CERRAR_MAX

@@ -501,8 +501,11 @@ class CanalAvisos:
 
     # --- choques y solapes que ya no aplican -------------------------------------------------------------------------
 
-    def _juzgar_par(self, e: dict, now: float, info: dict, pares: dict) -> str | None:
+    def _juzgar_par(self, e: dict, now: float, info: dict, pares: dict, *, caducar_choques: bool = False) -> str | None:
         """Motivo por el que un choque/solape ya no aplica, o None si sigue siendo cierto (o no se puede comprobar).
+        Una tarjeta `done` solo lo cierra con constancia de integración (done no es integrada: el conflicto sigue
+        vivo hasta que se fusiona); `archived` lo cierra siempre. El choque es una decisión pendiente de Oscar: solo
+        caduca con `caducar_choques` (la limpieza única, que él confirma tras el dry-run); el solape caduca siempre.
         Sin la clave `tids` (avisos anteriores a este cierre) solo cuenta la caducidad: no se sabe qué tarjetas eran."""
         tids = [t for t in e.get("tids") or () if t]
         if "tids" in e:
@@ -514,8 +517,10 @@ class CanalAvisos:
                         log.info("tema Decisiones: no se pudo leer %s: %s", tid, exc)
                         info[tid] = None
                 status = (info[tid] or {}).get("status") or ""
-                if status in ESTADOS_TERMINADA:
-                    return f"la tarjeta {tid} está {status}"
+                if status == "archived":
+                    return f"la tarjeta {tid} está archived"
+                if status in ESTADOS_TERMINADA and self._cierre("integrar", info[tid])[0]:
+                    return f"la tarjeta {tid} está {status} e integrada"
             tipo = e.get("tipo")
             if len(tids) >= 2 and self.vigentes:
                 if tipo not in pares:
@@ -529,7 +534,7 @@ class CanalAvisos:
                                                  for i, a in enumerate(tids) for b in tids[i + 1:]):
                     return "ya no comparten ficheros"
         dias = (now - float(e.get("at") or now)) / 86400
-        if self.caducan_dias and dias >= self.caducan_dias:
+        if self.caducan_dias and dias >= self.caducan_dias and (caducar_choques or e.get("tipo") != "choque"):
             return f"lleva {int(dias)} días abierto"
         return None
 
@@ -587,7 +592,7 @@ class CanalAvisos:
         pares: dict = {}
         cerrar, conservar = [], []
         for key, e in candidatos:
-            motivo = self._juzgar_par(e, now, info, pares)
+            motivo = self._juzgar_par(e, now, info, pares, caducar_choques=True)
             ficha = {"key": key, "tipo": e.get("tipo"), "head": e.get("head"), "motivo": motivo,
                      "mensaje": e.get("rol") != "silenciada"}
             (cerrar if motivo else conservar).append(ficha)
@@ -949,6 +954,47 @@ def para_desk(desk, destino: tuple[str, str] | None) -> CanalAvisos:
     if getattr(desk, "hermes_for", None) and getattr(desk, "lanes", None):
         canal.vigentes = pares_vigentes_de(desk)
     return canal
+
+
+def limpiar_main(argv: list[str]) -> int:
+    """`lanes.py limpiar-avisos`: limpieza única de choques/solapes antiguos del tema 🎯 Decisiones.
+    Sin opciones: DRY-RUN (no edita ni escribe nada). `--aplicar [--max N]`: cierra como mucho N (por defecto
+    CERRAR_MAX) y anota el lote en .state/decisiones_cierres.jsonl; repetir hasta que `quedan` sea 0.
+    `--revertir LOTE`: reabre un lote. Solo edita mensajes existentes."""
+    import argparse
+    from .config import load_env, load_lanes, load_telegram_settings
+    from .decisions import CALLBACKS_DIR, OWNER_TELEGRAM_ID, CallbackStore, DecisionDesk
+    from .hermes import HermesCLI
+    from .kanban_api import backend_for
+    from .notices import LinkBuilder
+    from .telegram import notifier_from_env
+
+    ap = argparse.ArgumentParser(prog="lanes.py limpiar-avisos", description=limpiar_main.__doc__.split("\n\n")[0])
+    ap.add_argument("--aplicar", action="store_true", help="ejecución real (sin esto es dry-run)")
+    ap.add_argument("--max", type=int, default=CERRAR_MAX, help=f"tope de cierres por llamada (def. {CERRAR_MAX})")
+    ap.add_argument("--revertir", metavar="LOTE", help="reabre los cierres de ese lote")
+    args = ap.parse_args(argv)
+    env, tg_settings, lanes = load_env(), load_telegram_settings(), load_lanes()
+    notifier, lanes_bot = notifier_from_env(env, tg_settings)
+    if not (lanes_bot and notifier.enabled and tg_settings.get("decisiones")):
+        raise SystemExit("limpiar-avisos necesita CARRILES_BOT_TOKEN, TELEGRAM_CHAT_ID y el tema de decisiones")
+    cache: dict[str, HermesCLI] = {}
+    hermes_for = lambda board: cache.setdefault(board, backend_for(board))
+    desk = DecisionDesk(notifier, CallbackStore(CALLBACKS_DIR), lanes=lanes, hermes_for=hermes_for,
+                        links=LinkBuilder(env.get("KANBAN_BASE_URL") or tg_settings["kanban_base_url"]),
+                        owner_id=env.get("OWNER_TELEGRAM_ID") or OWNER_TELEGRAM_ID)
+    canal = para_desk(desk, tg_settings["decisiones"])
+    if args.revertir:
+        print(f"reabiertos: {canal.revertir(args.revertir, max_reabiertos=args.max)}")
+        return 0
+    inf = canal.limpiar_antiguos(dry_run=not args.aplicar, max_cierres=args.max)
+    print(json.dumps({k: v for k, v in inf.items() if k not in ("a_cerrar", "conservados")},
+                     ensure_ascii=False, indent=2))
+    print(f"conservados: {len(inf['conservados'])}" + ("" if args.aplicar else
+          f" · se cerrarían {inf['se_cerrarian']} (para ejecutar: añade --aplicar, con OK de Oscar)"))
+    for f in inf["conservados"][:50]:
+        print(f"  conserva {f['tipo']} {f['key']}: {f['head']}")
+    return 0
 
 
 def pares_vigentes_de(desk) -> Callable[[str], set | None]:
