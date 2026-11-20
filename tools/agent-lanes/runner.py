@@ -38,6 +38,7 @@ from agent_lanes.recolector import Recolector, RecolectorTicker
 from agent_lanes import avisos_revision, workflows
 from agent_lanes.avance_workflows import AvanceTicker, AvanceWorkflows
 from agent_lanes.avisos_revision import AvisosRevision, AvisosRevisionTicker
+from agent_lanes.asignaciones import AsignacionesAviso
 from agent_lanes.paradas import ParadasRunner, ParadasTicker
 from agent_lanes.reconcile import ReconcileTicker, Reconciler, gh_prs
 from agent_lanes.aviso import REMIND_HOURS, StuckWatcher
@@ -314,7 +315,11 @@ def main(argv: list[str] | None = None) -> int:
                                                                                 reply_markup=markup),
                                        issue=decisions.store.issue, state_path=ROOT / ".state" / "paradas.json")
         decisions.paradas = paradas_runner
-        paradas = ParadasTicker(paradas_runner, minutes=float(env.get("RECONCILE_MINUTES") or 10))
+        asignaciones = AsignacionesAviso(all_lanes, hermes_for,
+                                         lambda text, markup=None: notify.send_to(p_chat, p_thread, text, html=False,
+                                                                                  reply_markup=markup))
+        paradas = ParadasTicker(paradas_runner, minutes=float(env.get("RECONCILE_MINUTES") or 10),
+                                extra=asignaciones.publicar)
         # Resumen agrupado de tarjetas listas para revisar (sustituye al aviso con sonido de cada ficha): mismo destino.
         avisos_rev = AvisosRevision(lambda text, markup=None: notify.send_to(p_chat, p_thread, text, html=False,
                                                                               reply_markup=markup),

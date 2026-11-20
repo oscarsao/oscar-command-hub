@@ -252,8 +252,10 @@ class ParadasRunner:
 class ParadasTicker:
     """Bucle del runner: una vez al día, pasada la hora (Madrid), publica. Un fallo no tumba el runner."""
 
-    def __init__(self, runner: ParadasRunner, minutes: float = 10, clock: Callable[[], float] = time.time):
+    def __init__(self, runner: ParadasRunner, minutes: float = 10, clock: Callable[[], float] = time.time,
+                 extra: Callable[[], object] | None = None):
         self.runner, self.minutes, self.clock = runner, minutes, clock
+        self.extra = extra  # pasada adicional diaria con su propio mensaje (asignaciones.AsignacionesAviso.publicar)
         self._last = 0.0
 
     def tick(self) -> list[str]:
@@ -270,7 +272,14 @@ class ParadasTicker:
                 return []
             state.data["last_day"] = day  # antes de publicar: sin bucles si algo falla
             state.save()
-            return self.runner.publicar()
+            try:
+                return self.runner.publicar()
+            finally:
+                if self.extra:
+                    try:
+                        self.extra()
+                    except Exception as exc:
+                        log.warning("aviso de asignaciones sin worker falló: %s", exc)
         except Exception as exc:
             log.warning("aviso de tarjetas paradas falló: %s", exc)
             return []

@@ -33,6 +33,7 @@ PATH_RE = re.compile(r"[\w.\-]+(?:/[\w.\-]+)*")
 LOTE_RIESGO = (".env", "environment", "secret", "token", "credential", "stripe", "billing", "payment", "pago", "checkout",
                "factur", "invoice", "cliente", "customer", "migration", "alembic", "supabase", "dockerfile", "docker-compose",
                ".github", "railway", "vercel", "dokploy", "deploy", "produccion", "production", "auth")
+DEFAULT_PERFILES = ("oscar", "integrador", "apoyo", "codex")
 SOLO_ANADIR = ("docs/kb/CHANGELOG.md", "docs/kb/LEDGER_ESTATUS.md", "docs/kb/archivo/CHANGELOG.md", "CHANGELOG.md")
 
 
@@ -153,6 +154,13 @@ def _build() -> dict[str, Ajuste]:
                1, 720, (12, 24, 48, 72)),
         Ajuste("atascos.paradas_max", "Atascos", "Fichas del aviso de tarjetas paradas", 8, "int",
                "Fichas con botones por aviso; el resto se cuenta en la cabecera.", 1, 30, (5, 8, 12)),
+        Ajuste("asignaciones.horas", "Atascos", "Horas para avisar de una tarjeta asignada a quien no ejecuta", 4.0,
+               "float", "Tarjeta en cola, pendiente, bloqueada o en triage asignada a algo que no es un carril ni un "
+               "perfil conocido (p. ej. oscar-e2): sale en el aviso diario de la Integradora pasadas estas horas.",
+               1, 168, (2, 4, 8, 24)),
+        Ajuste("asignaciones.perfiles", "Atascos", "Perfiles conocidos que no son carril", DEFAULT_PERFILES, "lista",
+               "Asignados que NO se avisan porque son personas o consolas atendidas a mano. oscar-e2 no está a propósito: "
+               "es una consola sin worker.", avanzado=True),
         Ajuste("atascos.solo_anadir", "Atascos", "Ficheros que solo crecen por el final", SOLO_ANADIR, "lista",
                "Un conflicto en ellos se resuelve juntando ambas partes. Rutas relativas separadas por comas.",
                avanzado=True),
