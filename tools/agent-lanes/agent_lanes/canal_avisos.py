@@ -108,6 +108,11 @@ CERRAR_MAX = 25
 TIPOS_CIERRE_TARJETA = frozenset({"blocked", "needs_input"})  # cerrar si la tarjeta está done/archived
 TIPOS_CIERRE_INTEGRADO = frozenset({"aprobar", "integrar"})   # además, solo con constancia de integración
 ESTADOS_TERMINADA = ("done", "archived")
+# Choques y solapes (decisión de Oscar 20-11): se cierran solos cuando dejan de ser ciertos.
+TIPOS_CIERRE_PAR = frozenset({"choque", "solape"})
+CADUCAN_DIAS = 7                  # días abiertos tras los que un choque/solape se da por caducado (configurable)
+CIERRES_ARCHIVO = "decisiones_cierres.jsonl"  # auditoría y vuelta atrás de los cierres de choque/solape
+_TID_RE = re.compile(r"\bt_[0-9a-f]{8}\b")
 HEAD_MAX = 90
 _TAG_RE = re.compile(r"<[^>]+>")
 
@@ -147,7 +152,8 @@ class CanalAvisos:
     def __init__(self, notifier, owner_dm: str, destino: tuple[str, str] | None, state_dir: Path | str, *,
                  vivo: Callable[[str], bool], messages=None, clock: Callable[[], float] = time.time,
                  sembrador: Callable[[], list[dict]] | None = None, sleep: Callable[[float], None] = time.sleep,
-                 run_async: bool = False, tarjeta: Callable[[str], dict | None] | None = None):
+                 run_async: bool = False, tarjeta: Callable[[str], dict | None] | None = None,
+                 caducan_dias: float = CADUCAN_DIAS):
         self.notifier = notifier
         self.owner_dm = str(owner_dm)
         self.destino = (str(destino[0]), str(destino[1])) if destino else None
@@ -162,6 +168,10 @@ class CanalAvisos:
         self.sembrador, self.sleep, self.run_async = sembrador, sleep, run_async
         # `tarjeta(tid)` -> {status, comentarios [str], rama_integrada (True/False/None)} o None: para cerrar obsoletos.
         self.tarjeta = tarjeta
+        # `vigentes(tipo)` -> pares de tarjetas {frozenset({a, b})} que hoy siguen en conflicto, o None si no se sabe.
+        self.vigentes: Callable[[str], set | None] | None = None
+        self.caducan_dias = caducan_dias
+        self.cierres_path = Path(state_dir) / CIERRES_ARCHIVO
         self._inicio_pendiente = True
         self._sembrando = threading.Lock()
         # `copias(markup)` -> ids de usuario de quienes reciben copia de una aprobación (ver para_desk); None = nadie.
@@ -194,7 +204,7 @@ class CanalAvisos:
         sent = self.notifier.send_to(self.destino[0], self.destino[1], text, html=html_text, **extra)
         if sent and sent.get("message_id"):
             self._registrar({"tipo": tipo, "rol": "solo", "token": markup_token(markup),
-                             "head": cabecera(text, html_text), **_donde(sent)})
+                             "head": cabecera(text, html_text), **_tids_de(tipo, text), **_donde(sent)})
             self._linea_dm(cabecera(text, html_text), sent)
             self.refrescar()
         return sent
@@ -209,7 +219,7 @@ class CanalAvisos:
             data = self._load()
             data["abiertas"].setdefault(f"silenciada:{token}", {
                 "tipo": tipo, "rol": "silenciada", "token": token, "head": cabecera(text, html_text),
-                "at": self.clock()})
+                **_tids_de(tipo, text), "at": self.clock()})
             self._save(data)
         self.refrescar()
 
@@ -484,9 +494,160 @@ class CanalAvisos:
                 self._save(data)
             n += 1
             self.sleep(PAUSA_ENTRE_MENSAJES)
+        n += self._cerrar_pares(CERRAR_MAX - n)
         if n:
             log.info("tema Decisiones: %d avisos obsoletos cerrados (tope %d por pasada)", n, CERRAR_MAX)
         return n
+
+    # --- choques y solapes que ya no aplican -------------------------------------------------------------------------
+
+    def _juzgar_par(self, e: dict, now: float, info: dict, pares: dict) -> str | None:
+        """Motivo por el que un choque/solape ya no aplica, o None si sigue siendo cierto (o no se puede comprobar).
+        Sin la clave `tids` (avisos anteriores a este cierre) solo cuenta la caducidad: no se sabe qué tarjetas eran."""
+        tids = [t for t in e.get("tids") or () if t]
+        if "tids" in e:
+            for tid in tids:
+                if tid not in info:
+                    try:
+                        info[tid] = self.tarjeta(tid) if self.tarjeta else None
+                    except Exception as exc:  # una tarjeta que no se lee no para la pasada
+                        log.info("tema Decisiones: no se pudo leer %s: %s", tid, exc)
+                        info[tid] = None
+                status = (info[tid] or {}).get("status") or ""
+                if status in ESTADOS_TERMINADA:
+                    return f"la tarjeta {tid} está {status}"
+            tipo = e.get("tipo")
+            if len(tids) >= 2 and self.vigentes:
+                if tipo not in pares:
+                    try:
+                        pares[tipo] = self.vigentes(tipo)
+                    except Exception as exc:
+                        log.info("tema Decisiones: no se pudo recalcular los %ss: %s", tipo, exc)
+                        pares[tipo] = None
+                vivos = pares[tipo]
+                if vivos is not None and not any(frozenset((a, b)) in vivos
+                                                 for i, a in enumerate(tids) for b in tids[i + 1:]):
+                    return "ya no comparten ficheros"
+        dias = (now - float(e.get("at") or now)) / 86400
+        if self.caducan_dias and dias >= self.caducan_dias:
+            return f"lleva {int(dias)} días abierto"
+        return None
+
+    def _cerrar_pares(self, cupo: int) -> int:
+        """Pasada automática: cierra los choques/solape con `tids` que ya no aplican (edita «↪️ Ya no aplica», sin
+        botones) y anota cada cierre en CIERRES_ARCHIVO. Los anteriores a este cambio (sin `tids`) solo los trata
+        `limpiar_antiguos`, con dry-run y confirmación. Máximo `cupo`. Devuelve cuántos cerró."""
+        if cupo <= 0:
+            return 0
+        with self._lock:
+            candidatos = [(k, e) for k, e in self._load()["abiertas"].items()
+                          if e.get("tipo") in TIPOS_CIERRE_PAR and "tids" in e]
+        info: dict = {}
+        pares: dict = {}
+        n, now = 0, self.clock()
+        for key, e in candidatos:
+            if n >= cupo:
+                break
+            motivo = self._juzgar_par(e, now, info, pares)
+            if motivo and self._cerrar_con_motivo(key, motivo, None):
+                n += 1
+                if e.get("rol") != "silenciada":
+                    self.sleep(PAUSA_ENTRE_MENSAJES)
+        return n
+
+    def _cerrar_con_motivo(self, key: str, motivo: str, lote: str | None) -> bool:
+        with self._lock:
+            data = self._load()
+            e = data["abiertas"].get(key)
+            if not e:
+                return False
+            self._anotar_cierre({"lote": lote, "cuando": self.clock(), "key": key, "motivo": motivo, "entrada": e})
+            self._cerrar(data, key, f"↪️ Ya no aplica: {motivo}\n{e.get('head') or ''}".strip())
+            self._save(data)
+        return True
+
+    def _anotar_cierre(self, rec: dict) -> None:
+        """Una línea por cierre (auditoría y vuelta atrás). Si no se puede anotar, no se cierra: lanza."""
+        self.cierres_path.parent.mkdir(parents=True, exist_ok=True)
+        with self.cierres_path.open("a", encoding="utf-8", newline="\n") as f:
+            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+
+    def limpiar_antiguos(self, *, dry_run: bool = True, max_cierres: int = CERRAR_MAX) -> dict:
+        """Limpieza única de los avisos de choque/solape anteriores al cierre automático (sin `tids`).
+
+        `dry_run` (por defecto): no edita ni escribe nada; devuelve cuántos se cerrarían y cuáles se conservan.
+        Con `dry_run=False` cierra como mucho `max_cierres` por llamada (Telegram da 429 si se satura) y anota cada
+        cierre en CIERRES_ARCHIVO con un id de lote (ver `revertir`); se repite hasta que `quedan` sea 0.
+        Solo edita mensajes existentes: nunca envía mensajes nuevos."""
+        now = self.clock()
+        with self._lock:
+            candidatos = [(k, e) for k, e in self._load()["abiertas"].items()
+                          if e.get("tipo") in TIPOS_CIERRE_PAR and "tids" not in e]
+        info: dict = {}
+        pares: dict = {}
+        cerrar, conservar = [], []
+        for key, e in candidatos:
+            motivo = self._juzgar_par(e, now, info, pares)
+            ficha = {"key": key, "tipo": e.get("tipo"), "head": e.get("head"), "motivo": motivo,
+                     "mensaje": e.get("rol") != "silenciada"}
+            (cerrar if motivo else conservar).append(ficha)
+        informe = {"dry_run": dry_run, "candidatos": len(candidatos), "se_cerrarian": len(cerrar),
+                   "se_conservan": len(conservar), "conservados": conservar,
+                   "este_lote": min(len(cerrar), max_cierres), "tope": max_cierres, "lote": None, "cerrados": 0}
+        if dry_run:
+            informe["a_cerrar"] = cerrar
+            return informe
+        informe["lote"] = lote = f"limpieza-{int(now)}"
+        hechos = 0
+        for ficha in cerrar[:max_cierres]:
+            if self._cerrar_con_motivo(ficha["key"], ficha["motivo"], lote):
+                hechos += 1
+                if ficha["mensaje"]:
+                    self.sleep(PAUSA_ENTRE_MENSAJES)
+        informe["cerrados"], informe["quedan"] = hechos, len(cerrar) - hechos
+        self._actualizar_contador()
+        return informe
+
+    def revertir(self, lote: str, *, max_reabiertos: int = CERRAR_MAX) -> int:
+        """Vuelta atrás de un lote de CIERRES_ARCHIVO: devuelve cada aviso al contador y restaura en su mensaje la
+        primera línea guardada («↩️ Reabierto»; el texto entero y los botones no se guardan, y los botones ya habían
+        caducado). Máximo `max_reabiertos` por llamada. Devuelve cuántos reabrió."""
+        try:
+            lineas = [json.loads(x) for x in self.cierres_path.read_text(encoding="utf-8").splitlines() if x.strip()]
+        except (OSError, json.JSONDecodeError):
+            return 0
+        hechos = {r["key"] for r in lineas if r.get("lote") == lote and r.get("revertido")}
+        n = 0
+        for rec in lineas:
+            if rec.get("lote") != lote or rec.get("revertido") or rec["key"] in hechos or n >= max_reabiertos:
+                continue
+            e = rec["entrada"]
+            with self._lock:
+                data = self._load()
+                data["abiertas"].setdefault(rec["key"], e)
+                self._save(data)
+            if e.get("rol") != "silenciada":
+                try:
+                    self.notifier.edit(e["chat_id"], e["message_id"], f"↩️ Reabierto\n{e.get('head') or ''}".strip(),
+                                       html=False)
+                except Exception as exc:
+                    log.info("tema Decisiones: no se pudo reabrir %s: %s", e.get("message_id"), exc)
+                self.sleep(PAUSA_ENTRE_MENSAJES)
+            self._anotar_cierre({"lote": lote, "cuando": self.clock(), "key": rec["key"], "revertido": True,
+                                 "entrada": e})
+            n += 1
+        if n:
+            self._actualizar_contador()
+        return n
+
+    def _actualizar_contador(self) -> None:
+        """Edita el mensaje fijado con las decisiones que quedan (no siembra ni envía decisiones nuevas)."""
+        if not self.fijado:
+            return
+        try:
+            self.fijado.update(contador_texto(self.pendientes(), self.clock()))
+        except Exception as exc:
+            log.warning("tema Decisiones: no se pudo refrescar el contador: %s", exc)
 
     @staticmethod
     def _cierre(tipo: str, info: dict | None) -> tuple[str | None, str]:
@@ -648,6 +809,13 @@ def semilla(it: dict, markup, verbo: str, now: float) -> dict:
             "tipo": TIPO_SEMILLA.get(it["kind"], it["kind"]), "texto": texto, "markup": markup}
 
 
+def _tids_de(tipo: str, text: str) -> dict:
+    """{"tids": [...]} con las tarjetas que cita un choque/solape (para cerrarlo cuando ya no aplique); {} en otros tipos."""
+    if tipo not in TIPOS_CIERRE_PAR:
+        return {}
+    return {"tids": list(dict.fromkeys(_TID_RE.findall(text or "")))}
+
+
 def _misma(a: dict, b: dict) -> bool:
     return (str(a.get("chat_id")), str(a.get("message_id"))) == (str(b.get("chat_id")), str(b.get("message_id")))
 
@@ -777,4 +945,25 @@ def para_desk(desk, destino: tuple[str, str] | None) -> CanalAvisos:
                 if gente.restringido(p.user_id) and all(gente.puede_en(p.user_id, m) for m in marcas)]
 
     canal.copias = copias
+    if getattr(desk, "hermes_for", None) and getattr(desk, "lanes", None):
+        canal.vigentes = pares_vigentes_de(desk)
     return canal
+
+
+def pares_vigentes_de(desk) -> Callable[[str], set | None]:
+    """`vigentes(tipo)` del canal. Solo los solapes se recalculan (solo lee Hermes); los choques necesitan git y solo
+    se cierran por tarjeta terminada o por caducidad. Con solapes.yaml apagado devuelve None (no se sabe)."""
+    def vigentes(tipo: str) -> set | None:
+        if tipo != "solape":
+            return None
+        from . import solapes
+        ajustes = solapes.load_ajustes()
+        if not ajustes.activo:
+            return None
+        pares: set = set()
+        for g in solapes.detectar(desk.lanes, desk.hermes_for, ajustes):
+            tids = [c.tid for c in g.cards]
+            pares.update(frozenset((a, b)) for i, a in enumerate(tids) for b in tids[i + 1:])
+        return pares
+
+    return vigentes
