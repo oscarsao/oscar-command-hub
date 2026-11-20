@@ -543,6 +543,60 @@ def test_sin_lector_de_tarjetas_no_hace_nada(tmp_path):
     assert c.cerrar_obsoletas() == 0 and len(c.pendientes()) == 1
 
 
+# --- cierre masivo de decisiones de un tipo apagado (t_4b2b3c20) ----------------------------------------------------
+
+def _apagar_choques(monkeypatch):
+    monkeypatch.setattr(canal_avisos, "activo", lambda tipo, nivel_=None: tipo not in ("choque", "solape"))
+
+
+def _estado_600_y_60(tmp_path):
+    c, tg = _obsoletas(tmp_path, {}, [])
+    data = c._load()
+    for n in range(600):
+        tipo = "choque" if n % 2 else "solape"
+        rol = "silenciada" if n % 10 == 0 else "solo"
+        data["abiertas"][f"{TEMA[0]}:{1000 + n}"] = {"tipo": tipo, "rol": rol, "token": f"tk{n}", "head": f"c{n}",
+                                                     "chat_id": TEMA[0], "message_id": 1000 + n,
+                                                     "thread_id": TEMA[1], "at": 1.0}
+    for n in range(60):
+        data["abiertas"][f"{TEMA[0]}:{5000 + n}"] = {"tipo": "needs_input", "rol": "solo", "token": f"r{n}",
+                                                     "head": f"real {n}", "chat_id": TEMA[0],
+                                                     "message_id": 5000 + n, "thread_id": TEMA[1], "at": 1.0}
+    c._save(data)
+    return c, tg
+
+
+def test_dry_run_cuenta_lo_que_cerraria_y_no_edita_nada(tmp_path, monkeypatch):
+    _apagar_choques(monkeypatch)
+    c, tg = _estado_600_y_60(tmp_path)
+    assert c.cerrar_apagados(dry_run=True) == 600
+    assert len(c.pendientes()) == 660 and not tg.edits() and "apagados" not in c._load().get("sembrado", {})
+
+
+def test_tipo_apagado_cierra_los_600_sin_tope_y_deja_las_60(tmp_path, monkeypatch):
+    _apagar_choques(monkeypatch)
+    c, tg = _estado_600_y_60(tmp_path)
+    assert c.cerrar_apagados() == 600 > canal_avisos.CERRAR_MAX
+    assert len(c.pendientes()) == 60 and {e["tipo"] for e in c.pendientes()} == {"needs_input"}
+    assert len(tg.edits()) == 540  # las 60 silenciadas no tienen mensaje que editar
+    ap = c._load()["sembrado"]["apagados"]
+    assert ap["cerradas"] == 600 and ap["por_tipo"] == {"choque": 300, "solape": 300}
+    assert c.cerrar_apagados() == 0  # idempotente
+
+
+def test_con_el_tipo_activo_no_cierra_nada(tmp_path):
+    c, tg = _obsoletas(tmp_path, {}, [("choque", "t_a"), ("solape", "t_b")])
+    assert c.cerrar_apagados() == 0 and len(c.pendientes()) == 2 and not tg.edits()
+
+
+def test_el_recalculo_cierra_los_apagados(tmp_path, monkeypatch):
+    _apagar_choques(monkeypatch)
+    c, _tg = _obsoletas(tmp_path, {}, [("choque", "t_a"), ("needs_input", "t_b")])
+    c.sembrador = list
+    c._sembrar_si_toca()
+    assert _restantes(c) == ["t_b"]
+
+
 def test_la_revision_periodica_cierra_y_el_contador_queda_bien(tmp_path):
     tarjetas = {"t_a": {"status": "done", "comentarios": []}, "t_b": {"status": "running", "comentarios": []}}
     c, _tg = _obsoletas(tmp_path, tarjetas, [("needs_input", "t_a"), ("needs_input", "t_b")], sembrador=lambda: [])

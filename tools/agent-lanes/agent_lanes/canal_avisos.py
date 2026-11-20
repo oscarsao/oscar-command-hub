@@ -394,6 +394,7 @@ class CanalAvisos:
                 n = self.sembrar(publicar=modo != "revisar")
                 if n:
                     log.info("tema Decisiones: sembradas %d decisiones (%s)", n, modo)
+                self.cerrar_apagados()
                 self.cerrar_obsoletas()
             except Exception as exc:  # la siembra es una ayuda: nunca tumba la pasada
                 log.warning("tema Decisiones: la siembra (%s) falló: %s", modo, exc)
@@ -447,6 +448,39 @@ class CanalAvisos:
                                  "head": cabecera(it["texto"], False), **_donde(sent)})
                 log.info("decisión publicada en el tema (semilla) %s", it["clave"])
                 n += 1
+        return n
+
+    def cerrar_apagados(self, dry_run: bool = False) -> int:
+        """Cierra TODOS los mensajes abiertos de un tipo que el nivel de avisos tiene apagado (p. ej. choque/solape en
+        «esencial»), en una sola pasada y sin el tope CERRAR_MAX (un tipo apagado no debe dejar decisiones colgadas).
+        Solo toca el estado del tema (decisiones_tema.json); choques.json no se toca. Con `dry_run` solo cuenta lo que
+        cerraría y no edita nada. Guarda el recuento en `sembrado.apagados` para el parte. Devuelve el recuento."""
+        with self._lock:
+            candidatos = [(k, e.get("tipo") or "") for k, e in self._load()["abiertas"].items()
+                          if not activo(e.get("tipo") or "")]
+        if dry_run or not candidatos:
+            return len(candidatos)
+        por_tipo: dict[str, int] = {}
+        n = 0
+        for key, tipo in candidatos:
+            with self._lock:  # el lock solo mientras se edita uno: la pausa entre mensajes va fuera
+                data = self._load()
+                e = data["abiertas"].get(key)
+                if not e:
+                    continue
+                self._cerrar(data, key, f"✅ Ya no está pendiente (este tipo de aviso está apagado)\n"
+                                        f"{e.get('head') or ''}".strip())
+                self._save(data)
+            por_tipo[tipo] = por_tipo.get(tipo, 0) + 1
+            n += 1
+            if e.get("rol") != "silenciada":  # las silenciadas no tienen mensaje: sin 429 que evitar
+                self.sleep(PAUSA_ENTRE_MENSAJES)
+        with self._lock:
+            data = self._load()
+            data["sembrado"] = dict(data.get("sembrado") or {}, apagados={
+                "at": self.clock(), "cerradas": n, "por_tipo": por_tipo})
+            self._save(data)
+        log.info("tema Decisiones: %d decisiones de tipos apagados cerradas %s", n, por_tipo)
         return n
 
     def cerrar_obsoletas(self) -> int:
