@@ -131,6 +131,7 @@ class TelegramNotifier:
         self.solo_menciones: dict[str, str] = {}  # {chat_id: "@usuario"}: ese DM solo recibe avisos que lo mencionan
         self.sleep = time.sleep  # inyectable en tests (espera del reintento ante 429)
         self.salida = None  # cola de salida persistente (cola_salida.ColaSalida); la instala el runner
+        self.on_entregado = None  # (entrada, result): completa el registro de un aviso retenido (lo pone TaskNotices)
 
     def _is_collab_chat(self, chat_id) -> bool:
         """Falla ABIERTO es lo que hay que evitar: con el filtro activo, todo chat privado (id positivo) que no sea el de
@@ -246,7 +247,7 @@ class TelegramNotifier:
     def drenar_salida(self) -> dict:
         """Una pasada de la cola de salida (la llama CommandCenter.salida_tick cada minuto). {} sin cola."""
         salida = getattr(self, "salida", None)
-        return salida.drenar(self._enviar_payload) if salida is not None else {}
+        return salida.drenar(self._enviar_payload, getattr(self, "on_entregado", None)) if salida is not None else {}
 
     def edit(self, chat_id: str, message_id, text: str, *, html: bool = True,
              reply_markup: dict | None = None) -> bool:

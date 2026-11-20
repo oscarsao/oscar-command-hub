@@ -211,6 +211,68 @@ def test_es_transitorio():
     assert not es(ValueError("x"))
 
 
+def test_urgente_con_principal_retenido_envia_la_copia_al_dm_y_completa_el_registro_al_drenar(montaje, monkeypatch):
+    """Revisión ronda 1: el principal falla una vez (queda en la cola) pero la copia al DM llega; al drenar, el principal
+    llega UNA vez y se anota con su message_id, su token y las copias que ya salieron."""
+    from agent_lanes.notices import MessageStore, TaskNotices
+    nt, reloj = montaje
+    cli = Cliente(fallos=1)
+    monkeypatch.setattr(nt, "_api", cli)
+    store = MessageStore()
+    tn = TaskNotices(nt, store)
+    markup = {"inline_keyboard": [[{"text": "A", "callback_data": "tok1:0"}]]}
+    with contexto("needs_input", "t_7"):
+        res = tn.publish("t_7", "❓ t_7 · ¿Qué BD?", None, ("-100", "5"), alert=True, reply_markup=markup,
+                         mirror_to=OWNER)
+    assert res is None
+    assert textos(cli) == ["❓ t_7 · ¿Qué BD?"] and cli.enviados[0]["chat_id"] == OWNER  # el DM ya llegó
+    assert [e["meta"]["clase"] for e in nt.salida.pendientes()] == ["main"]
+    assert store.get("t_7")["mirrors"][0]["chat_id"] == OWNER
+    reloj.t += 61
+    nt.drenar_salida()
+    nt.drenar_salida()
+    assert [p["chat_id"] for p in cli.enviados] == [OWNER, "-100"]  # el principal salió una sola vez
+    rec = store.get("t_7")
+    assert rec["chat_id"] == "-100" and rec["thread_id"] == "5" and rec["message_id"] == 2 and rec["token"] == "tok1"
+    assert rec["was_alert"] and [m["chat_id"] for m in rec["mirrors"]] == [OWNER]  # la copia no se pierde
+    assert nt.salida.pendientes() == []
+
+
+def test_copia_al_dm_retenida_se_registra_como_espejo_al_entregarse(montaje, monkeypatch):
+    from agent_lanes.notices import MessageStore, TaskNotices
+    nt, reloj = montaje
+    cli = Cliente(fallos=2)  # fallan el principal y el DM
+    monkeypatch.setattr(nt, "_api", cli)
+    store = MessageStore()
+    with contexto("aprobar", "t_8"):
+        TaskNotices(nt, store).publish("t_8", "✅ t_8 · lista", None, ("-100", "5"), alert=True, mirror_to=OWNER)
+    assert len(nt.salida.pendientes()) == 2 and cli.enviados == []
+    reloj.t += 61
+    nt.drenar_salida()
+    avisos = [p for p in cli.enviados if not p["text"].startswith("⚠️ Hubo")]  # (más el mensaje único de recuperación)
+    assert sorted(p["chat_id"] for p in avisos) == ["-100", OWNER] and len(cli.enviados) == 3
+    rec = store.get("t_8")
+    assert rec["chat_id"] == "-100" and [m["chat_id"] for m in rec["mirrors"]] == [OWNER]
+
+
+def test_linea_entrega_en_el_parte_de_las_9(montaje, monkeypatch):
+    from agent_lanes.commands import CommandCenter
+    nt, reloj = montaje
+    monkeypatch.setattr(nt, "_api", Cliente(fallos=1))
+    cc = CommandCenter.__new__(CommandCenter)
+    cc.notifier = nt
+    assert cc.linea_entrega() == ""
+    with contexto("needs_input", "t_1"):
+        nt.send_to(OWNER, None, "x")
+    reloj.t += 61
+    nt.drenar_salida()
+    reloj.t += 86400
+    linea = cc.linea_entrega()
+    assert linea.startswith("📬 Avisos de ayer: 0 enviados · 1 reintentados") and "\n" not in linea
+    cc.notifier = type("Sin", (), {})()  # sin cola instalada: línea vacía
+    assert cc.linea_entrega() == ""
+
+
 def test_estado_corrupto_no_rompe(tmp_path):
     (tmp_path / "c.json").write_text("{no json", encoding="utf-8")
     cola = ColaSalida(tmp_path / "c.json", OWNER)

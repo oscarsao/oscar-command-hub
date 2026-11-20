@@ -44,18 +44,32 @@ _ctx = threading.local()
 
 
 @contextlib.contextmanager
-def contexto(tipo: str, tid: str | None = None) -> Iterator[None]:
-    """Dice al notificador de qué tipo y tarjeta es el aviso que se envía dentro del bloque (hilo actual)."""
-    previo = getattr(_ctx, "valor", None)
-    _ctx.valor = (tipo, tid)
+def contexto(tipo: str, tid: str | None = None, meta: dict | None = None) -> Iterator[None]:
+    """Dice al notificador de qué tipo y tarjeta es el aviso que se envía dentro del bloque (hilo actual).
+    `meta`: qué anotar si el aviso queda retenido y luego se entrega (`on_entregado`): {"clase": "main"|"dm"|"decision",
+    ...datos del registro}. Se guarda en la entrada de la cola."""
+    previo, previo_meta = getattr(_ctx, "valor", None), getattr(_ctx, "meta", None)
+    _ctx.valor, _ctx.meta = (tipo, tid), meta
     try:
         yield
     finally:
-        _ctx.valor = previo
+        _ctx.valor, _ctx.meta = previo, previo_meta
 
 
 def contexto_actual() -> tuple[str, str | None]:
     return getattr(_ctx, "valor", None) or ("info", None)
+
+
+def meta_actual() -> dict | None:
+    return getattr(_ctx, "meta", None)
+
+
+def consumir_retenido() -> bool:
+    """¿El último envío de este hilo quedó retenido en la cola? Lo lee (y limpia) quien necesita distinguirlo de
+    «Telegram apagado» (ambos devuelven None): `notices.publish` para seguir con las copias."""
+    valor = bool(getattr(_ctx, "retenido", False))
+    _ctx.retenido = False
+    return valor
 
 
 def urgente(tipo: str) -> bool:
@@ -166,7 +180,7 @@ class ColaSalida:
                 previa = next((e for e in data["entradas"] if e["clave"] == clave), None)
                 entrada = {"clave": clave, "tipo": tipo, "tid": tid, "prioridad": 0 if urgente(tipo) else 1,
                            "payload": payload, "creado": previa["creado"] if previa else now,
-                           "intentos": previa["intentos"] if previa else 0}
+                           "intentos": previa["intentos"] if previa else 0, "meta": meta_actual()}
                 data["entradas"] = [e for e in data["entradas"] if e["clave"] != clave] + [entrada]
                 if len(data["entradas"]) > MAX_COLA:  # ante una caída enorme se pierden primero los informativos viejos
                     data["entradas"].sort(key=lambda e: (e["prioridad"], e["creado"]))
@@ -178,6 +192,7 @@ class ColaSalida:
                     data["pausa_hasta"] = now + BACKOFF_BASE
                 self._save(data)
             log.warning("cola de salida: %s retenido (%s)", clave, type(exc).__name__)
+            _ctx.retenido = True
             return True
         except Exception as err:  # si ni la cola funciona, el fallo original sube como antes
             log.warning("cola de salida: no se pudo guardar el aviso: %s", err)
@@ -201,19 +216,22 @@ class ColaSalida:
             partes.append(f"{caducados} avisos caducaron sin llegar.")
         return " ".join(partes)
 
-    def drenar(self, enviar: Callable[[dict], dict | None]) -> dict:
+    def drenar(self, enviar: Callable[[dict], dict | None],
+               on_entregado: Callable[[dict, dict | None], None] | None = None) -> dict:
         """Una pasada: caduca lo vencido y, pasada la espera, reintenta por prioridad con `enviar(payload)` (lanza ante
         fallo). Ante el primer fallo transitorio para y alarga la espera; el resto sigue en cola. Devuelve un resumen
-        {enviados, caducados, fallidos, aviso} (para el log y los tests). Nunca lanza."""
+        {enviados, caducados, fallidos, aviso} (para el log y los tests). Nunca lanza.
+        `on_entregado(entrada, result)`: tras cada entrega (no el mensaje de recuperación) para completar el registro
+        de mensajes (message_id, token, copias); si falla, solo se anota en el log."""
         out = {"enviados": 0, "caducados": 0, "fallidos": 0, "aviso": False}
         try:
             with self._lock:
-                return self._drenar(enviar, out)
+                return self._drenar(enviar, out, on_entregado)
         except Exception as exc:
             log.warning("cola de salida: la pasada falló: %s", exc)
             return out
 
-    def _drenar(self, enviar: Callable[[dict], dict | None], out: dict) -> dict:
+    def _drenar(self, enviar: Callable[[dict], dict | None], out: dict, on_entregado=None) -> dict:
         data, now = self._load(), self.clock()
         if not data["entradas"]:
             if data["caida"]:
@@ -253,9 +271,14 @@ class ColaSalida:
             self._save(data)
         for e in vivas:
             try:
-                enviar(e["payload"])
+                result = enviar(e["payload"])
             except Exception as exc:
                 return self._fallo(data, out, e, exc, now)
+            if on_entregado is not None:
+                try:
+                    on_entregado(e, result)
+                except Exception as exc:  # el registro es una ayuda: el aviso ya llegó
+                    log.warning("cola de salida: no se pudo registrar %s: %s", e["clave"], exc)
             data["entradas"].remove(e)
             self._contar(data, "reintentados", e["tipo"])
             out["enviados"] += 1

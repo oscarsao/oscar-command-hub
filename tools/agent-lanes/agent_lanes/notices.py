@@ -16,6 +16,7 @@ import subprocess
 import time
 
 from . import proc as _proc
+from .cola_salida import consumir_retenido, contexto, contexto_actual
 from .peticiones import TOTAL_PASOS, vinculo_de
 import threading
 from pathlib import Path
@@ -635,6 +636,58 @@ class TaskNotices:
         # tema del proyecto de la petición a la que pertenece el aviso (formato_aviso.tema_de); se usa solo si el aviso
         # no trae un tema de origen. None = como siempre (tema del carril).
         self.tema_de = tema_de
+        # Un aviso retenido por la cola de salida que se entrega después (ColaSalida.drenar) completa aquí su registro
+        # (message_id, token, copias). Un solo callback por notificador: todos los almacenes comparten .state/messages.
+        if hasattr(notifier, "drenar_salida") and getattr(notifier, "on_entregado", None) is None:
+            try:
+                notifier.on_entregado = self.registrar_entrega
+            except Exception as exc:  # notificador de solo lectura (tests): sin registro diferido
+                log.debug("no se pudo instalar el registro diferido de la cola de salida: %s", exc)
+
+    def registrar_entrega(self, entrada: dict, result: dict | None) -> None:
+        """Callback de la cola de salida: el aviso retenido `entrada` acaba de llegar (`result` = respuesta de Telegram).
+        Hace el `store.put` / `add_mirror` que `publish` no pudo hacer entonces."""
+        meta, tid = entrada.get("meta") or {}, entrada.get("tid")
+        if not tid or not meta or not isinstance(result, dict) or not result.get("message_id"):
+            return
+        p = entrada["payload"]
+        sent = {"chat_id": str(p["chat_id"]), "thread_id": str(p.get("message_thread_id") or "0"),
+                "message_id": result["message_id"]}
+        token, bot = meta.get("token"), meta.get("bot")
+        if meta.get("clase") == "main":
+            mirrors = (self.store.get(tid) or {}).get("mirrors")  # las copias que sí salieron no se pierden
+            self.store.put(tid, {**sent, **({"bot": str(bot)} if bot else {}), **({"token": token} if token else {}),
+                                 "sig": meta.get("sig"), "sig_at": time.time(), "was_alert": bool(meta.get("alert")),
+                                 **({"mirrors": mirrors} if mirrors else {}),
+                                 **({"channel": meta["channel"]} if meta.get("channel") else {})})
+        elif meta.get("clase") in ("dm", "decision"):
+            self.store.add_mirror(tid, sent, token=token, bot=bot, decision=meta["clase"] == "decision")
+
+    def _copias(self, tid: str, text: str, extra: dict, sent: dict | None, mirror_to: str | None,
+                decision_to: tuple[str, str] | None, token: str | None, bot) -> tuple[str | None, dict | None]:
+        """Copias del aviso al DM de Oscar y al tema 🎯 Decisiones. `sent` = aviso principal (None si quedó retenido en
+        la cola: entonces las copias salen igualmente, para que el urgente llegue aunque falle el principal).
+        Devuelve (dm, copia del tema)."""
+        tipo, dm, copy = contexto_actual()[0], None, None
+        if mirror_to and hasattr(self.notifier, "send_to") and (not sent or str(sent.get("chat_id")) != str(mirror_to)):
+            try:
+                with contexto(tipo, tid, {"clase": "dm", "token": token, "bot": str(bot) if bot else None}):
+                    c = self.notifier.send_to(str(mirror_to), None, text, **extra)
+                self.store.add_mirror(tid, c, token=token, bot=bot)
+                dm = str(mirror_to)
+            except Exception as exc:  # DM sin /start ("chat not found", 403): no rompe el aviso del tema
+                log.info("%s: no se pudo enviar la copia al DM: %s", tid, exc)
+        if decision_to and hasattr(self.notifier, "send_to") and (
+                not sent or (str(sent.get("chat_id")), str(sent.get("thread_id") or "0"))
+                != (str(decision_to[0]), str(decision_to[1]))):
+            try:
+                with contexto(tipo, tid, {"clase": "decision", "token": token, "bot": str(bot) if bot else None}):
+                    copy = self.notifier.send_to(str(decision_to[0]), str(decision_to[1]), text, **extra)
+                self.store.add_mirror(tid, copy, token=token, bot=bot, decision=True)
+            except Exception as exc:  # el aviso principal ya salió: la copia del tema es una ayuda
+                log.info("%s: no se pudo enviar la copia al tema Decisiones: %s", tid, exc)
+                copy = None
+        return dm, copy
 
     def publish(self, tid: str, text: str, target=None, lane_target=None, *, alert: bool = False,
                 reply_markup: dict | None = None, mirror_to: str | None = None, channel: str | None = None,
@@ -690,12 +743,17 @@ class TaskNotices:
                 target = self.tema_de(text)
             except Exception as exc:  # el tema es una mejora: nunca tumba el aviso
                 log.info("%s: no se pudo resolver el tema del proyecto: %s", tid, exc)
-        sent = self.notifier.send(text, target, lane_target, silent=not alert, **extra)
+        token = markup_token(reply_markup)
+        consumir_retenido()
+        with contexto(contexto_actual()[0], tid, {"clase": "main", "sig": sig, "alert": bool(alert), "channel": channel,
+                                                  "token": token, "bot": str(bot) if bot else None}):
+            sent = self.notifier.send(text, target, lane_target, silent=not alert, **extra)
         if not sent:
+            if alert and consumir_retenido():  # el principal queda en la cola: la copia al DM / Decisiones sale ya
+                self._copias(tid, text, extra, None, mirror_to, decision_to, token, bot)
             return None
         if bot:
             sent = {**sent, "bot": str(bot)}
-        token = markup_token(reply_markup)
         if token:
             sent["token"] = token
         # trail = la línea corta que quedó en el canal anterior; sigue apuntando al aviso vigente de este canal.
@@ -733,22 +791,7 @@ class TaskNotices:
                 log.info("%s: no se pudo dejar la línea de enlace: %s", tid, exc)
         self.store.put(tid, {**sent, "sig": sig, "sig_at": time.time(), "was_alert": bool(alert), **({"mirrors": mirrors} if mirrors else {}),
                              **({"channel": channel} if channel else {}), **({"trail": trail} if trail else {})})
-        dm = None
-        if alert and mirror_to and hasattr(self.notifier, "send_to") and str(sent.get("chat_id")) != str(mirror_to):
-            try:
-                copy = self.notifier.send_to(str(mirror_to), None, text, **extra)
-                self.store.add_mirror(tid, copy, token=token, bot=bot)
-                dm = str(mirror_to)
-            except Exception as exc:  # DM sin /start ("chat not found", 403): no rompe el aviso del tema
-                log.info("%s: no se pudo enviar la copia al DM: %s", tid, exc)
-        copy = None
-        if alert and decision_to and hasattr(self.notifier, "send_to") and                 (str(sent.get("chat_id")), str(sent.get("thread_id") or "0")) != (str(decision_to[0]), str(decision_to[1])):
-            try:
-                copy = self.notifier.send_to(str(decision_to[0]), str(decision_to[1]), text, **extra)
-                self.store.add_mirror(tid, copy, token=token, bot=bot, decision=True)
-            except Exception as exc:  # el aviso principal ya salió: la copia del tema es una ayuda
-                log.info("%s: no se pudo enviar la copia al tema Decisiones: %s", tid, exc)
-                copy = None
+        dm, copy = self._copias(tid, text, extra, sent, mirror_to, decision_to, token, bot) if alert else (None, None)
         if alert and followup:
             self._send_followup(tid, followup, target, lane_target, dm,
                                 topic=tuple(decision_to) if copy else None)
@@ -758,18 +801,23 @@ class TaskNotices:
                        topic: tuple[str, str] | None = None) -> None:
         """El resto de las preguntas en mensajes aparte (sin notificación), al tema y, si hubo copia, al DM (o al tema
         🎯 Decisiones: `topic`)."""
-        for chunk in split_text([html.escape(line) for line in lines]):
-            if topic:
-                try:
-                    self.notifier.send_to(topic[0], topic[1], chunk, silent=True)
-                except Exception as exc:
-                    log.info("%s: no se pudo enviar el resto al tema Decisiones: %s", tid, exc)
+        for i, chunk in enumerate(split_text([html.escape(line) for line in lines])):
+            with contexto("followup", f"{tid}#{i}"):  # clave propia: si se retiene no pisa al aviso principal en la cola
+                self._enviar_resto(tid, chunk, target, lane_target, dm, topic)
+
+    def _enviar_resto(self, tid: str, chunk: str, target, lane_target, dm: str | None,
+                      topic: tuple[str, str] | None) -> None:
+        if topic:
             try:
-                self.notifier.send(chunk, target, lane_target, silent=True)
+                self.notifier.send_to(topic[0], topic[1], chunk, silent=True)
             except Exception as exc:
-                log.info("%s: no se pudo enviar el resto de las preguntas: %s", tid, exc)
-            if dm:
-                try:
-                    self.notifier.send_to(dm, None, chunk)
-                except Exception as exc:
-                    log.info("%s: no se pudo enviar el resto al DM: %s", tid, exc)
+                log.info("%s: no se pudo enviar el resto al tema Decisiones: %s", tid, exc)
+        try:
+            self.notifier.send(chunk, target, lane_target, silent=True)
+        except Exception as exc:
+            log.info("%s: no se pudo enviar el resto de las preguntas: %s", tid, exc)
+        if dm:
+            try:
+                self.notifier.send_to(dm, None, chunk)
+            except Exception as exc:
+                log.info("%s: no se pudo enviar el resto al DM: %s", tid, exc)
