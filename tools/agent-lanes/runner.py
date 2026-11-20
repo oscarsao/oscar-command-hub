@@ -290,6 +290,7 @@ def main(argv: list[str] | None = None) -> int:
     avisos_ticker = None
     wf_ticker = None
     solapes = None
+    solapes_paso = None  # el barrido de solapes va en su propio hilo (t_beb8fbf5): con Hermes lento llegó a durar 1.204 s
     choques = None
     if decisions and not args.once:  # PR resueltos -> tarjetas cerradas; propuesta diaria de obsoletas (con botón)
         owner_dm = env.get("OWNER_TELEGRAM_ID") or OWNER_TELEGRAM_ID
@@ -340,6 +341,8 @@ def main(argv: list[str] | None = None) -> int:
                                send=canal_avisos.emisor(canal, notify, "solape", owner_dm),
                                state_path=ROOT / ".state" / "solapes.json",
                                issue=decisions.store.issue if decisions else None)
+        # No cuenta en busy() del drenaje: es solo lectura de Hermes y un hilo demonio; reiniciar a medias no pierde nada.
+        solapes_paso = HiloAparte("solapes", solapes.tick)
         if decisions:
             decisions.solapes = solapes  # los botones del aviso los atiende el despachador de decisiones
             decisions.fusion = Fusion(all_lanes, hermes_for)  # fusionar / encadenar / duplicada / pausar (fusion.py)
@@ -413,7 +416,7 @@ def main(argv: list[str] | None = None) -> int:
                     pasada_integrador()
                 else:
                     hilo_integrador.lanzar()
-        for nombre, ticker in (("guard", guard), ("solapes", solapes), ("choques", choques), ("reconcile", reconcile),
+        for nombre, ticker in (("guard", guard), ("solapes", solapes_paso), ("choques", choques), ("reconcile", reconcile),
                                ("limpieza-ticker", limpieza), ("recolector", recolector), ("paradas", paradas),
                                ("avisos", avisos_ticker)):
             if ticker:

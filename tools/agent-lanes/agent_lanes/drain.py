@@ -43,6 +43,7 @@ RESULT_FILE = STATE / "apply_result.json"  # veredicto del último restart: {ok,
 ACTIVE_FILE = STATE / "integrator_active.json"  # {pid, at}: el runner nuevo ya tiene el integrador activo
 LIVE_REPO = ROOT.parents[1]  # checkout vivo (oscar-command-hub, rama main) que ejecuta el runner
 MAX_AGE_SECONDS = 2 * 3600
+NOTA_CADA = 300  # s: cada cuánto cuenta `restart --drain` qué retiene el drenaje (nombres de las tarjetas/pasos)
 TASK_NAME = "agent-lanes runner"
 SCHTASKS = "schtasks"
 
@@ -254,13 +255,20 @@ class Restarter:
             self.out(f"drenando: el runner (pid {old}) deja de reclamar; espero a que acaben sus workers "
                      f"(máx. {int(timeout)} s)")
 
+            t0, proximo = self._clock(), [NOTA_CADA]
+
             def drained() -> bool:
                 if not self.pid_alive(old):
                     return True  # murió solo: nada que esperar
                 if self.colgado and self.colgado():
                     return True  # colgado y sin workers en vuelo (supervisor): el acuse nunca llegaría
                 ack = read_ack(self.ack_file) or {}
-                return ack.get("pid") == old and float(ack.get("at") or 0) >= since and bool(ack.get("idle"))
+                listo = ack.get("pid") == old and float(ack.get("at") or 0) >= since and bool(ack.get("idle"))
+                if not listo and self._clock() - t0 >= proximo[0]:  # t_beb8fbf5: quién retiene el drenaje, cada 5 min
+                    proximo[0] += NOTA_CADA
+                    busy = ", ".join(ack.get("busy") or ()) or "sin acuse del runner todavía (¿en un paso largo?)"
+                    self.out(f"sigo drenando ({int(self._clock() - t0)} s de {int(timeout)}): {busy}")
+                return listo
 
             if not self._wait(drained, timeout):
                 busy = ", ".join((read_ack(self.ack_file) or {}).get("busy") or ()) or "workers en curso"

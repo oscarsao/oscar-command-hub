@@ -70,6 +70,9 @@ class Ajustes:
     extensiones: tuple = EXTENSIONES
     max_tarjetas: int = 8             # tarjetas que se listan en un aviso (el resto, «y N más»)
     comparten_max: int = 5            # rutas compartidas que se citan en el aviso
+    presupuesto_s: float = 120        # t_beb8fbf5: tope de una pasada (0 = sin tope); agotado, se corta y sigue en la siguiente
+    max_fallos: int = 2               # llamadas a Hermes fallidas seguidas tras las que se corta la pasada (0 = nunca)
+    relaciones_min: float = 30        # minutos que se recuerda el padre/hija de una tarjeta entre pasadas (0 = no se recuerda)
 
 
 def load_ajustes(path: Path | str | None = None) -> Ajustes:
@@ -91,6 +94,9 @@ def load_ajustes(path: Path | str | None = None) -> Ajustes:
             out[f.name] = float(v)
         elif f.name == "nivel" and v in ("archivo", "modulo"):
             out[f.name] = v
+        elif f.name in ("presupuesto_s", "max_fallos", "relaciones_min") \
+                and isinstance(v, (int, float)) and not isinstance(v, bool) and v >= 0:
+            out[f.name] = int(v) if f.name == "max_fallos" else float(v)
         elif f.name in ("modulo_min_profundidad", "max_tarjetas", "comparten_max") \
                 and isinstance(v, int) and not isinstance(v, bool) and v >= 1:
             out[f.name] = v
@@ -226,17 +232,43 @@ class Grupo:
     comparten: list
 
 
-def tarjetas_activas(lanes: dict, hermes_for, ajustes: Ajustes) -> dict[str, list[Card]]:
-    """repo -> tarjetas vigiladas con sus rutas. Un tablero ilegible no corta el resto."""
+class Pase:
+    """Límites de UNA pasada de `detectar` (t_beb8fbf5). Cada llamada a `hermes kanban` que agota su timeout cuesta hasta
+    ~6 min (120 s x 3 intentos + esperas) y la pasada va en el bucle principal del runner: con Hermes lento, una
+    pasada tardó 1.204 s y retrasó el acuse del drenaje. `puede()` es False al agotar `presupuesto_s` o tras
+    `max_fallos` fallos SEGUIDOS de `show` (las lecturas de tableros solo cuentan para el presupuesto); lo ya leído se conserva y el resto queda para la pasada siguiente."""
+
+    def __init__(self, ajustes: Ajustes, clock=time.monotonic):
+        self.ajustes, self._clock = ajustes, clock
+        self._t0, self.fallos, self.cortada = clock(), 0, ""
+
+    def puede(self) -> bool:
+        if self.cortada:
+            return False
+        if self.ajustes.presupuesto_s and self._clock() - self._t0 >= self.ajustes.presupuesto_s:
+            self.cortada = f"presupuesto de {self.ajustes.presupuesto_s:g} s agotado"
+        elif self.ajustes.max_fallos and self.fallos >= self.ajustes.max_fallos:
+            self.cortada = f"{self.fallos} llamadas a Hermes fallidas seguidas"
+        return not self.cortada
+
+    def resultado(self, ok: bool) -> None:
+        self.fallos = 0 if ok else self.fallos + 1
+
+
+def tarjetas_activas(lanes: dict, hermes_for, ajustes: Ajustes, pase: Pase | None = None) -> dict[str, list[Card]]:
+    """repo -> tarjetas vigiladas con sus rutas. Un tablero ilegible no corta el resto (salvo los límites de `pase`)."""
+    pase = pase or Pase(Ajustes(presupuesto_s=0, max_fallos=0))
     by_repo: dict[str, list[Card]] = {}
     vistos: set[tuple[str, str]] = set()
     boards = list(dict.fromkeys(l.board for l in lanes.values()
                                 if getattr(l, "board", "") and getattr(l, "kind", "") in ("implement",)))
     for board in boards:
         for status in ajustes.estados:
+            if not pase.puede():
+                break
             try:
                 tasks = hermes_for(board).list_status_all(status)
-            except Exception as exc:
+            except Exception as exc:  # un tablero caído no cuenta para el corte por fallos: los demás se leen igual
                 log.warning("solapes: %s/%s no leído: %s", board, status, exc)
                 continue
             for t in tasks:
@@ -253,28 +285,52 @@ def tarjetas_activas(lanes: dict, hermes_for, ajustes: Ajustes) -> dict[str, lis
     return by_repo
 
 
-def _enlazadas(a: Card, b: Card, hermes_for, cache: dict) -> bool:
-    """¿Una es padre/hija de la otra? (cadenas de /flujo: secuenciales a propósito). Si no se puede saber, no."""
-    def rel(c: Card) -> set[str]:
-        if c.tid not in cache:
-            try:
-                show = hermes_for(c.board).show(c.tid)
-                cache[c.tid] = {str(x.get("id") if isinstance(x, dict) else x)
-                                for k in ("parents", "children") for x in (show.get(k) or [])}
-            except Exception:
-                cache[c.tid] = set()
+def _enlazadas(a: Card, b: Card, hermes_for, cache: dict, pase: Pase | None = None, recuerdo: dict | None = None,
+               ttl: float = 0.0, clock=time.monotonic) -> bool | None:
+    """¿Una es padre/hija de la otra? (cadenas de /flujo: secuenciales a propósito). None = no se pudo saber en esta
+    pasada (límite de `pase` o `show` fallido): el par NO se avisa, para no dar un aviso falso, y se reintenta en la
+    siguiente. `recuerdo` (entre pasadas, `ttl` s) evita repetir un `show` por tarjeta en cada barrido."""
+    def rel(c: Card) -> set[str] | None:
+        if c.tid in cache:
+            return cache[c.tid]
+        hit = (recuerdo or {}).get((c.board, c.tid))
+        if hit and ttl and clock() - hit[0] < ttl:
+            cache[c.tid] = hit[1]
+            return hit[1]
+        if pase is not None and not pase.puede():
+            return None
+        try:
+            show = hermes_for(c.board).show(c.tid)
+        except Exception:
+            if pase is not None:
+                pase.resultado(False)
+            cache[c.tid] = None  # no se repite en esta pasada (cada intento puede costar minutos)
+            return None
+        if pase is not None:
+            pase.resultado(True)
+        cache[c.tid] = {str(x.get("id") if isinstance(x, dict) else x)
+                        for k in ("parents", "children") for x in (show.get(k) or [])}
+        if recuerdo is not None and ttl:
+            recuerdo[(c.board, c.tid)] = (clock(), cache[c.tid])
         return cache[c.tid]
-    return b.tid in rel(a) or a.tid in rel(b)
+    ra, rb = rel(a), rel(b)
+    if ra is None or rb is None:
+        return None
+    return b.tid in ra or a.tid in rb
 
 
-def detectar(lanes: dict, hermes_for, ajustes: Ajustes | None = None, descartes: set[str] | None = None) -> list[Grupo]:
+def detectar(lanes: dict, hermes_for, ajustes: Ajustes | None = None, descartes: set[str] | None = None,
+             recuerdo: dict | None = None, clock=time.monotonic) -> list[Grupo]:
     """Conjuntos de 2+ tarjetas del mismo repo con solape (componentes conexos de los pares que solapan).
-    `descartes`: parejas (`par`) que Oscar ya dijo que no son duplicadas; no se juntan."""
+    `descartes`: parejas (`par`) que Oscar ya dijo que no son duplicadas; no se juntan. `recuerdo`: caché de relaciones
+    entre pasadas (la guarda `SolapeTicker`). Los límites de la pasada están en `Pase` (t_beb8fbf5)."""
     ajustes = ajustes or Ajustes()
+    pase = Pase(ajustes, clock)
+    ttl = ajustes.relaciones_min * 60
     descartes = descartes or set()
     grupos: list[Grupo] = []
     cache: dict = {}
-    for repo, cards in sorted(tarjetas_activas(lanes, hermes_for, ajustes).items()):
+    for repo, cards in sorted(tarjetas_activas(lanes, hermes_for, ajustes, pase).items()):
         parent = {c.tid: c.tid for c in cards}
 
         def raiz(x):
@@ -286,7 +342,8 @@ def detectar(lanes: dict, hermes_for, ajustes: Ajustes | None = None, descartes:
         for i, a in enumerate(cards):
             for b in cards[i + 1:]:
                 c = compartido(a.rutas, b.rutas, ajustes)
-                if c and par(a.tid, b.tid) not in descartes and not _enlazadas(a, b, hermes_for, cache):
+                if c and par(a.tid, b.tid) not in descartes \
+                        and _enlazadas(a, b, hermes_for, cache, pase, recuerdo, ttl, clock) is False:
                     parent[raiz(a.tid)] = raiz(b.tid)
                     comun.setdefault(a.tid, []).extend(c)
                     comun.setdefault(b.tid, []).extend(c)
@@ -297,6 +354,8 @@ def detectar(lanes: dict, hermes_for, ajustes: Ajustes | None = None, descartes:
             if len(miembros) > 1:
                 comparten = list(dict.fromkeys(x for m in miembros for x in comun.get(m.tid, [])))
                 grupos.append(Grupo(repo, sorted(miembros, key=lambda m: m.tid), comparten))
+    if pase.cortada:
+        log.warning("solapes: pasada cortada (%s); lo que falta se mira en la siguiente", pase.cortada)
     return grupos
 
 
@@ -342,6 +401,7 @@ class SolapeTicker:
         self.issue = issue
         self.descartes_path = descartes_path or state_path.with_name("solapes_descartados.json")
         self._last: float | None = None
+        self._recuerdo: dict = {}  # (tablero, tarjeta) -> (instante, ids padre/hija): ahorra `show` entre pasadas
 
     def _enviar(self, g: Grupo, ajustes: Ajustes) -> None:
         if self.issue:
@@ -394,7 +454,8 @@ class SolapeTicker:
             if not ajustes.activo or (self._last is not None and now - self._last < ajustes.minutos * 60):
                 return []
             self._last = now
-            grupos = detectar(self.lanes, self.hermes_for, ajustes, load_descartes(self.descartes_path))
+            grupos = detectar(self.lanes, self.hermes_for, ajustes, load_descartes(self.descartes_path),
+                              self._recuerdo, self._clock)
             seen = self._seen()
             fresh = [g for g in grupos if clave(g) not in seen]
             n = len(seen)

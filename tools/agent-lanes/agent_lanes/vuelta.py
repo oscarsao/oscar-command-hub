@@ -89,6 +89,10 @@ class HiloAparte:
             self._hilo.start()
             return True
 
+    def tick(self) -> None:
+        """Mismo contrato que los tickers del bucle principal (`ticker.tick()`): lanza el paso en su hilo, sin esperar."""
+        self.lanzar()
+
     def esperar(self, timeout: float | None = None) -> None:
         h = self._hilo
         if h is not None:
