@@ -198,7 +198,7 @@ class Prevencion:
         tid = str(t["id"])
         sol = solapes.Ajustes(nivel=aj.prevenir_nivel, modulo_min_profundidad=aj.modulo_min_profundidad)
         propia = choques.Unidad(tid, choques._etiq(tid, t.get("title") or ""),
-                                rutas=solapes.extraer_rutas(_texto(t), sol, eff.repo), texto=_texto(t))
+                                rutas=choques.rutas_tarjeta(tid, _texto(t), sol, eff.repo), texto=_texto(t))
         remote = getattr(eff, "remote", "origin") or "origin"
         if f"lane/{tid}" in vivas:  # intento anterior: su diff también es su zona
             diff = self.git.ficheros(eff.repo, remote, eff.base, f"lane/{tid}")
