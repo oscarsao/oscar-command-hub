@@ -1,0 +1,4 @@
+[
+  {"number": 10, "title": "PR en borrador antiguo", "isDraft": true, "createdAt": "2026-11-10T10:00:00Z", "headRefName": "lane/t_x", "url": "https://github.com/o/r/pull/10"},
+  {"number": 11, "title": "PR listo", "isDraft": false, "createdAt": "2026-11-19T10:00:00Z", "headRefName": "lane/t_y", "url": "https://github.com/o/r/pull/11"}
+]

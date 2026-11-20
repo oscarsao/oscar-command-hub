@@ -1,0 +1,8 @@
+[
+  {"id": "t_aaaaaaa1", "title": "Tarjeta lista", "status": "ready", "assignee": "claude-hub", "body": "Hacer algo."},
+  {"id": "t_aaaaaaa2", "title": "Tarjeta bloqueada", "status": "blocked", "assignee": "claude-hub", "body": "Necesita la variable de entorno FOO_TOKEN_X para funcionar.", "last_failure_error": "toca rutas vetadas"},
+  {"id": "t_aaaaaaa3", "title": "Hecha y fusionada", "status": "done", "assignee": "claude-hub", "result": "head_sha 1111111111111111111111111111111111111111"},
+  {"id": "t_aaaaaaa4", "title": "Hecha sin fusionar", "status": "done", "assignee": "claude-oscarhq", "result": "head_sha 2222222222222222222222222222222222222222"},
+  {"id": "t_aaaaaaa5", "title": "Hecha sin SHA", "status": "done", "assignee": "claude-oscarhq", "result": "ok"},
+  {"id": "t_aaaaaaa6", "title": "En triaje", "status": "triage", "assignee": null, "body": "Usa la variable de entorno YA_CONSTA_Z."}
+]
