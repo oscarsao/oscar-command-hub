@@ -92,6 +92,21 @@ def test_ticker_recuerda_las_relaciones_entre_pasadas(tmp_path):
     assert len(enviados) == 1  # y el aviso sigue siendo uno solo
 
 
+def test_pasada_cortada_no_avisa_un_grupo_parcial(tmp_path):
+    reloj = Reloj()
+    h = HermesLento(reloj, n=4, latencia_show=70.0)  # presupuesto 120 s: no alcanza a mirar todos los pares
+    enviados = []
+    t = SolapeTicker(LANES, lambda b: h, send=enviados.append, state_path=tmp_path / "s.json",
+                     settings_path=tmp_path / "no.yaml", clock=reloj, descartes_path=tmp_path / "d.json")
+    t.tick()
+    assert enviados == []  # cortada: nada se envía ni se marca como visto
+    reloj.t += 11 * 60
+    t.tick()
+    reloj.t += 11 * 60
+    t.tick()
+    assert len(enviados) == 1 and all(f"t_0000000{i}" in enviados[0] for i in range(4))  # un solo aviso, completo
+
+
 def test_un_show_fallido_no_se_recuerda_y_se_reintenta(tmp_path):
     reloj = Reloj()
     h = HermesLento(reloj, n=2, show_falla=True, show_cost_fail=1)

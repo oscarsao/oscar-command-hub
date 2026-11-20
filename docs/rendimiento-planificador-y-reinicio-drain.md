@@ -2,8 +2,25 @@
 
 ## Alcance y límite de este informe
 
-Esta tarjeta pedía medir la BD de Hermes con datos reales. **No se ha podido**: el carril no puede leer `~/.hermes` ni
-tocar la BD viva (límite de la tarjeta y del guard), y el repo no contiene ninguna copia. Por eso:
+### Medición sobre las copias de la Integradora (20-11-2026, solo lectura, `mode=ro`)
+
+La BD **no es el cuello de botella**. Tamaños y consultas equivalentes a `list` y `show` (SQLite directo, sin el CLI):
+
+| Tablero | Tamaño | Tarjetas | Eventos | Comentarios | `list` por estados | `show` de una tarjeta (4 consultas) |
+|---|---|---|---|---|---|---|
+| default | 4,2 MB | 382 | 4.127 | 1.363 | 3,3 ms | ≈0,7 ms |
+| migrateam | 4,5 MB | 269 | 3.824 | 1.797 | — | — |
+| oscarhq | 22 MB | 1.375 | 17.464 | 6.555 | 4,5 ms | ≈0,9 ms |
+
+Ya existen índices en `status`, `assignee+status`, `task_id` de eventos/comentarios/runs, enlaces padre/hijo, etc.;
+máximo 177 eventos y 169 comentarios por tarjeta. Por tanto **no hace falta índice, poda ni vaciado de heartbeats**: no
+se propone tocar la BD. Los 120 s de `show` y los 1.204 s de «solapes» no vienen de los datos sino del coste de cada
+llamada al CLI `hermes` (arranque del proceso, contención con el resto de procesos de la vuelta) multiplicado por el
+número de llamadas; de ahí que los arreglos de este PR reduzcan y acoten las llamadas (presupuesto, caché, hilo aparte)
+en lugar de tocar la BD. Esa medición con el CLI real (`hermes kanban show`) no se hizo: queda para la Integradora
+cronometrarla en el equipo vivo. No se ha copiado contenido de las copias al repo.
+
+Resto de límites:
 
 - El diagnóstico sale de leer el código de agent-lanes (que es donde están los 1.204 s y los 120 s).
 - Las mediciones «antes/después» de este documento son **simuladas** (reloj falso, Hermes falso que «cuesta» lo que
@@ -12,7 +29,7 @@ tocar la BD viva (límite de la tarjeta y del guard), y el repo no contiene ning
 - Lo que depende de la BD de Hermes (índices, poda, vaciado de heartbeats) queda **solo descrito** (apartado 4): vive
   fuera de este repo y habría que probarlo contra una copia que haga la Integradora.
 
-## 1. Dónde está el cuello de botella (verificado en el código)
+## 1. Dónde está el cuello de botella (por lectura del código; las cifras son hipótesis coherentes, no medidas)
 
 1. **`solapes` bloquea la vuelta principal.** `runner.py` llama a `SolapeTicker.tick()` en línea. Cada pasada hace
    `hermes kanban list --status X` (4 estados × tablero) y, por cada par de tarjetas que comparten ruta, un
@@ -38,7 +55,8 @@ tocar la BD viva (límite de la tarjeta y del guard), y el repo no contiene ning
 | Presupuesto por pasada (`presupuesto_s`, 120 s) y corte tras `max_fallos` (2) `show` seguidos fallidos | `solapes.Pase` | Una pasada ya no puede encadenar decenas de timeouts; lo no leído queda para la siguiente |
 | Caché de relaciones padre/hija entre pasadas (`relaciones_min`, 30 min) | `SolapeTicker._recuerdo` | Pasadas posteriores no repiten el `show` de cada tarjeta |
 | Un `show` fallido no se repite dentro de la pasada y **no se avisa el par** (antes se avisaba como «no enlazadas») | `solapes._enlazadas` | Sin avisos falsos con Hermes enfermo; se reintenta a la siguiente |
-| `solapes` en su propio hilo (`HiloAparte`) | `runner.py`, `vuelta.HiloAparte.tick` | La vuelta principal ya no espera al barrido: el acuse del drain llega aunque `solapes` vaya lento. No cuenta en `busy` (solo lectura, hilo demonio) |
+| `solapes` en su propio hilo (`HiloAparte`) | `runner.py`, `vuelta.HiloAparte.tick` | La vuelta principal ya no espera al barrido: el acuse del drain llega aunque `solapes` vaya lento. No cuenta en `busy` (lee Hermes y puede enviar un aviso; un `/End` justo entre el envío y el guardado de `seen` podría repetir ese aviso, caso raro) |
+| Pasada cortada = no se avisa ni se marca (evita un aviso parcial y otro después con el grupo completo). Si la caché caduca antes de completar, no converge: subir `presupuesto_s` | `SolapeTicker.tick` | Un solo aviso por conjunto |
 | `restart --drain` cuenta cada 5 min qué lo retiene | `drain.Restarter` | La Integradora ve «sigo drenando (900 s de 3600): t_ac4dbbe0, integrador-pasada» y decide con datos |
 
 Los tres ajustes nuevos se leen de `solapes.yaml` (se relee en cada pasada; ausentes o inválidos = valores por defecto;

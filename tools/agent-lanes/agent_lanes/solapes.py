@@ -320,7 +320,7 @@ def _enlazadas(a: Card, b: Card, hermes_for, cache: dict, pase: Pase | None = No
 
 
 def detectar(lanes: dict, hermes_for, ajustes: Ajustes | None = None, descartes: set[str] | None = None,
-             recuerdo: dict | None = None, clock=time.monotonic) -> list[Grupo]:
+             recuerdo: dict | None = None, clock=time.monotonic, estado: dict | None = None) -> list[Grupo]:
     """Conjuntos de 2+ tarjetas del mismo repo con solape (componentes conexos de los pares que solapan).
     `descartes`: parejas (`par`) que Oscar ya dijo que no son duplicadas; no se juntan. `recuerdo`: caché de relaciones
     entre pasadas (la guarda `SolapeTicker`). Los límites de la pasada están en `Pase` (t_beb8fbf5)."""
@@ -354,6 +354,8 @@ def detectar(lanes: dict, hermes_for, ajustes: Ajustes | None = None, descartes:
             if len(miembros) > 1:
                 comparten = list(dict.fromkeys(x for m in miembros for x in comun.get(m.tid, [])))
                 grupos.append(Grupo(repo, sorted(miembros, key=lambda m: m.tid), comparten))
+    if estado is not None:
+        estado["cortada"] = pase.cortada
     if pase.cortada:
         log.warning("solapes: pasada cortada (%s); lo que falta se mira en la siguiente", pase.cortada)
     return grupos
@@ -454,8 +456,11 @@ class SolapeTicker:
             if not ajustes.activo or (self._last is not None and now - self._last < ajustes.minutos * 60):
                 return []
             self._last = now
+            estado: dict = {}
             grupos = detectar(self.lanes, self.hermes_for, ajustes, load_descartes(self.descartes_path),
-                              self._recuerdo, self._clock)
+                              self._recuerdo, self._clock, estado)
+            if estado.get("cortada"):  # grupo posiblemente parcial: no se avisa ni se marca (evita un 2.º aviso del mismo conjunto)
+                return grupos
             seen = self._seen()
             fresh = [g for g in grupos if clave(g) not in seen]
             n = len(seen)
