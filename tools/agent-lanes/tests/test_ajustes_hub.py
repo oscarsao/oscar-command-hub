@@ -206,3 +206,12 @@ def test_el_comando_esta_registrado():
     from agent_lanes.commands import COMMANDS
     assert "ajustes" in dict(COMMANDS)
     assert OSCAR
+
+
+# --- fichero real versionado (t_05182667) --------------------------------------------------------------
+
+def test_fichero_real_fija_nivel_y_huella():
+    assert ah.VALUES_PATH.is_file()
+    real = ah.Ajustes(ah.VALUES_PATH, audit=ah.AUDIT_PATH.with_name("no_existe_auditoria.jsonl"))
+    assert real.valor("avisos.nivel") == "esencial"
+    assert real.valor("avisos.huella_ventana_horas") == 24
