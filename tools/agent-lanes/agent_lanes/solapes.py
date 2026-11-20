@@ -52,7 +52,8 @@ URL_RE = re.compile(r"https?://\S+")
 TOKEN_RE = re.compile(r"[\w.\-]+(?:/[\w.\-]+)*/?")
 # ruta absoluta: «c:/…», «~/…» o «/algo/otro…» (con al menos dos tramos), no pegada a otra palabra o ruta
 ABS_RE = re.compile(r"(?:(?<![\w.\-/])[a-z]:/|(?<![\w.\-/:])~/|(?<![\w.\-/:])/(?=[\w.\-]+/))[\w.\-/]*")
-ZONA_RE = re.compile(r"^[ \t>*-]*zona[ \t]*:[ \t]*(.+)$", re.IGNORECASE | re.MULTILINE)
+# «Zona:» y «Zona (toca):» / «Zona (toca, solo lectura):» (paréntesis opcional del rótulo, en la misma línea)
+ZONA_RE = re.compile(r"^[ \t>*-]*zona(?:[ \t]*\([^)\n]*\))?[ \t]*:[ \t]*(.+)$", re.IGNORECASE | re.MULTILINE)
 ZONA = "zona:"  # prefijo interno de las carpetas declaradas en «Zona:»: chocan por contener/ser contenidas, a cualquier nivel
 MAX_ESTADO = 500  # claves recordadas en el fichero de estado
 DESCARTES_PATH = ROOT / ".state" / "solapes_descartados.json"
@@ -124,7 +125,7 @@ def _zona_declarada(texto: str, ajustes: Ajustes, base: str) -> set[str]:
     exts, out = set(ajustes.extensiones), set()
     for linea in ZONA_RE.findall((texto or "").replace("\\", "/")):
         for item in linea.split(","):
-            r = item.strip().strip("`'\"()[]").lower().removeprefix("./").lstrip("/")
+            r = item.strip().strip("`'\"()[]").rstrip(".").strip("`'\"()[]").lower().removeprefix("./").lstrip("/")
             if base and r.startswith(base + "/"):
                 r = r[len(base) + 1:]
             partes = [p for p in r.split("/") if p]

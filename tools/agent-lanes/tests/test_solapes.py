@@ -246,3 +246,28 @@ def test_zona_declarada_se_lee_y_suma_a_las_rutas_extraidas():
     a, b = extraer_rutas("zona: web/ideas", A, HUB), extraer_rutas("Zona: web/ideas/detalle", A, HUB)
     assert compartido(a, b, Ajustes(nivel="archivo")) == ["zona web/ideas/detalle/"]  # una contiene a la otra
     assert compartido(a, extraer_rutas("Zona: web/otra", A, HUB), Ajustes(nivel="archivo")) == []
+
+
+def test_zona_con_parentesis_en_el_rotulo_equivale_a_zona():
+    cuerpo = "Zona (toca): tools/agent-lanes/agent_lanes/paradas, tools/agent-lanes/tests"
+    esperado = extraer_rutas("Zona: tools/agent-lanes/agent_lanes/paradas, tools/agent-lanes/tests", A, HUB)
+    assert extraer_rutas(cuerpo, A, HUB) == esperado
+    assert "tools/agent-lanes/tests/" in esperado and "zona:tools/agent-lanes/tests/" in esperado
+    assert extraer_rutas("- Zona (toca, solo lectura): `web/ideas`, `x/run.py`.", A, HUB) == \
+        extraer_rutas("Zona: web/ideas, x/run.py", A, HUB)
+    assert extraer_rutas("ZONA  (toca): web/ideas.", A, HUB) == extraer_rutas("Zona: web/ideas", A, HUB)
+
+
+def test_zona_con_rotulo_nuevo_marca_solape_solo_si_se_contienen():
+    n = Ajustes(nivel="archivo")
+    a = extraer_rutas("Zona (toca): tools/agent-lanes/agent_lanes", n, HUB)
+    b = extraer_rutas("Zona (toca): tools/agent-lanes/agent_lanes/paradas, tools/agent-lanes/tests", n, HUB)
+    c = extraer_rutas("Zona (toca): tools/monitor", n, HUB)
+    assert compartido(a, b, n)
+    assert compartido(b, c, n) == []
+
+
+def test_zona_no_casa_en_parrafo_ni_sin_dos_puntos():
+    for t in ("La zona (toca): web/ideas es grande", "Zona (toca) web/ideas", "Zona web/ideas",
+              "Zona (toca\n): web/ideas"):
+        assert "zona:web/ideas/" not in extraer_rutas(t, A, HUB), t
