@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import re
+import sqlite3
 import subprocess
 import tempfile
 import time
@@ -366,6 +367,138 @@ class HermesError(RuntimeError):
     pass
 
 
+# --- lector de solo lectura (t_ee0b27a3) ---------------------------------------------------------------------------
+# `hermes kanban show` arranca un Python por tarjeta (y ahí caen los «read-only (transitorio)»): los pasos solapes,
+# choques, prevención y resultados lo llaman cientos de veces por vuelta. Este lector abre el kanban.db en
+# `mode=ro` y devuelve el MISMO dict que `show --json` (campo a campo, ver tests/test_hermes_lector.py). Solo lee:
+# toda escritura sigue yendo por el CLI. Ante cualquier fallo (base ausente, esquema raro, bloqueo) devuelve None y
+# `HermesCLI.show` cae al CLI de siempre. Interruptor: `runner.hermes_lector_ro` de lanes.yaml o la variable de
+# entorno AGENT_LANES_HERMES_LECTOR (0/1; gana sobre lanes.yaml).
+LECTOR_ENV = "AGENT_LANES_HERMES_LECTOR"
+LECTOR_TIMEOUT = 5.0  # espera de SQLite ante un bloqueo
+LECTOR_BACKOFF = (0.2, 0.5)  # esperas entre los 3 intentos
+_LECTOR_TASK = ("id", "title", "body", "assignee", "status", "priority", "tenant", "workspace_kind", "workspace_path",
+                "branch_name", "project_id", "created_by", "created_at", "started_at", "completed_at", "result",
+                "skills", "max_runtime_seconds", "max_retries", "model_override", "provider_override", "session_id",
+                "workflow_template_id", "current_step_key", "completion_contract", "last_failure_error")
+_LECTOR_VACIO_ES_NULO = ("model_override", "provider_override")  # "" = sin definir, como en Hermes
+_LECTOR_RUN = ("id", "profile", "step_key", "status", "outcome", "summary", "error", "metadata", "worker_pid",
+               "started_at", "ended_at")
+
+
+def lector_activado(cfg: dict | None = None) -> bool:
+    """¿Se usa el lector de solo lectura? Entorno > `runner.hermes_lector_ro` de lanes.yaml > sí."""
+    env = (os.environ.get(LECTOR_ENV) or "").strip().lower()
+    if env:
+        return env not in ("0", "false", "no", "off")
+    return bool((cfg if cfg is not None else _proc.cli_settings()).get("lector_ro", True))
+
+
+def ruta_kanban_db(board: str) -> Path | None:
+    """kanban.db del tablero igual que Hermes: HERMES_KANBAN_DB pinta la ruta; si no, `<raíz>/kanban.db` (default) o
+    `<raíz>/kanban/boards/<slug>/kanban.db`. None si el nombre no es válido."""
+    pinned = (os.environ.get("HERMES_KANBAN_DB") or "").strip()
+    if pinned:
+        return Path(pinned).expanduser()
+    slug = (board or "default").strip().lower()
+    if not _BOARD_RE.match(slug):
+        return None
+    local = (os.environ.get("LOCALAPPDATA") or "").strip()
+    root = Path((os.environ.get("HERMES_KANBAN_HOME") or "").strip() or
+                (Path(local) if local else Path.home() / "AppData/Local") / "hermes")
+    return root / "kanban.db" if slug == "default" else root / "kanban/boards" / slug / "kanban.db"
+
+
+def _lossy(value):
+    return value.decode("utf-8", errors="replace") if isinstance(value, bytes) else value
+
+
+def _json_or(value):
+    if not value:
+        return None
+    try:
+        return json.loads(value)
+    except Exception:
+        return None
+
+
+def _opt_int(value):
+    return int(value) if value is not None else None
+
+
+def _show_desde_conexion(conn, task_id: str) -> dict | None:
+    """El dict de `hermes kanban show <id> --json` leído de `conn` (consultas idénticas a las de Hermes 0.21.4).
+    None si la tarjeta no existe."""
+    conn.row_factory = sqlite3.Row
+    conn.text_factory = lambda b: b.decode("utf-8", errors="replace")
+    row = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
+    if row is None:
+        return None
+    cols = set(row.keys())
+
+    def g(col, default=None):
+        return _lossy(row[col]) if col in cols else default
+
+    task = {col: g(col) for col in _LECTOR_TASK}
+    for col in _LECTOR_VACIO_ES_NULO:
+        task[col] = task[col] or None
+    if "last_failure_error" not in cols:
+        task["last_failure_error"] = g("last_spawn_error")
+    parsed = _json_or(g("skills"))
+    task["skills"] = [str(s) for s in parsed if s] if isinstance(parsed, list) else []
+    parents = [r[0] for r in conn.execute(
+        "SELECT parent_id FROM task_links WHERE child_id = ? ORDER BY parent_id", (task_id,))]
+    children = [r[0] for r in conn.execute(
+        "SELECT child_id FROM task_links WHERE parent_id = ? ORDER BY child_id", (task_id,))]
+    comments = [{"author": _lossy(r["author"]), "body": _lossy(r["body"]), "created_at": r["created_at"]}
+                for r in conn.execute("SELECT * FROM task_comments WHERE task_id = ? ORDER BY created_at ASC",
+                                      (task_id,))]
+    events = [{"kind": _lossy(r["kind"]), "payload": _json_or(_lossy(r["payload"])), "created_at": r["created_at"],
+               "run_id": _opt_int(r["run_id"] if "run_id" in r.keys() else None)}
+              for r in conn.execute("SELECT * FROM task_events WHERE task_id = ? ORDER BY created_at ASC, id ASC",
+                                    (task_id,))]
+    runs = [{"id": int(r["id"]), "profile": _lossy(r["profile"]), "step_key": _lossy(r["step_key"]),
+             "status": _lossy(r["status"]), "outcome": _lossy(r["outcome"]), "summary": _lossy(r["summary"]),
+             "error": _lossy(r["error"]), "metadata": _json_or(_lossy(r["metadata"])),
+             "worker_pid": _lossy(r["worker_pid"]), "started_at": int(r["started_at"]),
+             "ended_at": _opt_int(r["ended_at"])}
+            for r in conn.execute("SELECT * FROM task_runs WHERE task_id = ? ORDER BY started_at ASC, id ASC",
+                                  (task_id,))]
+    latest = conn.execute(
+        "SELECT summary FROM task_runs WHERE task_id = ? AND summary IS NOT NULL AND summary != '' "
+        "ORDER BY COALESCE(ended_at, started_at) DESC, id DESC LIMIT 1", (task_id,)).fetchone()
+    return {"task": task, "latest_summary": latest["summary"] if latest else None, "parents": parents,
+            "children": children, "comments": comments, "events": events, "runs": runs}
+
+
+def leer_show_ro(db: Path | str, task_id: str, *, timeout: float = LECTOR_TIMEOUT, sleep=time.sleep,
+                 backoff: tuple[float, ...] = LECTOR_BACKOFF) -> dict | None:
+    """`show --json` de una tarjeta leyendo `db` en solo lectura (`file:…?mode=ro`, una conexión por llamada: sirve
+    para varios hilos). Reintenta un bloqueo/«readonly» transitorio con espera corta. Devuelve None si no se puede
+    leer (base ausente, esquema distinto, bloqueo persistente) o si la tarjeta no existe: quien llama decide si cae
+    al CLI. Nunca escribe."""
+    path = Path(db)
+    if not path.is_file():
+        return None
+    uri = path.resolve().as_uri() + "?mode=ro"
+    for intento in range(len(backoff) + 1):
+        conn = None
+        try:
+            conn = sqlite3.connect(uri, uri=True, timeout=timeout)
+            conn.execute("PRAGMA query_only = ON")
+            return _show_desde_conexion(conn, task_id)
+        except (sqlite3.Error, KeyError, ValueError, TypeError) as exc:
+            if intento >= len(backoff):
+                log.warning("hermes lector ro: %s no se pudo leer (%s); se usa el CLI", task_id, exc)
+                return None
+            log.info("hermes lector ro: %s (%s); reintento %d/%d", task_id, exc, intento + 1, len(backoff))
+            sleep(backoff[intento])
+        finally:
+            if conn is not None:
+                conn.close()
+    return None
+
+
 def preparar_tarjeta(board: str, title: str, body: str, assignee: str) -> tuple[str, str]:
     """(cuerpo, assignee) de una tarjeta nueva, igual en todos los backends del kanban (F2-02): aviso de título,
     enrutado de [Telegram] al carril claude-telegram y marca «Tamaño: GRANDE»."""
@@ -401,8 +534,11 @@ class KanbanComun:
 class HermesCLI(KanbanComun):
     def __init__(self, board: str, exe: Path = HERMES_EXE, runner=_proc.run, author: str = "agent-lanes",
                  sleep=time.sleep, backoff: tuple[float, ...] = READONLY_BACKOFF,
-                 timeout_backoff: tuple[float, ...] | None = None):
+                 timeout_backoff: tuple[float, ...] | None = None, lector_db: Path | str | None = None):
         self._sleep = sleep
+        # kanban.db que lee `show` en solo lectura. Con un `runner` doble (tests) no se adivina: sin base explícita,
+        # el lector solo se usa si el runner es el real.
+        self._lector_db = Path(lector_db) if lector_db else (ruta_kanban_db(board) if runner is _proc.run else None)
         self._backoff = backoff
         self._timeout_backoff = timeout_backoff  # None = runner.cli_timeout_backoff de lanes.yaml
         self.board = board
@@ -510,6 +646,10 @@ class HermesCLI(KanbanComun):
         return self._call("comment", task_id, "--author", author or self.author, text).returncode == 0
 
     def show(self, task_id: str) -> dict:
+        if self._lector_db is not None and lector_activado():
+            found = leer_show_ro(self._lector_db, task_id, sleep=self._sleep)
+            if found is not None:
+                return found
         cp = self._call("show", task_id, "--json")
         if cp.returncode != 0:
             raise HermesError(f"show {task_id} failed: {cp.stderr.strip()[:300]}")
