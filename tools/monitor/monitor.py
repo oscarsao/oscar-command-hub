@@ -75,6 +75,10 @@ LIST_FAIL_GAP = 240  # s sin fallos nuevos = recuperado (el runner lista cada ~6
 RAM_REPORT_EVERY = 4 * 3600  # s entre informes de RAM al DM (antes: aviso repetido cada hora mientras RAM > 88 %)
 ALERT_CAP_HOURS = 24  # como mucho un aviso por clave y día (retro 22-10); editable: ajustes_hub.json avisos.alerta_cada_horas
 CAP_EXEMPT = ("INFO", "RESUELTO")
+# Caídas del runner: sin el tope de 1 aviso al día por clave/huella. El 14-11-2026 el runner estuvo ~2 h 45 min
+# parado y el aviso «colgado» no llegó porque un aviso parecido ya había salido ese día; se repiten cada `every`.
+CAP_EXEMPT_KEYS = ("runner-dead", "runner-hung")
+LATIDO_COLGADO_SECS = 300  # umbral por defecto del latido del planificador (lanes.yaml: latido_parado_segundos)
 WATCHED_CODE = ("monitor.py", "dbwatch.py", "prodwatch.py", "disponibilidad.py")  # si cambian, se reinicia solo
 RESUMEN_INFO = LANES / ".state" / "resumen_info.json"  # resumen diario INFO del runner (F1-04)
 RUNNER_LOCK = LANES / ".state" / "runner.lock"
@@ -308,7 +312,7 @@ class Monitor:
     def alert(self, level: str, text: str, key: str | None = None, every: float = 600) -> None:
         key = key or text
         t = time.time()
-        capped = level not in CAP_EXEMPT and every > 0  # RESUELTO/INFO y los de `every=0` salen siempre
+        capped = level not in CAP_EXEMPT and every > 0 and not key.startswith(CAP_EXEMPT_KEYS)  # RESUELTO/INFO, `every=0` y caídas del runner salen siempre
         if capped:
             if self.silenced(key):
                 return
@@ -444,7 +448,11 @@ class Monitor:
         if not (self.write_log and self.latido):
             return None
         b = disp.bateria(self.read_battery)
-        detalle = {"runner": "VIVO" in self.lanes_text or disp.runner_pid_vivo(RUNNER_LOCK),
+        vivo = "VIVO" in self.lanes_text or disp.runner_pid_vivo(RUNNER_LOCK)
+        lat = self.latido_runner_detalle()
+        # `runner` solo es true si el proceso es el runner Y su planificador late: un PID vivo con el latido
+        # envejecido es «colgado» (14-11-2026: 2 h 45 min de runner:true con el runner muerto).
+        detalle = {"runner": bool(vivo and not lat.get("colgado") and lat.get("estado") != "parado"), "runner_vivo": bool(vivo), **lat,
                    "ram_pct": round(psutil.virtual_memory().percent), "bateria_pct": round(b[0]) if b else None,
                    "enchufado": b[1] if b else None}
         res = self.latido.tick(detalle)
@@ -574,18 +582,37 @@ class Monitor:
                        "normalmente se resuelve solo al terminar la tarea; si pasa de 30 min, avísame en la "
                        "sesión de Claude Code o mira /salud.", min_hits=4)
 
+    def _latido_runner(self) -> tuple[dict, dict | None, str, str]:
+        """(ajustes del runner, latido, estado, detalle) del latido interno `.state/runner-latido.json`. El PID del
+        latido cuenta como vivo solo si es el runner (14-11-2026: Windows reutilizó el PID y todo lo dio por vivo)."""
+        if str(LANES) not in sys.path:
+            sys.path.insert(0, str(LANES))
+        from agent_lanes import supervisor
+        from agent_lanes.config import load_runner_settings
+        from agent_lanes.procid import es_el_runner
+        cfg = load_runner_settings()
+        parado = float(cfg.get("latido_parado_segundos") or LATIDO_COLGADO_SECS)
+        data = supervisor.leer(LANES / ".state" / "runner-latido.json")
+        estado, detalle = supervisor.evaluar(data, time.time(), parado, psutil.pid_exists, es_el_runner)
+        return cfg, data, estado, detalle
+
+    def latido_runner_detalle(self) -> dict:
+        """Campos del latido externo (ohq_hub_heartbeat): edad del planificador y del bucle principal, y `colgado`
+        cuando el planificador lleva más del umbral sin latir aunque el proceso exista."""
+        try:
+            from agent_lanes import supervisor
+            _, data, estado, detalle = self._latido_runner()
+            return {"estado": estado, "colgado": estado == "colgado", "detalle_latido": detalle,
+                    **supervisor.edades(data, time.time())}
+        except Exception as exc:  # noqa: BLE001 - el latido externo sale aunque esto falle
+            return {"estado": "desconocido", "colgado": False, "detalle_latido": type(exc).__name__}
+
     def _runner_colgado(self, draining: bool) -> None:
         """Latido real del runner (agent_lanes/supervisor.py): proceso vivo pero planificador sin latir = colgado.
         Avisa ALTA y, si no había workers en vuelo, lanza `lanes.py restart --drain --colgado` (máx. 1/hora)."""
         try:
-            if str(LANES) not in sys.path:
-                sys.path.insert(0, str(LANES))
             from agent_lanes import ciego, supervisor
-            from agent_lanes.config import load_runner_settings
-            cfg = load_runner_settings()
-            parado = float(cfg.get("latido_parado_segundos") or supervisor.DEFAULT_PARADO_SECS)
-            data = supervisor.leer(LANES / ".state" / "runner-latido.json")
-            estado, detalle = supervisor.evaluar(data, time.time(), parado, psutil.pid_exists)
+            cfg, data, estado, detalle = self._latido_runner()
             if estado == "colgado" and not draining:
                 accion = supervisor.reinicio_si_colgado(
                     data, estado, now=time.time(), habilitado=bool(cfg.get("reinicio_auto_colgado", True)),

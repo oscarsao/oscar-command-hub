@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .config import Lane
+from .vuelta import medir
 
 log = logging.getLogger("agent_lanes")
 
@@ -83,8 +84,9 @@ class GitOps:
         """`_git` que reintenta con espera progresiva si el fallo es el bloqueo de .git/config de otro git. Agotados
         los reintentos registra un único aviso y lanza GitError."""
         for intento in range(len(_REINTENTOS_BLOQUEO) + 1):
-            cp = self._run(["git", "-C", repo, *args], capture_output=True, text=True, encoding="utf-8",
-                           errors="replace", timeout=300)
+            with medir("git " + " ".join(args[:2]) + f" {Path(args[2]).name if len(args) > 2 else ''}".rstrip()):
+                cp = self._run(["git", "-C", repo, *args], capture_output=True, text=True, encoding="utf-8",
+                               errors="replace", timeout=300)
             if cp.returncode == 0:
                 return cp
             if not any(marca in cp.stderr for marca in _MARCAS_BLOQUEO):
@@ -303,8 +305,9 @@ class GitOps:
                 return False, msg
             log.info("%s: carpeta huérfana %s borrada (git ya no la conoce como worktree)", task_id, path)
         if path.exists():
-            cp = self._run(["git", "-C", lane.repo, "worktree", "remove", str(path)], capture_output=True, text=True,
-                           encoding="utf-8", errors="replace", timeout=300)
+            with medir(f"git worktree remove {task_id}"):
+                cp = self._run(["git", "-C", lane.repo, "worktree", "remove", str(path)], capture_output=True,
+                               text=True, encoding="utf-8", errors="replace", timeout=300)
             if cp.returncode != 0:
                 head = (self._out("git", "-C", str(path), "rev-parse", "HEAD") or "").strip()
                 remote = self._remote_sha(lane, branch)
@@ -316,8 +319,9 @@ class GitOps:
                          or "").splitlines()
                 log.warning("%s: HEAD %s ya está en %s/%s; se descartan %d archivo(s) locales al limpiar: %s",
                             task_id, head[:10], lane.remote, branch, len(dirty), dirty[:200])
-                cp = self._run(["git", "-C", lane.repo, "worktree", "remove", "--force", str(path)],
-                               capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300)
+                with medir(f"git worktree remove --force {task_id}"):
+                    cp = self._run(["git", "-C", lane.repo, "worktree", "remove", "--force", str(path)],
+                                   capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300)
                 if cp.returncode != 0:
                     return False, f"worktree no eliminado ni con --force: {cp.stderr.strip()[:200]}"
         if not self._branch_exists(lane.repo, branch):

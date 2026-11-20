@@ -123,6 +123,10 @@ def test_pid_vivo_y_status_lento_no_es_runner_parado(monitor, tmp_path, monkeypa
     monkeypatch.setattr(monitor.subprocess, "run",
                         lambda *a, **k: types.SimpleNamespace(stdout="", stderr="lanes.py status: timeout"))
     (tmp_path / "runner.lock").write_text(json.dumps({"pid": os.getpid()}), encoding="utf-8")
+    # pytest no es runner.py: se simula que el proceso del PID sí lo es (la identidad real se prueba en test_runner_identidad)
+    real = monitor.disp.runner_pid_vivo
+    monkeypatch.setattr(monitor.disp, "runner_pid_vivo",
+                        lambda lock, pid_exists=None: real(lock, pid_exists=lambda p: p == os.getpid()))
     t = [1_000_000.0]
     monkeypatch.setattr(monitor.time, "time", lambda: t[0])
     for k in range(30):

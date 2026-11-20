@@ -11,6 +11,7 @@ from pathlib import Path
 from dataclasses import dataclass
 from typing import Callable
 
+from .procid import es_el_runner
 from .runner import pid_alive as _pid_alive
 
 log = logging.getLogger("agent_lanes")
@@ -363,18 +364,30 @@ class Service:
         return results
 
 
-def acquire_single_instance(lock_path: Path, pid_alive: Callable[[int], bool] = _pid_alive) -> bool:
-    """True if this process now owns the runner lock; False if another live runner holds it."""
+def acquire_single_instance(lock_path: Path, pid_alive: Callable[[int], bool] = _pid_alive,
+                            identidad: Callable[[int, float | None], bool | None] | None = None) -> bool:
+    """True if this process now owns the runner lock; False if another live runner holds it.
+
+    Un PID vivo no basta (Windows los reutiliza, 14-11-2026): con el `pid_alive` real se comprueba también que el
+    proceso sea el runner (`runner.py` en su línea de comandos y no nacido después del candado). Con un `pid_alive`
+    inyectado (tests) solo manda ese, salvo que se pase `identidad` explícita."""
     lock_path = Path(lock_path)
     lock_path.parent.mkdir(parents=True, exist_ok=True)
+    if identidad is None and pid_alive is _pid_alive:
+        identidad = lambda pid, started: es_el_runner(pid, started)  # noqa: E731
     if lock_path.exists():
         try:
-            owner = int(json.loads(lock_path.read_text(encoding="utf-8")).get("pid", 0))
-        except (OSError, ValueError, json.JSONDecodeError):
-            owner = 0
+            datos = json.loads(lock_path.read_text(encoding="utf-8"))
+            owner = int(datos.get("pid", 0))
+            started = datos.get("started")
+        except (OSError, ValueError, AttributeError, json.JSONDecodeError):
+            owner, started = 0, None
         if owner and owner != os.getpid():
             if pid_alive(owner):
-                return False
-            log.warning("lock caducado del PID %s: lo tomo", owner)
+                if identidad is None or identidad(owner, started) is not False:
+                    return False
+                log.warning("lock del PID %s obsoleto: ese PID lo usa ahora otro proceso (PID reutilizado); lo tomo", owner)
+            else:
+                log.warning("lock caducado del PID %s: lo tomo", owner)
     lock_path.write_text(json.dumps({"pid": os.getpid(), "started": time.time()}), encoding="utf-8")
     return True
