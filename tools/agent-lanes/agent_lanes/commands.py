@@ -577,6 +577,45 @@ class CommandCenter:
             now=lambda: datetime.fromtimestamp(self._now(), rc.MADRID), hour=hour,
             extra=lambda: self.integrador_resumen()[0]).tick()
 
+    def resumen_preguntas_tick(self) -> str | None:
+        """Resumen de preguntas de carriles a las 9, 14 y 20 h (t_a37ab14b; solo si hay cambios). Barato fuera de hora."""
+        from . import drain
+        from . import resumen_carriles as rc
+        path = self._state_file("resumen_preguntas_state", "resumen_preguntas.json")
+        cfg = rc.load_resumen_config()
+        if path is None or not cfg["activo"] or rc.due_slot(datetime.fromtimestamp(self._now(), rc.MADRID), set(),
+                                                            cfg["horas"]) is None:
+            return None
+        att = self.renotifier().attention
+        chat, thread = (str(att["chat"]), str(att.get("thread") or "0")) if att else (self.owner_id, None)
+
+        def cards(pendings: list) -> None:  # las mismas fichas con botones (y ⭐ recomendada) que /decisiones
+            now = self._now()
+            for group in group_pending(pendings):
+                if len(group) == 1:
+                    self._decision_card((chat, thread), group[0], now)
+                else:
+                    self._group_card((chat, thread), group, now)
+
+        def done_since(ts: float) -> int:
+            n = 0
+            for name, lane in self.lanes.items():
+                try:
+                    n += sum(1 for t in self.hermes_for(lane.board).list_status(name, "done")
+                             if float(t.get("completed_at") or 0) >= ts)
+                except Exception as exc:  # un carril ilegible no tumba el parte
+                    log.warning("resumen de preguntas: hechas de %s no leídas: %s", name, exc)
+            return n
+
+        def blocked() -> list:
+            return [p for p in self.renotifier().collect(statuses=("blocked", "triage")) if titulos.is_live(p.task)]
+
+        return rc.ResumenPreguntas(
+            self.pending_decisions, blocked, lambda: rc.collect_rows(self.lanes, self.hermes_for), done_since,
+            lambda: "en pausa (drenando para reiniciar)" if drain.active(now=self._now()) else "vivo",
+            lambda text: bool(self.notifier.send_to(chat, thread, text, html=False)), cards, path,
+            now=lambda: datetime.fromtimestamp(self._now(), rc.MADRID)).tick()
+
     # --- visibilidad del integrador (t_5624611d): estado, PR de sesiones interactivas, «ver más» ---------------
 
     def vis_ajustes(self):
@@ -1405,7 +1444,7 @@ class CommandCenter:
             self.urgent_tick()
         except Exception as exc:
             log.warning("avisos urgentes: %s", exc)
-        for tick in (self.guard_tick, self.daily_tick, self.peticiones_tick, self.al_dia_tick,
+        for tick in (self.guard_tick, self.daily_tick, self.resumen_preguntas_tick, self.peticiones_tick, self.al_dia_tick,
                      self.vigilancia_tick, self.equipo_tick):  # cola, partes de las 9:00, /al_dia, tema 👥 Equipo, tareas del equipo
             try:
                 tick()

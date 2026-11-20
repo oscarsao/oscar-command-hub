@@ -14,7 +14,10 @@ from pathlib import Path
 from typing import Callable
 from zoneinfo import ZoneInfo
 
+import yaml
+
 from .ajustes_hub import valor
+from .config import ROOT
 from .formato_aviso import PIE_TEXTO_LIBRE
 from .notices import hours_ago, truncate
 
@@ -239,3 +242,187 @@ def anotar(tipo: str, texto: str, clave: str | None = None) -> bool:
     except Exception as exc:
         log.warning("resumen INFO: no se pudo apuntar %s: %s", tipo, exc)
         return False
+
+
+# --- resumen de preguntas de carriles a las 9, 14 y 20 h (t_a37ab14b) ---------------------------------------------------
+# Un mensaje corto (máx. MAX_LINEAS líneas) con las preguntas que esperan a Oscar y, debajo, las más antiguas con sus
+# botones de siempre (⭐ la recomendada). Solo sale si algo cambió desde el último parte enviado: cambian las preguntas
+# abiertas (alguna nueva o resuelta), los bloqueos por tipo o el estado del runner. «En marcha» y «hechas» informan pero no
+# disparan el envío por sí solas. Ajustes en integrador_visibilidad.yaml, sección `resumen_preguntas` (se relee en cada
+# pasada). Solo lee el kanban; no cambia nada.
+
+MAX_LINEAS = 12
+LINEA_MAX = 200
+SETTINGS_PATH = ROOT / "integrador_visibilidad.yaml"
+SECCIONES = ("preguntas", "nuevas", "en_marcha", "bloqueadas", "runner")  # tipos de línea con interruptor
+RESUMEN_DEFAULTS = {"activo": True, "horas": [9, 14, 20], "preguntas_max": 5, "antiguas_horas": 24,
+                    "tipos": {s: True for s in SECCIONES}}
+
+
+def load_resumen_config(path: Path | str | None = None) -> dict:
+    """Ajustes de `resumen_preguntas` en el YAML; lo que falte o no sea válido vale el default."""
+    out = {**RESUMEN_DEFAULTS, "tipos": dict(RESUMEN_DEFAULTS["tipos"]), "horas": list(RESUMEN_DEFAULTS["horas"])}
+    try:
+        raw = (yaml.safe_load(Path(path or SETTINGS_PATH).read_text(encoding="utf-8")) or {}).get("resumen_preguntas")
+    except (OSError, yaml.YAMLError, AttributeError):
+        return out
+    if not isinstance(raw, dict):
+        return out
+    es_int = lambda v: isinstance(v, int) and not isinstance(v, bool)
+    if isinstance(raw.get("activo"), bool):
+        out["activo"] = raw["activo"]
+    horas = raw.get("horas")
+    if isinstance(horas, list):
+        validas = sorted({h for h in horas if es_int(h) and 0 <= h <= 23})
+        if validas:
+            out["horas"] = validas
+    if es_int(raw.get("preguntas_max")) and 0 <= raw["preguntas_max"] <= 20:
+        out["preguntas_max"] = raw["preguntas_max"]
+    if isinstance(raw.get("antiguas_horas"), (int, float)) and not isinstance(raw["antiguas_horas"], bool) \
+            and raw["antiguas_horas"] > 0:
+        out["antiguas_horas"] = float(raw["antiguas_horas"])
+    if isinstance(raw.get("tipos"), dict):
+        for s in SECCIONES:
+            if isinstance(raw["tipos"].get(s), bool):
+                out["tipos"][s] = raw["tipos"][s]
+    return out
+
+
+def tipo_bloqueo(p) -> str:
+    """Tipo de una tarjeta bloqueada: guard | atascada | pregunta | el `block_kind` del carril | otro."""
+    if getattr(p, "guard", False):
+        return "guard"
+    state = getattr(p, "state", "")
+    if state == "stuck":
+        return "atascada"
+    if state == "needs_input":
+        return "pregunta"
+    return str(getattr(p, "block_kind", None) or "otro")
+
+
+def contar_bloqueadas(bloqueadas: list) -> dict[str, int]:
+    out: dict[str, int] = {}
+    for p in bloqueadas:
+        t = tipo_bloqueo(p)
+        out[t] = out.get(t, 0) + 1
+    return dict(sorted(out.items(), key=lambda kv: (-kv[1], kv[0])))
+
+
+def contar_antiguas(preguntas: list, now: float, horas: float) -> int:
+    """Preguntas que llevan más de `horas` h esperando (las que no tienen fecha no cuentan como antiguas)."""
+    return sum(1 for p in preguntas if getattr(p, "since", None) and now - p.since > horas * 3600)
+
+
+def snapshot(preguntas: list, bloqueadas: list, runner: str) -> dict:
+    """Lo que, si cambia, justifica un parte nuevo."""
+    return {"preguntas": sorted(p.tid for p in preguntas), "bloqueadas": contar_bloqueadas(bloqueadas), "runner": runner}
+
+
+def render_resumen(preguntas: list, bloqueadas: list, rows: list[dict], runner: str, *, now: float, hora: int,
+                   nuevas: int, hechas: int, cfg: dict, con_botones: int = 0) -> str:
+    """El parte, de MAX_LINEAS líneas como mucho. Las secciones apagadas en `cfg['tipos']` no salen."""
+    tipos = cfg["tipos"]
+    lines = [f"🗓 Resumen de las {hora}:00 · preguntas de carriles"]
+    if tipos.get("preguntas"):
+        if preguntas:
+            viejas = contar_antiguas(preguntas, now, cfg["antiguas_horas"])
+            mas_antigua = min(preguntas, key=lambda p: (p.since or now, p.tid))
+            lines.append(f"❓ {len(preguntas)} pregunta{'s' if len(preguntas) != 1 else ''} esperan · {viejas} con más de "
+                         f"{int(cfg['antiguas_horas'])} h · la más antigua hace {hours_ago(mas_antigua.since, now)} h "
+                         f"({mas_antigua.tid})")
+        else:
+            lines.append("❓ Ninguna pregunta espera tu respuesta")
+    if tipos.get("nuevas"):
+        lines.append(f"🆕 Desde el último parte: {nuevas} pregunta{'s' if nuevas != 1 else ''} nueva"
+                     f"{'s' if nuevas != 1 else ''} · {hechas} tarjeta{'s' if hechas != 1 else ''} hecha"
+                     f"{'s' if hechas != 1 else ''}")
+    if tipos.get("en_marcha"):
+        activos = [f"{r['name']} {len(r['doing'])}" for r in rows if r.get("doing")]
+        total = sum(len(r["doing"]) for r in rows if r.get("doing"))
+        lines.append(f"🔵 En marcha: {total}" + (f" ({', '.join(activos[:4])}{'…' if len(activos) > 4 else ''})"
+                                                  if activos else ""))
+    if tipos.get("bloqueadas"):
+        por_tipo = contar_bloqueadas(bloqueadas)
+        lines.append(f"🚧 Bloqueadas: {len(bloqueadas)}" + (" (" + " · ".join(f"{t} {n}" for t, n in por_tipo.items()) + ")"
+                                                              if por_tipo else ""))
+    if tipos.get("runner"):
+        lines.append(f"⚙️ Runner: {runner}")
+    if con_botones:
+        lines.append(f"⬇️ Debajo, {con_botones} con sus botones (⭐ = la recomendada)")
+    return "\n".join(truncate(l, LINEA_MAX) for l in lines[:MAX_LINEAS])
+
+
+def due_slot(now: datetime, sent: set[str], horas: list[int]) -> tuple[str, int] | None:
+    """(clave AAAA-MM-DD HH, hora) del primer parte que toca y no está enviado: desde su hora hasta el margen
+    `avisos.resumen_ventana_horas` (hora de Madrid)."""
+    now = now.astimezone(MADRID)
+    ventana = valor("avisos.resumen_ventana_horas")
+    ventana = 2 if ventana is None else ventana
+    for h in horas:
+        key = f"{now:%Y-%m-%d} {h:02d}"
+        if h <= now.hour < h + ventana and key not in sent:
+            return key, h
+    return None
+
+
+class ResumenPreguntas:
+    """`decisions()` -> Pending en needs_input (más antigua primero); `blocked()` -> Pending bloqueadas (cualquier
+    tipo); `rows()` -> filas por carril; `done_since(ts)` -> tarjetas hechas desde `ts`; `runner()` -> texto de estado;
+    `send(text)` -> True si salió; `send_cards(pendings)` pinta las preguntas con sus botones. Un fallo se reintenta en
+    la pasada siguiente y no marca el parte como enviado."""
+
+    def __init__(self, decisions: Callable[[], list], blocked: Callable[[], list], rows: Callable[[], list],
+                 done_since: Callable[[float], int], runner: Callable[[], str], send: Callable[[str], bool],
+                 send_cards: Callable[[list], None], state_path: Path | str, *,
+                 now: Callable[[], datetime] = lambda: datetime.now(MADRID),
+                 config: Callable[[], dict] = load_resumen_config):
+        self.decisions, self.blocked, self.rows, self.done_since, self.runner = decisions, blocked, rows, done_since, runner
+        self.send, self.send_cards, self.state_path, self._now, self.config = send, send_cards, Path(state_path), now, config
+
+    def _load(self) -> dict:
+        try:
+            raw = json.loads(self.state_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {"sent": [], "last": None}
+        raw = raw if isinstance(raw, dict) else {}
+        last = raw.get("last") if isinstance(raw.get("last"), dict) else None
+        return {"sent": [s for s in raw.get("sent") or () if isinstance(s, str)], "last": last}
+
+    def _save(self, data: dict) -> None:
+        self.state_path.parent.mkdir(parents=True, exist_ok=True)
+        data = {**data, "sent": sorted(set(data["sent"]))[-30:]}
+        self.state_path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+
+    def tick(self) -> str | None:
+        """Una comprobación. Devuelve el texto enviado, o None (no toca, sin cambios o falló el envío)."""
+        cfg = self.config()
+        if not cfg["activo"]:
+            return None
+        now = self._now()
+        data = self._load()
+        slot = due_slot(now, set(data["sent"]), cfg["horas"])
+        if not slot:
+            return None
+        key, hora = slot
+        preguntas, bloqueadas, runner = self.decisions(), self.blocked(), self.runner()
+        snap, last = snapshot(preguntas, bloqueadas, runner), data["last"]
+        previo = (last or {}).get("snap")
+        cambios = bool(preguntas or bloqueadas) if previo is None else snap != previo
+        if not cambios:  # sin novedades: el hueco queda consumido y no se vuelve a evaluar
+            self._save({**data, "sent": [*data["sent"], key]})
+            return None
+        ts = now.timestamp()
+        desde = float((last or {}).get("at") or ts - 24 * 3600)
+        nuevas = len(set(snap["preguntas"]) - set((previo or {}).get("preguntas") or ()))
+        grupos = preguntas[:cfg["preguntas_max"]] if cfg["tipos"].get("preguntas") else []
+        text = render_resumen(preguntas, bloqueadas, self.rows(), runner, now=ts, hora=hora, nuevas=nuevas,
+                              hechas=self.done_since(desde), cfg=cfg, con_botones=len(grupos))
+        if not self.send(text):
+            return None
+        self._save({"sent": [*data["sent"], key], "last": {"at": ts, "snap": snap}})
+        if grupos:
+            try:
+                self.send_cards(grupos)
+            except Exception as exc:  # el parte ya salió; las fichas siguen en /decisiones
+                log.warning("resumen de preguntas: fichas no enviadas: %s", exc)
+        return text

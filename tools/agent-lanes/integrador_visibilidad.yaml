@@ -9,3 +9,16 @@ repos: {}
 # Textos de los avisos (plantillas con {repo} {sha} {horas} {max}). Claves: estado_falta, estado_viejo,
 # incidencia_abre, incidencia_cierra.
 textos: {}
+# Resumen de preguntas de carriles (agent_lanes/resumen_carriles.py, ResumenPreguntas): un parte corto con las preguntas
+# que esperan a Oscar y, debajo, las más antiguas con sus botones. Solo sale si algo cambió desde el anterior.
+resumen_preguntas:
+  activo: true            # false = no sale ningún parte
+  horas: [9, 14, 20]      # horas (Madrid, 0-23) de los partes
+  preguntas_max: 5        # preguntas que salen con botones debajo del parte (0 = solo el parte)
+  antiguas_horas: 24      # a partir de cuántas horas una pregunta cuenta como antigua
+  tipos:                  # interruptor por tipo de línea (máx. 12 líneas en total)
+    preguntas: true       # cuántas esperan y la más antigua (y sus botones)
+    nuevas: true          # nuevas y hechas desde el último parte
+    en_marcha: true       # tarjetas en marcha por carril
+    bloqueadas: true      # bloqueadas por tipo
+    runner: true          # estado del runner
