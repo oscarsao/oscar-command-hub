@@ -7,7 +7,7 @@ import logging
 import re
 import subprocess
 
-from . import grandes, lecciones, preferencias
+from . import grandes, lecciones, preferencias, verificacion
 from . import proc as _proc
 from dataclasses import dataclass
 from pathlib import Path
@@ -137,6 +137,7 @@ def build_prompt(task: dict, lane: Lane) -> str:
         + _conflict_section(task.get("merge_conflict"), lane)
         + _clasificador_section(task.get("clasificador_avisos"))
         + _recordatorio_section(task.get("clasificador_recordatorio"))
+        + verificacion.SECCION_WORKER
         + preferencias.section_for("workers")
         + lecciones.section_for(lane.name)
     )

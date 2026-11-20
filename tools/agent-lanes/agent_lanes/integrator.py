@@ -57,6 +57,7 @@ from . import cola_integrador  # noqa: E402
 from . import consola  # noqa: E402
 from . import drain  # noqa: E402
 from . import proc as _proc  # noqa: E402
+from . import verificacion  # noqa: E402
 from .atascos import DEFAULT_APPEND_ONLY, AutoResolver, pr_branch_card_body  # noqa: E402
 from .config import ROOT, _chat_thread, _load  # noqa: E402
 from .deps import is_integration_comment, pending_parents, waiting_line  # noqa: E402
@@ -750,7 +751,8 @@ class Integrator:
             task["for_oscar"] = str(for_oscar)[:600]
         about = {"lane": lane.name, "title": (task.get("title") or "")[:200]}  # para el resumen fijado
         pr = self._pr_view(self.links.repo_slug(lane), number)
-        problem = self._pr_problem(lane, tid, pr) or self._approval_problem(tid, number, pr, show)
+        problem = (self._pr_problem(lane, tid, pr) or self._approval_problem(tid, number, pr, show)
+                   or verificacion.problema_integracion(show))  # prueba en navegador pendiente: no se integra
         if problem:
             if st.get("status") != "pr_problem" or st.get("pr_problem") != problem:
                 log.info("%s: PR #%s no integrable: %s", tid, number, problem)
@@ -851,7 +853,7 @@ class Integrator:
         if not slug or not zona or not cola_integrador.proyecto_permitido(ids, proyectos):
             return None  # barato y sin red: ni proyecto, ni Zona, ni MigraTeam (los ficheros se miran después)
         pr = self._pr_view(slug, f"lane/{tid}")
-        problem = self._pr_problem(lane, tid, pr)
+        problem = self._pr_problem(lane, tid, pr) or verificacion.problema_integracion(show)
         if problem or pr.get("mergeable") == "CONFLICTING" or pending_parents(self.hermes_for(lane.board), tid, show):
             return self._auto_no(tid, problem or "conflictos o tarjetas padre sin integrar")
         number, url, head = pr["number"], pr["url"], pr["headRefOid"]

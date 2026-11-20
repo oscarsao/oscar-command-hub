@@ -55,9 +55,11 @@ def _task(t: dict) -> str:
     return f"<code>{html.escape(str(t.get('id') or '?'))}</code> · {html.escape(truncate(t.get('title'), TITLE_MAX))}"
 
 
-def render_sections(*, running, queue, done, conflicts, now: float, cfg: PanelSettings, slots: str = "") -> str:
+def render_sections(*, running, queue, done, conflicts, now: float, cfg: PanelSettings, slots: str = "",
+                    verificacion=()) -> str:
     """running: [{lane,id,title,status,since}] · queue: [{id,title,priority}] · done: [{id,title}] ·
-    conflicts: [{tid,pr,title,text,url?}]. Cada sección vacía lo dice en una línea (no desaparece)."""
+    conflicts: [{tid,pr,title,text,url?}] · verificacion: [{id,title,pr,url}] (esperan prueba en navegador).
+    Cada sección vacía lo dice en una línea (no desaparece), salvo la de verificación: solo sale si hay alguna."""
     e = html.escape
     out = ["<b>🔧 EN MARCHA</b>"]
     if slots:  # huecos normales/grandes/reservados ocupados (23-10): se ve de un vistazo si hay plaza libre
@@ -78,6 +80,14 @@ def render_sections(*, running, queue, done, conflicts, now: float, cfg: PanelSe
         out.append(f"… y {len(conflicts) - len(shown)} más")
     if not conflicts:
         out.append("ninguno")
+    if verificacion:
+        out.append("\n<b>🧪 ESPERAN PRUEBA EN NAVEGADOR</b>")
+        for v in verificacion[:cfg.conflicts]:
+            pr = f"#{int(v['pr'])}" if v.get("pr") else "sin PR"
+            pr = f'<a href="{e(v["url"], quote=True)}">{pr}</a>' if v.get("url") and v.get("pr") else pr
+            out.append(f"{pr} {_task(v)}")
+        if len(verificacion) > cfg.conflicts:
+            out.append(f"… y {len(verificacion) - cfg.conflicts} más")
     return "\n".join(out)
 
 
@@ -129,18 +139,24 @@ class LivePanel:
                 running.append({"lane": name, "id": t.get("id"), "title": t.get("title"), "status": "running",
                                 "since": t.get("started_at")})
             queue += h.list_status(name, "ready")
+        from .bandeja import verificacion_pendiente
+        pendientes: list[dict] = []  # «VERIFICACIÓN PENDIENTE» sin «HECHA»: en review o terminadas hace poco
         for board in boards:
             h = i.hermes_for(board)
+            vistas = []
             for t in h.list_status_all("review"):
                 running.append({"lane": t.get("assignee") or "review", "id": t.get("id"), "title": t.get("title"),
                                 "status": "review", "since": t.get("started_at")})
+                vistas.append(t)
             for t in h.list_status_all("done"):
                 at = t.get("completed_at")
                 try:
                     if at is not None and now - float(at) <= self.cfg.done_hours * 3600:
                         done.append({"id": t.get("id"), "title": t.get("title"), "at": float(at)})
+                        vistas.append(t)
                 except (TypeError, ValueError):
                     continue
+            pendientes += verificacion_pendiente(h, vistas)
         def prio(t):
             try:
                 return int(t.get("priority"))
@@ -150,7 +166,8 @@ class LivePanel:
         done.sort(key=lambda t: -t["at"])
         from . import drain
         from .status import busy_slots, slots_text
-        return {"running": running, "queue": queue, "done": done, "slots": slots_text(busy_slots(drain.BUSY_FILE))}
+        return {"running": running, "queue": queue, "done": done, "slots": slots_text(busy_slots(drain.BUSY_FILE)),
+                "verificacion": pendientes}
 
     def conflict_entries(self) -> list[dict]:
         """Conflictos/bloqueos VIGENTES: gates fallidos y problemas de PR del integrador + PR en conflicto vistos

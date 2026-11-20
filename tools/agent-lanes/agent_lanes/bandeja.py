@@ -137,6 +137,18 @@ def split_low_priority(cards: list[dict], cfg: Bandeja, now: float) -> tuple[lis
     return keep, low
 
 
+def verificacion_pendiente(hermes, tasks: list[dict]) -> list[dict]:
+    """Tarjetas en review/hechas con «VERIFICACIÓN PENDIENTE» sin «HECHA»: [{id, title, pr, url}] (ver verificacion.py)."""
+    from . import verificacion
+    return verificacion.pendientes(hermes, tasks)
+
+
+def render_verificacion(entries: list[dict]) -> str:
+    """Lista propia «esperan prueba en navegador», con su PR; vacía si no hay ninguna (no ocupa sitio en la bandeja)."""
+    from . import verificacion
+    return verificacion.render_lista(entries)
+
+
 def group_counts(cards: list[dict]) -> str:
     """"MigraTeam 4 · Otros 3" (mayor grupo primero)."""
     counts: dict[str, int] = {}
