@@ -108,6 +108,16 @@ def test_limpieza_real_respeta_el_tope_solo_edita_y_se_revierte(tmp_path):
     assert c.revertir(inf["lote"]) == 0  # ya revertido: idempotente
 
 
+def test_el_contador_fijado_se_edita_y_queda_con_lo_que_sigue_abierto(tmp_path):
+    c, tg = _canal(tmp_path, {})
+    c.fijado._store({"chat_id": TEMA[0], "thread_id": TEMA[1], "message_id": 77, "text": "🎯 <b>3 decisiones</b>"})
+    _par(c, 840, "choque", [], at=1 * DIA, nuevo=False)
+    _par(c, 841, "needs_input", ["t_a"], at=9.9 * DIA)
+    c.limpiar_antiguos(dry_run=False)
+    assert "1 decisión pendiente" in tg.edits(77)[0]["text"]
+    assert not [1 for m, _ in tg.calls if m == "sendMessage"]
+
+
 def test_enviar_anota_las_tarjetas_del_aviso(tmp_path):
     tg = TG()
     kb = {"inline_keyboard": [[{"text": "x", "callback_data": "tok123456:0"}]]}

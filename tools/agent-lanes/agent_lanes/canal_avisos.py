@@ -641,8 +641,9 @@ class CanalAvisos:
         return n
 
     def _actualizar_contador(self) -> None:
-        """Edita el mensaje fijado con las decisiones que quedan (no siembra ni envía decisiones nuevas)."""
-        if not self.fijado:
+        """Edita el mensaje fijado con las decisiones que quedan. Solo edita: sin fijado previo no crea ninguno, y no
+        siembra ni envía decisiones nuevas."""
+        if not self.fijado or not self.fijado._load().get("message_id"):
             return
         try:
             self.fijado.update(contador_texto(self.pendientes(), self.clock()))
