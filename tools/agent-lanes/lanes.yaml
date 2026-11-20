@@ -269,6 +269,23 @@ lanes:
     max_parallel: 2  # 20-11 (Oscar, botón en la sesión de la Integradora): de 1 a 2; volver a 1 si hay OOM o lentitud
     test_cmd: py -3.12 "{AGENT_LANES_DIR}/agent_lanes/checks.py" {BASE}
 
+  # 20-11 (Oscar, botón en la sesión de la Integradora): sitio web de MigraTeam (www.migrateam.com, Next.js en Vercel).
+  # La fábrica de tarjetas descartaba candidatas del sitio por no tener carril. Todo entra por develop (vista previa de
+  # Vercel, NO www); a main solo por promoción con botón de Oscar, fuera del carril. Sin deploy: lo hace la Integradora.
+  claude-migrateam-web:
+    telegram: {chat: -1003530490339, thread: 230}
+    board: migrateam
+    repo: C:/Users/oscar/dev/migrateam-web
+    github: PildoraDigital/migrateam-web
+    base: develop
+    max_parallel: 1
+    # Dependencias y CI: revisión de seguridad aparte (una dependencia nueva pide auditoría antes de entrar).
+    forbidden_paths:
+      - .github/workflows/
+      - package.json
+      - package-lock.json
+    test_cmd: py -3.12 "{AGENT_LANES_DIR}/agent_lanes/checks.py" {BASE}
+
   claude-nextjobs:
     telegram: {chat: -1003530490339, thread: 5}
     board: default
@@ -399,7 +416,7 @@ lanes:
 
   review:
     kind: review
-    reviews: [claude-oscarhq, claude-migrateam, claude-scraper, claude-nextjobs, claude-hub]
+    reviews: [claude-oscarhq, claude-migrateam, claude-migrateam-web, claude-scraper, claude-nextjobs, claude-hub]
     role: roles/revisor.md
     model: sonnet
     effort: medium

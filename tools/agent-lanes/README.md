@@ -29,7 +29,7 @@ por hora); con workers en vuelo nunca reinicia.
 
 | Assignee | Para qué | Resultado |
 |---|---|---|
-| `claude-<repo>` (`claude-oscarhq`, `claude-migrateam`, `claude-scraper`, `claude-nextjobs`) | Código de ESE repo: bugfix, feature, spec, docs versionados | Rama `lane/<id>` empujada, `test_cmd` del carril, carril `review` y PR con [✅ Aprobar] |
+| `claude-<repo>` (`claude-oscarhq`, `claude-migrateam`, `claude-migrateam-web`, `claude-scraper`, `claude-nextjobs`) | Código de ESE repo: bugfix, feature, spec, docs versionados | Rama `lane/<id>` empujada, `test_cmd` del carril, carril `review` y PR con [✅ Aprobar] |
 | `claude-hub` (alias `claude-telegram`) | El propio sistema (`oscar-command-hub`: agent-lanes, monitor, bots de Telegram de carriles `@pildora_carriles_bot` y Avisos `@PildoraD_BOT`): arreglos pedidos desde Telegram sin abrir Claude Code. Desde el 23-10 «Hub y Telegram» es un solo carril; `claude-telegram` es solo un alias (no se emite). **Plaza reservada** (`reserved_slots`, fuera de `max_workers`) y dos repos: la tarjeta elige con `Repo: hub\|oscar-hq` (lista blanca `repos:`). Un título `[Telegram]` o citar los bots la enruta aquí (`clasificador.yaml`) | Rama `lane/<id>` sobre `main` (u `master` de oscar-hq), suite de agent-lanes, `review`, ficha ⚙️ SISTEMA e integrador; tras fusionar, [🔁 Aplicar] |
 | `claude-ops` | Trabajo operativo sin repo: inventariar o copiar carpetas (vault/buzón del disco E:), leer calendario, Drive o ClickUp y proponer cambios, preparar accesos, planes e informes | Carpeta `C:/Users/oscar/dev/_lanes/ops/<id>` con evidencias; siempre a `review` con [✅ Validar / 🔁 Pedir cambios] |
 | `oscar` | Lo que exige a Oscar: firmar, pagar, decisiones de negocio, credenciales, ejecutar una acción externa ya aprobada (v1), cualquier cosa en producción | Lo hace Oscar (también es donde acaba el botón 🗄 Aparcar) |
@@ -287,7 +287,7 @@ cambia; cualquier cola, orden o escalada que se escriba aquí debe respetarla.
   mande solo el yaml: reinstalar el servicio SIN `-MaxWorkers` (`instalar_servicio.sh` ya no lo pasa; lo hace Oscar, los
   `.ps1` quedan fuera del alcance de los workers) y reiniciar el runner. El log de arranque
   (`runner: carriles=… max_workers=N`) dice el valor real. `max_parallel` por carril: 1 por defecto (`defaults`); 4 en
-  `claude-oscarhq` (27-10); 2 en `claude-hub` y en `review` (5-11); 2 en `claude-migrateam` y `claude-scraper` (20-11);
+  `claude-oscarhq` (27-10); 2 en `claude-hub` y en `review` (5-11); 2 en `claude-migrateam` y `claude-scraper` (20-11); 1 en `claude-migrateam-web` (20-11);
   1 en `claude-ops`.
 
 ## Guarda de tablero (ADR-036)
