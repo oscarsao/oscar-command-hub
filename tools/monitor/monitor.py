@@ -55,6 +55,9 @@ HEALTH = {"Oscar HQ": "https://api.pildoradigital.com/api/health",  # 22-10: fue
           "Dashboard local": "http://127.0.0.1:9119/"}
 WATCH_PROCS = ("claude", "python", "pythonw", "node", "chrome", "hermes", "cloudflared", "msedge", "code")
 LOG_LEVEL_RE = re.compile(r"\b(WARNING|ERROR|CRITICAL)\b")
+# Fallos de limpieza del runner (worktree remove con timeout, tarea que no se pudo bloquear): se concilian solos, no son ALTA.
+CLEANUP_RE = re.compile(r"worktree remove.*timed out|timed out.*worktree remove|no se pudo bloquear", re.IGNORECASE | re.DOTALL)
+TASK_ID_RE = re.compile(r"\bt_[0-9a-f]{8}\b", re.IGNORECASE)
 # Silencio del DM de 23:00 a 08:00 (30-09): solo pasan las caídas reales (runner, Hermes, servicios, listado de tareas).
 QUIET_START, QUIET_END = 23, 8
 OUTAGE_KEYS = ("runner-dead", "runner-hung", "gw-dead", "health-", "list-fail", "db-down", "db-slow", "vercel-prod", "battery-low")
@@ -102,7 +105,8 @@ def alert_fingerprint(level: str, text: str) -> str:
     """Huella de un aviso: nivel + texto sin cifras (minutos, porcentajes, ids numéricos) ni espacios de más, para que
     «RAM 86 %» y «RAM 87 %» cuenten como el mismo aviso."""
     import hashlib
-    cuerpo = re.sub(r"\d+", "#", " ".join(text.split())).lower()
+    cuerpo = re.sub(r"\bt_[0-9a-f]{8}\b", "t_#", " ".join(text.split()), flags=re.IGNORECASE)  # una huella por fallo, no por tarjeta
+    cuerpo = re.sub(r"\d+", "#", cuerpo).lower()
     return hashlib.sha1(f"{level}|{cuerpo}".encode("utf-8")).hexdigest()[:16]
 
 
@@ -254,6 +258,7 @@ class Monitor:
         self.runner_events: deque[str] = deque(maxlen=9)
         self.hermes_tail = Tail(HERMES / "logs" / "errors.log")
         self.runner_tail = Tail(LANES / ".state" / "runner.log")
+        self.cleanups_pending: set[str] = set()  # ids con limpieza fallida vista en runner.log
         psutil.cpu_percent(None)
 
     # --- alertas --------------------------------------------------------------------------------------
@@ -384,6 +389,19 @@ class Monitor:
         if not self._list_fail_first or ts - self._list_fail_last > LIST_FAIL_GAP:
             self._list_fail_first = ts
         self._list_fail_last = ts
+
+    def alert_runner_line(self, line: str) -> None:
+        """Línea WARNING/ERROR de runner.log -> alerta. Las limpiezas fallidas salen MEDIA y con un contador."""
+        m = LOG_LEVEL_RE.search(line[:40])
+        if not m:
+            return
+        texto = line[24:160].strip()
+        if CLEANUP_RE.search(line):  # limpieza pendiente: MEDIA, una huella y un contador de pendientes
+            ids = TASK_ID_RE.findall(line) or [texto]
+            self.cleanups_pending.update(i.lower() for i in ids)
+            self.alert("MEDIA", f"carriles: {texto} (limpiezas pendientes: {len(self.cleanups_pending)})", every=10 ** 9)
+            return
+        self.alert("MEDIA" if m.group(1) == "WARNING" else "ALTA", "carriles: " + texto, every=10 ** 9)
 
     def check_list_failures(self) -> None:
         streak = self._list_fail_last - self._list_fail_first
@@ -883,10 +901,7 @@ class Monitor:
                 continue
             self.note_runner_line(line)
             self.runner_events.appendleft(line[11:19] + " " + line[24:].strip())
-            m = LOG_LEVEL_RE.search(line[:40])
-            if m:
-                self.alert("MEDIA" if m.group(1) == "WARNING" else "ALTA", "carriles: " + line[24:160].strip(),
-                           every=10 ** 9)
+            self.alert_runner_line(line)
         self.check_list_failures()
         ev = Text("\n".join(e[:150] for e in list(self.runner_events)[:6]) or "(sin eventos nuevos desde que abriste el monitor)",
                   style="dim")

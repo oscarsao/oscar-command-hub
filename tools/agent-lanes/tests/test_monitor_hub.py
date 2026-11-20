@@ -157,3 +157,20 @@ def test_runner_parado_solo_avisa_a_los_cinco_minutos(monitor, monkeypatch):
     t[0] = 1_000_000.0 + 301
     m.condition("runner-dead", True, texto, "x", min_secs=monitor.RUNNER_DEAD_SECS)
     assert pushed and "cinco minutos" in pushed[-1]
+
+
+def test_limpiezas_fallidas_una_huella_media_y_contador(monitor, monkeypatch):
+    """t_3f2201dd: 15 «worktree remove timed out» con ids distintos = 1 huella, prioridad MEDIA y contador."""
+    monkeypatch.setattr(monitor.time, "time", lambda: 1_800_000_000.0)
+    ids = [f"t_{0xa1b2c3d0 + i:08x}" for i in range(15)]
+    lineas = [f"2026-11-20 10:00:00,123 ERROR lanes: git worktree remove {t} timed out after 60s" for t in ids]
+    assert len({monitor.alert_fingerprint("MEDIA", ln[24:]) for ln in lineas}) == 1
+    m, pushed = make(monitor)
+    for ln in lineas:
+        m.alert_runner_line(ln)
+    m.alert_runner_line("2026-11-20 10:00:01,000 ERROR lanes: no se pudo bloquear t_0123abcd (review_stuck) en el kanban")
+    assert pushed == []  # MEDIA: no va al DM
+    assert [lv for _, lv, _ in m.alerts] == ["MEDIA", "MEDIA"]  # 15 de remove -> 1; bloquear -> otra huella
+    assert len(m.cleanups_pending) == 16
+    m.alert_runner_line("2026-11-20 10:00:02,000 ERROR lanes: algo grave distinto")
+    assert m.alerts[0][1] == "ALTA"
