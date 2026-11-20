@@ -95,10 +95,12 @@ def cli_settings() -> dict:
     """`runner.cli_timeout_seconds` y `runner.cli_timeout_backoff` de lanes.yaml (se leen una vez). Nunca lanza."""
     global _cli_cfg
     if _cli_cfg is None:
-        cfg = {"timeout": DEFAULT_CLI_TIMEOUT, "backoff": DEFAULT_CLI_BACKOFF}
+        cfg = {"timeout": DEFAULT_CLI_TIMEOUT, "backoff": DEFAULT_CLI_BACKOFF, "lector_ro": True}
         try:
             from .config import _load
             runner = (_load(None) or {}).get("runner") or {}
+            if "hermes_lector_ro" in runner:  # lector de solo lectura de `show` (hermes.leer_show_ro); false = CLI
+                cfg["lector_ro"] = bool(runner["hermes_lector_ro"])
             if runner.get("cli_timeout_seconds"):
                 cfg["timeout"] = int(runner["cli_timeout_seconds"])
             if isinstance(runner.get("cli_timeout_backoff"), (list, tuple)):
