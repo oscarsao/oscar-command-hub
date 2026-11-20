@@ -953,6 +953,27 @@ class CommandCenter:
         self.cmd_pendiente(where, ("atencion " if show_all else "decisiones ") + args, brand)
 
     def _vista_decisiones(self, where, args: str, brand: str | None, show_all: bool = False) -> None:
+        """La bandeja de decisiones y, aparte, la lista «esperan prueba en navegador» si hay tarjetas con ella."""
+        self._decisiones_y_cola(where, args, brand, show_all)
+        self._verificacion_pendiente(where, brand)
+
+    def _verificacion_pendiente(self, where, brand: str | None) -> None:
+        """Tarjetas en review con «VERIFICACIÓN PENDIENTE» (sin «HECHA»): mensaje propio con su PR; nada si no hay.
+        Un tablero o una tarjeta ilegibles nunca estropean la bandeja."""
+        entries: list[dict] = []
+        try:
+            for board in dict.fromkeys(l.board for l in self.lanes.values() if l.board):
+                if brand and BOARD_BRANDS.get(board, "Otros") != brand:
+                    continue
+                h = self.hermes_for(board)
+                entries += _bandeja.verificacion_pendiente(h, h.list_status_all("review"))
+            text = _bandeja.render_verificacion(entries)
+            if text:
+                self._send(where, text, html=False)
+        except Exception as exc:
+            log.warning("lista de verificación pendiente: %s", exc)
+
+    def _decisiones_y_cola(self, where, args: str, brand: str | None, show_all: bool = False) -> None:
         """Las TOP_DECISIONS más importantes, cada una en su mensaje con botones, y "N más · ver todas". Importancia
         (decide Oscar): primero las que bloquean agentes (preguntas y 🧊 atascadas, la más antigua antes), luego las
         tarjetas de decisión por antigüedad. Con ≤5 en total, o con `show_all`, la bandeja completa de siempre."""

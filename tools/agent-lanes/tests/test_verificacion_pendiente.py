@@ -135,3 +135,34 @@ def test_problema_integracion_texto():
     assert "VERIFICACIÓN HECHA" in verificacion.problema_integracion(_show(PENDIENTE))
     assert verificacion.problema_integracion(_show(PENDIENTE, HECHA["body"])) is None
     assert verificacion.problema_integracion(_show("sin etiqueta")) is None
+
+
+# --- (b') el comando de la bandeja (/decisiones) envía la lista como mensaje propio -------------------------------
+
+class _HermesReview(FakeHermes):
+    def __init__(self, shows, review):
+        super().__init__(shows)
+        self.review = review
+
+    def list_status_all(self, status):
+        return self.review if status == "review" else []
+
+
+def _bandeja_cmd(tmp_path, shows, review):
+    from tests.test_commands import OSCAR, center, command
+    cc, desk, bot, _, _ = center(tmp_path, {})
+    cc.hermes_for = lambda b: _HermesReview(shows, review)
+    command(desk, "/decisiones", user=OSCAR, chat=OSCAR)
+    return bot
+
+
+def test_comando_de_la_bandeja_envia_la_lista_de_pendientes(tmp_path):
+    shows = {"t_a": _show(PENDIENTE), "t_b": _show(PENDIENTE, HECHA["body"])}
+    bot = _bandeja_cmd(tmp_path, shows, [{"id": "t_a", "title": "Panel"}, {"id": "t_b", "title": "Otra"}])
+    lista = [m for m in bot.sent if "Esperan prueba en navegador" in m["text"]]
+    assert lista and "t_a" in lista[0]["text"] and "PR #7" in lista[0]["text"] and "t_b" not in lista[0]["text"]
+
+
+def test_comando_de_la_bandeja_no_envia_nada_si_no_hay_pendientes(tmp_path):
+    bot = _bandeja_cmd(tmp_path, {"t_c": _show("nada")}, [{"id": "t_c", "title": "X"}])
+    assert not [m for m in bot.sent if "Esperan prueba" in m["text"]]
