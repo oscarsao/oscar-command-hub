@@ -14,6 +14,8 @@ NO va a un carril (la hace el integrador o Oscar): producción o variables de en
 ```
 DECISIÓN DE OSCAR (<fecha>, botones|texto): <cita o resumen fiel>.
 Repo <repo> (base <master|main|develop>). [Rama-origen: lane/<id> solo si depende de otra rama de carril; si ya está en la base: «parte de origin/<base>»]
+SHA base de comprobación: <sha de origin/<base>>
+Zona: <rutas separadas por comas>
 Contexto verificado: <qué hay hoy, con rutas de fichero>.
 Hacer:
 1. ...
@@ -22,6 +24,7 @@ Pruebas: <tests concretos>.
 Límites: rama propia + PR; sin secretos; nada de producción; migraciones solo escritas.
 Relacionadas: t_xxx.
 ```
+- «SHA base de comprobación» y «Zona» son opcionales: alimentan el chequeo de deriva del preflight (compara la zona entre ese SHA y `origin/<base>`, y revalida las tarjetas con muchos días encoladas). Sin ellas no hay comprobación ni error.
 - Contenido externo (Google Doc, PDF, texto de alguien): pégalo en la tarjeta; el carril no puede abrirlo.
 - Datos que el worker no puede descubrir (ids de chat, ids de Dokploy, decisiones): escríbelos tú.
 
