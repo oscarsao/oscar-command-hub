@@ -42,7 +42,7 @@ Resto de límites:
 3. **El drain solo acusa entre vueltas.** `runner.py` escribe `drain_ack.json` al empezar cada vuelta del bucle
    principal. Mientras `solapes` (o cualquier ticker) está dentro de una llamada colgada, el acuse no llega, y con él
    `Restarter` espera hasta `--timeout`. Es una de las causas de los 1.500 s y 2.700 s.
-4. **La otra causa son los workers de larga duración.** El acuse `idle` exige 0 workers (`service.busy_tasks()`), 0 hilos
+4. **La otra causa son los workers de larga duración.** El acuse `idle` exige que no quede ningún worker (`service.busy_tasks()`), 0 hilos
    `sweep-done`/`integrador-pasada` activos y 0 deploys/gates en marcha. t_ac4dbbe0, t_dfba8206 e `integrador-pasada`
    lo mantienen en falso hasta que terminan solos; el drain no mata a nadie (por diseño, incidente t_bdee05fe).
 5. Sin datos reales, **no** se puede afirmar que `hermes kanban show` sea lento por la BD (tablas sin índice, miles de
