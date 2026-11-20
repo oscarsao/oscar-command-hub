@@ -247,6 +247,32 @@ def test_ticker_compatibles_no_avisan_por_defecto(tmp_path):
     assert (tmp_path / "ch.json").exists()  # queda registrado: no se reevalúa como nuevo
 
 
+def _tick(tmp_path, monkeypatch, nivel, g, cards=()):
+    monkeypatch.setattr(choques.nivel_avisos, "nivel", lambda: nivel)
+    sent = []
+    tk = ChoquesTicker(LANES, hermes(list(cards)), send=sent.append, state_path=tmp_path / "ch.json",
+                       settings_path=tmp_path / "no.yaml", git=g, clock=lambda: 0.0, wall=lambda: NOW)
+    return tk.tick(), sent
+
+
+def test_ticker_revisar_nunca_publica_decision_con_ningun_nivel(tmp_path, monkeypatch):
+    cards = [card("t_1", "Añadir el aviso de solape", f"Crea el aviso en {CMD}", status="blocked"),
+             card("t_2", "Quitar el aviso de solape", f"Elimina el aviso de {CMD}")]
+    for i, nivel in enumerate(("normal", "todo", "esencial")):
+        encontrados, sent = _tick(tmp_path / str(i), monkeypatch, nivel, FakeGit(), cards)
+        assert [c.clase for c in encontrados] == ["revisar"]
+        assert sent == [], nivel
+
+
+def test_ticker_conflicto_avisa_en_normal_y_en_esencial_es_solo_dato(tmp_path, monkeypatch):
+    g = FakeGit({"lane/t_1": (NOW, "x", [CMD]), "lane/t_2": (NOW, "y", [CMD])},
+                reales={frozenset(("lane/t_1", "lane/t_2")): True})
+    encontrados, sent = _tick(tmp_path / "n", monkeypatch, "normal", g)
+    assert [c.clase for c in encontrados] == ["conflicto"] and len(sent) == 1
+    encontrados, sent = _tick(tmp_path / "e", monkeypatch, "esencial", g)
+    assert [c.clase for c in encontrados] == ["conflicto"] and sent == []  # sigue detectado para el parte
+
+
 def test_rama_con_pr_ya_fusionado_no_cuenta(tmp_path):
     class G(FakeGit):
         def ramas_cerradas(self, repo):

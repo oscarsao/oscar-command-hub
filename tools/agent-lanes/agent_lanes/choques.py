@@ -45,7 +45,7 @@ from pathlib import Path
 import yaml
 
 from . import proc as _proc
-from . import fusion, solapes
+from . import fusion, nivel_avisos, solapes
 from .config import ROOT
 
 log = logging.getLogger("agent_lanes")
@@ -719,7 +719,16 @@ class ChoquesTicker:
                 log.info("choques: %s y %s, misma zona y compatibles (no se avisa)", c.a.uid, c.b.uid)
                 seen[clave(c)] = wall
                 changed = True
-            fresh = [c for c in nuevos if c not in silenciosos][:ajustes.max_avisos]
+            # «revisar» (intención contradictoria) nunca publica una decisión en el tema, con cualquier nivel: se registra y
+            # queda a demanda en /choques. «conflicto» sí, salvo con nivel «esencial»: ahí es solo un dato para el parte y no
+            # se registra, para que salga si Oscar vuelve a normal.
+            for c in [c for c in nuevos if c.clase == "revisar"]:
+                log.info("choques: %s y %s, intención contradictoria (sin decisión en el tema; ver /choques)", c.a.uid, c.b.uid)
+                seen[clave(c)] = wall
+                changed = True
+            esencial = nivel_avisos.nivel() == "esencial"
+            fresh = [c for c in nuevos if c not in silenciosos and c.clase != "revisar"
+                     and not (esencial and c.clase == "conflicto")][:ajustes.max_avisos]
             try:
                 for c in fresh:  # si un envío falla, ese par se reintenta en la pasada siguiente
                     self._enviar(c, ajustes)
