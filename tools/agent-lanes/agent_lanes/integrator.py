@@ -64,9 +64,10 @@ from .hermes import OSCAR_AUTHOR, REVIEW_AUTHOR  # noqa: E402
 from .integration import (CHANNEL, FAILED, WAITING, PinnedSummary, link_line, phase_for, render_ficha,  # noqa: E402
                           repo_name, risk_of, summary_state, summary_text)
 from .titulos import rebase_title  # noqa: E402
+from .origen_host import origen_host  # noqa: E402
 from .notices import MessageStore, TaskNotices, card_url, markup_token, render, status_line, truncate  # noqa: E402
 from .telegram import telegram_target  # noqa: E402
-from .verify import render_test_cmd  # noqa: E402
+from .verify import render_test_cmd, split_paths, vetada  # noqa: E402
 from .vuelta import medir  # noqa: E402
 
 log = logging.getLogger("agent_lanes")
@@ -447,6 +448,8 @@ class GateResult:
     base_sha: str = ""
     head_sha: str = ""
     test_exit: int | None = None
+    tid: str = ""
+    origen_host: str = ""   # motivo si la rama viene de un host remoto (origen_host.py); "" = local
 
 
 class Integrator:
@@ -769,7 +772,8 @@ class Integrator:
             outcome = self._conflict_pass(lane, policy, tid, number, url, pr, task, about)
             if outcome:
                 return outcome
-        if policy.batch:  # lote diario: sin ficha ni gates sueltos; el lote los pasa todos juntos (batch.py)
+        # Una rama de origen host (config de hoy O metadata verificado_en=host) nunca entra en un lote: va por gates sueltos.
+        if policy.batch and not origen_host(lane, show):  # lote diario: sin ficha ni gates sueltos (batch.py)
             if not self.dry_run and (st.get("status") != "batch_pending" or st.get("head_sha") != pr["headRefOid"]):
                 keep = st.get("pending_since") if st.get("status") == "batch_pending" else None
                 self._save(tid, status="batch_pending", pr=number, pr_url=url, head_sha=pr["headRefOid"],
@@ -1099,7 +1103,12 @@ class Integrator:
 
     def _gates(self, lane, policy: Policy, tid: str, number: int, head_sha: str) -> GateResult:
         repo, remote, base = lane.repo, lane.remote, lane.base
-        res = GateResult(ok=False, head_sha=head_sha)
+        res = GateResult(ok=False, head_sha=head_sha, tid=tid)
+        try:  # origen de la rama: config de hoy o metadata de la tarjeta (sobrevive a quitar `host:` del carril)
+            res.origen_host = origen_host(lane, self.hermes_for(lane.board).show(tid))
+        except Exception as exc:
+            res.origen_host = origen_host(lane)
+            log.info("%s: metadata de origen no leída (solo cuenta la config del carril): %s", tid, exc)
         pr_ref = f"refs/integrator/pr-{number}"
         cp = self._git(repo, "fetch", remote, f"+refs/heads/{base}:refs/remotes/{remote}/{base}",
                        f"+refs/pull/{number}/head:{pr_ref}")
@@ -1136,7 +1145,7 @@ class Integrator:
         merge = self._git(w, "-c", f"core.hooksPath={self._nohooks()}", *self._ident(),
                           "merge", "--no-ff", "--no-edit", res.head_sha)
         if merge.returncode != 0:
-            conflicts = (self._git(w, "diff", "--name-only", "--diff-filter=U").stdout or "").split()
+            conflicts = split_paths(self._git(w, "diff", "-z", "--name-only", "--diff-filter=U").stdout)
             self._git(w, "-c", f"core.hooksPath={self._nohooks()}", "merge", "--abort")
             res.reasons.append(f"tiene conflictos con {lane.base}" +
                                (f" en {len(conflicts)} archivo(s)" if conflicts else ""))
@@ -1144,7 +1153,7 @@ class Integrator:
             return
         res.passed.append(f"sin conflictos con {lane.base}")
         rng = f"{res.base_sha}...{res.head_sha}"
-        res.changed_files = (self._git(w, "diff", "--no-renames", "--name-only", rng).stdout or "").split()
+        res.changed_files = split_paths(self._git(w, "diff", "-z", "--no-renames", "--name-only", rng).stdout)
 
         self._diff_gates(w, lane, policy, res, rng)
         self._migration_gates(wt, lane, policy, res)
@@ -1152,13 +1161,13 @@ class Integrator:
     def _diff_gates(self, w: str, lane, policy: Policy, res: GateResult, rng: str) -> None:
         """Gates del diff (rutas vetadas, ejecutables, .env, secretos): los comparten el PR suelto y cada rama de un
         lote (batch.py). `res.changed_files` ya está rellenado y `w` es un worktree con el diff accesible."""
-        forbidden = [f for f in res.changed_files if any(f.startswith(p) for p in lane.forbidden_paths)]
+        forbidden = [f for f in res.changed_files if vetada(f, lane.forbidden_paths)]
         if forbidden:
             res.reasons.append(f"toca rutas vetadas del carril: {', '.join(forbidden[:5])}")
         execs = [f for f in res.changed_files if f.lower().endswith(EXEC_SUFFIXES)]
         # Solo archivos NUEVOS: modificar un módulo que ya existía (p. ej. src/api/routes/signal.py en oscar-hq) no
         # introduce ninguna suplantación nueva (falso positivo del PR #55, 29-09).
-        added = set((self._git(w, "diff", "--no-renames", "--name-only", "--diff-filter=A", rng).stdout or "").split())
+        added = set(split_paths(self._git(w, "diff", "-z", "--no-renames", "--name-only", "--diff-filter=A", rng).stdout))
         shadow = [f for f in res.changed_files
                   if f in added and f.endswith(".py") and Path(f).stem in STDLIB_NAMES]
         if execs or shadow:
@@ -1168,7 +1177,7 @@ class Integrator:
                 (".example", ".sample", ".template"))) for f in res.changed_files):
             res.reasons.append("toca .gitattributes o un .env (revísalo a mano)")
         res.sensitive = [f for f in res.changed_files
-                         if any(f.startswith(p) or Path(f).name == p for p in policy.sensitive_paths)]
+                         if vetada(f, policy.sensitive_paths) or any(Path(f).name == p for p in policy.sensitive_paths)]
 
         # --text/--no-textconv/--no-ext-diff/--no-color: ni .gitattributes, ni binarios, ni la config del repo
         # pueden dejar ciego al scan.
@@ -1184,7 +1193,7 @@ class Integrator:
     def _migration_gates(self, wt: Path, lane, policy: Policy, res: GateResult) -> None:
         """Migraciones, infraestructura y test_cmd del carril sobre el PR ya fusionado en `wt`."""
         w = str(wt)
-        if policy.alembic_versions and any(f.startswith(policy.alembic_versions) for f in res.changed_files):
+        if policy.alembic_versions and any(vetada(f, [policy.alembic_versions]) for f in res.changed_files):
             heads, problems = alembic_heads(wt / policy.alembic_versions)
             if len(heads) != 1 or problems:
                 res.reasons.append(f"migraciones de Alembic inconsistentes ({len(heads)} heads)")
@@ -1192,24 +1201,37 @@ class Integrator:
             else:
                 res.passed.append("Alembic con un solo head")
             res.migration = "alembic"
-        if any(f.startswith(p) for p in policy.manual_migrations for f in res.changed_files):
+        if any(vetada(f, policy.manual_migrations) for f in res.changed_files):
             res.migration = res.migration or "supabase"
         if res.sensitive:  # infraestructura de arranque/deploy: el deploy queda en manual, como una migración
             res.migration = res.migration or "infra"
             res.detail.append("toca infraestructura de deploy: " + ", ".join(res.sensitive[:10]))
 
-        if getattr(lane, "host", None):
-            # Carril con host: el test_cmd ejecutaría en el hub código escrito por otro equipo. Falla cerrado: requiere
-            # aprobación humana (ejecutarlo en el host o en un sandbox es E2).
-            res.reasons.append(f"carril con host ({lane.host.destino}): el test_cmd no se ejecuta en el hub sobre código del "
-                               "host; requiere aprobación humana")
-            return
+        origen = res.origen_host or origen_host(lane)
+        if origen:
+            # Rama de origen host: el test_cmd ejecutaría en el hub código escrito por otro equipo. Falla cerrado salvo
+            # integración en dos niveles (E2): `host_integracion: true` en el carril Y aprobación humana explícita de
+            # ESTA cabeza (registro local del bot de carriles). Entonces la batería se repite UNA vez en el hub con
+            # safe_env; lo que certificó el host solo sirvió para pasar a revisión.
+            motivo = self._bateria_hub_motivo(lane, res, origen)
+            if motivo:
+                res.reasons.append(motivo)
+                return
+            cache = (self._state(res.tid).get("host_bateria") or {}) if res.tid else {}
+            if cache.get("head") == res.head_sha and cache.get("exit") is not None:  # una sola vez por cabeza
+                res.test_exit = int(cache["exit"])
+                (res.passed if res.test_exit == 0 else res.reasons).append(
+                    "tests OK (batería del hub, ya repetida)" if res.test_exit == 0
+                    else "los tests del carril fallan con el PR fusionado (batería del hub)")
+                return
         if res.reasons or not lane.test_cmd:
             return  # nunca se ejecuta test_cmd sobre un diff que ya falló
         try:
             with medir(f"integrador test_cmd {lane.name} {wt.name}"):
                 t = self._exec(render_test_cmd(lane), cwd=w, timeout=1800, shell=True, env=safe_env())
             res.test_exit = t.returncode
+            if origen and res.tid:
+                self._save(res.tid, host_bateria={"head": res.head_sha, "exit": t.returncode})
             if t.returncode != 0:
                 res.reasons.append("los tests del carril fallan con el PR fusionado")
                 # A la tarjeta solo el exit: la salida puede llevar una línea con un secreto. Completa, al log.
@@ -1219,6 +1241,16 @@ class Integrator:
                 res.passed.append("tests OK")
         except subprocess.TimeoutExpired:
             res.reasons.append("los tests del carril tardaron más de 30 min")
+
+    def _bateria_hub_motivo(self, lane, res: GateResult, origen: str) -> str | None:
+        """None si la batería puede repetirse en el hub (integración en dos niveles); si no, el motivo del bloqueo."""
+        base = f"{origen}: el test_cmd no se ejecuta en el hub sobre código del host; requiere aprobación humana"
+        if not getattr(lane, "host_integracion", False):
+            return base
+        rec = self._approved_record(res.tid) if res.tid else {}
+        if not res.head_sha or str(rec.get("head_sha") or "") != res.head_sha:
+            return base + " de esta cabeza (✅ Aprobar sobre el PR actual)"
+        return None
 
     def _remove_worktree(self, repo: str, wt: Path) -> None:
         """Solo worktrees propios del integrador (int-*/intdep-*), nunca lane-<id> ni otros."""
@@ -2110,9 +2142,9 @@ class Integrator:
                 return (f"{lane.base} incluye el PR #{st.get('pr', '?')} con migración o infraestructura pendiente"
                         + (f" ({', '.join(names[:5])})" if names else ""))
         if tip != sha:
-            changed = (self._git(lane.repo, "diff", "--no-renames", "--name-only", sha, tip).stdout or "").split()
-            risky = [f for f in changed if any(f.startswith(p) for p in policy.manual_migrations)
-                     or any(f.startswith(p) or Path(f).name == p for p in policy.sensitive_paths)]
+            changed = split_paths(self._git(lane.repo, "diff", "-z", "--no-renames", "--name-only", sha, tip).stdout)
+            risky = [f for f in changed if vetada(f, policy.manual_migrations) or vetada(f, policy.sensitive_paths)
+                     or any(Path(f).name == p for p in policy.sensitive_paths)]
             if risky:
                 return (f"después de esta fusión {lane.base} trae migración o infraestructura: "
                         + ", ".join(risky[:3]))
@@ -2120,9 +2152,9 @@ class Integrator:
 
     def _migration_files(self, lane, policy: Policy, sha: str) -> list[str]:
         """Migraciones manuales (policy.manual_migrations) que trae la fusión `sha` (squash: su padre es la base)."""
-        cp = self._git(lane.repo, "diff", "--no-renames", "--name-only", f"{sha}^", sha)
-        files = (cp.stdout or "").split() if cp.returncode == 0 else []
-        return [f for f in files if any(f.startswith(p) for p in policy.manual_migrations)]
+        cp = self._git(lane.repo, "diff", "-z", "--no-renames", "--name-only", f"{sha}^", sha)
+        files = split_paths(cp.stdout) if cp.returncode == 0 else []
+        return [f for f in files if vetada(f, policy.manual_migrations)]
 
     def _mark_included(self, lane, tid: str, tip: str, dep_id: str, desk, via: str = "railway deployment") -> list:
         """Tras un deploy correcto de `tip`: toda ficha fusionada cuyo merge_sha está en lo desplegado queda como

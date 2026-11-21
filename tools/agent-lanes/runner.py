@@ -57,7 +57,9 @@ from agent_lanes.ops import OpsWorkspace, verify_ops
 from agent_lanes.runner import MESSAGES_DIR, STATE_DIR, LaneRunner
 from agent_lanes.service import Service, acquire_single_instance
 from agent_lanes.telegram import notifier_from_env
-from agent_lanes.ssh_host import ClaudeWorkerRemoto, GitOpsRemoto, verify_remoto
+from agent_lanes import host_ops
+from agent_lanes.ssh_host import (ClaudeWorkerRemoto, GitOpsRemoto, pila_review_remota, sweep_done_remoto,
+                                    verify_remoto)
 from agent_lanes.verify import verify
 from agent_lanes.vuelta import Cronometro, HiloAparte
 from agent_lanes.worker import ClaudeWorker
@@ -259,7 +261,8 @@ def main(argv: list[str] | None = None) -> int:
             runners.append(ReviewRunner(lane, all_lanes, hermes_for=hermes_for, git=git, reviewer=ClaudeReviewer(),
                                         verifier=verify, notify=notify, messages=messages, links=links,
                                         decisions=decisions, integration=integration, tree=tree,
-                                        state_dir=ROOT / ".state" / "review-blocked"))
+                                        state_dir=ROOT / ".state" / "review-blocked",
+                                        host_pila=pila_review_remota))  # E2: solo se usa con `host_review: true` en el carril
     # Carril Integrador: solo con INTEGRATOR_ENABLED. Sin bot de carriles corre los gates y avisa sin botones.
     integrator = build_integrator(env, all_lanes, hermes_for=hermes_for, links=links, notifier=notify,
                                   messages=messages, desk=decisions)
@@ -375,9 +378,16 @@ def main(argv: list[str] | None = None) -> int:
                          daemon=True).start()
     # Limpieza de worktrees e integrador en su PROPIO hilo (t_11ee04e0): un `git worktree remove` colgado o un test_cmd de
     # 30 min ya no alargan la vuelta principal. Cada uno no se solapa consigo mismo. `--once` los ejecuta en línea.
+    host_hechas: dict[str, set] = {}  # worktrees remotos ya comprobados por carril (cada comprobación es una llamada SSH)
+
     def barrer_worktrees() -> None:
         for lane in impl.values():
             try:
+                if lane.host:  # E2: el worktree vive en el host; solo se retira el propio de cada tarjeta en done
+                    if cleaned := sweep_done_remoto(lane, hermes_for(lane.board), pilas[lane.name][0],
+                                                    hechas=host_hechas.setdefault(lane.name, set())):
+                        log.info("%s: worktrees remotos retirados tras done: %s", lane.name, cleaned)
+                    continue
                 if cleaned := sweep_done(lane, hermes_for(lane.board), git,
                                          max_tarjetas=int(settings.get("sweep_max_tarjetas", 5) or 0),
                                          max_segundos=float(settings.get("sweep_max_segundos", 300) or 0)):
@@ -392,6 +402,10 @@ def main(argv: list[str] | None = None) -> int:
         except Exception as exc:
             log.warning("integrador falló: %s", exc)
 
+    if not args.once:  # E2/E3 mínimo: sondeo de los hosts con comprobaciones activas (latido, disco, SHA, contrato); sin Telegram
+        monitor = host_ops.HostMonitor([l.host for l in impl.values() if l.host], host_ops.HostStore())
+        if monitor.start():
+            log.info("sondeo de hosts activo: %s", [h.destino for h in monitor.hosts])
     hilo_limpieza = HiloAparte("sweep-done", barrer_worktrees)
     hilo_integrador = HiloAparte("integrador-pasada", pasada_integrador) if integrator else None
 

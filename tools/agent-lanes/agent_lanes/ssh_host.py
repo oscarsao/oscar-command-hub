@@ -10,12 +10,10 @@ Piezas
   ClaudeWorkerRemoto  ClaudeWorker que despacha por SshRunner y apunta el PID REMOTO en claves propias del estado.
   verify_remoto     parte git en el hub contra GitHub (sin fiarse del host) + parte test_cmd por SSH en el host.
 
-TODO documentados (fuera de E1, ver la spec §4 y §6):
-  E2  reencolar sin contar bloqueo ante HostUnreachable, cortar huérfanos remotos (host_worker_pid/created ya se
-      guardan para eso), disco mínimo, pausa de cuota por host, tope `host.max_parallel` compartido entre carriles,
-      limpieza (`cleanup`) del worktree remoto, `poner_al_dia` y `base_contiene` en remoto, comprobar SHA/hash del
-      contrato del host antes de despachar, dependencias (pnpm) del worktree remoto.
-  E3  latido, panel, aviso de 5 min, resumen diario, ajustes en /ajustes y `host_gasto_dia_usd`.
+E2 (este fichero + host_ops.py + remote_exec.py): revisión en el host (ClaudeReviewerRemoto), cortar huérfanos
+(ClaudeWorkerRemoto.cortar_huerfano), gasto del host, `cleanup`/`poner_al_dia`/`base_contiene` remotos y limpieza de lo ya
+hecho (sweep_done_remoto). Los reencolados por fallo de transporte y la puerta de lanzamiento viven en runner.py/host_ops.py.
+E3 (solo lo mínimo): `ultimaSenal` por sondeo del hub; sin panel, sin Telegram, sin resumen diario ni /ajustes.
 """
 from __future__ import annotations
 
@@ -23,6 +21,7 @@ import json
 import logging
 import ntpath
 import os
+import re
 import secrets
 import subprocess
 import sys
@@ -30,11 +29,13 @@ import threading
 import time
 from pathlib import Path
 
+from . import host_ops
 from . import proc as _proc
 from .config import ROOT, HostCfg, Lane
 from .git_ops import _MARCAS_BLOQUEO, _REINTENTOS_BLOQUEO, AlDia, GitError
 from .verify import VerifyResult, _git, split_paths, vetada
-from .worker import ClaudeWorker, run_claude
+from .review import ClaudeReviewer, review_args, review_prompt
+from .worker import ClaudeWorker, WorkerOutcome, run_claude
 
 log = logging.getLogger("agent_lanes")
 
@@ -115,7 +116,7 @@ def real_transport(cmd: list[str], *, input: str, timeout: float | None, on_stde
             out.append(chunk)
 
     def read_err():
-        for raw in iter(p.stderr.readline, b""):
+        for raw in iter(lambda: p.stderr.readline(65536), b""):  # con tope: línea acotada
             if not cuenta(len(raw)):
                 return
             line = raw.decode("utf-8", "replace")
@@ -151,7 +152,7 @@ def real_transport(cmd: list[str], *, input: str, timeout: float | None, on_stde
     for t in threads:
         t.join(30)
     if excedido.is_set():
-        raise HostError(f"salida remota superior a {max_bytes} bytes: ssh cortado (el proceso remoto muere al plazo)")
+        raise HostError(f"salida remota superior a {max_bytes} bytes: ssh cortado; el proceso remoto pudo seguir vivo (muere al plazo)")
     return subprocess.CompletedProcess(cmd, p.returncode, b"".join(out).decode("utf-8", "replace"), "".join(err))
 
 
@@ -167,6 +168,7 @@ class SshRunner:
         self._transport = transport
         self._on_local_pid = on_local_pid
         self._local_roots = [str(local_root), Path(local_root).as_posix()]
+        self.remote_finished = False  # True si hubo línea RC (el proceso remoto ya no corre): limpiar host_worker_* es seguro
 
     def __call__(self, args, *, input=None, cwd=None, env=None, timeout=None, on_start=None, shell=False,
                  **_ignored) -> subprocess.CompletedProcess:
@@ -176,6 +178,24 @@ class SshRunner:
                "env": {k: v for k, v in (env or {}).items() if k in ENV_ALLOWED},
                "local_roots": self._local_roots}
         req["cmd" if shell else "args"] = args if shell else list(args)
+        return self._send(req, nonce, args, timeout, on_start)
+
+    def op(self, nombre: str, timeout: float = 60, **params) -> dict:
+        """Op propia del lanzador remoto (lista cerrada en remote_exec.OPS: `status`, `kill`). Devuelve el JSON de su
+        stdout. Un lanzador antiguo (sin ops) falla sin línea RC -> HostError: falla cerrado."""
+        nonce = secrets.token_hex(8)
+        cp = self._send({"v": 1, "nonce": nonce, "op": nombre, "timeout": timeout, **params}, nonce, [nombre], timeout, None)
+        if cp.returncode != 0:
+            raise HostError(f"host {self.host.destino}: op {nombre} terminó con rc={cp.returncode}")
+        try:
+            data = json.loads(cp.stdout or "")
+        except ValueError:
+            raise HostError(f"host {self.host.destino}: op {nombre} devolvió algo que no es JSON") from None
+        if not isinstance(data, dict):
+            raise HostError(f"host {self.host.destino}: op {nombre} devolvió un JSON inesperado")
+        return data
+
+    def _send(self, req: dict, nonce: str, args, timeout, on_start) -> subprocess.CompletedProcess:
         tag = f"@@LANE-{nonce}-"
         seen: dict = {}
 
@@ -199,9 +219,15 @@ class SshRunner:
         transport = self._transport or real_transport
         deadline = None if timeout is None else float(timeout) + TIMEOUT_GRACE_S + self.host.conexion_timeout_s
         extra = {"on_local_pid": self._on_local_pid} if self._on_local_pid else {}
-        cp = transport(ssh_argv(self.host), input=json.dumps(req), timeout=deadline, on_stderr_line=on_line, **extra)
+        try:
+            cp = transport(ssh_argv(self.host), input=json.dumps(req), timeout=deadline, on_stderr_line=on_line, **extra)
+        except subprocess.TimeoutExpired:
+            # El plazo del ssh LOCAL (no el marcador TIMEOUT del lanzador): no sabemos qué pasó allí.
+            vivo = f" el proceso remoto PID {seen['pid']}" if "pid" in seen else " el proceso remoto"
+            raise HostError(f"host {self.host.destino}: el ssh agotó su plazo sin respuesta; {vivo.strip()} pudo seguir vivo "
+                            "en el host") from None
         if len(cp.stdout or "") + len(cp.stderr or "") > MAX_OUTPUT_BYTES:
-            raise HostError(f"salida remota superior a {MAX_OUTPUT_BYTES} bytes: descartada")
+            raise HostError(f"salida remota superior a {MAX_OUTPUT_BYTES} bytes: descartada; el proceso remoto pudo seguir vivo")
 
         rc, timed_out, kept = None, False, []
         for line in (cp.stderr or "").splitlines(keepends=True):
@@ -222,11 +248,12 @@ class SshRunner:
             tail = " ".join(stderr.split())[-300:]
             if cp.returncode == 255:
                 vivo = (f" ATENCIÓN: el proceso remoto PID {seen['pid']} pudo seguir vivo en el host (se corta solo al "
-                        f"plazo); no relances esta tarjeta hasta comprobarlo (E2)") if "pid" in seen else ""
-                raise HostUnreachable(f"host {self.host.destino} no alcanzable (ssh rc=255): {tail}.{vivo}")
+                        f"plazo); el runner lo comprueba y lo corta antes de relanzar") if "pid" in seen else ""
+                raise HostUnreachable(f"host {self.host.destino} sin conexión (ssh rc=255): {tail}.{vivo}")
             raise HostError(f"host {self.host.destino}: el lanzador remoto no llegó a correr (ssh rc={cp.returncode}): {tail}")
         if timed_out:
             raise subprocess.TimeoutExpired(args, timeout)
+        self.remote_finished = True  # llegó la línea RC: el proceso remoto terminó (o lo cortó el lanzador al plazo)
         return subprocess.CompletedProcess(args, rc, cp.stdout, stderr)
 
 
@@ -245,6 +272,7 @@ def record_host_worker(state_path: Path, pid) -> None:
     state["host"] = getattr(pid, "host", None)
     state["host_worker_pid"] = int(pid)
     state["host_worker_created"] = getattr(pid, "created", None)
+    state["host_worker_started"] = time.time()  # hora del hub: caduca un PID sin hora de creación (ver cortar_huerfano)
     tmp = Path(state_path).with_suffix(f".{os.getpid()}.tmp")
     tmp.write_text(json.dumps(state), encoding="utf-8")
     os.replace(tmp, state_path)
@@ -264,13 +292,73 @@ def sanear_coste(cost, presupuesto: float):
     return min(c, 2 * float(presupuesto))
 
 
+def limpiar_host_worker(state_path: Path) -> None:
+    """El proceso remoto YA terminó (hubo línea RC): se borra lo apuntado de él. Si no se llegó a saber (transporte caído),
+    se deja para que el siguiente despacho lo corte antes de relanzar (E2)."""
+    try:
+        state = json.loads(Path(state_path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return
+    if not isinstance(state, dict) or "host_worker_pid" not in state:
+        return
+    for k in ("host_worker_pid", "host_worker_created", "host_worker_started"):
+        state.pop(k, None)
+    tmp = Path(state_path).with_suffix(f".{os.getpid()}.tmp")
+    tmp.write_text(json.dumps(state), encoding="utf-8")
+    os.replace(tmp, state_path)
+
+
+def _presupuesto_de(args) -> float | None:
+    """El `--max-budget-usd` de la llamada (para estimar el gasto cuando el host no declara coste)."""
+    try:
+        return float(args[list(args).index("--max-budget-usd") + 1])
+    except (ValueError, IndexError):
+        return None
+
+
 class ClaudeWorkerRemoto(ClaudeWorker):
     """ClaudeWorker de un carril con host: mismo prompt, mismos args y mismo reparto de presupuesto; solo cambia quién
     ejecuta (SshRunner) y a quién se apunta el PID. Sin GuardiaRam (mide procesos locales)."""
 
-    def __init__(self, pid_dir: Path | None = None, transport=None, **kw):
+    def __init__(self, pid_dir: Path | None = None, transport=None, store: host_ops.HostStore | None = None, **kw):
         super().__init__(pid_dir=pid_dir, **kw)
         self._transport = transport
+        self._store = store or (host_ops.default_store(pid_dir) if pid_dir else None)
+
+    def cortar_huerfano(self, lane: Lane, task_id: str, now: float | None = None) -> str:
+        """Antes de relanzar una tarjeta: si el estado apunta a un `claude` remoto de un intento anterior, se corta SOLO si
+        sigue siendo el mismo proceso (hora de creación; la comprueba el lanzador del host). Devuelve el estado:
+        `limpio` (nada que cortar o ya cortado: se borra lo apuntado y se puede lanzar) o `pendiente` (no se pudo
+        comprobar o sigue vivo: NO se lanza, la tarjeta sigue en ready). Un fallo de transporte se propaga."""
+        if not self._pid_dir:
+            return "limpio"
+        path = Path(self._pid_dir) / f"{task_id}.json"
+        try:
+            state = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return "limpio"
+        if not isinstance(state, dict) or state.get("host_worker_pid") is None:
+            return "limpio"
+        if state.get("host") not in (None, lane.host.destino):
+            log.warning("%s: el worker remoto apuntado era de otro host (%s); se ignora", task_id, state.get("host"))
+            limpiar_host_worker(path)
+            return "limpio"
+        now = time.time() if now is None else now
+        res = SshRunner(lane.host, self._transport).op("kill", timeout=60, pid=int(state["host_worker_pid"]),
+                                                       created=state.get("host_worker_created"))
+        estado = str(res.get("estado") or "")
+        if estado in ("cortado", "no_existe", "otro_proceso", "pid_invalido"):
+            log.warning("%s: worker remoto huérfano (pid %s en %s): %s", task_id, state["host_worker_pid"], lane.host.destino,
+                        estado)
+            limpiar_host_worker(path)
+            return "limpio"
+        if estado == "sin_hora":
+            # Sin hora de creación no se corta a ciegas. Pasado el plazo máximo del carril el lanzador ya lo habrá cortado.
+            if now - float(state.get("host_worker_started") or now) > lane.max_runtime_seconds + 300:
+                limpiar_host_worker(path)
+                return "limpio"
+        log.warning("%s: worker remoto huérfano sin poder cortarlo (%s); no se relanza", task_id, estado)
+        return "pendiente"
 
     def _exec(self, args, prompt, cwd, timeout, lane, task_id, extra_env=None):
         state_path = Path(self._pid_dir) / f"{task_id}.json" if self._pid_dir else None
@@ -286,11 +374,64 @@ class ClaudeWorkerRemoto(ClaudeWorker):
                 from .worker import record_worker_pid
                 record_worker_pid(state_path, pid)
 
-        out = run_claude(SshRunner(lane.host, self._transport, on_local_pid=on_local_pid), args, prompt, cwd, timeout,
-                         {"AGENT_LANES_TASK": task_id, "AGENT_LANES_LANE": lane.name, **(extra_env or {})},
-                         on_start=on_start if state_path else None)
+        ssh = SshRunner(lane.host, self._transport, on_local_pid=on_local_pid)
+        try:
+            out = run_claude(ssh, args, prompt, cwd, timeout,
+                             {"AGENT_LANES_TASK": task_id, "AGENT_LANES_LANE": lane.name, **(extra_env or {})},
+                             on_start=on_start if state_path else None)
+        except SshTransportError:
+            self._gastar(lane, None, args)  # no sabemos qué gastó: se estima con el presupuesto de la llamada
+            raise
         out.cost_usd = sanear_coste(out.cost_usd, lane.max_budget_usd)
+        self._gastar(lane, out.cost_usd, args)
+        if state_path and ssh.remote_finished:
+            limpiar_host_worker(state_path)  # el proceso remoto terminó: nada que cortar después
         return out
+
+    def _gastar(self, lane: Lane, cost, args) -> None:
+        """Gasto del host del día: lo declarado (saneado) o, si no hay, el presupuesto de la llamada (estimado, conservador)."""
+        if self._store is None:
+            return
+        usd = cost if cost is not None else (_presupuesto_de(args) or lane.max_budget_usd)
+        try:
+            self._store.add_gasto(lane.host.destino, float(usd))
+        except (OSError, ValueError) as exc:
+            log.warning("gasto del host %s no apuntado: %s", lane.host.destino, exc)
+
+
+class ClaudeReviewerRemoto(ClaudeReviewer):
+    """Revisor de un carril con `host_review: true`: el `claude` revisor corre EN el host (mismos args y mismo guard de solo
+    lectura que el local) y al hub solo vuelve el informe JSON. Nada de lo que escribió el host se ejecuta en el hub."""
+
+    def __init__(self, transport=None, store: host_ops.HostStore | None = None):
+        super().__init__(runner=None)
+        self._transport, self._store = transport, store
+
+    def _ejecutar(self, lane: Lane, args, prompt: str, cwd: str, timeout: float, env: dict) -> WorkerOutcome:
+        out = run_claude(SshRunner(lane.host, self._transport), args, prompt, cwd, timeout, env)
+        out.cost_usd = sanear_coste(out.cost_usd, lane.max_budget_usd)
+        if self._store is not None:
+            try:
+                self._store.add_gasto(lane.host.destino, out.cost_usd if out.cost_usd is not None
+                                      else (_presupuesto_de(args) or lane.max_budget_usd))
+            except (OSError, ValueError) as exc:
+                log.warning("gasto del host %s no apuntado: %s", lane.host.destino, exc)
+        return out
+
+    def run(self, review_lane, lane, task, meta, cwd, session_id, timeout) -> WorkerOutcome:
+        args = review_args(review_lane, ["--session-id", session_id, "--name", f"review-{task['id']}"])
+        return self._ejecutar(lane, args, review_prompt(lane, task, meta), cwd, timeout, self._env(review_lane, task))
+
+    def resume(self, review_lane, lane, task, cwd, session_id, timeout) -> WorkerOutcome:
+        return self._ejecutar(lane, review_args(review_lane, ["--resume", session_id]),
+                              "Termina la revisión y devuelve el JSON del schema.", cwd, timeout,
+                              self._env(review_lane, task))
+
+
+def pila_review_remota(lane: Lane, transport=None, store=None):
+    """(git, reviewer, verifier) que ejecutan la revisión EN el host (la factoría que recibe ReviewRunner)."""
+    return GitOpsRemoto(transport), ClaudeReviewerRemoto(transport, store), (
+        lambda l, tid, cwd, result: verify_remoto(l, tid, cwd, result, transport=transport))
 
 
 # --- Git en el host -------------------------------------------------------------------------------------------------
@@ -304,7 +445,13 @@ def _lock(host: HostCfg) -> threading.Lock:
         return _LOCKS.setdefault(f"{host.destino}|{host.repo_dir.lower()}", threading.Lock())
 
 
+_TID = re.compile(r"t_[0-9A-Za-z_]{1,40}")
+_SHA = re.compile(r"[0-9a-fA-F]{7,40}")
+
+
 def worktree_remoto(lane: Lane, task_id: str) -> str:
+    if not _TID.fullmatch(task_id or ""):  # el id acaba en una ruta del host: solo caracteres de nombre de fichero
+        raise ValueError(f"id de tarjeta no válido para una ruta remota: {task_id!r}")
     return ntpath.join(lane.host.worktree_root, f"lane-{task_id}")
 
 
@@ -369,9 +516,130 @@ class GitOpsRemoto:
         log.warning("sync_base %s@%s: merge %s falló sin conflicto: %s", path, lane.host.destino, ref, out[-200:])
         return None
 
+    def prepare_review_worktree(self, lane: Lane, task_id: str) -> str:
+        """Worktree de revisión EN el host: el de la tarjeta si sigue allí; si no, se recrea desde la rama remota. Nunca crea
+        una rama nueva desde la base (revisaría algo vacío): si lane/<id> no existe en el remoto, GitError."""
+        branch = f"lane/{task_id}"
+        with_remote = self._git(lane, lane.host.repo_dir, "fetch", lane.remote, f"+refs/heads/{branch}:refs/remotes/{lane.remote}/{branch}")
+        if with_remote.returncode != 0:
+            raise GitError(f"{branch} no se pudo traer de {lane.remote} en {lane.host.destino}: {with_remote.stderr.strip()[:200]}")
+        return self.prepare_worktree(lane, task_id)
+
+    def _lista_worktrees(self, lane: Lane) -> set[str] | None:
+        cp = self._git(lane, lane.host.repo_dir, "worktree", "list", "--porcelain")
+        if cp.returncode != 0:
+            return None
+        return {_norm_ruta(l[len("worktree "):]) for l in (cp.stdout or "").splitlines() if l.startswith("worktree ")}
+
+    def cleanup(self, lane: Lane, task_id: str) -> tuple[bool, str]:
+        """Retira SOLO el worktree remoto `lane-<id>` de ESTA tarjeta (`git worktree remove`; `--force` únicamente si el
+        HEAD del worktree es exactamente la rama que GitHub tiene, comprobado desde el hub). No borra la rama del host ni
+        carpetas ni nada más: limpiar el resto lo decide Oscar. Un fallo de transporte se propaga."""
+        path = worktree_remoto(lane, task_id)  # valida el id
+        conocidos = self._lista_worktrees(lane)
+        if conocidos is None:
+            return False, "no se pudo listar los worktrees del host"
+        if _norm_ruta(path) not in conocidos:
+            return True, "sin worktree remoto"
+        cp = self._git(lane, lane.host.repo_dir, "worktree", "remove", path)
+        if cp.returncode == 0:
+            return True, "worktree remoto retirado"
+        head = self._git(lane, path, "rev-parse", "HEAD")
+        remoto = _git(lane.repo, "ls-remote", lane.remote, f"refs/heads/lane/{task_id}")
+        sha = remoto.stdout.split()[0].lower() if remoto.returncode == 0 and remoto.stdout.strip() else ""
+        mine = head.stdout.strip().lower() if head.returncode == 0 else ""
+        if not sha or sha != mine:
+            return False, (f"worktree remoto no retirado: tiene cambios y la rama de GitHub ({sha[:10] or 'ausente'}) no "
+                           f"coincide con su HEAD ({mine[:10] or '?'}); no se fuerza. git: {cp.stderr.strip()[:150]}")
+        cp = self._git(lane, lane.host.repo_dir, "worktree", "remove", "--force", path)
+        return (True, "worktree remoto retirado (--force: su HEAD ya está en GitHub)") if cp.returncode == 0 else (
+            False, f"worktree remoto no retirado ni con --force: {cp.stderr.strip()[:150]}")
+
+    def base_contiene(self, lane: Lane, cwd: str, *shas: str) -> bool:
+        """«Ya resuelto» con prueba, desde el HUB: cada SHA existe y es punta o ancestro de <remote>/<base> en el clon del
+        hub (tras fetch). El host no opina. Cualquier fallo -> False (la tarjeta sigue su camino normal)."""
+        if not shas or not all(shas) or not all(_SHA.fullmatch(x) for x in shas):
+            return False
+        try:
+            if _git(lane.repo, "fetch", lane.remote, lane.base).returncode != 0:
+                return False
+            return all(_git(lane.repo, "cat-file", "-e", f"{x}^{{commit}}").returncode == 0
+                       and _git(lane.repo, "merge-base", "--is-ancestor", x, lane.base_ref).returncode == 0 for x in shas)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("base_contiene (hub) %s: %s", lane.repo, exc)
+            return False
+
     def poner_al_dia(self, lane: Lane, path: str, task_id: str) -> AlDia:
-        """E2: «omitida» = la tarjeta sigue su camino a review como antes de existir este paso (no se fusiona nada)."""
-        return AlDia("omitida", detalle="carril remoto: poner al día la rama llega en E2")
+        """P4 en el host (misma lógica que GitOps.poner_al_dia): merge (nunca rebase ni force), test_cmd en el host y push de
+        la rama propia. El SHA resultante se confirma DESDE EL HUB (ls-remote): lo que declare el host no cuenta. Todo lo
+        dudoso es «omitida»: la tarjeta sigue a review como antes. Un fallo de transporte se propaga."""
+        ref, branch = lane.base_ref, f"lane/{task_id}"
+
+        def git(*a, timeout=300):
+            return self._ssh(lane)(["git", "-C", path, *a], timeout=timeout)
+        if git("fetch", lane.remote, lane.base).returncode != 0:
+            return AlDia("omitida", detalle="fetch falló en el host")
+        atras = git("rev-list", "--count", f"HEAD..{ref}")
+        if atras.returncode != 0:
+            return AlDia("omitida", detalle="rev-list falló en el host")
+        if atras.stdout.strip() in ("", "0"):
+            return AlDia("al_dia")
+        mt = git("merge-tree", "--write-tree", "--name-only", "--no-messages", "HEAD", ref)
+        if mt.returncode == 1:
+            lineas = mt.stdout.splitlines()[1:]
+            ficheros = [l.strip() for l in (lineas[:lineas.index("")] if "" in lineas else lineas) if l.strip()]
+            return AlDia("conflicto", ficheros=ficheros, detalle=f"{ref} choca con {branch}")
+        if mt.returncode != 0:
+            return AlDia("omitida", detalle=f"merge-tree no disponible en el host: {mt.stderr.strip()[:150]}")
+        antes = git("rev-parse", "HEAD").stdout.strip()
+        if git("merge", "--no-edit", ref).returncode != 0:
+            git("merge", "--abort")
+            return AlDia("omitida", detalle="merge falló sin conflicto en merge-tree")
+        if lane.test_cmd:
+            t = self._ssh(lane)(render_test_cmd_host(lane), shell=True, cwd=path, timeout=1800)
+            if t.returncode != 0:
+                git("reset", "--hard", antes)  # su propio worktree: vuelve a como estaba
+                return AlDia("tests", detalle=f"test_cmd falló en {lane.host.destino} tras fusionar {ref} (exit "
+                             f"{t.returncode}): {(t.stdout + t.stderr).strip()[-300:]}")
+        if git("push", lane.remote, f"HEAD:refs/heads/{branch}").returncode != 0:
+            git("reset", "--hard", antes)
+            return AlDia("omitida", detalle="push de la rama fusionada rechazado")
+        local = git("rev-parse", "HEAD").stdout.strip().lower()
+        ls = _git(lane.repo, "ls-remote", lane.remote, f"refs/heads/{branch}")
+        nuevo = ls.stdout.split()[0].lower() if ls.returncode == 0 and ls.stdout.strip() else ""
+        if not nuevo or nuevo != local:
+            return AlDia("omitida", detalle="el SHA de la rama puesta al día no se pudo confirmar desde el hub")
+        return AlDia("fusionada", sha=nuevo)
+
+
+def _norm_ruta(p: str) -> str:
+    return ntpath.normcase(ntpath.normpath(p.strip().replace("/", "\\")))
+
+
+def sweep_done_remoto(lane: Lane, hermes, git: "GitOpsRemoto", *, max_tarjetas: int = 3, hechas: set | None = None) -> list[str]:
+    """Limpieza de worktrees remotos de tarjetas en done (mismo criterio que review.sweep_done, pero en el host). Como mucho
+    `max_tarjetas` por pasada y sin repetir las ya comprobadas (`hechas`): cada comprobación es una llamada SSH."""
+    hechas = hechas if hechas is not None else set()
+    limpias, intentadas = [], 0
+    for task in hermes.list_status(lane.name, "done"):
+        tid = task["id"]
+        if tid in hechas or not _TID.fullmatch(tid or ""):
+            continue
+        if max_tarjetas and intentadas >= max_tarjetas:
+            break
+        intentadas += 1
+        try:
+            ok, msg = git.cleanup(lane, tid)
+        except SshTransportError as exc:
+            log.info("%s: limpieza remota aplazada (transporte): %s", tid, exc)
+            break  # sin host no hay más que probar esta pasada
+        if ok:
+            hechas.add(tid)
+            if "retirado" in msg:
+                limpias.append(tid)
+        else:
+            log.warning("%s: limpieza remota pendiente: %s", tid, msg)
+    return limpias
 
 
 # --- verify dividido ------------------------------------------------------------------------------------------------

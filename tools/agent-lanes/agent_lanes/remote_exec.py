@@ -22,6 +22,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]  # tools/agent-lanes del clon del host
@@ -59,6 +60,52 @@ def render_settings_if_needed(args: list[str]) -> None:
         out.write_text(text, encoding="utf-8")
 
 
+def _free_gb(path: str) -> float | None:
+    import shutil
+    p = Path(path or ".")
+    while True:  # la carpeta de worktrees puede no existir aún: se mide el primer ancestro que sí
+        try:
+            return round(shutil.disk_usage(str(p)).free / 1024 ** 3, 2)
+        except OSError:
+            if p.parent == p:
+                return None
+            p = p.parent
+
+
+def op_status(req: dict) -> dict:
+    """Op `status` (sondeo del hub): disco libre, HEAD del clon del hub y hash de contract/ de ESTE clon. Solo lectura."""
+    from agent_lanes.contrato import contract_hash
+    head = None
+    try:
+        cp = subprocess.run(["git", "-C", str(ROOT), "rev-parse", "HEAD"], capture_output=True, text=True, timeout=30,
+                            creationflags=CREATE_NO_WINDOW if sys.platform == "win32" else 0)
+        head = (cp.stdout.strip() or None) if cp.returncode == 0 else None
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return {"host_time": time.time(), "disk_free_gb": _free_gb(str(req.get("worktree_root") or "")),
+            "hub_head": head, "contract_hash": contract_hash(ROOT)}
+
+
+def op_kill(req: dict) -> dict:
+    """Op `kill`: corta el ARBOL de un `claude` huérfano solo si el PID sigue siendo el mismo proceso (hora de creación
+    igual, +-2 s). Sin hora de creación no se corta (podría ser otro proceso con el PID reutilizado)."""
+    pid, created = int(req["pid"]), req.get("created")
+    if pid <= 0:
+        return {"estado": "pid_invalido"}
+    if created is None:
+        return {"estado": "sin_hora"}
+    now = _proc.created_at(pid)
+    if now is None:
+        return {"estado": "no_existe"}
+    if abs(now - float(created)) > 2:
+        return {"estado": "otro_proceso"}
+    _proc.kill_tree(pid)
+    return {"estado": "cortado" if _proc.created_at(pid) is None else "sigue_vivo"}
+
+
+OPS = {"status": op_status, "kill": op_kill}
+
+
 def main() -> int:
     req = json.loads(sys.stdin.buffer.read().decode("utf-8"))
     nonce = str(req["nonce"])
@@ -67,6 +114,21 @@ def main() -> int:
     def mark(kind: str, data: str = "") -> None:
         err.write(f"\n@@LANE-{nonce}-{kind} {data}\n".encode("utf-8"))
         err.flush()
+
+    if req.get("op"):  # operaciones propias del lanzador (nada que venga del hub se ejecuta): lista cerrada
+        fn = OPS.get(str(req["op"]))
+        if fn is None:
+            err.write(f"remote_exec: op desconocida {req['op']!r}\n".encode("utf-8"))
+            return 2  # sin línea RC: el hub lo ve como fallo del lanzador (HostError)
+        try:
+            out = fn(req)
+        except Exception as exc:  # noqa: BLE001
+            err.write(f"remote_exec: op {req['op']} falló: {exc}\n".encode("utf-8", "replace"))
+            return 3
+        sys.stdout.buffer.write(json.dumps(out).encode("utf-8"))
+        sys.stdout.buffer.flush()
+        mark("RC", "0")
+        return 0
 
     local_roots = [str(x) for x in req.get("local_roots") or ()]
     shell = bool(req.get("shell"))

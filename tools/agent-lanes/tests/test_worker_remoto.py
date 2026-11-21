@@ -18,7 +18,8 @@ from agent_lanes.ssh_host import (ClaudeWorkerRemoto, GitOpsRemoto, HostError, H
 from agent_lanes.worker import ClaudeWorker
 from .test_runner_state import LANE, ok_outcome
 
-HOST = HostCfg(destino="worker-b", repo_dir="C:\\agent-lanes\\repos\\hub", worktree_root="C:\\agent-lanes\\_lanes")
+HOST = HostCfg(destino="worker-b", repo_dir="C:\\agent-lanes\\repos\\app", worktree_root="C:\\agent-lanes\\_lanes",
+               hub_dir="C:\\agent-lanes\\repos\\oscar-command-hub")
 RLANE = replace(LANE, name="claude-hub-remoto", host=HOST, test_cmd='py -3.12 "{AGENT_LANES_DIR}/agent_lanes/checks.py" {BASE}')
 RESULT_JSON = json.dumps({"subtype": "success", "is_error": False, "structured_output": ok_outcome().structured})
 
@@ -124,7 +125,7 @@ def test_remote_prompt_and_args_equal_local(monkeypatch):
     assert "OHQ_API_KEY" not in json.dumps(req) and "super-secreto" not in json.dumps(req)
     # el comando remoto es fijo y ssh no interactivo, sin StrictHostKeyChecking=no
     assert cmd[0] == "ssh" and "BatchMode=yes" in cmd and "--" in cmd and "worker-b" in cmd
-    assert cmd[-1] == 'py -3.12 "C:\\agent-lanes\\repos\\hub\\tools\\agent-lanes\\agent_lanes\\remote_exec.py"'
+    assert cmd[-1] == 'py -3.12 "C:\\agent-lanes\\repos\\oscar-command-hub\\tools\\agent-lanes\\agent_lanes\\remote_exec.py"'
     assert "StrictHostKeyChecking=yes" in cmd and not any("StrictHostKeyChecking=no" in c for c in cmd)
 
 
@@ -142,13 +143,23 @@ def test_resume_remote_keeps_session_and_model():
 # --- 2. PID remoto en el estado ----------------------------------------------------------------------------------------
 
 def test_remote_pid_goes_to_host_keys_not_worker_pid(tmp_path):
+    """El PID remoto va a claves propias (nunca a worker_pid) y SE CONSERVA si el transporte cae (puede seguir vivo)."""
+    (tmp_path / "t_9.json").write_text(json.dumps({"task_id": "t_9", "pid": 1}))
+    ssh = FakeSsh(lambda req: Reply(pid=4242, created=1700000123.25, ssh_rc=255, no_rc=True))
+    with pytest.raises(HostUnreachable):
+        ClaudeWorkerRemoto(pid_dir=tmp_path, transport=ssh).run(RLANE, TASK, "C:\\wt\\lane-t_9", "sid", timeout=60)
+    state = json.loads((tmp_path / "t_9.json").read_text())
+    assert state["host"] == "worker-b" and state["host_worker_pid"] == 4242 and state["host_worker_created"] == 1700000123.25
+    assert state["worker_pid"] == 31337  # el ssh LOCAL (reconcile lo mata); el PID remoto va aparte, nunca aquí
+    assert state["pid"] == 1 and state["host_worker_started"] > 0
+
+
+def test_remote_pid_is_cleared_when_the_remote_process_finished(tmp_path):
     (tmp_path / "t_9.json").write_text(json.dumps({"task_id": "t_9", "pid": 1}))
     ssh = FakeSsh(lambda req: Reply(out=RESULT_JSON, pid=4242, created=1700000123.25))
     ClaudeWorkerRemoto(pid_dir=tmp_path, transport=ssh).run(RLANE, TASK, "C:\\wt\\lane-t_9", "sid", timeout=60)
     state = json.loads((tmp_path / "t_9.json").read_text())
-    assert state["host"] == "worker-b" and state["host_worker_pid"] == 4242 and state["host_worker_created"] == 1700000123.25
-    assert state["worker_pid"] == 31337  # el ssh LOCAL (reconcile lo mata); el PID remoto va aparte, nunca aquí
-    assert state["pid"] == 1
+    assert "host_worker_pid" not in state and "host_worker_created" not in state and state["host"] == "worker-b"
 
 
 def test_on_start_receives_remote_pid_object():
@@ -161,7 +172,7 @@ def test_on_start_receives_remote_pid_object():
 
 def test_ssh_255_is_host_unreachable_not_a_worker_failure():
     ssh = FakeSsh(lambda req: Reply(ssh_rc=255, no_rc=True, pid=None, err="ssh: connect to host worker-b port 22: Connection timed out"))
-    with pytest.raises(HostUnreachable, match="no alcanzable"):
+    with pytest.raises(HostUnreachable, match="sin conexión"):
         ClaudeWorkerRemoto(transport=ssh).run(RLANE, TASK, "C:\\wt", "sid", timeout=60)
 
 
@@ -301,7 +312,7 @@ def test_prepare_worktree_git_failure_is_giterror_and_transport_failure_propagat
         GitOpsRemoto(down).prepare_worktree(RLANE, "t_9")
 
 
-def test_sync_base_conflict_and_poner_al_dia_deferred():
+def test_sync_base_conflict_in_host():
     def script(req):
         sub = req["args"][3:]
         if sub[:1] == ["merge"]:
@@ -309,8 +320,6 @@ def test_sync_base_conflict_and_poner_al_dia_deferred():
         return Reply()
     ops = GitOpsRemoto(FakeSsh(script))
     assert "CONFLICT" in ops.sync_base(RLANE, "C:\\wt\\lane-t_9")
-    dia = ops.poner_al_dia(RLANE, "C:\\wt\\lane-t_9", "t_9")
-    assert dia.estado == "omitida" and "E2" in dia.detalle
 
 
 # --- 6. verify dividido: no se fía del host ---------------------------------------------------------------------------------
@@ -371,7 +380,7 @@ def test_verify_ok_runs_git_in_hub_and_tests_in_host():
     head_req, _status_req, test_req = ssh.requests
     assert head_req["args"] == ["git", "-C", "C:\\wt\\lane-t_1", "rev-parse", "HEAD"]
     assert test_req["shell"] and test_req["cwd"] == "C:\\wt\\lane-t_1"
-    assert "C:/agent-lanes/repos/hub/tools/agent-lanes/agent_lanes/checks.py" in test_req["cmd"]  # {AGENT_LANES_DIR} del HOST
+    assert "C:/agent-lanes/repos/oscar-command-hub/tools/agent-lanes/agent_lanes/checks.py" in test_req["cmd"]  # {AGENT_LANES_DIR} del HOST
     assert "origin/master" in test_req["cmd"] and "{" not in test_req["cmd"]
 
 
@@ -416,7 +425,7 @@ def test_unreachable_after_pid_warns_worker_may_be_alive():
 def test_empty_host_block_and_host_with_repos_are_rejected(tmp_path):
     with pytest.raises(ValueError, match="vacío"):
         load_lanes(_yaml(tmp_path, "    host: {}\n"))
-    body = ("    repos: {a: {repo: C:/x}}\n    host: {destino: w, repo_dir: 'C:\\a', worktree_root: 'C:\\b'}\n")
+    body = ("    repos: {a: {repo: C:/x}}\n    host: {destino: w, repo_dir: 'C:\\a', worktree_root: 'C:\\b', hub_dir: 'C:\\h'}\n")
     with pytest.raises(ValueError, match="repos"):
         load_lanes(_yaml(tmp_path, body))
 
@@ -470,7 +479,7 @@ def test_lane_without_host_is_local_and_real_lanes_yaml_has_none():
 
 def test_host_parsed_clamps_max_parallel_and_ignores_future_keys(tmp_path):
     body = ("    max_parallel: 3\n    host_gasto_dia_usd: 15\n    host:\n      destino: worker-b\n"
-            "      repo_dir: 'C:\\agent-lanes\\repos\\hub'\n      worktree_root: 'C:\\agent-lanes\\_lanes'\n"
+            "      repo_dir: 'C:\\agent-lanes\\repos\\hub'\n      hub_dir: 'C:\\agent-lanes\\repos\\hub'\n      worktree_root: 'C:\\agent-lanes\\_lanes'\n"
             "      max_parallel: 1\n      latido_s: 60\n      disco_min_gb: 10\n")
     lane = load_lanes(_yaml(tmp_path, body))["l1"]
     assert lane.host.destino == "worker-b" and lane.host.conexion_timeout_s == 15
@@ -481,7 +490,7 @@ def test_host_parsed_clamps_max_parallel_and_ignores_future_keys(tmp_path):
     "destino: -oProxyCommand=x", "destino: 'a b'", "repo_dir: relativa", "repo_dir: 'C:\\a\"&calc'",
     "repo_dir: 'C:\\a\\..\\b'", "max_parallel: 0", "conexion_timeout_s: 0", "otra: 1"])
 def test_host_rejects_unsafe_or_unknown_values(tmp_path, bad):
-    base = {"destino": "w", "repo_dir": "C:\\a", "worktree_root": "C:\\b"}
+    base = {"destino": "w", "repo_dir": "C:\\a", "worktree_root": "C:\\b", "hub_dir": "C:\\h"}
     key, _, val = bad.partition(": ")
     lines = {**base, key: val.strip("'")} if key in base else {**base, key: val}
     body = "    host:\n" + "".join(f"      {k}: '{v}'\n" if isinstance(v, str) else f"      {k}: {v}\n" for k, v in lines.items())
@@ -490,7 +499,7 @@ def test_host_rejects_unsafe_or_unknown_values(tmp_path, bad):
 
 
 def test_host_only_for_implement_lanes_and_never_in_defaults(tmp_path):
-    host = "    host: {destino: w, repo_dir: 'C:\\a', worktree_root: 'C:\\b'}\n"
+    host = "    host: {destino: w, repo_dir: 'C:\\a', worktree_root: 'C:\\b', hub_dir: 'C:\\h'}\n"
     with pytest.raises(ValueError, match="kind: implement"):
         load_lanes(_yaml(tmp_path, "    kind: ops\n" + host))
     with pytest.raises(ValueError, match="defaults"):
@@ -558,28 +567,65 @@ def test_integrator_never_runs_test_cmd_on_a_host_lane_branch(tmp_path, monkeypa
 def test_host_rejected_for_sensitive_repos(tmp_path, repo, github):
     p = tmp_path / "lanes.yaml"
     p.write_text(f"lanes:\n  l1:\n    board: b\n    base: main\n    repo: {repo}\n    github: '{github}'\n"
-                 "    host: {destino: w, repo_dir: 'C:/a', worktree_root: 'C:/b'}\n", encoding="utf-8")
+                 "    host: {destino: w, repo_dir: 'C:/a', worktree_root: 'C:/b', hub_dir: 'C:/h'}\n", encoding="utf-8")
     with pytest.raises(ValueError, match="repo sensible"):
         load_lanes(p)
 
 
-def test_sensitive_repo_list_is_configurable_and_hub_dir_is_optional(tmp_path):
+def test_sensitive_repo_list_is_united_not_replaced_and_hub_dir_is_required(tmp_path):
+    host = "    host: {destino: w, repo_dir: 'C:/a', worktree_root: 'C:/b', hub_dir: 'C:/hub'}\n"
     p = tmp_path / "lanes.yaml"
-    p.write_text("host_sensitive_repos: [otro]\nlanes:\n  l1:\n    board: b\n    base: main\n    repo: C:/x/oscar-hq\n"
-                 "    host: {destino: w, repo_dir: 'C:/a', worktree_root: 'C:/b', hub_dir: 'C:/hub'}\n", encoding="utf-8")
-    lane = load_lanes(p)["l1"]  # con la lista propia, oscar-hq ya no es sensible
-    assert lane.host.hub_dir == "C:/hub" and lane.host.agent_lanes_dir == "C:/hub/tools/agent-lanes"
+    # La lista de lanes.yaml SE UNE a la de fábrica: [otro] o [] no dejan fuera hub ni oscar-hq.
+    for lista in ("[otro]", "[]", "[migrateam]"):
+        p.write_text(f"host_sensitive_repos: {lista}\nlanes:\n  l1:\n    board: b\n    base: main\n    repo: C:/x/oscar-hq\n"
+                     + host, encoding="utf-8")
+        with pytest.raises(ValueError, match="repo sensible"):
+            load_lanes(p)
+    p.write_text("host_sensitive_repos: [migrateam]\nlanes:\n  l1:\n    board: b\n    base: main\n    repo: C:/x/migrateam\n"
+                 + host, encoding="utf-8")
+    with pytest.raises(ValueError, match="migrateam"):  # y la lista propia suma
+        load_lanes(p)
+    p.write_text("lanes:\n  l1:\n    board: b\n    base: main\n    repo: C:/x/app\n"
+                 "    host: {destino: w, repo_dir: 'C:/a', worktree_root: 'C:/b'}\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="hub_dir"):  # hub_dir obligatorio: no se cae en repo_dir
+        load_lanes(p)
+    p.write_text("lanes:\n  l1:\n    board: b\n    base: main\n    repo: C:/x/app\n" + host, encoding="utf-8")
+    lane = load_lanes(p)["l1"]
+    assert lane.host.agent_lanes_dir == "C:/hub/tools/agent-lanes"
     assert ssh_host.launcher_command(lane.host) == 'py -3.12 "C:/hub\\tools\\agent-lanes\\agent_lanes\\remote_exec.py"'
 
 
-def test_ignored_future_keys_warn(tmp_path, caplog):
+def test_sensitive_check_covers_host_repo_dir_and_dot_segments_and_hub_aliases(tmp_path):
+    host = "    host: {destino: w, repo_dir: '%s', worktree_root: 'C:/b', hub_dir: 'C:/hub'}\n"
     p = tmp_path / "lanes.yaml"
-    p.write_text("lanes:\n  l1:\n    board: b\n    base: main\n    repo: C:/x\n    host_gasto_dia_usd: 15\n"
-                 "    host: {destino: w, repo_dir: 'C:/a', worktree_root: 'C:/b', hub_sha_minimo: pin}\n", encoding="utf-8")
-    with caplog.at_level("INFO", logger="agent_lanes"):
+    hub = config.ROOT.parents[1].as_posix()
+    casos = [("C:/x/app", "C:/agent-lanes/repos/oscar-hq"), ("C:/x/oscar-hq/.", "C:/a"), ("C:/x/./app", "C:/a"),
+             (hub, "C:/a"), (hub + "/tools/../..", "C:/a")]
+    for repo, repo_dir in casos:
+        p.write_text(f"lanes:\n  l1:\n    board: b\n    base: main\n    repo: '{repo}'\n" + host % repo_dir, encoding="utf-8")
+        with pytest.raises(ValueError, match="sensible"):
+            load_lanes(p)
+
+
+def test_e2_host_keys_are_read_validated_and_inert_by_default(tmp_path):
+    p = tmp_path / "lanes.yaml"
+    p.write_text("lanes:\n  l1:\n    board: b\n    base: main\n    repo: C:/x\n    host_gasto_dia_usd: 15\n    host_review: true\n"
+                 "    host: {destino: w, repo_dir: 'C:/a', worktree_root: 'C:/b', hub_dir: 'C:/h', hub_sha_minimo: pin,\n"
+                 "           latido_s: 60, disco_min_gb: 10, contrato_hash: true}\n", encoding="utf-8")
+    lane = load_lanes(p)["l1"]
+    assert (lane.host_gasto_dia_usd, lane.host_review, lane.host_integracion) == (15.0, True, False)
+    assert (lane.host.hub_sha_minimo, lane.host.latido_s, lane.host.disco_min_gb, lane.host.contrato_hash) == ("pin", 60, 10, True)
+    defecto = replace(HOST)
+    assert (defecto.hub_sha_minimo, defecto.latido_s, defecto.disco_min_gb, defecto.contrato_hash) == ("", 0, 0.0, False)
+    assert (LANE.host_review, LANE.host_integracion, LANE.host_gasto_dia_usd) == (False, False, None)
+    for malo in ("hub_sha_minimo: 'zz; rm'", "latido_s: -1", "disco_min_gb: -5", "contrato_hash: 'si'"):
+        p.write_text("lanes:\n  l1:\n    board: b\n    base: main\n    repo: C:/x\n    host: {destino: w, repo_dir: 'C:/a',"
+                     f" worktree_root: 'C:/b', hub_dir: 'C:/h', {malo}}}\n", encoding="utf-8")
+        with pytest.raises(ValueError):
+            load_lanes(p)
+    p.write_text("lanes:\n  l1:\n    board: b\n    base: main\n    repo: C:/x\n    host_review: true\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="solo tiene sentido"):  # sin host: las claves de host no valen
         load_lanes(p)
-    avisos = [r for r in caplog.records if r.levelname == "WARNING"]
-    assert len(avisos) == 2 and all("IGNORA" in r.getMessage() for r in avisos)
 
 
 def test_ssh_argv_forces_strict_host_key_and_identities_only():
@@ -591,11 +637,11 @@ def test_ssh_argv_forces_strict_host_key_and_identities_only():
 def test_unreachable_and_alive_messages_are_excluded_from_auto_relaunch():
     from agent_lanes import relanzar
     marcas = [relanzar._norm(m) for m in relanzar.EXCLUIR_DEFECTO]
-    for msg in ("error del runner: host worker-b no alcanzable (ssh rc=255): x",
+    for msg in ("error del runner: host worker-b sin conexión (ssh rc=255): x",
                 "ATENCIÓN: el proceso remoto PID 7 pudo seguir vivo en el host"):
         assert any(m in relanzar._norm(msg) for m in marcas)
     yaml_marcas = [relanzar._norm(m) for m in relanzar.load_ajustes(relanzar.ROOT / "relanzar.yaml").excluir_motivos]
-    assert "no alcanzable" in yaml_marcas and "pudo seguir vivo" in yaml_marcas
+    assert "(ssh rc=255)" in yaml_marcas and "pudo seguir vivo" in yaml_marcas
 
 
 def test_remote_quota_text_blocks_card_without_global_pause(tmp_path):

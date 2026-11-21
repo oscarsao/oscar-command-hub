@@ -14,5 +14,5 @@ excluir_motivos:              # si el motivo contiene alguna (sin mayúsculas ni
   - "LIMITACION-GUARD"
   - "producción"
   - "migración"
-  - "no alcanzable"       # host remoto caído: puede haber un worker vivo (ssh_host)
+  - "(ssh rc=255)"        # host remoto caído: puede haber un worker vivo (ssh_host)
   - "pudo seguir vivo"
