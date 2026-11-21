@@ -66,7 +66,8 @@ Tiene que salir un **`claude.exe`**. El lanzador ejecuta `claude` sin shell inte
 
 ```powershell
 New-Item -ItemType Directory -Force C:\agent-lanes, C:\agent-lanes\repos, C:\agent-lanes\_lanes | Out-Null
-icacls C:\agent-lanes /grant "agentlanes:(OI)(CI)M"
+# Solo Administradores, SYSTEM y agentlanes (sin herencia de permisos de C:\):
+icacls C:\agent-lanes /inheritance:r /grant "Administradores:(OI)(CI)F" /grant "SYSTEM:(OI)(CI)F" /grant "agentlanes:(OI)(CI)M"
 
 Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0
 Set-Service -Name sshd -StartupType Automatic
@@ -78,8 +79,14 @@ Cierra el servidor a lo mínimo. Edita `C:\ProgramData\ssh\sshd_config` (como ad
 
 ```
 PubkeyAuthentication yes
+KbdInteractiveAuthentication no
 AllowUsers agentlanes
+AllowTcpForwarding no
+PermitTunnel no
 ```
+
+(En una instalación en inglés el grupo es `Administrators`. `AllowTcpForwarding` y `PermitTunnel` van globales, no solo en un
+bloque `Match`.)
 
 Reinicia el servicio y limita el firewall a la IP del HUB (el nombre de la regla es el que crea Windows al instalar OpenSSH):
 
@@ -102,15 +109,26 @@ por SSH la puede leer (sin verificar: depende de dónde guarde las credenciales 
 
 En github.com, **con la cuenta técnica** (no con `oscarsao`):
 
-1. Que `oscarsao` la añada como colaboradora con permiso de escritura **solo** al repo del carril (`oscarsao/oscar-command-hub`).
+**Este carril NO puede apuntar a `oscar-command-hub` ni a `oscar-hq`** (el runner rechaza `host:` en esos repos; lista en
+`host_sensitive_repos` de `lanes.yaml`): el código lo escribe otro equipo y no debe acabar ejecutándose junto al hub ni en
+producción. Usa un repo no sensible. El clon de `oscar-command-hub` del HOST (paso 7) es solo de lectura: contiene el
+lanzador y el guard; no es el repo del carril.
+
+1. Que `oscarsao` la añada como colaboradora con permiso de escritura **solo** al repo del carril.
 2. Settings > Developer settings > Personal access tokens > **Fine-grained tokens** > Generate new token:
    - Repository access: **Only select repositories**, solo ese repo (y los demás del carril, si los hay).
-   - Permissions: **Contents: Read and write** y **Pull requests: Read and write**. Nada más (Metadata es de solo lectura y
-     viene sola; **sin** Workflows ni Administration).
+   - Permissions: **Contents: Read and write** y nada más (Metadata es de solo lectura y viene sola). **Sin** Pull requests,
+     Workflows ni Administration: **los PR los abre el hub**, nunca el host.
    - Caducidad: 90 días (apunta la fecha en el §11).
-3. Barrera real: `main` debe estar protegida (sin push directo). Compruébalo en Settings > Branches o Rules del repo; si no lo
-   está, protégela **antes** de dar este token. El push de `lane/*` es lo único que hace falta. (Sin verificar: no tengo acceso
-   a la configuración del repo.)
+3. Ruleset recomendado en el repo del carril (Settings > Rules > Rulesets):
+   - `main`: exigir PR con aprobación de CODEOWNERS y bloquear force push y borrado.
+   - Todas las ramas: bloquear force push y borrado.
+   - Creación de ramas limitada a `lane/*` para la cuenta técnica.
+   En repos privados de una cuenta personal gratuita puede que los rulesets no estén disponibles (sin verificar).
+4. **Decisión de Oscar: por ahora NO se activa la protección de ramas.** Riesgo residual que se acepta de forma consciente:
+   con un token con `Contents: write` y sin protección, un host comprometido (o un worker que obedezca texto malicioso de una
+   tarjeta) puede empujar a `main` del repo del carril, reescribir o borrar ramas. Por eso el carril solo se usa con repos no
+   sensibles y sus PR **no se fusionan sin Oscar**. Cuando se active la protección, hazlo antes de ampliar el uso.
 
 Pega el token **tú** en el HOST, como `agentlanes` (SIN ADMIN):
 
@@ -178,14 +196,16 @@ Host worker-b
     User agentlanes
     IdentityFile ~/.ssh/hub-a-host
     IdentitiesOnly yes
-    BatchMode yes
     ServerAliveInterval 15
 ```
 
-**Aceptar la clave del HOST una vez, a mano** (el runner usa `BatchMode=yes` y no puede responder a esa pregunta; sin esto
-falla con rc 255). Desde el HUB: `ssh worker-b` y compara la huella que muestra con la del HOST
-(`ssh-keygen -lf C:\ProgramData\ssh\ssh_host_ed25519_key.pub` en el HOST) antes de escribir `yes`. Nunca se usa
-`StrictHostKeyChecking=no`.
+(Sin `BatchMode` en el alias: el runner lo añade él mismo en cada conexión, junto con `StrictHostKeyChecking=yes` e
+`IdentitiesOnly=yes`; así el paso manual de abajo sí puede preguntar.)
+
+**Aceptar la clave del HOST una vez, a mano** (el runner no puede responder a esa pregunta; sin esto falla con rc 255).
+Desde el HUB: `ssh -o BatchMode=no worker-b` y compara la huella que muestra con la del HOST
+(`ssh-keygen -lf C:\ProgramData\ssh\ssh_host_ed25519_key.pub` en el HOST) antes de escribir `yes`.
+**Prohibido `StrictHostKeyChecking=no`** (ni en el alias, ni en la línea de comandos, ni en un `Host *`).
 
 ## 9. HOST [ADMIN]: cerrar la contraseña (solo cuando la clave ya entre)
 
@@ -201,7 +221,7 @@ En `tools\agent-lanes` del HUB, con `py -3.12`. Cada paso debe dar lo que se ind
 3. Lanzador remoto de extremo a extremo (usa `HostCfg` y `SshRunner`; ajusta `destino` y las rutas):
 
    ```powershell
-   py -3.12 -c "from agent_lanes.config import HostCfg; from agent_lanes.ssh_host import SshRunner; h=HostCfg(destino='worker-b', repo_dir=r'C:\agent-lanes\repos\oscar-command-hub', worktree_root=r'C:\agent-lanes\_lanes'); r=SshRunner(h); print(r(['git','--version'], cwd=r'C:\agent-lanes', timeout=60, on_start=lambda p: print('PID remoto', int(p), p.created)))"
+   py -3.12 -c "from agent_lanes.config import HostCfg; from agent_lanes.ssh_host import SshRunner; h=HostCfg(destino='worker-b', repo_dir=r'C:\agent-lanes\repos\oscar-command-hub', hub_dir=r'C:\agent-lanes\repos\oscar-command-hub', worktree_root=r'C:\agent-lanes\_lanes'); r=SshRunner(h); print(r(['git','--version'], cwd=r'C:\agent-lanes', timeout=60, on_start=lambda p: print('PID remoto', int(p), p.created)))"
    ```
 
    Espera `PID remoto <n> <hora>` y un `CompletedProcess` con `returncode=0`. Un `HostError` aquí = `py`, la ruta del clon o el SHA
@@ -212,23 +232,26 @@ En `tools\agent-lanes` del HUB, con `py -3.12`. Cada paso debe dar lo que se ind
    stdout con `OK`. Si pide login, la sesión del paso 5 no se lee desde una conexión por SSH: hay que resolverlo antes de seguir.
 6. `r(['gh','auth','status'], ...)` -> autenticado con la cuenta técnica; `r(['git','-C',<clon>,'ls-remote','origin','HEAD'], ...)` -> un SHA.
 7. `r(['git','-C',<clon>,'push','--dry-run','origin','HEAD:refs/heads/lane/t_humo'], ...)` -> sin error de permisos. (Un dry-run
-   no crea la rama; que el token no pueda tocar `main` lo garantiza la protección de la rama, paso 6.3.)
+   no crea la rama; que el token no pueda tocar `main` lo garantizaría la protección de ramas, hoy NO activada por decisión de Oscar: riesgo
+   residual del paso 6.4.)
 8. Entorno limpio: `r(['cmd','/c','set'], ...)` -> **ninguna** variable con tokens (`*TOKEN*`, `*KEY*`, `*SECRET*`) y ninguna
    `AGENT_LANES_*` heredada del equipo.
 9. Caída simulada: en el HOST `Stop-Service sshd` [ADMIN] y repite el paso 3 -> `HostUnreachable ... (ssh rc=255)`, claramente
    distinto de un fallo del worker. Vuelve a `Start-Service sshd`.
 
-Solo con todo en verde, añade el carril (en el HUB, `lanes.yaml`; hay un ejemplo comentado `claude-hub-remoto`):
+Solo con todo en verde, añade el carril (en el HUB, `lanes.yaml`; hay un ejemplo comentado `ejemplo-remoto`, con un repo ficticio
+no sensible). `repo_dir` es el clon del repo **del carril** y `hub_dir` el clon de `oscar-command-hub` del paso 7:
 
 ```yaml
     host:
       destino: worker-b
       max_parallel: 1
-      repo_dir: 'C:\agent-lanes\repos\oscar-command-hub'
+      repo_dir: 'C:\agent-lanes\repos\<repo-del-carril>'
+      hub_dir: 'C:\agent-lanes\repos\oscar-command-hub'
       worktree_root: 'C:\agent-lanes\_lanes'
 ```
 
-y comprueba que carga: `py -3.12 -c "from agent_lanes.config import load_lanes; print(load_lanes()['claude-hub-remoto'].host)"`.
+y comprueba que carga: `py -3.12 -c "from agent_lanes.config import load_lanes; print(load_lanes()['<carril>'].host)"`.
 El runner lee `lanes.yaml` al arrancar: reiniciarlo lo decides tú (`lanes.py restart --drain`, sin workers en vuelo).
 Esta entrega **no** reencola sola una tarjeta si el HOST cae (E2): con `HostUnreachable` la tarjeta se bloquea como
 «error del runner» y la sueltas a mano.
@@ -260,10 +283,11 @@ Rotación (90 días, sin recordatorio automático por ahora): clave SSH (reempla
   (`poner_al_dia`), comprobar que el SHA y el hash de `contract/` del HOST son los del HUB antes de despachar, instalar
   dependencias (pnpm) en el worktree remoto.
 - **E3**: latido del HOST, panel, aviso a los 5 minutos, resumen diario, ajustes en `/ajustes`, `host_gasto_dia_usd`, piloto de 3 tarjetas.
-- La revisión (carril review) y el integrador siguen trabajando sobre el clon **del HUB** (`repo:` del carril) contra GitHub, y
-  **ejecutan allí** el `test_cmd` de la rama y el revisor: la separación «el código de la rama solo corre en el HOST» vale
-  para la primera verificación, no para la revisión ni la integración. No uses un carril remoto con repos sensibles hasta que se
-  decida (E2) si la revisión también pasa por el HOST.
+- **Review e integrador NO ejecutan ramas de un carril con `host:`** (falla cerrado, hecho en código): el carril review pasa la
+  tarjeta a `needs_input` («revisión humana») sin crear worktree, sin `test_cmd` y sin revisor con Bash; el integrador marca la
+  puerta «requiere aprobación humana» y no corre `test_cmd` en el hub. Ejecutarlas en el HOST o en un sandbox es E2. **Los PR de
+  ramas de carriles con `host:` no se fusionan sin Oscar** (la «Excepción del hub» del CLAUDE.md global no cubre este caso: este
+  carril ni siquiera admite el repo del hub).
 
 ## 13. Riesgos abiertos de E1 (conócelos antes de usarlo)
 
@@ -274,4 +298,23 @@ Rotación (90 días, sin recordatorio automático por ahora): clave SSH (reempla
 - **`MODO WORKER` en el HOST**: las reglas del worker viajan por `--settings` (guard de `contract/`) y el prompt, pero el
   `~/.claude/CLAUDE.md` global y el hook de permisos de Oscar **no existen** en el perfil `agentlanes`. Es lo que se quiere
   (cero credenciales y cero acceso a producción); no lo «arregles» copiándolos.
-- La verificación en el HUB rechaza un worktree del HOST con cambios sin commitear antes de correr `test_cmd`.
+- La verificación en el HUB rechaza un worktree del HOST con cambios sin commitear antes de correr `test_cmd`, y deja
+  `verificado_en: host` en la metadata de la tarjeta (el `test_cmd` corrió en el segundo ordenador, no en el hub).
+- **Credenciales bajo SSH en Windows** (sin verificar): una sesión por SSH con clave no abre DPAPI ni el Administrador de
+  credenciales de la sesión interactiva, así que `gh`, el Git Credential Manager o Claude Code **podrían no leer** el token ni
+  el login guardados. El paso 5 y el 6 de la prueba de humo lo comprueban; si falla, no se «arregla» guardando secretos en
+  ficheros ni en variables de entorno del HUB.
+- **Quien administre el HOST puede leer el token de GitHub y la sesión de Claude** del perfil `agentlanes`. Asume ambos como
+  comprometibles: token con caducidad corta y mínimo permiso, y valora una **cuenta de Claude dedicada con tope de gasto** en
+  vez de la de Hola@ compartida.
+- **Qué ve el HOST**: el texto completo de la tarjeta (título, cuerpo, notas del coordinador, respuestas de Oscar, feedback de
+  review), el nombre de las ramas y, por las rutas del hub que aparecen en los argumentos, el usuario de Windows del HUB. Y puede
+  devolver preguntas (`needs_input`) que llegan a Oscar con botones: son texto de otro equipo, léelas como tal.
+- **Coste declarado por el HOST**: se acota (negativo o no numérico = 0; máximo 2x el presupuesto de la tarjeta), pero no es una
+  medición independiente: el gasto real está en la cuenta de Claude.
+- **Salida remota**: stdout+stderr acumulados se cortan a 8 MiB (el ssh se corta y el error lo dice).
+- **Cuota de Claude agotada en el HOST**: bloquea la tarjeta con el motivo; **no** pausa a los demás carriles (la pausa por host es E2).
+- **Tras un bloqueo por host no alcanzable o «pudo seguir vivo»** el relanzado automático no la toca (marcas de `relanzar.yaml`);
+  el estado conserva `host`, `host_worker_pid` y `host_worker_created` para E2.
+- **Claves `host:` de E2/E3** (`hub_sha_minimo`, `latido_s`, `disco_min_gb`, `host_gasto_dia_usd`): se ignoran y el runner lo
+  avisa con un WARNING al cargar. Mientras tanto no hay tope de gasto diario del host.

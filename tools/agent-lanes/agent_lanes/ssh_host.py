@@ -33,7 +33,7 @@ from pathlib import Path
 from . import proc as _proc
 from .config import ROOT, HostCfg, Lane
 from .git_ops import _MARCAS_BLOQUEO, _REINTENTOS_BLOQUEO, AlDia, GitError
-from .verify import VerifyResult, _git
+from .verify import VerifyResult, _git, split_paths, vetada
 from .worker import ClaudeWorker, run_claude
 
 log = logging.getLogger("agent_lanes")
@@ -42,6 +42,7 @@ ENV_PREFIX = "AGENT_LANES_"      # prefijo que además exige el lanzador remoto
 # Lista blanca EXACTA de lo que viaja al host (las que pone ClaudeWorker); cualquier otra, aunque lleve el prefijo, se queda.
 ENV_ALLOWED = frozenset(ENV_PREFIX + n for n in ("TASK", "LANE", "MERGE_OK", "PUSH_OK", "WORKTREE", "BASE", "ROLE"))
 LAUNCHER_REL = ("tools", "agent-lanes", "agent_lanes", "remote_exec.py")
+MAX_OUTPUT_BYTES = 8 * 1024 * 1024  # tope de stdout+stderr remotos acumulados; pasado, se corta con aviso (HostError)
 TIMEOUT_GRACE_S = 30             # el lanzador remoto corta al llegar a `timeout`; ssh local espera algo más
 LOCAL_RC_TIMEOUT = 124
 
@@ -72,31 +73,51 @@ class RemotePid(int):
 
 def launcher_command(host: HostCfg) -> str:
     """Comando remoto, fijo: solo `py` y la ruta del lanzador dentro del clon del host (sin datos de la tarjeta)."""
-    return f'py -3.12 "{ntpath.join(host.repo_dir, *LAUNCHER_REL)}"'
+    return f'py -3.12 "{ntpath.join(host.hub_dir or host.repo_dir, *LAUNCHER_REL)}"'
 
 
 def ssh_argv(host: HostCfg) -> list[str]:
     """ssh no interactivo. Nunca StrictHostKeyChecking=no: la clave del host se acepta una vez a mano (guía)."""
-    return ["ssh", "-T", "-o", "BatchMode=yes", "-o", f"ConnectTimeout={host.conexion_timeout_s}",
+    return ["ssh", "-T", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes", "-o", "IdentitiesOnly=yes", "-o", f"ConnectTimeout={host.conexion_timeout_s}",
             "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3",
             # Un `Host *` del ~/.ssh/config del hub no debe filtrar agente, X11 ni túneles al host.
             "-o", "ForwardAgent=no", "-o", "ForwardX11=no", "-o", "ClearAllForwardings=yes",
             "-o", "PermitLocalCommand=no", "--", host.destino, launcher_command(host)]
 
 
-def real_transport(cmd: list[str], *, input: str, timeout: float | None, on_stderr_line=None) -> subprocess.CompletedProcess:
+def real_transport(cmd: list[str], *, input: str, timeout: float | None, on_stderr_line=None, on_local_pid=None,
+                   max_bytes: int = MAX_OUTPUT_BYTES) -> subprocess.CompletedProcess:
     """Ejecuta el ssh local con el JSON por stdin; lee stderr línea a línea (para el marcador del PID). Con `timeout`
     agotado mata el ssh y lanza TimeoutExpired. Es la costura que los tests sustituyen por `FakeSsh`."""
     kw = {"creationflags": _proc.CREATE_NO_WINDOW} if sys.platform == "win32" else {}
     p = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, **kw)
+    if on_local_pid:
+        try:
+            on_local_pid(p.pid)  # el ssh LOCAL: el runner lo reconoce y lo mata si muere (worker_pid)
+        except Exception:
+            log.warning("ssh: on_local_pid falló", exc_info=True)
     out: list[bytes] = []
     err: list[str] = []
+    total = [0]
+    excedido = threading.Event()
+
+    def cuenta(n: int) -> bool:
+        total[0] += n
+        if total[0] > max_bytes and not excedido.is_set():
+            excedido.set()
+            p.kill()  # salida desmesurada: se corta el ssh (el lanzador remoto morirá al cerrarse la conexión)
+        return not excedido.is_set()
 
     def read_out():
-        out.append(p.stdout.read())
+        while chunk := p.stdout.read(65536):
+            if not cuenta(len(chunk)):
+                return
+            out.append(chunk)
 
     def read_err():
         for raw in iter(p.stderr.readline, b""):
+            if not cuenta(len(raw)):
+                return
             line = raw.decode("utf-8", "replace")
             err.append(line)
             if on_stderr_line:
@@ -129,6 +150,8 @@ def real_transport(cmd: list[str], *, input: str, timeout: float | None, on_stde
         raise subprocess.TimeoutExpired(cmd, timeout) from None
     for t in threads:
         t.join(30)
+    if excedido.is_set():
+        raise HostError(f"salida remota superior a {max_bytes} bytes: ssh cortado (el proceso remoto muere al plazo)")
     return subprocess.CompletedProcess(cmd, p.returncode, b"".join(out).decode("utf-8", "replace"), "".join(err))
 
 
@@ -139,9 +162,10 @@ class SshRunner:
     Devuelve CompletedProcess con el rc del PROCESO REMOTO. Lanza: HostUnreachable (ssh rc 255), HostError (el lanzador
     no corrió), subprocess.TimeoutExpired (se pasó el `timeout`, igual que el runner local)."""
 
-    def __init__(self, host: HostCfg, transport=None, local_root: Path = ROOT):
+    def __init__(self, host: HostCfg, transport=None, local_root: Path = ROOT, on_local_pid=None):
         self.host = host
         self._transport = transport
+        self._on_local_pid = on_local_pid
         self._local_roots = [str(local_root), Path(local_root).as_posix()]
 
     def __call__(self, args, *, input=None, cwd=None, env=None, timeout=None, on_start=None, shell=False,
@@ -174,7 +198,10 @@ class SshRunner:
 
         transport = self._transport or real_transport
         deadline = None if timeout is None else float(timeout) + TIMEOUT_GRACE_S + self.host.conexion_timeout_s
-        cp = transport(ssh_argv(self.host), input=json.dumps(req), timeout=deadline, on_stderr_line=on_line)
+        extra = {"on_local_pid": self._on_local_pid} if self._on_local_pid else {}
+        cp = transport(ssh_argv(self.host), input=json.dumps(req), timeout=deadline, on_stderr_line=on_line, **extra)
+        if len(cp.stdout or "") + len(cp.stderr or "") > MAX_OUTPUT_BYTES:
+            raise HostError(f"salida remota superior a {MAX_OUTPUT_BYTES} bytes: descartada")
 
         rc, timed_out, kept = None, False, []
         for line in (cp.stderr or "").splitlines(keepends=True):
@@ -223,6 +250,20 @@ def record_host_worker(state_path: Path, pid) -> None:
     os.replace(tmp, state_path)
 
 
+def sanear_coste(cost, presupuesto: float):
+    """`cost_usd` lo declara el host: no es de fiar. Negativo, no numérico o NaN = 0; se satura a 2x el presupuesto de
+    la tarjeta (un coste real puede pasarse algo del tope, uno absurdo no). None se queda None."""
+    if cost is None:
+        return None
+    try:
+        c = float(cost)
+    except (TypeError, ValueError):
+        return 0.0
+    if c != c or c < 0:
+        return 0.0
+    return min(c, 2 * float(presupuesto))
+
+
 class ClaudeWorkerRemoto(ClaudeWorker):
     """ClaudeWorker de un carril con host: mismo prompt, mismos args y mismo reparto de presupuesto; solo cambia quién
     ejecuta (SshRunner) y a quién se apunta el PID. Sin GuardiaRam (mide procesos locales)."""
@@ -238,9 +279,18 @@ class ClaudeWorkerRemoto(ClaudeWorker):
             if state_path:
                 record_host_worker(state_path, pid)
 
-        return run_claude(SshRunner(lane.host, self._transport), args, prompt, cwd, timeout,
-                          {"AGENT_LANES_TASK": task_id, "AGENT_LANES_LANE": lane.name, **(extra_env or {})},
-                          on_start=on_start if state_path else None)
+        def on_local_pid(pid: int) -> None:
+            # PID del ssh LOCAL en worker_pid: si el runner muere, reconcile lo mata (y _live_worker lo ve). Matar el ssh
+            # no mata al claude remoto (corta al plazo); eso, y el PID remoto (host_worker_pid), es de E2.
+            if state_path:
+                from .worker import record_worker_pid
+                record_worker_pid(state_path, pid)
+
+        out = run_claude(SshRunner(lane.host, self._transport, on_local_pid=on_local_pid), args, prompt, cwd, timeout,
+                         {"AGENT_LANES_TASK": task_id, "AGENT_LANES_LANE": lane.name, **(extra_env or {})},
+                         on_start=on_start if state_path else None)
+        out.cost_usd = sanear_coste(out.cost_usd, lane.max_budget_usd)
+        return out
 
 
 # --- Git en el host -------------------------------------------------------------------------------------------------
@@ -362,9 +412,9 @@ def verify_remoto(lane: Lane, task_id: str, cwd: str, result: dict, runner=_proc
             if ahead.returncode != 0 or ahead.stdout.strip() in ("", "0"):
                 reasons.append(f"{branch} no tiene commits sobre {lane.remote}/{lane.base}")
             if lane.forbidden_paths:
-                changed = _git(repo, "diff", "--no-renames", "--name-only", f"{lane.base_ref}...{remote_sha}",
-                               runner=runner).stdout.split()
-                hits = [f for f in changed if any(f.replace("\\", "/").startswith(p) for p in lane.forbidden_paths)]
+                changed = split_paths(_git(repo, "diff", "-z", "--no-renames", "--name-only",
+                                           f"{lane.base_ref}...{remote_sha}", runner=runner).stdout)
+                hits = [f for f in changed if vetada(f, lane.forbidden_paths)]
                 if hits:
                     reasons.append(f"toca rutas vetadas en este carril: {', '.join(hits[:10])}")
             if not reasons:
@@ -400,7 +450,7 @@ def verify_remoto(lane: Lane, task_id: str, cwd: str, result: dict, runner=_proc
 
     if reasons or not lane.test_cmd:
         # test_cmd ejecuta código de la rama: nunca sobre una rama que ya falló los controles.
-        return VerifyResult(ok=not reasons, reasons=reasons, test_exit=None, remote_sha=remote_sha)
+        return VerifyResult(ok=not reasons, reasons=reasons, test_exit=None, remote_sha=remote_sha, verificado_en="host")
     test_exit = None
     try:
         t = ssh(render_test_cmd_host(lane), shell=True, cwd=cwd, timeout=1800)
@@ -412,4 +462,5 @@ def verify_remoto(lane: Lane, task_id: str, cwd: str, result: dict, runner=_proc
         reasons.append("test_cmd superó 30 min")
     except SshTransportError as exc:  # transporte, no «tests rojos»
         reasons.append(f"no se pudo ejecutar test_cmd en el host: {exc}")
-    return VerifyResult(ok=not reasons, reasons=reasons, test_exit=test_exit, remote_sha=remote_sha)
+    return VerifyResult(ok=not reasons, reasons=reasons, test_exit=test_exit, remote_sha=remote_sha,
+                        verificado_en="host")

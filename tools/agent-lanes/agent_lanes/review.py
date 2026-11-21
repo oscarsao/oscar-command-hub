@@ -434,6 +434,14 @@ class ReviewRunner:
             if not meta:
                 return self._block(h, task, "transient", "review sin metadata de implementación (branch/head_sha)",
                                    public="falta la metadata de implementación")
+            if getattr(lane, "host", None):
+                # Carril con host: la rama la escribió OTRO equipo. Ni test_cmd ni un Claude con Bash sobre ella en el hub
+                # sin una persona delante (falla cerrado). Ejecutarla en el host o en un sandbox es E2.
+                motivo = (f"carril con host ({lane.host.destino}): el código de la rama lo escribió otro equipo y review no lo "
+                          "ejecuta en el hub (ni test_cmd ni revisor con Bash); requiere aprobación humana previa")
+                return self._block(h, task, "needs_input", motivo, public="rama de un carril remoto: revisión humana",
+                                   questions=["La rama viene de un carril con host remoto: ¿la revisas tú y la apruebas? "
+                                              "(review automático desactivado para estas ramas)"])
             cwd = self.git.prepare_review_worktree(lane, tid)
             check = self.verifier(lane, tid, cwd, {"branch": meta["branch"], "head_sha": meta["head_sha"]})
             if not check.ok:

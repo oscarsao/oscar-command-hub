@@ -455,7 +455,9 @@ class LaneRunner:
         # Estado justo tras el claim y antes de cualquier llamada lenta (notify-list de Hermes): sin él, `lanes.py
         # status` veía la tarea en running sin PID y la daba por huérfana (incidente 27-09, tarjeta t_bdee05fe).
         self.state_dir.mkdir(parents=True, exist_ok=True)
-        state_path.write_text(json.dumps({"task_id": tid, "lane": lane.name, "pid": os.getpid(),
+        # Carril con host: lo apuntado del worker REMOTO de un intento anterior se conserva (E2 lo usará para cortar huérfanos).
+        previo = {k: v for k, v in self._read_state(tid).items() if k in ("host", "host_worker_pid", "host_worker_created")}
+        state_path.write_text(json.dumps({**previo, "task_id": tid, "lane": lane.name, "pid": os.getpid(),
                                           "session_id": session_id, "started": time.time()}), encoding="utf-8")
         self._active[tid] = task
         try:
@@ -475,7 +477,14 @@ class LaneRunner:
             return self._work(task, tid, session_id, deadline)
         finally:
             self._active.pop(tid, None)
-            state_path.unlink(missing_ok=True)
+            # Carril con host: se CONSERVA lo apuntado del worker remoto (sin `pid` ni `worker_pid`, que son locales) para
+            # que E2 pueda cortar un huérfano aunque la tarjeta ya esté bloqueada. Sin PID remoto, se borra como siempre.
+            restos = {k: v for k, v in self._read_state(tid).items()
+                      if k in ("task_id", "lane", "host", "host_worker_pid", "host_worker_created")}
+            if "host_worker_pid" in restos:
+                state_path.write_text(json.dumps(restos), encoding="utf-8")
+            else:
+                state_path.unlink(missing_ok=True)
 
     def _work(self, task: dict, tid: str, session_id: str, deadline: float) -> str:
         lane = self.lane
@@ -550,6 +559,12 @@ class LaneRunner:
                 return self._block(tid, "transient", f"error del runner: {exc}", task, public="error del runner")
 
             if not outcome.ok and cuota.es_cuota(outcome.raw_error):
+                if getattr(lane, "host", None):
+                    # El texto viene del host: no puede disparar la pausa GLOBAL (cuota.json) de todos los carriles.
+                    # La pausa por host es de E2; mientras, la tarjeta se bloquea con el motivo.
+                    return self._block(tid, "transient", f"cuota de Claude agotada en el host {lane.host.destino} "
+                                       f"(pausa por host: E2): {outcome.raw_error}", task,
+                                       public="cuota de Claude agotada en el host remoto")
                 return self._pausar_por_cuota(tid, task, outcome.raw_error)
             if not outcome.ok:
                 why = "max_runtime alcanzado" if deadline - self.clock() <= 60 else f"tras {resumes} resume(s)"
@@ -619,7 +634,7 @@ class LaneRunner:
             metadata = {
                 "lane": lane.name, "session_id": session_id, "worktree": cwd, "resumes": resumes,
                 "cost_usd": outcome.cost_usd, "verified": True, "test_cmd": lane.test_cmd,
-                "runner_test_exit": check.test_exit, **{k: result.get(k) for k in (
+                "runner_test_exit": check.test_exit, "verificado_en": getattr(check, "verificado_en", "hub"), **{k: result.get(k) for k in (
                     "branch", "head_sha", "changed_files", "tests", "next_steps", "risks", "for_oscar")},
             }
             ok, err = self.hermes.request_review(tid, result.get("summary", "")[:1500], metadata)

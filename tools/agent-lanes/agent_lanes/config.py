@@ -28,12 +28,17 @@ class HostCfg:
     worktree_root: str
     max_parallel: int = 1
     conexion_timeout_s: int = 15
+    # Clon de oscar-command-hub EN EL HOST (lanzador remote_exec.py y contract/), fijado al SHA del hub. Aparte de
+    # `repo_dir` (el repo del carril, que NO puede ser un repo sensible). Vacío = igual que repo_dir.
+    hub_dir: str = ""
 
     def __post_init__(self):
         if not isinstance(self.destino, str) or not HOST_DESTINO_RE.fullmatch(self.destino):
             raise ValueError(f"host.destino {self.destino!r}: solo letras, cifras, . _ - y sin guion inicial")
-        for nombre in ("repo_dir", "worktree_root"):
+        for nombre in ("repo_dir", "worktree_root", "hub_dir"):
             valor = getattr(self, nombre)
+            if nombre == "hub_dir" and not valor:
+                continue
             if (not isinstance(valor, str) or not HOST_RUTA_RE.fullmatch(valor)
                     or ".." in re.split(r"[\\/]", valor)):
                 raise ValueError(f"host.{nombre} {valor!r}: ruta absoluta de Windows sin comillas, % & | < > ^ ni '..'")
@@ -45,7 +50,20 @@ class HostCfg:
     @property
     def agent_lanes_dir(self) -> str:
         """{AGENT_LANES_DIR} en el host: tools/agent-lanes del clon de oscar-command-hub, con barras normales."""
-        return self.repo_dir.rstrip("\\/").replace("\\", "/") + "/tools/agent-lanes"
+        return (self.hub_dir or self.repo_dir).rstrip("\\/").replace("\\", "/") + "/tools/agent-lanes"
+
+
+HOST_REPOS_SENSIBLES = ("oscar-command-hub", "oscar-hq")  # repos donde NO se admite `host:` (configurable)
+
+
+def host_repo_sensible(name: str, merged: dict, lista=None) -> str | None:
+    """Nombre del repo sensible al que apunta el carril (por `github:` o por la carpeta de `repo:`), o None."""
+    sensibles = {str(x).strip().casefold() for x in (lista if isinstance(lista, (list, tuple)) else HOST_REPOS_SENSIBLES)}
+    for valor in (merged.get("github"), merged.get("repo")):
+        ultimo = re.split(r"[\\/]", str(valor or "").strip().rstrip("/\\"))[-1].casefold().removesuffix(".git")
+        if ultimo in sensibles:
+            return ultimo
+    return None
 
 
 def host_from_yaml(name: str, cfg) -> HostCfg | None:
@@ -55,10 +73,11 @@ def host_from_yaml(name: str, cfg) -> HostCfg | None:
         raise ValueError(f"{name}: `host` vacío (quítalo para un carril local)")
     if not isinstance(cfg, dict):
         raise ValueError(f"{name}: `host` debe ser un bloque (destino, repo_dir, worktree_root, ...)")
-    propios = {"destino", "repo_dir", "worktree_root", "max_parallel", "conexion_timeout_s"}
+    propios = {"destino", "repo_dir", "worktree_root", "max_parallel", "conexion_timeout_s", "hub_dir"}
     for k in cfg:
         if k in HOST_CLAVES_FUTURAS:
-            logging.getLogger("agent_lanes").info("%s: host.%s es de una entrega posterior (E2/E3); se ignora", name, k)
+            logging.getLogger("agent_lanes").warning("%s: host.%s es de una entrega posterior (E2/E3); se IGNORA: no "
+                                                     "hay protección ni límite por esa clave todavía", name, k)
         elif k not in propios:
             raise ValueError(f"{name}: clave desconocida en host: {k!r}")
     faltan = [k for k in ("destino", "repo_dir", "worktree_root") if not cfg.get(k)]
@@ -185,10 +204,16 @@ def load_lanes(path: Path | None = None) -> dict[str, Lane]:
         merged = {**defaults, **cfg}
         merged["host"] = host_from_yaml(name, merged.get("host"))
         if merged.pop("host_gasto_dia_usd", None) is not None:  # tope diario del host: E3, aún sin efecto
-            logging.getLogger("agent_lanes").info("%s: host_gasto_dia_usd es de la entrega E3; se ignora", name)
+            logging.getLogger("agent_lanes").warning("%s: host_gasto_dia_usd es de la entrega E3; se IGNORA: el host "
+                                                     "NO tiene tope de gasto diario todavía", name)
         if merged["host"]:
             if merged.get("kind", "implement") != "implement":
                 raise ValueError(f"{name}: `host` solo se admite en carriles kind: implement")
+            sensible = host_repo_sensible(name, merged, data.get("host_sensitive_repos"))
+            if sensible:
+                raise ValueError(f"{name}: `host` no se admite en el repo sensible {sensible!r} (código del host ejecutándose "
+                                 f"junto al hub). Lista en `host_sensitive_repos` de lanes.yaml (por defecto "
+                                 f"{', '.join(HOST_REPOS_SENSIBLES)})")
             if merged.get("repos"):
                 raise ValueError(f"{name}: `host` no se combina con `repos:` (un solo clon remoto por carril)")
             merged["max_parallel"] = min(int(merged.get("max_parallel", 1)), merged["host"].max_parallel)
