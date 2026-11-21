@@ -1,6 +1,7 @@
 """Mechanical verification: never trust the worker's self-report."""
 from __future__ import annotations
 
+import re
 import subprocess
 
 from . import proc as _proc
@@ -15,6 +16,19 @@ class VerifyResult:
     reasons: list[str] = field(default_factory=list)
     test_exit: int | None = None
     remote_sha: str | None = None
+    verificado_en: str = "hub"  # «host» si test_cmd corrió en el segundo ordenador (verify remoto)
+
+
+def split_paths(out: str) -> list[str]:
+    """Salida de `git diff -z --name-only`: rutas separadas por NUL (sin comillas ni escapes aunque lleven espacios o
+    caracteres no ASCII). También separa por salto de línea por si alguna salida no usa -z (falla hacia el lado seguro)."""
+    return [p for p in re.split(r"[\0\n]", out or "") if p]
+
+
+def vetada(path: str, prefijos) -> bool:
+    """¿La ruta cae bajo un prefijo vetado? Sin distinguir mayúsculas (Windows/macOS) y con barras normales."""
+    ruta = path.replace("\\", "/").lower()
+    return any(ruta.startswith(str(p).replace("\\", "/").lower()) for p in prefijos)
 
 
 def render_test_cmd(lane: Lane) -> str:
@@ -55,9 +69,9 @@ def verify(lane: Lane, task_id: str, cwd: str, result: dict, runner=_proc.run) -
 
     if remote_sha and lane.forbidden_paths:
         # --no-renames: a pure `git mv` out of a vetoed dir would otherwise list only the new path.
-        changed = _git(cwd, "diff", "--no-renames", "--name-only", f"{lane.base_ref}...{remote_sha}",
-                       runner=runner).stdout.split()
-        hits = [f for f in changed if any(f.replace("\\", "/").startswith(p) for p in lane.forbidden_paths)]
+        changed = split_paths(_git(cwd, "diff", "-z", "--no-renames", "--name-only",
+                                   f"{lane.base_ref}...{remote_sha}", runner=runner).stdout)
+        hits = [f for f in changed if vetada(f, lane.forbidden_paths)]
         if hits:
             reasons.append(f"toca rutas vetadas en este carril: {', '.join(hits[:10])}")
 

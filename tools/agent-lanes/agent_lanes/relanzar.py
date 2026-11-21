@@ -42,7 +42,8 @@ log = logging.getLogger("agent_lanes")
 SETTINGS_PATH = ROOT / "relanzar.yaml"
 STATE_PATH = ROOT / ".state" / "relanzar.json"
 AUTHOR = "relanzar"
-EXCLUIR_DEFECTO = ("CONFIGURACIÓN", "LIMITACION-GUARD", "producción", "migración")
+EXCLUIR_DEFECTO = ("CONFIGURACIÓN", "LIMITACION-GUARD", "producción", "migración",
+                   "no alcanzable", "pudo seguir vivo")  # host remoto: un worker puede seguir vivo (ssh_host)
 MOTIVO_MAX = 160
 MAX_LECTURAS = 40          # tarjetas bloqueadas leídas (show) por pasada como máximo
 MAX_RAMAS = 5              # comprobaciones de rama (git) por pasada como máximo

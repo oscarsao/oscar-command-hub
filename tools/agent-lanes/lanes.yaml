@@ -305,6 +305,32 @@ lanes:
   # y aplicar. test_cmd: el mismo gate genérico + la suite de agent-lanes del worktree (pytest encuentra
   # tools/agent-lanes/pytest.ini desde la ruta de tests: pythonpath = la copia del worker, nunca el checkout vivo).
   # OJO: la suite es código del worker y se ejecuta como Oscar (verify.py sin entorno mínimo; el integrador sí).
+  #
+  # --- Segundo ordenador por SSH (E1 de specs/worker-remoto-ssh.md). EJEMPLO COMENTADO: ningún carril lo usa hoy. ---
+  # Sin `host:` el carril es local y todo funciona como siempre. Con él, el runner de ESTE equipo (el hub) despacha el
+  # worker al otro (el host): `claude -p`, el worktree y el test_cmd corren allí; kanban, avisos y la parte git de verify,
+  # aquí. Pasos manuales del host: docs/segundo-ordenador-ssh.md. `repo` y `github` siguen siendo el clon del HUB.
+  # NO se admite `host:` en repos sensibles (`host_sensitive_repos`, por defecto oscar-command-hub y oscar-hq): el ejemplo usa
+  # un repo ficticio. Las ramas de un carril con host: NO se revisan ni se integran en automático (review y el test_cmd del
+  # integrador fallan cerrado: aprobación humana) y sus PR no se fusionan sin Oscar.
+  # host_sensitive_repos: [oscar-command-hub, oscar-hq]   # nivel superior de este fichero; opcional
+  # ejemplo-remoto:
+  #   board: default
+  #   repo: C:/Users/oscar/dev/ejemplo-no-sensible       # clon del HUB (ficticio)
+  #   github: oscarsao/ejemplo-no-sensible
+  #   base: main
+  #   role: roles/implementador.md
+  #   model: sonnet
+  #   max_budget_usd: 3.0
+  #   test_cmd: py -3.12 -m pytest tests -q
+  #   host:
+  #     destino: worker-b                 # alias de ~/.ssh/config del hub (usuario, IP, IdentityFile dedicado)
+  #     max_parallel: 1                   # tarjetas a la vez EN ESE HOST (acota max_parallel del carril)
+  #     repo_dir: 'C:\agent-lanes\repos\ejemplo-no-sensible'   # clon del repo del carril en el host
+  #     hub_dir: 'C:\agent-lanes\repos\oscar-command-hub'      # clon del hub en el host (lanzador y contract/), mismo SHA
+  #     worktree_root: 'C:\agent-lanes\_lanes'
+  #     conexion_timeout_s: 15
+  #     # E2/E3 (se aceptan y se ignoran hoy): hub_sha_minimo, latido_s, disco_min_gb; y host_gasto_dia_usd en el carril.
   claude-hub:
     telegram: {chat: -1003731090094, thread: 38}  # Desarrollo Píldora (Oscar 23-10: lo de Píldora, Signal y Hub va al grupo de Ángel)
     board: default

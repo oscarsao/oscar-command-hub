@@ -1198,6 +1198,12 @@ class Integrator:
             res.migration = res.migration or "infra"
             res.detail.append("toca infraestructura de deploy: " + ", ".join(res.sensitive[:10]))
 
+        if getattr(lane, "host", None):
+            # Carril con host: el test_cmd ejecutaría en el hub código escrito por otro equipo. Falla cerrado: requiere
+            # aprobación humana (ejecutarlo en el host o en un sandbox es E2).
+            res.reasons.append(f"carril con host ({lane.host.destino}): el test_cmd no se ejecuta en el hub sobre código del "
+                               "host; requiere aprobación humana")
+            return
         if res.reasons or not lane.test_cmd:
             return  # nunca se ejecuta test_cmd sobre un diff que ya falló
         try:
