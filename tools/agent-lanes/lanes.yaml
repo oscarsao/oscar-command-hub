@@ -236,7 +236,9 @@ lanes:
     repo: C:/Users/oscar/dev/oscar-hq
     # Candado (28-09): el runner solo reclama si `git remote get-url origin` del repo es este owner/repo de GitHub.
     github: oscarsao/oscar-hq
-    base: master
+    # 19-11 (Oscar): como MigraTeam, los carriles integran en staging y a master solo se llega por la promoción
+    # (sección `promote:`). Para volver al flujo anterior basta poner `base: master` (ver README, «Rama de desarrollo»).
+    base: staging
     # 27-10 (Oscar): 4 plazas para Oscar HQ (antes 2, 23-10), cada una en su worktree lane/<id>. Dos tarjetas que citan
     # supabase/migrations no corren a la vez (serialize_paths); el resto sí. La tarjeta grande va aparte (max_big).
     max_parallel: 4
@@ -446,6 +448,12 @@ promote:
     alembic_versions: backend/alembic/versions/
     seeds: [backend/seeds/, backend/app/seeds/]
     sensitive_paths: [backend/alembic/, backend/alembic.ini, backend/Procfile, backend/railway.json, backend/railway.toml, backend/nixpacks.toml, backend/Dockerfile, railway.json, vercel.json, frontend/vercel.json, .github/]
+  # 19-11 (Oscar): Oscar HQ promueve staging → master con el mismo botón. Sin health_url ni health_alembic_key de
+  # producción la promoción se detiene al preparar («falta health_url…») sin tocar nada: añádelos cuando la API los exponga.
+  claude-oscarhq:
+    repo: oscarsao/oscar-hq
+    head: staging
+    base: master
 
 # Recolector nocturno de worktrees y ramas locales ya integradas (agent_lanes/recolector.py). APAGADO por defecto.
 # Una vez al día, pasada `hora` (Madrid), quita el worktree lane-<id> y su rama local SOLO si la tarjeta está done/archived,
@@ -485,8 +493,12 @@ integrator:
       dokploy_url: http://localhost:3300
       dokploy_application_id: ""
       dokploy_token_env: DOKPLOY_API_TOKEN
-      risk: manual                  # 🟠 cabecera de la ficha: deploy manual con botón
+      # 19-11: fusionar actualiza staging (rama de pruebas). Mientras dokploy_application_id siga vacío el 🚀 avisa
+      # «deploy no configurado»: no hay que apuntarlo a la aplicación de producción, que se despliega desde master.
+      risk: staging                 # 🟢 staging = rama de pruebas; producción solo por la promoción
       risk_label: OSCAR HQ
+      merge_label: "🔀 Fusionar en staging"
+      merge_warning: "⚠️ Fusionar actualiza la rama de pruebas (staging), no producción; a master solo se llega por la promoción"
       batch: daily                  # lote diario (agent_lanes/batch.py): un solo botón [🔀 Fusionar lote] a las 08:30 o con /lote oscarhq
       manual_migrations: [supabase/migrations/]
       # Mismo gate que el build de Vercel (#172 dijo «tests OK» con el dashboard roto): tsc + vitest en un worktree limpio.
@@ -497,7 +509,9 @@ integrator:
       batch_frontend_cmd: cd dashboard && set COREPACK_ENABLE_DOWNLOAD_PROMPT=0&& corepack pnpm@10.18.3 install --frozen-lockfile && npx tsc --noEmit && npx vitest run
       # Infraestructura de arranque/deploy: se puede fusionar, pero sin botón de deploy (lo revisa Oscar).
       sensitive_paths: [railway.json, railway.toml, nixpacks.toml, Procfile, Dockerfile, .railwayignore, requirements.txt, .github/]
-      health_url: https://api.pildoradigital.com/api/health   # se verifica tras el done de Dokploy
+      # Vacío mientras no exista una API de pruebas verificada (la de producción, https://api.pildoradigital.com/api/health,
+      # no es la de staging y no se usa para verificar fusiones en staging).
+      health_url: ""
     claude-migrateam:
       # 28-09: fusiona en develop, que DESPLIEGA STAGING solo (Railway staging + Vercel develop, alembic contra la BD
       # de staging). Nunca master: la promoción a producción es release/<fecha> con OK de Oscar, fuera del carril.

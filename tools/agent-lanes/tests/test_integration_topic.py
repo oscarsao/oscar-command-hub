@@ -136,9 +136,10 @@ def test_lanes_yaml_declares_the_integration_topic_and_risks():
     assert load_telegram_settings()["integration"] == INTEG
     s = load_integrator_settings(env={})
     assert s.integration_telegram == INTEG
-    assert risk_of(s.policies["claude-oscarhq"]) == risk_of(Policy(lane="x", deploy="railway_up", risk="manual",
+    assert risk_of(s.policies["claude-oscarhq"]) == risk_of(Policy(lane="x", deploy="railway_up", risk="staging",
                                                                    risk_label="Oscar HQ"))
-    assert header(risk_of(s.policies["claude-oscarhq"]), "listo") == "🟠 OSCAR HQ · LISTO"
+    # 19-11: Oscar HQ integra en staging (risk staging), con su etiqueta propia
+    assert header(risk_of(s.policies["claude-oscarhq"]), "listo") == "🟢 OSCAR HQ · LISTO"
     assert header(risk_of(s.policies["claude-migrateam"]), "listo") == "🟢 STAGING · LISTO"
 
 

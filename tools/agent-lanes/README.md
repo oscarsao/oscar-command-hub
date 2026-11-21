@@ -340,6 +340,18 @@ re-ata a la cabeza nueva), resuelve el conflicto trivial con `atascos` o crea la
 proactiva son la tarjeta hija (`specs/al-dia-prod.md`). Alias `/aldia`. Con un proyecto vale su marca; «todos» exige acceso
 a todas las marcas.
 
+## Rama de desarrollo de Oscar HQ (19-11, t_e59e779d)
+Oscar HQ funciona como MigraTeam: los carriles parten de `staging` y el integrador fusiona ahí (🟢 riesgo `staging`, botón
+«🔀 Fusionar en staging», lote diario como siempre). A `master` (producción) solo se llega por la promoción
+`staging → master` (`promote.claude-oscarhq` en lanes.yaml; `/promover claude-oscarhq`).
+- `integrator.lanes.claude-oscarhq.health_url` está vacío a propósito: aún no hay una API de pruebas verificada. Tampoco hay
+  `health_url`/`health_alembic_key` de producción en `promote.claude-oscarhq`, así que la promoción se detiene al preparar
+  («falta `health_url`…») sin tocar nada. Cuando la API los exponga se añaden ahí (y `alembic_versions`, que por defecto apunta
+  a MigraTeam; Oscar HQ usa `supabase/migrations/`, que la promoción aún no sabe leer).
+- `dokploy_application_id` sigue vacío: el 🚀 Desplegar avisa «deploy no configurado». No lo apuntes a la aplicación de producción.
+- **Volver atrás**: en `lanes.yaml` pon `base: master` en el carril `claude-oscarhq`, y en su entrada del integrador
+  `risk: manual` y borra `merge_label`/`merge_warning`; la entrada `promote.claude-oscarhq` puede quedarse. Reinicia el runner.
+
 ## Tras la migración a Dokploy (22-10, t_ffffc632)
 Oscar HQ y NextJobs corren en el servidor pildora-01 (Hetzner) con Dokploy; MigraTeam sigue en Railway hasta su corte.
 - **Autor de los commits del integrador** (`integrator.commit_author` en lanes.yaml; por defecto
