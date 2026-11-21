@@ -76,13 +76,18 @@ def test_un_test_cambiado_se_lanza_solo_el(repo):
     assert mode == "delta" and _names(files) == sorted(FIJOS + ["test_bar.py"])
 
 
-def test_modulo_sin_test_no_añade_nada(repo):
+def test_modulo_sin_tests_propios_suite_completa(repo):
     _commit(repo, **{f"{AL}/agent_lanes/nuevo.py": "y\n"})
-    assert _names(_load().plan("main")[1]) == FIJOS
+    assert _load().plan("main") == ("completo", [])
 
 
-@pytest.mark.parametrize("rel", ["tests/conftest.py", "agent_lanes/config.py"])
-def test_modulos_comunes_lanzan_la_suite_completa(repo, rel):
+@pytest.mark.parametrize("rel", [
+    "tests/conftest.py", "agent_lanes/config.py", "agent_lanes/runner.py", "agent_lanes/checks.py",
+    "agent_lanes/tests_delta.py", "agent_lanes/hermes.py", "agent_lanes/verify.py",
+    "lanes.yaml", "contract/result.schema.json", "roles/implementador.md", "tests/fixtures/golden.json",
+    "agent_lanes/sub/otro.py",
+])
+def test_lo_comun_o_no_cubierto_lanza_la_suite_completa(repo, rel):
     _commit(repo, **{f"{AL}/{rel}": "y\n"})
     assert _load().plan("main") == ("completo", [])
 
@@ -92,18 +97,28 @@ def test_mas_de_25_ficheros_suite_completa(repo):
     assert _load().plan("main") == ("completo", [])
 
 
-def test_lanes_yaml_con_clave_nueva_suite_completa(repo):
-    _commit(repo, **{f"{AL}/lanes.yaml": "lanes:\n  a:\n    test_cmd: uno\n    clave_nueva: 1\n"})
-    assert _load().plan("main") == ("completo", [])
+def test_docs_y_ficheros_fuera_de_agent_lanes_no_amplian(repo):
+    _commit(repo, **{f"{AL}/README.md": "y\n", "decisions/x.md": "y\n", "otra/cosa.txt": "y\n"})
+    assert _load().plan("main") == ("delta", [f"{AL}/tests/{n}" for n in FIJOS])
 
 
-def test_lanes_yaml_solo_valor_cambiado_es_delta(repo):
+def test_cambio_de_valor_en_lanes_yaml_tambien_es_completo(repo):
     _commit(repo, **{f"{AL}/lanes.yaml": "lanes:\n  a:\n    test_cmd: dos\n"})
-    assert _load().plan("main")[0] == "delta"
+    assert _load().plan("main") == ("completo", [])
 
 
 def test_base_inexistente_suite_completa(repo):
     assert _load().plan("no-existe") == ("completo", [])
+
+
+def test_git_que_agota_el_tiempo_cae_a_completo(repo, monkeypatch):
+    mod = _load()
+
+    def lento(cmd, **kw):
+        raise subprocess.TimeoutExpired(cmd, 1)
+
+    monkeypatch.setattr(mod.subprocess, "run", lento)
+    assert mod.plan("main") == ("completo", [])
 
 
 def test_main_imprime_modo_y_devuelve_el_codigo_de_pytest(repo, monkeypatch, capsys):
