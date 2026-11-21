@@ -368,9 +368,9 @@ class LaneRunner:
 
     def _block(self, tid: str, kind: str, reason: str, task: dict | None = None, *, public: str,
                questions: list | None = None, summary: str | None = None, for_oscar: str | None = None,
-               notify_kind: str | None = None, changed_files=None) -> str:
+               notify_kind: str | None = None, changed_files=None, escalar_repetido: bool = True) -> str:
         """`reason` (detalle técnico) va a la tarjeta y al log; a Telegram solo `public` (+ preguntas si needs_input)."""
-        times = self._same_block_times(tid, kind, reason) if kind == "transient" else 0
+        times = self._same_block_times(tid, kind, reason) if kind == "transient" and escalar_repetido else 0
         if times:  # 2º bloqueo igual: Hermes la mandaría a triage; se escala a Oscar con otro motivo y botones
             reason = (f"Bloqueada {times + 1} veces por lo mismo ({public}); reintentar sin cambios no sirve.\n"
                       f"Último detalle: {reason}")
@@ -585,7 +585,8 @@ class LaneRunner:
                         "sirve: Oscar/el carril hub debe cambiar lanes.yaml (forbidden_paths, dest_roots, claims) o "
                         "corregir la tarea (quitar esas rutas/destinos) y entonces reabrirla")
                 return self._block(tid, "transient", "verificación mecánica fallida: " + "; ".join(check.reasons),
-                                   task, public="verificación mecánica fallida")
+                                   task, public="verificación mecánica fallida",
+                                   escalar_repetido=not getattr(check, "transient", False))  # tope agotado: no cuenta
             if ops:
                 return self._to_review_ops(tid, task, session_id, cwd, resumes, outcome, result)
 

@@ -59,7 +59,7 @@ DEFAULTS: dict = {
         {"clase": TRANSITORIO, "regex": CUOTA_REGEX,
          "resumen": "se agotó la cuota de uso de Claude",
          "que_falta": "nada: el carril se pausa solo y se reanuda a la hora de reset"},
-        {"clase": TRANSITORIO, "regex": r"timed out|max_runtime|el worker no terminó|tiempo o presupuesto",
+        {"clase": TRANSITORIO, "regex": r"timed out|tope de verificación agotado|max_runtime|el worker no terminó|tiempo o presupuesto",
          "resumen": "el worker se quedó sin tiempo o sin presupuesto",
          "que_falta": "reintentar; si se repite, partir la tarea en otras más pequeñas"},
         {"clase": TRANSITORIO, "regex": r"rate.?limit|overloaded|\b429\b|\b529\b",

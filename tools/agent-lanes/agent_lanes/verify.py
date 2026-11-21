@@ -15,11 +15,23 @@ class VerifyResult:
     reasons: list[str] = field(default_factory=list)
     test_exit: int | None = None
     remote_sha: str | None = None
+    transient: bool = False  # el tope del test_cmd se agotó: fallo transitorio (reintentar), no un fallo del código
 
 
 def render_test_cmd(lane: Lane) -> str:
     """test_cmd comes only from lanes.yaml (never from a task body); placeholders are fixed values."""
     return lane.test_cmd.replace("{AGENT_LANES_DIR}", ROOT.as_posix()).replace("{BASE}", lane.base_ref)
+
+
+DEFAULT_VERIFY_TIMEOUT_MIN = 30.0
+
+
+def verify_timeout_min(lane: Lane) -> float:
+    """Tope del test_cmd en minutos (`verify_timeout_min` de lanes.yaml); si falta o no es válido, 30."""
+    value = getattr(lane, "verify_timeout_min", None)
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 < value < float("inf"):
+        return DEFAULT_VERIFY_TIMEOUT_MIN
+    return float(value)
 
 
 def _git(cwd: str, *args: str, runner=_proc.run) -> subprocess.CompletedProcess:
@@ -79,12 +91,15 @@ def verify(lane: Lane, task_id: str, cwd: str, result: dict, runner=_proc.run) -
     if reasons or not lane.test_cmd:
         # Never run test_cmd (it executes code from the worktree) on a branch that already failed the checks.
         return VerifyResult(ok=not reasons, reasons=reasons, test_exit=None, remote_sha=remote_sha)
+    minutes = verify_timeout_min(lane)
     try:
         t = runner(render_test_cmd(lane), shell=True, cwd=cwd, capture_output=True, text=True,
-                   encoding="utf-8", errors="replace", timeout=1800)
+                   encoding="utf-8", errors="replace", timeout=minutes * 60)
         test_exit = t.returncode
         if t.returncode != 0:
             reasons.append(f"test_cmd falló (exit {t.returncode}): {(t.stdout + t.stderr).strip()[-300:]}")
     except subprocess.TimeoutExpired:
-        reasons.append("test_cmd superó 30 min")
+        reasons.append(f"tope de verificación agotado: test_cmd superó {minutes:g} min (verify_timeout_min); "
+                       "fallo transitorio, el siguiente paso es reintentar")
+        return VerifyResult(ok=False, reasons=reasons, test_exit=None, remote_sha=remote_sha, transient=True)
     return VerifyResult(ok=not reasons, reasons=reasons, test_exit=test_exit, remote_sha=remote_sha)

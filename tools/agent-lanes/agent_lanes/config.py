@@ -31,6 +31,8 @@ class Lane:
     worktree_root: str = ""
     max_resumes: int = 2
     heartbeat_seconds: float = 240
+    # Tope (minutos) del test_cmd en la verificación mecánica (verify.py); agotarlo es un fallo transitorio.
+    verify_timeout_min: float = 30
     remote: str = "origin"
     # -p mode denies any Bash not pre-approved; acceptEdits only covers file edits.
     allowed_tools: tuple[str, ...] = ()

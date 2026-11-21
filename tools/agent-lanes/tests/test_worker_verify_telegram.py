@@ -67,6 +67,55 @@ def test_verify_rejects_wrong_branch():
     assert not r.ok
 
 
+class TimeoutGitRun(FakeGitRun):
+    """Como FakeGitRun, pero el test_cmd agota el tiempo y anota el timeout recibido."""
+    def __init__(self, *a, **kw):
+        super().__init__(*a, **kw)
+        self.timeout = None
+
+    def __call__(self, args, **kw):
+        if isinstance(args, str):
+            self.timeout = kw.get("timeout")
+            raise subprocess.TimeoutExpired(args, kw.get("timeout"))
+        return super().__call__(args, **kw)
+
+
+def test_verify_timeout_es_transitorio_con_el_tope_configurado():
+    from dataclasses import replace
+    fake = TimeoutGitRun("a" * 40)
+    r = verify(replace(LANE, verify_timeout_min=45, test_cmd="pytest"), "t_1", "C:/wt", GOOD, runner=fake)
+    assert not r.ok and r.transient and fake.timeout == 45 * 60
+    assert any("45 min" in x and "reintentar" in x for x in r.reasons)
+
+
+@pytest.mark.parametrize("valor", [None, 0, -5, "mucho", True])
+def test_verify_timeout_ausente_o_invalido_usa_30_min(valor):
+    from dataclasses import replace
+    fake = TimeoutGitRun("a" * 40)
+    lane = replace(LANE, test_cmd="pytest")
+    object.__setattr__(lane, "verify_timeout_min", valor)
+    r = verify(lane, "t_1", "C:/wt", GOOD, runner=fake)
+    assert r.transient and fake.timeout == 1800 and any("30 min" in x for x in r.reasons)
+
+
+def test_verify_exit_1_sigue_siendo_fallo_normal():
+    from dataclasses import replace
+    r = verify(replace(LANE, test_cmd="pytest"), "t_1", "C:/wt", GOOD, runner=FakeGitRun("a" * 40, test_rc=1))
+    assert not r.ok and not r.transient and r.test_exit == 1
+
+
+def test_lanes_yaml_lee_verify_timeout_min():
+    from agent_lanes.config import load_lanes
+    assert all(lane.verify_timeout_min == 30 for lane in load_lanes().values())
+
+
+def test_bloqueos_clasifica_el_tope_agotado_como_transitorio():
+    from dataclasses import replace
+    from agent_lanes import bloqueos
+    r = verify(replace(LANE, test_cmd="pytest"), "t_1", "C:/wt", GOOD, runner=TimeoutGitRun("a" * 40))
+    assert bloqueos.clasificar("verificación mecánica fallida: " + "; ".join(r.reasons)).clase == bloqueos.TRANSITORIO
+
+
 def test_telegram_error_never_contains_token(monkeypatch):
     secret = "123456:SECRET-TOKEN"
 
