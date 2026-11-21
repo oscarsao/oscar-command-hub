@@ -134,6 +134,20 @@ def _abrir(lane, tid, title, summary, ajustes, runner, gh_exe, sleep) -> Resulta
             return Resultado(FALLO, "gh pr list devolvió una respuesta no válida")
         if existe:
             return Resultado(OMITIDO, f"ya existe un PR ({estado}) de {branch}")
+    # (e) otro PR abierto (de otra rama) ya contiene los commits de esta rama: no se abre un duplicado
+    tip = (run(["git", "-C", lane.repo, "rev-parse", f"{lane.remote}/{branch}"], "git rev-parse").stdout or "").strip()
+    if tip:
+        cp = run([gh_exe, "pr", "list", "--repo", slug, "--state", "open", "--json", "number,commits", "--limit", "200"],
+                 "gh pr list", cwd=tempfile.gettempdir())
+        if cp.returncode != 0:
+            return Resultado(FALLO, f"gh pr list falló: {(cp.stderr or '').strip()[:200]}")
+        try:
+            abiertos = json.loads(cp.stdout or "[]")
+        except json.JSONDecodeError:
+            return Resultado(FALLO, "gh pr list devolvió una respuesta no válida")
+        for pr in abiertos if isinstance(abiertos, list) else []:
+            if tip in {c.get("oid") for c in (pr.get("commits") or []) if isinstance(c, dict)}:
+                return Resultado(OMITIDO, f"el PR #{pr.get('number')} (otra rama) ya contiene los commits de {branch}")
     cp = run([gh_exe, "pr", "create", "--draft", "--repo", slug, "--base", lane.base, "--head", branch,
               "--title", (title or tid)[:200], "--body", _cuerpo(summary)], "gh pr create", lectura=False,
              cwd=tempfile.gettempdir())

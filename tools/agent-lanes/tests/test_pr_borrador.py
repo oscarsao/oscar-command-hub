@@ -22,9 +22,11 @@ def cp(rc=0, out="", err=""):
 class Sim:
     """Runner que responde a git/gh según lo configurado y apunta cada comando."""
 
-    def __init__(self, *, remota=True, ahead="2", abiertos="[]", fusionados="[]", create=None, gh_rc=0):
+    def __init__(self, *, remota=True, ahead="2", abiertos="[]", fusionados="[]", create=None, gh_rc=0, commits="[]",
+                 tip=""):
         self.cmds = []
         self.remota, self.ahead, self.gh_rc = remota, ahead, gh_rc
+        self.commits, self.tip = commits, tip
         self.listas = {"open": abiertos, "merged": fusionados}
         self.create = create or cp(0, URL + "\n")
 
@@ -35,9 +37,13 @@ class Sim:
                 return cp(0, "a" * 40 + "\trefs/heads/lane/t_1\n" if self.remota else "")
             if "rev-list" in cmd:
                 return cp(0, self.ahead + "\n")
+            if "rev-parse" in cmd:
+                return cp(0, self.tip + "\n" if self.tip else "")
             return cp(0)
         if self.gh_rc and "list" in cmd:
             return cp(self.gh_rc, "", "boom")
+        if "number,commits" in cmd:
+            return cp(0, self.commits)
         if "list" in cmd:
             return cp(0, self.listas[cmd[cmd.index("--state") + 1]])
         return self.create
@@ -171,3 +177,22 @@ def test_review_omitido_no_comenta_y_complete_rechazado_no_abre():
     assert r.run_once() == {"t_1": "done"} and comentarios(h) == []
     r, h, llamadas = make(pb.Resultado(pb.ABIERTO, url=URL), complete_ok=False)
     assert r.run_once() == {"t_1": "blocked:transient"} and llamadas == []
+
+
+def test_otro_pr_abierto_que_ya_contiene_sus_commits_no_abre_duplicado():
+    tip = "b" * 40
+    sim = Sim(tip=tip, commits='[{"number": 7, "commits": [{"oid": "' + tip + '"}]}]')
+    res = abrir(sim)
+    assert res.estado == pb.OMITIDO and "#7" in res.motivo and sim.creates() == []
+
+
+def test_otro_pr_abierto_sin_sus_commits_no_lo_impide():
+    tip = "b" * 40
+    sim = Sim(tip=tip, commits='[{"number": 7, "commits": [{"oid": "' + "c" * 40 + '"}]}]')
+    assert abrir(sim).estado == pb.ABIERTO and len(sim.creates()) == 1
+
+
+def test_fallo_al_listar_prs_abiertos_no_abre_nada():
+    sim = Sim(tip="b" * 40, commits="no es json")
+    res = abrir(sim)
+    assert res.estado == pb.FALLO and sim.creates() == []
