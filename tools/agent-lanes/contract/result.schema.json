@@ -33,6 +33,15 @@
     },
     "for_oscar": {"type": "string", "maxLength": 300},
     "limitation": {"type": "string", "enum": ["guard"]},
+    "already_resolved": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["evidence", "checked_sha"],
+      "properties": {
+        "evidence": {"type": "string", "maxLength": 1500},
+        "checked_sha": {"type": "string"}
+      }
+    },
     "next_steps": {"type": "array", "items": {"type": "string"}},
     "risks": {"type": "array", "items": {"type": "string"}}
   }
