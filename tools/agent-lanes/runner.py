@@ -19,8 +19,11 @@ from agent_lanes import canal_avisos, ciego, consola, cuota, doctor_config, drai
 from agent_lanes.bandeja import load as load_bandeja
 from agent_lanes.board_guard import BoardGuardTicker
 from agent_lanes.choques import ChoquesTicker
+from agent_lanes.relanzar import RelanzarTicker
 from agent_lanes.fusion import Fusion
+from agent_lanes import sin_integrar as sin_integrar_mod
 from agent_lanes.prevencion import Prevencion
+from agent_lanes.sin_integrar import SinIntegrar
 from agent_lanes.solapes import SolapeTicker
 from agent_lanes.config import (ROOT, load_env, load_lanes, load_notice_limits, load_runner_settings,
                                 load_telegram_settings)
@@ -210,13 +213,16 @@ def main(argv: list[str] | None = None) -> int:
     # Candado de repos: un carril de código solo reclama si el remote de su repo es el `github:` de lanes.yaml.
     # Prevención de choques al lanzar (choques.yaml → prevenir_al_lanzar): una instancia para todos los carriles de código.
     prevencion = Prevencion(all_lanes, hermes_for)
+    # Freno por aprobadas sin integrar (sin_integrar.yaml): su aviso se cablea más abajo, cuando hay canal de avisos.
+    sin_integrar = SinIntegrar(all_lanes, hermes_for)
+    sin_integrar_mod.instalar(sin_integrar)
     # Límite de RAM por worker (lanes.yaml runner.worker_ram_mb; 0 = sin límite): corta al que se desboca y avisa al DM.
     ram = {"ram_mb": float(settings.get("worker_ram_mb") or 0), "alert": drain.dm_alert(env),
            "ram_intervalo": float(settings.get("worker_ram_intervalo_segundos") or supervisor.DEFAULT_RAM_INTERVALO)}
     runners: list = [LaneRunner(l, hermes=hermes_for(l.board), git=git, worker=ClaudeWorker(pid_dir=STATE_DIR, **ram),
                                 verifier=verify, notify=notify, exclude=set(args.exclude), messages=messages, links=links,
                                 decisions=decisions, tree=tree, repo_guard=github_slug_problem, lanes=all_lanes,
-                                final_only=tg_settings["final_only"], prevencion=prevencion,
+                                final_only=tg_settings["final_only"], prevencion=prevencion, sin_integrar=sin_integrar,
                                 cuota_minutos=cuota_minutos)
                      for l in impl.values()]
     # Carril ops: sin repo. Carpeta de trabajo por tarea + verificación por evidencias; siempre acaba en review para
@@ -331,6 +337,7 @@ def main(argv: list[str] | None = None) -> int:
     if not args.once:  # guarda de tablero (ADR-036): tarjetas en un tablero que su carril no lee
         owner_dm = env.get("OWNER_TELEGRAM_ID") or OWNER_TELEGRAM_ID
         canal = canal_avisos.de(decisions)  # tipo de cada aviso -> tema 🎯 Decisiones o DM (canal_avisos.CLASES)
+        sin_integrar.send = canal_avisos.emisor(canal, notify, "sin_integrar", owner_dm)
         guard = BoardGuardTicker(all_lanes, hermes_for, apply=env.get("BOARD_GUARD_APPLY", "").lower() == "true",
                                  send=canal_avisos.emisor(canal, notify, "board_guard", owner_dm),
                                  state_path=ROOT / ".state" / "board_guard.json",
@@ -350,6 +357,8 @@ def main(argv: list[str] | None = None) -> int:
                                 issue=decisions.store.issue if decisions else None)
         if decisions:
             decisions.choques = choques  # 🙈 Ignorar este par / 🔇 Silenciar rama (los de tarjetas siguen en fusion.py)
+    # Relanzado automático de bloqueadas transitorias (relanzar.yaml, apagado por defecto): una pasada por ciclo.
+    relanzar = None if args.once else RelanzarTicker(all_lanes, hermes_for)
     if not args.once:
         # El planificador va en su PROPIO hilo (fix/runner-tick, 23-10): el mantenimiento del bucle principal (sweep_done,
         # integrador, tickers) puede tardar minutos (un `git worktree remove` colgado bloqueó 5 min el tick y el runner
@@ -415,7 +424,7 @@ def main(argv: list[str] | None = None) -> int:
                     hilo_integrador.lanzar()
         for nombre, ticker in (("guard", guard), ("solapes", solapes), ("choques", choques), ("reconcile", reconcile),
                                ("limpieza-ticker", limpieza), ("recolector", recolector), ("paradas", paradas),
-                               ("avisos", avisos_ticker)):
+                               ("avisos", avisos_ticker), ("relanzar", relanzar)):
             if ticker:
                 with crono.paso(nombre):
                     ticker.tick()
