@@ -1,0 +1,8 @@
+# PR en borrador automático tras aprobar una review (agent_lanes/pr_borrador.py). Se relee en cada aprobación: no hace
+# falta reiniciar el runner. Lo que falte o no sea válido vale el default que se indica.
+# APAGADO POR DEFECTO: un PR en borrador puede disparar previews de Vercel y workflows de GitHub Actions por cada
+# tarjeta, y Oscar decidió no pagar Actions. Oscar o la Integradora lo encienden repo a repo.
+# Solo se abre si además la rama lane/<id> existe en el remoto, tiene commits sobre la base, no tiene ya un PR (abierto o
+# fusionado) y el carril no es de tipo ops. Un fallo nunca bloquea la finalización: queda en el log y en un comentario.
+activo: false      # true = interruptor general (con false no se abre ningún PR)
+repos: []          # lista blanca de slugs github (p. ej. [oscarsao/oscar-hq]); vacía = ninguno

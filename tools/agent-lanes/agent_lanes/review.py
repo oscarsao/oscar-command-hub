@@ -10,6 +10,7 @@ import logging
 import subprocess
 
 from . import avisos_revision, canal_avisos, resumen_carriles
+from . import pr_borrador as pr_borrador_mod
 from . import proc as _proc
 import time
 import uuid
@@ -138,8 +139,9 @@ class ReviewRunner:
                  reviewer, verifier, notify, clock: Callable[[], float] = time.monotonic,
                  messages: MessageStore | None = None, links: Callable | None = None, decisions=None,
                  integration=None, tree: Callable | None = None, state_dir: Path | str | None = None,
-                 sleep: Callable[[float], None] = time.sleep):
+                 sleep: Callable[[float], None] = time.sleep, pr_borrador: Callable | None = None):
         self.lane = review_lane
+        self._pr_borrador = pr_borrador or pr_borrador_mod.abrir_pr_borrador  # inyectable en tests
         self._sleep = sleep
         # Tareas en review que NO se pudieron bloquear (h.block solo mueve running/ready): se recuerda la cabeza ya
         # avisada para no reprocesarlas ni repetir la alerta en cada vuelta. state_dir=None: solo en memoria.
@@ -310,6 +312,23 @@ class ReviewRunner:
                         alert=True, buttons=bool(blocked), block_kind=kind)
         return f"blocked:{kind}"
 
+    def _abrir_pr_borrador(self, h, task: dict, lane: Lane, summary: str | None) -> None:
+        """Tras un `complete` correcto: PR en borrador de lane/<id> (apagado por defecto, ver pr_borrador.py). Nunca
+        bloquea ni revierte la finalización: un fallo va al log y a UN comentario de la tarjeta."""
+        tid = task["id"]
+        try:
+            lane = telegram_lane.lane_de_tarjeta(self.lanes, task) or lane
+            res = self._pr_borrador(lane, tid, task.get("title") or tid, summary)
+            if res.estado == pr_borrador_mod.ABIERTO:
+                log.info("%s: PR en borrador abierto: %s", tid, res.url)
+                h.comment(tid, f"PR en borrador abierto automáticamente: {res.url or '(sin URL)'}", author=REVIEW_AUTHOR)
+            elif res.estado == pr_borrador_mod.FALLO:
+                log.warning("%s: no se pudo abrir el PR en borrador: %s", tid, res.motivo)
+                h.comment(tid, f"No se pudo abrir el PR en borrador (la tarjeta queda aprobada igualmente): "
+                               f"{res.motivo}"[:1500], author=REVIEW_AUTHOR)
+        except Exception as exc:
+            log.warning("%s: PR en borrador: %s", tid, exc)
+
     def _sin_commits(self, h, task: dict) -> str | None:
         """Rama lane/<id> con 0 commits sobre la base: si ya hay un PR fusionado, se cierra (integrada); si no, vuelve
         al carril con el motivo. None = tiene commits o no se sabe (se escala como siempre). Nunca lanza."""
@@ -444,6 +463,7 @@ class ReviewRunner:
             if not ok:
                 return self._block(h, task, "transient", f"complete rechazado: {err}",
                                    public="el kanban rechazó el cierre")
+            self._abrir_pr_borrador(h, task, lane, verdict.get("summary"))
             cleaned, msg = self.git.cleanup(lane, tid)
             if not cleaned:  # detalle técnico solo al log y a la tarjeta
                 log_limpieza_pendiente(tid, msg)
