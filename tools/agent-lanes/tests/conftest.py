@@ -52,3 +52,11 @@ def _aprobaciones_aisladas(tmp_path, monkeypatch):
     """P08: el registro local de aprobaciones de cada test vive en su tmp_path (nunca en .state del hub)."""
     from agent_lanes import aprobaciones
     monkeypatch.setattr(aprobaciones, "APPROVALS_DIR", tmp_path / "_approvals")
+
+
+@pytest.fixture(autouse=True)
+def _pr_borrador_apagado(monkeypatch, tmp_path):
+    """El módulo del PR en borrador nunca lee el pr_borrador.yaml real: aunque alguien lo encienda, los tests que
+    construyen ReviewRunner sin inyectar el gancho no pueden llamar a git/gh reales."""
+    from agent_lanes import pr_borrador
+    monkeypatch.setattr(pr_borrador, "SETTINGS_PATH", tmp_path / "_no_existe_pr_borrador.yaml")
