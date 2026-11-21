@@ -110,7 +110,7 @@ TIPOS_CIERRE_INTEGRADO = frozenset({"aprobar", "integrar"})   # además, solo co
 ESTADOS_TERMINADA = ("done", "archived")
 # Choques y solapes (decisión de Oscar 20-11): se cierran solos cuando dejan de ser ciertos.
 TIPOS_CIERRE_PAR = frozenset({"choque", "solape"})
-CADUCAN_DIAS = 7                  # días abiertos tras los que un choque/solape se da por caducado (configurable)
+AJUSTES_CIERRE = "choques.yaml"   # claves `cerrar_avisos_solos` (false = apagado) y `solapes_caducan_dias` (0 = nunca)
 CIERRES_ARCHIVO = "decisiones_cierres.jsonl"  # auditoría y vuelta atrás de los cierres de choque/solape
 _TID_RE = re.compile(r"\bt_[0-9a-f]{8}\b")
 HEAD_MAX = 90
@@ -153,7 +153,7 @@ class CanalAvisos:
                  vivo: Callable[[str], bool], messages=None, clock: Callable[[], float] = time.time,
                  sembrador: Callable[[], list[dict]] | None = None, sleep: Callable[[float], None] = time.sleep,
                  run_async: bool = False, tarjeta: Callable[[str], dict | None] | None = None,
-                 caducan_dias: float = CADUCAN_DIAS):
+                 ajustes_cierre: Callable[[], tuple[bool, float]] | None = None):
         self.notifier = notifier
         self.owner_dm = str(owner_dm)
         self.destino = (str(destino[0]), str(destino[1])) if destino else None
@@ -170,7 +170,9 @@ class CanalAvisos:
         self.tarjeta = tarjeta
         # `vigentes(tipo)` -> pares de tarjetas {frozenset({a, b})} que hoy siguen en conflicto, o None si no se sabe.
         self.vigentes: Callable[[str], set | None] | None = None
-        self.caducan_dias = caducan_dias
+        # `ajustes_cierre()` -> (cierre automático encendido, días tras los que caduca un SOLAPE; 0 = nunca). Se relee
+        # en cada pasada; sin YAML o con YAML inválido: (False, 0) = apagado.
+        self.ajustes_cierre = ajustes_cierre or cargar_ajustes_cierre
         self.cierres_path = Path(state_dir) / CIERRES_ARCHIVO
         self._inicio_pendiente = True
         self._sembrando = threading.Lock()
@@ -501,12 +503,13 @@ class CanalAvisos:
 
     # --- choques y solapes que ya no aplican -------------------------------------------------------------------------
 
-    def _juzgar_par(self, e: dict, now: float, info: dict, pares: dict, *, caducar_choques: bool = False) -> str | None:
+    def _juzgar_par(self, e: dict, now: float, info: dict, pares: dict, caducan_dias: float = 0) -> str | None:
         """Motivo por el que un choque/solape ya no aplica, o None si sigue siendo cierto (o no se puede comprobar).
         Una tarjeta `done` solo lo cierra con constancia de integración (done no es integrada: el conflicto sigue
-        vivo hasta que se fusiona); `archived` lo cierra siempre. El choque es una decisión pendiente de Oscar: solo
-        caduca con `caducar_choques` (la limpieza única, que él confirma tras el dry-run); el solape caduca siempre.
-        Sin la clave `tids` (avisos anteriores a este cierre) solo cuenta la caducidad: no se sabe qué tarjetas eran."""
+        vivo hasta que se fusiona); `archived` (descartada) lo cierra. El CHOQUE es una decisión pendiente de Oscar:
+        nunca caduca por antigüedad ni por heurística, solo se cierra si deja de existir de forma verificable. El
+        SOLAPE puede caducar (`caducan_dias` > 0). Sin la clave `tids` (avisos anteriores a este cierre) no se sabe qué
+        tarjetas eran: un choque se conserva siempre y un solape solo caduca."""
         tids = [t for t in e.get("tids") or () if t]
         if "tids" in e:
             for tid in tids:
@@ -534,7 +537,7 @@ class CanalAvisos:
                                                  for i, a in enumerate(tids) for b in tids[i + 1:]):
                     return "ya no comparten ficheros"
         dias = (now - float(e.get("at") or now)) / 86400
-        if self.caducan_dias and dias >= self.caducan_dias and (caducar_choques or e.get("tipo") != "choque"):
+        if caducan_dias and dias >= caducan_dias and e.get("tipo") == "solape":
             return f"lleva {int(dias)} días abierto"
         return None
 
@@ -543,6 +546,13 @@ class CanalAvisos:
         botones) y anota cada cierre en CIERRES_ARCHIVO. Los anteriores a este cambio (sin `tids`) solo los trata
         `limpiar_antiguos`, con dry-run y confirmación. Máximo `cupo`. Devuelve cuántos cerró."""
         if cupo <= 0:
+            return 0
+        try:
+            encendido, caducan = self.ajustes_cierre()
+        except Exception as exc:  # ante la duda no cierra
+            log.info("tema Decisiones: ajustes de cierre ilegibles: %s", exc)
+            return 0
+        if not encendido:
             return 0
         with self._lock:
             candidatos = [(k, e) for k, e in self._load()["abiertas"].items()
@@ -553,7 +563,7 @@ class CanalAvisos:
         for key, e in candidatos:
             if n >= cupo:
                 break
-            motivo = self._juzgar_par(e, now, info, pares)
+            motivo = self._juzgar_par(e, now, info, pares, caducan)
             if motivo and self._cerrar_con_motivo(key, motivo, None):
                 n += 1
                 if e.get("rol") != "silenciada":
@@ -583,7 +593,14 @@ class CanalAvisos:
         `dry_run` (por defecto): no edita ni escribe nada; devuelve cuántos se cerrarían y cuáles se conservan.
         Con `dry_run=False` cierra como mucho `max_cierres` por llamada (Telegram da 429 si se satura) y anota cada
         cierre en CIERRES_ARCHIVO con un id de lote (ver `revertir`); se repite hasta que `quedan` sea 0.
-        Solo edita mensajes existentes: nunca envía mensajes nuevos."""
+        Solo edita mensajes existentes: nunca envía mensajes nuevos. Los choques antiguos (sin `tids`) no se pueden
+        verificar y se CONSERVAN siempre: son decisiones de Oscar. Solo se cierran solapes caducados
+        (`solapes_caducan_dias` de choques.yaml; con 0 no se cierra ninguno)."""
+        try:
+            caducan = self.ajustes_cierre()[1]
+        except Exception as exc:
+            log.info("tema Decisiones: ajustes de cierre ilegibles: %s", exc)
+            caducan = 0
         now = self.clock()
         with self._lock:
             candidatos = [(k, e) for k, e in self._load()["abiertas"].items()
@@ -592,7 +609,7 @@ class CanalAvisos:
         pares: dict = {}
         cerrar, conservar = [], []
         for key, e in candidatos:
-            motivo = self._juzgar_par(e, now, info, pares, caducar_choques=True)
+            motivo = self._juzgar_par(e, now, info, pares, caducan)
             ficha = {"key": key, "tipo": e.get("tipo"), "head": e.get("head"), "motivo": motivo,
                      "mensaje": e.get("rol") != "silenciada"}
             (cerrar if motivo else conservar).append(ficha)
@@ -815,6 +832,22 @@ def semilla(it: dict, markup, verbo: str, now: float) -> dict:
             "tipo": TIPO_SEMILLA.get(it["kind"], it["kind"]), "texto": texto, "markup": markup}
 
 
+def cargar_ajustes_cierre(path: Path | str | None = None) -> tuple[bool, float]:
+    """(encendido, días de caducidad de un solape) desde choques.yaml. NACE APAGADO: solo `cerrar_avisos_solos: true`
+    (booleano de verdad) lo enciende; sin fichero, con YAML inválido o con otro valor, (False, 0)."""
+    import yaml
+    from .config import ROOT
+    try:
+        raw = yaml.safe_load(Path(path or ROOT / AJUSTES_CIERRE).read_text(encoding="utf-8")) or {}
+    except (OSError, yaml.YAMLError):
+        return False, 0.0
+    if not isinstance(raw, dict) or raw.get("cerrar_avisos_solos") is not True:
+        return False, 0.0
+    d = raw.get("solapes_caducan_dias")
+    dias = float(d) if isinstance(d, (int, float)) and not isinstance(d, bool) and d > 0 else 0.0
+    return True, dias
+
+
 def _tids_de(tipo: str, text: str) -> dict:
     """{"tids": [...]} con las tarjetas que cita un choque/solape (para cerrarlo cuando ya no aplique); {} en otros tipos."""
     if tipo not in TIPOS_CIERRE_PAR:
@@ -846,9 +879,12 @@ def _git_rc(repo: str, *args: str) -> int | None:
         return None
 
 
-def _rama_integrada(lanes, tid: str, git: Callable[..., int | None] = _git_rc) -> bool | None:
-    """¿La rama `lane/<tid>` es ancestro de la base de su carril? Sin fetch: solo las refs que ya hay en el repo.
-    True si lo es en algún carril; False si se comprobó y no; None si no se pudo comprobar."""
+def _rama_integrada(lanes, tid: str, git: Callable[..., int | None] = _git_rc,
+                    contenido: Callable[..., bool | None] | None = None) -> bool | None:
+    """¿La rama `lane/<tid>` está integrada en la base de su carril? Mismo criterio que `sin_integrar`: ancestro de la
+    base o, si no lo es y se pasa `contenido` (sin_integrar.Lector.integrada_por_contenido), que fusionarla no cambie
+    nada (rebase/squash). Sin fetch: solo las refs que ya hay en el repo. True si lo está en algún carril; False si
+    se comprobó y no; None si no se pudo comprobar (ante la duda no se da por integrada)."""
     resultado, vistos = None, set()
     for lane in lanes:
         if not lane.repo or not lane.base or (lane.repo, lane.remote, lane.base) in vistos:
@@ -861,10 +897,20 @@ def _rama_integrada(lanes, tid: str, git: Callable[..., int | None] = _git_rc) -
                 return True
             if rc == 1:
                 resultado = False
+        if resultado is False and contenido is not None:
+            try:
+                val = contenido(lane.repo, lane.remote, lane.base, f"lane/{tid}")
+            except Exception:
+                val = None
+            if val is True:
+                return True
+            if val is None:
+                resultado = None
     return resultado
 
 
-def estado_tarjeta_de(desk, git: Callable[..., int | None] = _git_rc) -> Callable[[str], dict | None]:
+def estado_tarjeta_de(desk, git: Callable[..., int | None] = _git_rc,
+                      contenido: Callable[..., bool | None] | None = None) -> Callable[[str], dict | None]:
     """`tarjeta(tid)` del canal: estado y comentarios de la tarjeta (busca en los tableros de los carriles) y, si está
     terminada, si su rama ya es ancestro de la base. None si no se puede leer."""
     lanes = list((getattr(desk, "lanes", None) or {}).values())
@@ -881,7 +927,7 @@ def estado_tarjeta_de(desk, git: Callable[..., int | None] = _git_rc) -> Callabl
                 continue
             status = str(task.get("status") or "")
             comentarios = [str(c.get("body") or "") for c in show.get("comments") or () if isinstance(c, dict)]
-            rama = _rama_integrada(lanes, tid, git) if status in ESTADOS_TERMINADA else None
+            rama = _rama_integrada(lanes, tid, git, contenido) if status in ESTADOS_TERMINADA else None
             return {"status": status, "comentarios": comentarios, "rama_integrada": rama}
         return None
 
@@ -938,7 +984,8 @@ def para_desk(desk, destino: tuple[str, str] | None) -> CanalAvisos:
 
     canal = CanalAvisos(desk.notifier, desk.owner_id, destino, Path(store.root).parent, vivo=vivo,
                         messages=desk.messages)
-    canal.tarjeta = estado_tarjeta_de(desk) if getattr(desk, "hermes_for", None) else None
+    from .sin_integrar import Lector
+    canal.tarjeta = estado_tarjeta_de(desk, contenido=Lector().integrada_por_contenido) if getattr(desk, "hermes_for", None) else None
 
     def copias(markup: dict | None) -> list[str]:
         """Operadores acotados por marca (no Oscar ni los de «*») que pueden decidir TODAS las marcas de la tarjeta

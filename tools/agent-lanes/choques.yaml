@@ -42,3 +42,8 @@ contradiccion:
     - [añad|agreg|crea|activ|habilit|introduc, quita|elimin|borra|desactiv|deshabilit|retira]
     - [renombr, borra|elimin]
     - [mueve|mover|trasl, deja en su sitio|no mover]
+# Cierre automático de avisos de choque/solape del tema Decisiones (canal_avisos.py). NACE APAGADO (t_0ff63a37).
+# Un choque es una decisión de Oscar: nunca caduca; solo se cierra si una tarjeta del par está archived o done CON
+# integración constatada (rama en la base, PR fusionado o comentario INTEGRADO) o si el solape ya no se da. Ante la duda no cierra.
+cerrar_avisos_solos: false    # true = enciende el cierre automático
+solapes_caducan_dias: 0       # solo SOLAPES: días abiertos tras los que caducan (0 = nunca)

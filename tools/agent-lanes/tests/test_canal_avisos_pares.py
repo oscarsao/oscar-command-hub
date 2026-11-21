@@ -22,7 +22,8 @@ def _par(c, mid, tipo, tids, *, at, nuevo=True, rol="solo"):
     c._save(data)
 
 
-def _canal(tmp_path, tarjetas, *, ahora=10 * DIA, vigentes=None, **kw):
+def _canal(tmp_path, tarjetas, *, ahora=10 * DIA, vigentes=None, caducan_dias=0, encendido=True, **kw):
+    kw.setdefault("ajustes_cierre", lambda: (encendido, caducan_dias))
     tg = TG()
     c = CanalAvisos(tg, OWNER, TEMA, tmp_path, vivo=lambda t: False, sleep=lambda s: None, clock=lambda: ahora,
                     tarjeta=lambda tid: tarjetas.get(tid), **kw)
@@ -106,35 +107,36 @@ def test_tope_por_pasada(tmp_path):
 
 
 def test_dry_run_no_edita_ni_escribe_y_lista_lo_que_conserva(tmp_path):
-    c, tg = _canal(tmp_path, {})
-    _par(c, 810, "choque", [], at=1 * DIA, nuevo=False)      # 9 días: se cerraría
+    c, tg = _canal(tmp_path, {}, caducan_dias=3)
+    _par(c, 810, "choque", [], at=1 * DIA, nuevo=False)      # 9 días, pero un choque antiguo NO se cierra nunca
     _par(c, 811, "solape", [], at=9.5 * DIA, nuevo=False)    # medio día: se conserva
-    _par(c, 812, "solape", [], at=1 * DIA, nuevo=False, rol="silenciada")
+    _par(c, 812, "solape", [], at=1 * DIA, nuevo=False, rol="silenciada")  # 9 días: se cerraría
     antes = c.path.read_text(encoding="utf-8")
     inf = c.limpiar_antiguos()
-    assert inf["dry_run"] and inf["se_cerrarian"] == 2 and inf["se_conservan"] == 1
-    assert [f["key"] for f in inf["conservados"]] == [f"{TEMA[0]}:811"]
+    assert inf["dry_run"] and inf["se_cerrarian"] == 1 and inf["se_conservan"] == 2
+    assert [f["key"] for f in inf["conservados"]] == [f"{TEMA[0]}:810", f"{TEMA[0]}:811"]
     assert not tg.calls and not c.cierres_path.exists() and c.path.read_text(encoding="utf-8") == antes
 
 
 def test_limpieza_real_respeta_el_tope_solo_edita_y_se_revierte(tmp_path):
-    c, tg = _canal(tmp_path, {})
+    c, tg = _canal(tmp_path, {}, caducan_dias=3)
     for n in range(7):
-        _par(c, 820 + n, "choque", [], at=1 * DIA, nuevo=False)
+        _par(c, 820 + n, "solape", [], at=1 * DIA, nuevo=False)
     _par(c, 830, "solape", [], at=1 * DIA, nuevo=False, rol="silenciada")  # sin mensaje: no se edita
+    _par(c, 831, "choque", [], at=1 * DIA, nuevo=False)                    # el choque antiguo se queda
     inf = c.limpiar_antiguos(dry_run=False, max_cierres=3)
     assert inf["cerrados"] == 3 and inf["quedan"] == 5
-    assert len(c.pendientes()) == 5
+    assert len(c.pendientes()) == 6
     assert not [1 for m, _ in tg.calls if m == "sendMessage"]  # solo edita mensajes existentes
     assert c.revertir(inf["lote"]) == 3
-    assert len(c.pendientes()) == 8
+    assert len(c.pendientes()) == 9
     assert c.revertir(inf["lote"]) == 0  # ya revertido: idempotente
 
 
 def test_el_contador_fijado_se_edita_y_queda_con_lo_que_sigue_abierto(tmp_path):
-    c, tg = _canal(tmp_path, {})
+    c, tg = _canal(tmp_path, {}, caducan_dias=3)
     c.fijado._store({"chat_id": TEMA[0], "thread_id": TEMA[1], "message_id": 77, "text": "🎯 <b>3 decisiones</b>"})
-    _par(c, 840, "choque", [], at=1 * DIA, nuevo=False)
+    _par(c, 840, "solape", [], at=1 * DIA, nuevo=False)
     _par(c, 841, "needs_input", ["t_a"], at=9.9 * DIA)
     c.limpiar_antiguos(dry_run=False)
     assert "1 decisión pendiente" in tg.edits(77)[0]["text"]
@@ -147,3 +149,50 @@ def test_enviar_anota_las_tarjetas_del_aviso(tmp_path):
     c = CanalAvisos(tg, OWNER, TEMA, tmp_path, vivo=lambda t: True)
     c.enviar("solape", "🔀 Posible solape\n• t_0123abcd «a»\n• t_4567ef01 «b»", kb)
     assert [e["tids"] for e in c.pendientes()] == [["t_0123abcd", "t_4567ef01"]]
+
+
+# --- t_0ff63a37, devolución de la Integradora -----------------------------------------------------------------------
+
+def test_nace_apagado_sin_yaml_o_con_yaml_invalido_no_cierra(tmp_path):
+    assert canal_avisos.cargar_ajustes_cierre(tmp_path / "no_existe.yaml") == (False, 0.0)
+    for n, texto in enumerate(("[", "cerrar_avisos_solos: false", "cerrar_avisos_solos: 'true'", "- a")):
+        f = tmp_path / f"a{n}.yaml"
+        f.write_text(texto, encoding="utf-8")
+        assert canal_avisos.cargar_ajustes_cierre(f) == (False, 0.0)
+    f = tmp_path / "on.yaml"
+    f.write_text("cerrar_avisos_solos: true\nsolapes_caducan_dias: 5", encoding="utf-8")
+    assert canal_avisos.cargar_ajustes_cierre(f) == (True, 5.0)
+    # el choques.yaml del repo nace apagado
+    assert canal_avisos.cargar_ajustes_cierre() == (False, 0.0)
+    c, tg = _canal(tmp_path, {"t_a": {"status": "archived"}}, encendido=False)
+    _par(c, 850, "choque", ["t_a", "t_b"], at=9 * DIA)
+    assert c.cerrar_obsoletas() == 0 and not tg.edits()
+
+
+def test_ajustes_que_fallan_no_cierran(tmp_path):
+    def roto():
+        raise OSError("sin yaml")
+    c, tg = _canal(tmp_path, {"t_a": {"status": "archived"}}, ajustes_cierre=roto)
+    _par(c, 851, "choque", ["t_a", "t_b"], at=9 * DIA)
+    assert c.cerrar_obsoletas() == 0 and not tg.edits()
+
+
+def test_choque_antiguo_sin_tids_no_se_cierra_ni_con_caducidad_ni_en_la_limpieza(tmp_path):
+    c, tg = _canal(tmp_path, {}, caducan_dias=1)
+    _par(c, 852, "choque", [], at=0.0, nuevo=False)
+    assert c.limpiar_antiguos(dry_run=False)["cerrados"] == 0
+    assert len(c.pendientes()) == 1 and not tg.edits()
+
+
+def test_done_integrada_por_contenido_cierra_y_sin_certeza_no(tmp_path):
+    lane = type("L", (), {"repo": "/r", "base": "main", "remote": "origin"})()
+    ancestro_no = lambda repo, *a: 1
+    assert canal_avisos._rama_integrada([lane], "t_a", ancestro_no) is False
+    assert canal_avisos._rama_integrada([lane], "t_a", ancestro_no, lambda *a: True) is True
+    assert canal_avisos._rama_integrada([lane], "t_a", ancestro_no, lambda *a: False) is False
+    assert canal_avisos._rama_integrada([lane], "t_a", ancestro_no, lambda *a: None) is None
+
+    def boom(*a):
+        raise RuntimeError("git")
+    assert canal_avisos._rama_integrada([lane], "t_a", ancestro_no, boom) is None
+    assert canal_avisos._rama_integrada([lane], "t_a", lambda repo, *a: 0, boom) is True
