@@ -74,6 +74,7 @@ from . import botonera as _bt
 from . import deps
 from . import bandeja as _bandeja
 from . import clasificador, solapes
+from .sin_integrar import linea_resumen as linea_sin_integrar
 from . import lo_tuyo as _lo_tuyo
 from . import personal as _personal
 from . import tareas_movil as _tm
@@ -575,7 +576,7 @@ class CommandCenter:
             lambda: rc.collect_rows(self.lanes, self.hermes_for), lambda: self.pending_decisions() + self.stuck_tasks(),
             lambda: len(queue.entries()) if queue else 0, send, path, who=who,
             now=lambda: datetime.fromtimestamp(self._now(), rc.MADRID), hour=hour,
-            extra=lambda: self.integrador_resumen()[0]).tick()
+            extra=lambda: "\n".join(x for x in (self.integrador_resumen()[0], linea_sin_integrar()) if x)).tick()
 
     # --- visibilidad del integrador (t_5624611d): estado, PR de sesiones interactivas, «ver más» ---------------
 

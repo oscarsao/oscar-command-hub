@@ -124,6 +124,7 @@ class LaneRunner:
                  kill: Callable[[int], None] = _proc.kill_tree,
                  created_at: Callable[[int], float | None] = _proc.created_at,
                  lanes: dict | None = None, consultor: Callable | None = None, final_only=(), prevencion=None,
+                 sin_integrar=None,
                  cuota_path: Path | None = None, cuota_minutos: float = cuota.DEFAULT_MINUTOS,
                  wall_clock: Callable[[], float] = time.time):
         self.lane = lane
@@ -134,6 +135,8 @@ class LaneRunner:
         # prevencion.Prevencion: una ready que choca con trabajo en marcha del mismo repo no se lanza en paralelo
         # (choques.yaml → prevenir_al_lanzar). None = sin prevención (tests, carriles sin repo).
         self._prevencion = prevencion
+        # sin_integrar.SinIntegrar: con el repo en el tope de aprobadas sin integrar, el carril no reclama tarjetas nuevas.
+        self._sin_integrar = sin_integrar
         self._lanes = lanes or {}  # el clasificador distingue «otro repo» por los repos de los demás carriles
         self._consultor = consultor or _consulta.responder  # tipo «consulta»: (lane, task) -> (texto, coste)
         # Chats «solo resultado final» (lanes.yaml telegram.final_only): ahí solo salen inicio y entrega; el proceso va al DM.
@@ -279,6 +282,12 @@ class LaneRunner:
                 return []
         ready = [t for t in self.hermes.list_ready(self.lane.name) if t["id"] not in self.exclude]
         ready = [t for t in ready if not holds.held(t["id"]) and not self._dependency_hold(t["id"])]
+        sin_integrar = getattr(self, "_sin_integrar", None)
+        if sin_integrar is not None and self.lane.kind == "implement" and ready:
+            frenado, n = sin_integrar.frenado(self.lane)  # falla abierto: ante cualquier duda, reclama como siempre
+            if frenado:
+                sin_integrar.comentar_espera(self.hermes, ready[0]["id"], self.lane.repo, n)
+                return []
         prevencion = getattr(self, "_prevencion", None)  # getattr: algunos tests llaman con un self mínimo
         if prevencion is not None and self.lane.kind == "implement" and ready:
             try:

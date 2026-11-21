@@ -75,6 +75,7 @@ CLASES: dict[str, str] = {
     "prodwatch": URGENTE,        # 22 producción en fallo
     "team_notice": INFO,         # 23 aviso al equipo en Marketing
     "fijado": INFO,              # 24 mensajes fijados (Integración, panel de carriles)
+    "sin_integrar": INFO,        # 25 freno por aprobadas sin integrar (aviso_en / tope; una vez por cruce)
 }
 # Los tipos del resumen diario INFO (F1-04, resumen_carriles.TIPOS_RESUMEN: vigilancia, relanzada, limpieza,
 # workflow_sin_origen, bateria) son INFORMATIVOS por la regla general (tipo fuera de la tabla = INFO).
