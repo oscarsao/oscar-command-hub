@@ -252,3 +252,14 @@ def test_limites_negados_con_ruta_no_bloquean():
     for rid, body in (("produccion_env", "No es urgente pero cambia la variable de entorno HERMES_X en Railway"),
                       ("produccion_env", "No añadas tests y despliega a producción el runner")):
         assert rid in ids(clasificador.evaluar(HUB, task(body), lanes=LANES)), body
+
+
+def test_el_carril_de_pildora_mcp_si_puede_tocar_su_propio_repo():
+    mcp = Lane(name="claude-mcp-remoto", board="oscarhq", repo="C:/mcp", base="main", worktree_root="C:/wt",
+               github="oscarsao/pildora-mcp")
+    lanes = {"claude-hub": HUB, "claude-mcp-remoto": mcp}
+    # «pildora-mcp» está en otros_repos para los demás carriles, pero no para el suyo
+    assert clasificador.evaluar(mcp, task("Arregla el cliente en pildora-mcp"), lanes=lanes).integrador == []
+    assert ids(clasificador.evaluar(HUB, task("Arregla el cliente en pildora-mcp"), lanes=lanes)) == ["otro_repo"]
+    # y sigue sin poder tocar los demás
+    assert ids(clasificador.evaluar(mcp, task("Corrige el README en pildora-handbook"), lanes=lanes)) == ["otro_repo"]

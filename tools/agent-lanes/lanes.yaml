@@ -323,6 +323,7 @@ lanes:
       conexion_timeout_s: 15
       latido_s: 300
       disco_min_gb: 10
+      contrato_hash: true
 
   # Carril del PROPIO sistema (28-09, plan D): arreglos de agent-lanes/monitor/telegram pedidos desde Telegram, sin
   # sesión de Claude Code. Es el código que ejecuta a los workers: rol propio (cambios mínimos, tests obligatorios,
