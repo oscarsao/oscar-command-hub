@@ -53,6 +53,12 @@ def test_done_sin_constancia_de_integracion_no_cierra_el_choque(tmp_path):
     assert c.cerrar_obsoletas() == 1
 
 
+def _vig(pares, *activas):
+    v = canal_avisos.ParesVigentes(pares)
+    v.activas.update(activas)
+    return v
+
+
 def test_tarjeta_archivada_cierra_el_choque(tmp_path):
     c, tg = _canal(tmp_path, {"t_a": {"status": "archived"}, "t_b": {"status": "running"}})
     _par(c, 920, "choque", ["t_a", "t_b"], at=9 * DIA)
@@ -71,7 +77,7 @@ def test_choque_entre_dos_tarjetas_activas_con_conflicto_real_no_se_cierra(tmp_p
 
 def test_el_par_que_ya_no_comparte_ficheros_se_cierra(tmp_path):
     c, tg = _canal(tmp_path, {"t_a": {"status": "running"}, "t_b": {"status": "running"}},
-                   vigentes=lambda tipo: set())
+                   vigentes=lambda tipo: _vig(set(), "t_a", "t_b"))
     _par(c, 804, "solape", ["t_a", "t_b"], at=9 * DIA)
     assert c.cerrar_obsoletas() == 1
     assert "ya no comparten ficheros" in tg.edits(804)[0]["text"]
@@ -196,3 +202,95 @@ def test_done_integrada_por_contenido_cierra_y_sin_certeza_no(tmp_path):
         raise RuntimeError("git")
     assert canal_avisos._rama_integrada([lane], "t_a", ancestro_no, boom) is None
     assert canal_avisos._rama_integrada([lane], "t_a", lambda repo, *a: 0, boom) is True
+
+
+# --- correcciones de la revisión del PR #182 ---------------------------------------------------------------------
+
+def test_par_con_una_tarjeta_fuera_de_la_lectura_no_se_cierra_por_ya_no_comparten(tmp_path):
+    # t_b pasó a review/done sin integrar: ya no sale en `activas`, pero eso no prueba que no choquen
+    c, tg = _canal(tmp_path, {"t_a": {"status": "running"}, "t_b": {"status": "review"}},
+                   vigentes=lambda tipo: _vig(set(), "t_a"))
+    _par(c, 860, "solape", ["t_a", "t_b"], at=9 * DIA)
+    assert c.cerrar_obsoletas() == 0 and not tg.edits()
+    # un `vigentes` sin lectura de activas (set a secas) tampoco cierra
+    c2, tg2 = _canal(tmp_path / "x", {"t_a": {"status": "running"}, "t_b": {"status": "running"}},
+                     vigentes=lambda tipo: set())
+    _par(c2, 861, "solape", ["t_a", "t_b"], at=9 * DIA)
+    assert c2.cerrar_obsoletas() == 0 and not tg2.edits()
+
+
+def test_lectura_parcial_de_tableros_no_recalcula_los_solapes(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from agent_lanes import solapes
+    monkeypatch.setattr(solapes, "load_ajustes", lambda: solapes.Ajustes(activo=True))
+    lane = SimpleNamespace(board="b1", kind="implement", repo="r")
+
+    class Roto:
+        def list_status_all(self, st):
+            raise OSError("tablero caído")
+    desk = SimpleNamespace(lanes={"l": lane}, hermes_for=lambda b: Roto())
+    assert canal_avisos.pares_vigentes_de(desk)("solape") is None
+    assert canal_avisos.pares_vigentes_de(desk)("choque") is None
+
+
+def test_lectura_completa_devuelve_pares_y_activas(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from agent_lanes import solapes
+    monkeypatch.setattr(solapes, "load_ajustes", lambda: solapes.Ajustes(activo=True))
+    lane = SimpleNamespace(board="b1", kind="implement", repo="r")
+
+    class Ok:
+        def list_status_all(self, st):
+            return [{"id": "t_a", "assignee": "l", "status": st, "title": "x", "body": "toca agent_lanes/a.py"}]                 if st == "running" else []
+
+        def show(self, tid):
+            return {}
+    desk = SimpleNamespace(lanes={"l": lane}, hermes_for=lambda b: Ok())
+    v = canal_avisos.pares_vigentes_de(desk)("solape")
+    assert v is not None and "t_a" in v.activas and not v
+
+
+def test_archivada_con_rama_sin_integrar_no_cierra_el_choque_pero_si_integrada_o_sin_saber(tmp_path):
+    for n, (rama, cierra) in enumerate(((False, False), (True, True), (None, True))):
+        c, tg = _canal(tmp_path / str(n), {"t_a": {"status": "archived", "rama_integrada": rama},
+                                           "t_b": {"status": "running"}})
+        _par(c, 870 + n, "choque", ["t_a", "t_b"], at=9 * DIA)
+        assert c.cerrar_obsoletas() == (1 if cierra else 0), rama
+
+
+def test_limpiar_antiguos_respeta_el_interruptor_apagado(tmp_path):
+    c, tg = _canal(tmp_path, {}, caducan_dias=3, encendido=False)
+    _par(c, 880, "solape", [], at=1 * DIA, nuevo=False)
+    dry = c.limpiar_antiguos()
+    assert dry["dry_run"] and dry["interruptor"] is False and dry["se_cerrarian"] == 1
+    assert not tg.calls and not c.cierres_path.exists()  # el dry-run no escribe
+    inf = c.limpiar_antiguos(dry_run=False)
+    assert inf["cerrados"] == 0 and inf["quedan"] == 1 and "apagado" in inf and not tg.edits()
+    assert len(c.pendientes()) == 1 and not c.cierres_path.exists()
+
+
+def test_limpiar_antiguos_con_ajustes_ilegibles_no_cierra(tmp_path):
+    def roto():
+        raise OSError("sin yaml")
+    c, tg = _canal(tmp_path, {}, ajustes_cierre=roto)
+    _par(c, 881, "solape", [], at=0.0, nuevo=False)
+    assert c.limpiar_antiguos(dry_run=False)["cerrados"] == 0 and not tg.edits()
+
+
+def test_los_tids_son_solo_los_de_las_vinetas_del_par():
+    texto = ("🔀 Posible solape · repo: 2 tarjetas activas tocan lo mismo\n"
+             "• t_0123abcd «sigue lo de t_deadbeef» (l, running)\n• t_4567ef01 «b» (l, ready)\n"
+             "Sugerencia: mira t_99999999")
+    assert canal_avisos._tids_de("solape", texto) == {"tids": ["t_0123abcd", "t_4567ef01"]}
+    assert canal_avisos._tids_de("choque", "sin viñetas t_0123abcd") == {"tids": []}
+    assert canal_avisos._tids_de("blocked", texto) == {}
+
+
+def test_dry_run_de_la_cli_no_exige_tokens_ni_escribe(tmp_path, monkeypatch, capsys):
+    from agent_lanes import decisions
+    monkeypatch.setattr(decisions, "CALLBACKS_DIR", tmp_path / "callbacks")
+    for k in ("CARRILES_BOT_TOKEN", "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID"):
+        monkeypatch.delenv(k, raising=False)
+    assert canal_avisos.limpiar_main([]) == 0
+    assert "se cerrarían 0" in capsys.readouterr().out
+    assert not list(tmp_path.rglob("*"))
