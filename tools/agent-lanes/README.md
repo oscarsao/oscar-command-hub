@@ -161,8 +161,9 @@ sesión con Oscar. El monitor y el bot de Telegram (Python) sí entran.
 
 - Rol `roles/hub.md`: cambios mínimos, test obligatorio por cambio de comportamiento, suite completa en verde, sin
   tocar `contract/*guard*` ni `*worker-settings.json` salvo petición expresa y avisándolo en `for_oscar`.
-- `test_cmd`: `checks.py` (diff --check + compilación) y `py -3.12 -m pytest tools/agent-lanes/tests -q` del
-  worktree del worker. Es código del worker ejecutado como Oscar (el runner no le pone entorno mínimo; el integrador
+- `test_cmd`: `checks.py` (diff --check + compilación) y `agent_lanes/tests_delta.py` (pytest solo de los tests del delta de la
+  rama; suite completa si toca conftest/config/lanes/kanban_api/hermes, `lanes.yaml` con claves nuevas o >25 ficheros)
+  en el worktree del worker. Es código del worker ejecutado como Oscar (el runner no le pone entorno mínimo; el integrador
   sí): lo mismo que ya puede hacer el worker con su propio pytest, pero conviene saberlo.
 - El hook que se aplica a un worker es el del checkout VIVO (`render_settings` usa el ROOT del runner), no el de su
   worktree: un cambio en `contract/` no rige hasta fusionar y aplicar.

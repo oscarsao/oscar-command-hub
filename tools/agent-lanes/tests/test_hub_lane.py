@@ -41,8 +41,8 @@ def test_hub_lane_config():
 def test_hub_test_cmd_runs_gate_and_suite_of_the_worktree():
     cmd = render_test_cmd(load_lanes()[HUB])
     assert cmd.startswith(f'py -3.12 "{ROOT.as_posix()}/agent_lanes/checks.py" origin/main && ')
-    # ruta relativa al worktree (cwd del test_cmd): la suite del worker, nunca la del checkout vivo
-    assert cmd.endswith("py -3.12 -m pytest tools/agent-lanes/tests -q")
+    # 20-11: tests acotados al delta (script del runner; cwd = worktree, así que prueba la rama del worker)
+    assert cmd.endswith(f'py -3.12 "{ROOT.as_posix()}/agent_lanes/tests_delta.py" origin/main')
     assert "{" not in cmd
 
 
