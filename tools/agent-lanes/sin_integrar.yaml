@@ -1,7 +1,8 @@
 # Freno por aprobadas sin integrar (agent_lanes/sin_integrar.py). Se relee en cada pasada: no hace falta reiniciar el runner.
 # «Sin integrar» = tarjeta done con rama lane/<id> que no está en la base, sin PR abierto ni fusionado y sin comentario INTEGRADO <sha>.
-tope_sin_integrar: 25         # 21-11 (Oscar): con este recuento en un repo, sus carriles no reclaman tarjetas nuevas. 0 = apagado
-aviso_en: 20                  # aviso previo (una vez por cruce). 0 = sin aviso previo
+tope_sin_integrar: 0          # NACE APAGADO (0). Para encenderlo, sube el valor (p. ej. 25): con ese recuento en un repo sus carriles no reclaman tarjetas nuevas
+aviso_en: 0                   # aviso previo (una vez por cruce, p. ej. 20). 0 = sin aviso previo; solo actúa con tope > 0
+fallo_minutos: 5              # un fallo de git/gh/Hermes se recuerda solo este tiempo
 cache_minutos: 30             # cada cuánto se recalcula el recuento por repo
-plazo_segundos: 90            # si el recuento tarda más, queda «desconocido» y no frena
+plazo_segundos: 600           # (corre en segundo plano) si el recuento tarda más, queda «desconocido» y no frena
 informe: C:/Users/oscar/integrador-docs/hecha_no_integrada/ultimo.markdown   # ruta que se cita en el aviso

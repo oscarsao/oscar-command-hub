@@ -8,10 +8,15 @@ Criterio de «sin integrar» (solo lectura de git y gh), por REPO y no por table
 `<remote>/lane/<id>` que no es ancestro de `<remote>/<base>`, sin PR abierto ni fusionado y sin comentario que empiece
 por `INTEGRADO <sha>`.
 
-- Recuento con caché de 30 min (`cache_minutos`). Si git/gh/Hermes fallan o se pasa `plazo_segundos`, el estado es
-  «desconocido» y NO frena (falla abierto).
-- Ajustes en `sin_integrar.yaml` (se relee en cada pasada, sin reiniciar): `tope_sin_integrar` (25; 0 = apagado),
-  `aviso_en` (20; 0 = sin aviso previo), `cache_minutos`, `plazo_segundos`, `informe`.
+- NACE APAGADO: `tope_sin_integrar: 0` y `aviso_en: 0` (también sin YAML o con YAML inválido). Se enciende subiendo el valor.
+- `frenado()` solo LEE la caché (nunca calcula en el hilo del carril). El cálculo corre en un hilo de fondo, uno por repo,
+  y se renueva a los 30 min (`cache_minutos`); un fallo se cachea solo `fallo_minutos` (5) y NO cambia el estado de aviso.
+  Mientras no hay dato, el estado es «desconocido» y NO frena (falla abierto).
+- Antes de contar se hace `git fetch <remote> --prune` (con timeout). Una rama cuenta como integrada si es ancestro de la
+  base, si no tiene parches nuevos (`git cherry`), si `git merge-tree --write-tree` contra la base da el árbol de la base
+  (no cambiaría nada), si tiene PR abierto/fusionado (`gh pr list --limit 5000`) o un comentario `INTEGRADO <sha>`.
+- Ajustes en `sin_integrar.yaml` (se relee en cada pasada, sin reiniciar): `tope_sin_integrar` (0 = apagado),
+  `aviso_en` (0 = sin aviso previo), `cache_minutos`, `fallo_minutos`, `plazo_segundos`, `informe`.
 - Con el recuento >= tope el carril no reclama; las tarjetas ya en marcha terminan. La tarjeta que se queda esperando
   recibe UN comentario (`SIN-INTEGRAR-FRENO`) con el recuento.
 - Avisos por el canal de avisos (tipo `sin_integrar`): una vez al cruzar `aviso_en` y otra al alcanzar el tope; no se
@@ -38,6 +43,7 @@ STATE_PATH = ROOT / ".state" / "sin_integrar.json"
 MARCA = "SIN-INTEGRAR-FRENO"
 AUTHOR = "agent-lanes"
 INFORME = "C:/Users/oscar/integrador-docs/hecha_no_integrada/ultimo.markdown"
+PR_LIMITE = 5000  # gh pr list --limit: por encima se perderían PR antiguos (hoy el repo tiene del orden de mil)
 NEGATIVO_TTL = 6 * 3600.0  # s: un «sin INTEGRADO» ya leído no se vuelve a leer hasta pasado este tiempo
 
 OK, AVISO, TOPE = 0, 1, 2
@@ -46,10 +52,11 @@ _NIVELES = {OK: "ok", AVISO: "aviso", TOPE: "tope"}
 
 @dataclass(frozen=True)
 class Ajustes:
-    tope: int = 25
-    aviso_en: int = 20
+    tope: int = 0        # 0 = apagado (nace apagado: se enciende en sin_integrar.yaml)
+    aviso_en: int = 0    # 0 = sin aviso previo
     cache_minutos: float = 30.0
-    plazo_segundos: float = 90.0
+    fallo_minutos: float = 5.0
+    plazo_segundos: float = 600.0
     informe: str = INFORME
 
 
@@ -73,7 +80,8 @@ def load_ajustes(path: Path | str | None = None) -> Ajustes:
     if tope and aviso > tope:
         aviso = tope
     out = {"tope": tope, "aviso_en": aviso}
-    for key, campo in (("cache_minutos", "cache_minutos"), ("plazo_segundos", "plazo_segundos")):
+    for key, campo in (("cache_minutos", "cache_minutos"), ("fallo_minutos", "fallo_minutos"),
+                         ("plazo_segundos", "plazo_segundos")):
         v = raw.get(key)
         if isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0:
             out[campo] = float(v)
@@ -97,6 +105,32 @@ class Lector:
             return None
         return (cp.stdout or "") if cp.returncode == 0 else None
 
+    def _rc(self, args: list[str], cwd: str) -> tuple[int, str]:
+        try:
+            cp = self._run(args, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                           timeout=self._timeout, cwd=cwd)
+        except Exception as exc:
+            log.info("sin_integrar: %s falló: %s", " ".join(args[:3]), exc)
+            return -1, ""
+        return cp.returncode, (cp.stdout or "")
+
+    def fetch(self, repo: str, remote: str) -> bool:
+        """`git fetch <remote> --prune` (solo refs remotas; no toca ramas locales ni el árbol de trabajo)."""
+        rc, _ = self._rc(["git", "-C", repo, "fetch", "-q", remote, "--prune"], repo)
+        return rc == 0
+
+    def integrada_por_contenido(self, repo: str, remote: str, base: str, rama: str) -> bool:
+        """True si fusionar la rama en la base no cambiaría nada (rebase/squash ya integrado). Ante la duda, False."""
+        b, r = f"{remote}/{base}", f"{remote}/{rama}"
+        rc, cherry = self._rc(["git", "-C", repo, "cherry", b, r], repo)
+        if rc == 0 and cherry.strip() and not any(x.startswith("+") for x in cherry.splitlines()):
+            return True
+        rc, out = self._rc(["git", "-C", repo, "merge-tree", "--write-tree", "--no-messages", b, r], repo)
+        if rc != 0 or not out.strip():
+            return False  # conflicto (1) o git sin --write-tree: cuenta como no integrada
+        rc2, tree = self._rc(["git", "-C", repo, "rev-parse", f"{b}^{{tree}}"], repo)
+        return rc2 == 0 and out.splitlines()[0].strip() == tree.strip()
+
     def ramas_sin_fusionar(self, repo: str, remote: str, base: str) -> set[str] | None:
         """Ramas `lane/*` de `<remote>` que NO son ancestro de `<remote>/<base>` (sin el prefijo del remote)."""
         out = self._out(["git", "-C", repo, "branch", "-r", "--no-merged", f"{remote}/{base}",
@@ -108,7 +142,7 @@ class Lector:
 
     def ramas_con_pr(self, repo: str) -> set[str] | None:
         """Ramas con PR abierto o fusionado (los cerrados sin fusionar no cuentan como integrados)."""
-        out = self._out(["gh", "pr", "list", "--state", "all", "--json", "headRefName,state", "--limit", "1000"], repo)
+        out = self._out(["gh", "pr", "list", "--state", "all", "--json", "headRefName,state", "--limit", str(PR_LIMITE)], repo)
         if out is None:
             return None
         try:
@@ -135,17 +169,28 @@ def _tarjetas_done(lanes, hermes_for, repo: str) -> list[str] | None:
 
 class SinIntegrar:
     def __init__(self, lanes: dict, hermes_for, *, lector: Lector | None = None, settings_path: Path | str | None = None,
-                 state_path: Path | str | None = None, send=None, clock=time.monotonic, wall=time.time):
+                 state_path: Path | str | None = None, send=None, clock=time.monotonic, wall=time.time,
+                 fondo: bool = True):
         self.lanes, self.hermes_for = lanes, hermes_for
         self.lector = lector or Lector()
         self.settings_path = settings_path
         self.state_path = Path(state_path or STATE_PATH)
         self.send = send  # send(text, markup=None) del canal de avisos; None = no avisa (se puede fijar después)
         self._clock, self._wall = clock, wall
-        self._lock = threading.RLock()
-        self._cache: dict[str, tuple[float, int | None]] = {}   # repo -> (cuándo, recuento o None)
+        self.fondo = fondo  # True: el cálculo corre en un hilo; False (tests): se calcula en la propia llamada
+        self._lock = threading.Lock()  # solo protege estructuras pequeñas; nunca se sostiene durante un cálculo
+        self._cache: dict[str, tuple[float, int | None]] = {}   # repo -> (cuándo, recuento o None si falló)
+        self._en_curso: set[str] = set()
         self._vistas: dict[str, tuple[float, bool]] = {}         # tid -> (cuándo, tiene INTEGRADO)
-        self._comentadas: set[str] = set()
+        self._comentadas_path = self.state_path.with_name(self.state_path.stem + "_comentadas.json")
+        self._comentadas: set[str] = self._leer_comentadas()
+
+    def _leer_comentadas(self) -> set[str]:
+        try:
+            data = json.loads(self._comentadas_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return set()
+        return {x for x in data if isinstance(x, str)} if isinstance(data, list) else set()
 
     def ajustes(self) -> Ajustes:
         return load_ajustes(self.settings_path)
@@ -171,8 +216,11 @@ class SinIntegrar:
             return None
         limite = self._clock() + aj.plazo_segundos
         try:
+            remote = lane.remote or "origin"
+            if not self.lector.fetch(repo, remote):
+                return None  # sin refs frescas habría falsos positivos: desconocido
             done = _tarjetas_done(self.lanes, self.hermes_for, repo)
-            sin_fusionar = self.lector.ramas_sin_fusionar(repo, lane.remote or "origin", lane.base)
+            sin_fusionar = self.lector.ramas_sin_fusionar(repo, remote, lane.base)
             con_pr = self.lector.ramas_con_pr(repo)
             if done is None or sin_fusionar is None or con_pr is None:
                 return None
@@ -182,6 +230,8 @@ class SinIntegrar:
             for tid in cand:
                 if self._clock() > limite:
                     return None  # tarda demasiado: desconocido (lo leído queda en memoria para la próxima vuelta)
+                if self.lector.integrada_por_contenido(repo, remote, lane.base, f"lane/{tid}"):
+                    continue
                 if not self._integrado(hermes, tid):
                     n += 1
             return n
@@ -189,22 +239,49 @@ class SinIntegrar:
             log.info("sin_integrar: recuento de %s falló: %s", repo, exc)
             return None
 
+    def refrescar(self, repo: str) -> int | None:
+        """Calcula y guarda el recuento del repo (lento: git/gh/Hermes). Lo llama el hilo de fondo."""
+        try:
+            aj = self.ajustes()
+            n = self._calcular(repo, aj)
+        except Exception as exc:
+            log.info("sin_integrar: refresco de %s falló: %s", repo, exc)
+            n = None
+        with self._lock:
+            self._cache[repo] = (self._clock(), n)
+            self._en_curso.discard(repo)
+        return n
+
     def recuento(self, repo: str) -> int | None:
-        """Sin integrar del repo (caché `cache_minutos`); None = desconocido."""
+        """Último recuento conocido del repo (solo lee la caché); None = desconocido o fallo reciente.
+        Si falta o ha caducado (`cache_minutos`; un fallo caduca en `fallo_minutos`) lanza un refresco en un hilo."""
         aj = self.ajustes()
         with self._lock:
             hit = self._cache.get(repo)
-            if hit and self._clock() - hit[0] < aj.cache_minutos * 60:
-                return hit[1]
-            n = self._calcular(repo, aj)
-            self._cache[repo] = (self._clock(), n)
-            return n
+            ttl = (aj.cache_minutos if hit and hit[1] is not None else aj.fallo_minutos) * 60
+            vigente = bool(hit) and self._clock() - hit[0] < ttl
+            valor = hit[1] if hit else None
+            lanzar = not vigente and repo not in self._en_curso
+            if lanzar:
+                self._en_curso.add(repo)
+        if lanzar:
+            if self.fondo:
+                try:
+                    threading.Thread(target=self.refrescar, args=(repo,), name=f"sin-integrar-{Path(repo).name}",
+                                     daemon=True).start()
+                except Exception as exc:
+                    log.info("sin_integrar: no se pudo lanzar el hilo: %s", exc)
+                    with self._lock:
+                        self._en_curso.discard(repo)
+            else:
+                valor = self.refrescar(repo)
+        return valor
 
     def recuentos(self) -> dict[str, int | None]:
         """Recuento de cada repo con carriles de código (para el resumen)."""
         repos = sorted({getattr(l, "repo", "") for l in self.lanes.values()
                         if getattr(l, "kind", "implement") == "implement" and getattr(l, "repo", "")})
-        if not self.ajustes().tope and not self.ajustes().aviso_en:
+        if not self.ajustes().tope:
             return {}
         return {r: self.recuento(r) for r in repos}
 
@@ -236,7 +313,7 @@ class SinIntegrar:
 
     def _avisar(self, repo: str, niv: int, n: int, aj: Ajustes) -> None:
         """Avisa solo cuando el nivel SUBE respecto al último avisado; al bajar se rearma sin avisar."""
-        with self._lock:
+        with self._lock:  # solo estado pequeño en disco; el cálculo largo nunca ocurre aquí
             data = self._estado()
             previo = data.get(repo, OK)
             previo = previo if isinstance(previo, int) else OK
@@ -283,6 +360,11 @@ class SinIntegrar:
         if tid in self._comentadas:
             return
         self._comentadas.add(tid)
+        try:
+            self._comentadas_path.parent.mkdir(parents=True, exist_ok=True)
+            self._comentadas_path.write_text(json.dumps(sorted(self._comentadas)), encoding="utf-8")
+        except OSError as exc:
+            log.info("sin_integrar: comentadas no guardadas: %s", exc)
         aj = self.ajustes()
         try:
             show = hermes.show(tid) or {}
@@ -298,7 +380,7 @@ class SinIntegrar:
         """Línea para el resumen de estado de carriles; vacía si está apagado o sin datos."""
         try:
             aj = self.ajustes()
-            if not aj.tope and not aj.aviso_en:
+            if not aj.tope:
                 return ""
             partes = []
             for repo, n in self.recuentos().items():
