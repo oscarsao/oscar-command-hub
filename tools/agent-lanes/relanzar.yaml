@@ -4,7 +4,7 @@
 # Con `activo: true` el runner relanza, como mucho `max_por_pasada` tarjetas por ciclo, la bloqueada MÁS ANTIGUA que cumpla
 # TODO: hueco bajo el tope de running, último bloqueo `transient`, motivo sin marcas de exclusión, asignada a un carril de
 # código (kind: implement), fuera de triage y sin haberse relanzado ya `max_auto_por_tarjeta` veces
-# (contador en .state/relanzar.json). Nunca toca needs_input. Comenta «RELANZADA AUTOMÁTICAMENTE (n/max): <motivo>».
+# (contador en .state/relanzar.json). Nunca toca needs_input NI una tarjeta que ya tenga la rama lane/<id> en el remoto: esa se integra, no se rehace. Comenta «RELANZADA AUTOMÁTICAMENTE (n/max): <motivo>».
 activo: false
 tope_running: 3               # tarjetas en running en TODOS los tableros; con este número o más no se relanza
 max_por_pasada: 1

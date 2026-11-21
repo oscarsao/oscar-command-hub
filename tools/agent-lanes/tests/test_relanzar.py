@@ -194,3 +194,43 @@ def test_ajustes_por_defecto_y_validos(tmp_path):
 def test_relanzar_yaml_del_repo_esta_apagado():
     from agent_lanes.relanzar import SETTINGS_PATH
     assert SETTINGS_PATH.exists() and load_ajustes(SETTINGS_PATH).activo is False
+
+
+# --- una tarjeta que YA tiene rama lane/<id> se integra, no se relanza (Integradora, 21-11) ---------------------------
+
+def run_con_rama(kb, ramas, cfg=ON):
+    board, hermes_for, state = kb
+    return pasada(cfg, LANES, hermes_for, state, rama_de=lambda lane_, tid: ramas.get(tid))
+
+
+def comentarios(board):
+    return [c[2] for c in board.calls if c[0] == "comment"]
+
+
+def test_con_rama_con_commits_no_se_relanza_y_se_avisa_una_sola_vez(kb):
+    board = kb[0]
+    board.add("t_1")
+    assert run_con_rama(kb, {"t_1": 3}) == []
+    assert unblocked(board) == []
+    assert len(comentarios(board)) == 1 and "NO RELANZADA" in comentarios(board)[0] and "3 commits" in comentarios(board)[0]
+    run_con_rama(kb, {"t_1": 3})  # segunda pasada: no repite el comentario ni relanza
+    assert unblocked(board) == [] and len(comentarios(board)) == 1
+
+
+def test_con_rama_ya_integrada_tampoco_se_relanza(kb):
+    board = kb[0]
+    board.add("t_1")
+    assert run_con_rama(kb, {"t_1": 0}) == [] and unblocked(board) == []
+
+
+def test_sin_rama_se_relanza_como_siempre(kb):
+    board = kb[0]
+    board.add("t_1")
+    assert run_con_rama(kb, {}) == ["t_1"] and unblocked(board) == ["t_1"]
+
+
+def test_la_tarjeta_con_rama_no_gasta_el_hueco_de_otra(kb):
+    board = kb[0]
+    board.add("t_1", at=100)  # la mas antigua, con rama
+    board.add("t_2", at=200)  # sin rama: es la que se relanza
+    assert run_con_rama(kb, {"t_1": 2}) == ["t_2"]

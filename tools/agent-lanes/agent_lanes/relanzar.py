@@ -33,6 +33,7 @@ from typing import Callable
 
 import yaml
 
+from . import proc as _proc
 from .config import ROOT
 
 log = logging.getLogger("agent_lanes")
@@ -113,12 +114,37 @@ def _guardar(path: Path, data: dict) -> None:
     tmp.replace(path)
 
 
+def rama_con_trabajo(lane, tid: str) -> int | None:
+    """Commits de origin/lane/<id> sobre la base del carril, o None si la rama NO existe en el remoto (o git falla).
+    Sirve para no relanzar una tarjeta que ya tiene trabajo hecho: se integra, no se rehace (Integradora, 21-11)."""
+    repo = getattr(lane, "repo", None)
+    if not repo:
+        return None
+    rama = "lane/" + tid
+    remote = getattr(lane, "remote", "origin")
+    base = getattr(lane, "base", "main")
+
+    def git(*args: str):
+        return _proc.run_retrying(["git", "-C", str(repo), *args], label="git " + args[0], capture_output=True,
+                                  text=True, encoding="utf-8", errors="replace")
+
+    try:
+        if git("fetch", "-q", remote, rama).returncode != 0:
+            return None  # la rama no existe en el remoto (o no hay red): no se puede decir que tenga trabajo
+        cp = git("rev-list", "--count", f"{remote}/{base}..{remote}/{rama}")
+        return int(cp.stdout.strip()) if cp.returncode == 0 else None
+    except Exception as exc:  # git no responde: falla del lado de NO relanzar solo si la rama se sabe existente
+        log.warning("relanzar: no se pudo mirar la rama de %s: %s", tid, exc)
+        return None
+
+
 def _recortar(text: str) -> str:
     one = " ".join(str(text or "").split())
     return one if len(one) <= MOTIVO_MAX else one[: MOTIVO_MAX - 1] + "…"
 
 
-def pasada(cfg: Ajustes, lanes: dict, hermes_for: Callable, state_path: Path | str | None = None) -> list[str]:
+def pasada(cfg: Ajustes, lanes: dict, hermes_for: Callable, state_path: Path | str | None = None,
+           rama_de: Callable | None = None) -> list[str]:
     """Una pasada de relanzado; devuelve los ids relanzados. Lanza solo ante un fallo del kanban (lo captura el ticker)."""
     if not cfg.activo:
         return []
@@ -158,7 +184,27 @@ def pasada(cfg: Ajustes, lanes: dict, hermes_for: Callable, state_path: Path | s
             continue
         leidas.append((when or float(t.get("created_at") or 0), t["id"], board, motivo))
     relanzadas: list[str] = []
-    for _when, tid, board, motivo in sorted(leidas)[: min(cfg.max_por_pasada, hueco)]:
+    rama_de = rama_de or rama_con_trabajo
+    con_rama = estado.get("con_rama") if isinstance(estado.get("con_rama"), dict) else {}
+    for _when, tid, board, motivo in sorted(leidas):
+        if len(relanzadas) >= min(cfg.max_por_pasada, hueco):
+            break
+        asignada = next((t.get("assignee") for b, t in candidatas if t.get("id") == tid), None)
+        commits = rama_de(lanes.get(asignada), tid) if lanes.get(asignada) is not None else None
+        if commits is not None:
+            # Ya tiene rama lane/<id>: o tiene trabajo sin integrar o ya esta integrada. NUNCA se relanza: se integra.
+            if tid not in con_rama:
+                con_rama[tid] = commits
+                estado["con_rama"] = con_rama
+                _guardar(state_path, estado)
+                try:
+                    hermes_for(board).comment(
+                        tid, f"NO RELANZADA AUTOMÁTICAMENTE: ya tiene la rama lane/{tid} ({commits} commits fuera de la base; "
+                             "0 = ya integrada). Se integra o se cierra, no se rehace. Aviso para la Integradora.", author=AUTHOR)
+                except Exception as exc:
+                    log.warning("relanzar: comentario de %s no escrito: %s", tid, exc)
+            log.info("relanzar: %s omitida: ya tiene rama lane/%s (%s commits)", tid, tid, commits)
+            continue
         n = _int(contador.get(tid), 0, 0) + 1
         contador[tid] = n  # antes del unblock: si algo falla a medias, no hay bucle
         estado["relanzadas"] = contador
