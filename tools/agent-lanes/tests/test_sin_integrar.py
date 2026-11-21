@@ -260,3 +260,132 @@ def test_comentadas_persisten_entre_reinicios(tmp_path):
     h.comentarios.clear()   # sin comentarios visibles en Hermes, la memoria en disco evita repetir
     f2.comentar_espera(h, "t_nuevo", REPO, 26)
     assert len(h.puestos) == 1
+
+
+# --- segunda revisión ------------------------------------------------------------------------------------------------
+
+def _con_sha(f, base="B1"):
+    """Dota al FakeLector de sha() y cuenta los juicios por contenido."""
+    f.lector.base_sha = base
+    f.lector.juicios = 0
+    orig = f.lector.integrada_por_contenido
+
+    def juzga(repo, remote, b, rama):
+        f.lector.juicios += 1
+        return orig(repo, remote, b, rama)
+    f.lector.integrada_por_contenido = juzga
+    f.lector.sha = lambda repo, ref: f.lector.base_sha if ref.endswith("/main") else "R:" + ref
+    return f
+
+
+def test_aviso_se_envia_fuera_del_lock(tmp_path):
+    r, h, avisos, f = montar(tmp_path, 26)
+    visto = []
+
+    def send(text, markup=None):
+        visto.append(f._lock.acquire(blocking=False))   # si el lock estuviera tomado, daría False
+        if visto[-1]:
+            f._lock.release()
+    f.send = send
+    assert reclama(r) == []
+    assert visto == [True]
+
+
+def test_recuento_largo_converge_con_juicios_memorizados(tmp_path):
+    now = [0.0]
+    r, h, avisos, f = montar(tmp_path, 30, tope=100, aviso=0, yaml="tope_sin_integrar: 100\nplazo_segundos: 10\n")
+    _con_sha(f)
+    f._clock = lambda: now[0]
+    orig = f.lector.integrada_por_contenido
+
+    def lenta(repo, remote, b, rama):
+        now[0] += 1.0            # cada juicio tarda 1 s; el plazo es 10 s
+        return orig(repo, remote, b, rama)
+    f.lector.integrada_por_contenido = lenta
+    assert f.recuento(REPO) is None and f.lector.juicios == 11      # plazo agotado: parcial = desconocido
+    juzgadas = f.lector.juicios
+    now[0] += 6 * 60                                               # pasa el TTL del fallo
+    assert f.recuento(REPO) is None and f.lector.juicios - juzgadas == 11   # solo las nuevas
+    now[0] += 6 * 60
+    assert f.recuento(REPO) == 30                                  # converge a la tercera pasada
+    juzgadas = f.lector.juicios
+    now[0] += 31 * 60
+    assert f.recuento(REPO) == 30 and f.lector.juicios == juzgadas  # misma base y ramas: nada que recalcular
+    f.lector.base_sha = "B2"                                       # la base avanza: se rejuzga
+    now[0] += 31 * 60
+    f.recuento(REPO)
+    assert f.lector.juicios > juzgadas   # se rejuzga (aquí otra vez limitado por el plazo)
+    assert (tmp_path / "estado_juicios.json").exists()
+
+
+def test_valor_viejo_caduca_y_hilo_colgado_se_relanza(tmp_path):
+    now = [1000.0]
+    r, h, avisos, f = montar(tmp_path, 26)
+    f._clock = lambda: now[0]
+    assert reclama(r) == []
+    now[0] += 31 * 60
+    f._en_curso[REPO] = now[0]                 # hilo colgado: el valor sigue vigente a medias
+    assert f.recuento(REPO) == 26              # 31 min < 3 x 30: aún se sirve
+    fetches = f.lector.fetches
+    f.lector.fetch_ok = False                  # el refresco relanzado falla: desconocido
+    now[0] += 100 * 60                         # > 90 min sin refrescar y sin que el hilo termine
+    assert f.recuento(REPO) is None
+    assert f.lector.fetches == fetches + 1     # se relanzó el refresco aunque el anterior no terminó
+
+
+def test_sin_send_no_se_marca_avisado_y_comentario_fallido_no_se_marca(tmp_path):
+    r, h, avisos, f = montar(tmp_path, 26)
+    f.send = None
+    assert reclama(r) == []
+    assert not (tmp_path / "estado.json").exists() or json.loads((tmp_path / "estado.json").read_text()).get(REPO, 0) == 0
+    f.send = lambda text, markup=None: avisos.append(text)
+    f._cache.clear()
+    reclama(r)
+    assert len(avisos) == 1                    # el aviso no se perdió
+    # send que falla: sigue sin marcar
+    r, h, avisos, f = montar(tmp_path / "otro", 26) if (tmp_path / "otro").mkdir() is None else None
+    f.send = lambda text, markup=None: (_ for _ in ()).throw(OSError("telegram caído"))
+    reclama(r)
+    f.send = lambda text, markup=None: avisos.append(text)
+    f._cache.clear()
+    reclama(r)
+    assert len(avisos) == 1
+    # comentario que no se escribe: se reintenta
+    h2 = FakeHermes([], ready=())
+    h2.comment = lambda tid, text, author=None: False
+    f.comentar_espera(h2, "t_x", REPO, 26)
+    assert "t_x" not in f._comentadas
+    h2.comment = lambda tid, text, author=None: h2.puestos.append((tid, text)) or True
+    f.comentar_espera(h2, "t_x", REPO, 26)
+    assert "t_x" in f._comentadas and len(h2.puestos) == 1
+
+
+def test_lector_git_sin_prompt_ni_stdin_y_merge_tree_129_es_desconocido(tmp_path):
+    from agent_lanes.sin_integrar import Lector
+    import subprocess
+    vistos = []
+
+    class CP:
+        def __init__(self, out="", rc=0):
+            self.stdout, self.returncode = out, rc
+
+    def run(args, **kw):
+        vistos.append(kw)
+        if "cherry" in args:
+            return CP("+ abc\n")
+        if "merge-tree" in args:
+            return CP("usage: git merge-tree\n", 129)
+        return CP()
+    lec = Lector(runner=run)
+    assert lec.integrada_por_contenido("C:/r", "origin", "main", "lane/t_1") is None
+    assert lec.fetch("C:/r", "origin")
+    assert vistos and all(k["stdin"] == subprocess.DEVNULL and k["env"]["GIT_TERMINAL_PROMPT"] == "0" for k in vistos)
+    # y un conflicto real (rc 1) sigue siendo «no integrada»
+    lec2 = Lector(runner=lambda a, **k: CP("+ x\n") if "cherry" in a else CP("", 1))
+    assert lec2.integrada_por_contenido("C:/r", "origin", "main", "lane/t_1") is False
+
+
+def test_candidata_desconocida_hace_el_recuento_desconocido(tmp_path):
+    r, h, avisos, f = montar(tmp_path, 30)
+    f.lector.integrada_por_contenido = lambda *a: None
+    assert f.recuento(REPO) is None and reclama(r) == ["t_nuevo"]

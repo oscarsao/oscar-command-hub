@@ -4,7 +4,8 @@
 Medido el 21-11-2026: «done» significa «pasó la revisión», no «integrada», y nada frenaba a los carriles cuando la cola
 de sin integrar crecía (363 ramas, 272 con >150 commits de retraso, 11 de 32 ya chocaban con lo posterior).
 
-Criterio de «sin integrar» (solo lectura de git y gh), por REPO y no por tablero: tarjeta `done` con rama
+Criterio de «sin integrar» (git y gh solo leen; `merge-tree --write-tree` escribe objetos sueltos en el repo del carril,
+inofensivo y recogido por `git gc`), por REPO y no por tablero: tarjeta `done` con rama
 `<remote>/lane/<id>` que no es ancestro de `<remote>/<base>`, sin PR abierto ni fusionado y sin comentario que empiece
 por `INTEGRADO <sha>`.
 
@@ -26,6 +27,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import subprocess
 import threading
 import time
@@ -44,6 +46,7 @@ MARCA = "SIN-INTEGRAR-FRENO"
 AUTHOR = "agent-lanes"
 INFORME = "C:/Users/oscar/integrador-docs/hecha_no_integrada/ultimo.markdown"
 PR_LIMITE = 5000  # gh pr list --limit: por encima se perderían PR antiguos (hoy el repo tiene del orden de mil)
+CADUCA_VECES = 3  # un valor no refrescado en 3 x cache_minutos (hilo colgado) pasa a desconocido y no frena
 NEGATIVO_TTL = 6 * 3600.0  # s: un «sin INTEGRADO» ya leído no se vuelve a leer hasta pasado este tiempo
 
 OK, AVISO, TOPE = 0, 1, 2
@@ -91,45 +94,50 @@ def load_ajustes(path: Path | str | None = None) -> Ajustes:
 
 
 class Lector:
-    """Lectura de git y gh (nunca escribe). Cualquier fallo devuelve None = «desconocido»."""
+    """Lectura de git y gh. Cualquier fallo devuelve None = «desconocido». Nunca pide nada por teclado."""
 
     def __init__(self, runner=subprocess.run, timeout: float = 60.0):
         self._run, self._timeout = runner, timeout
 
-    def _out(self, args: list[str], cwd: str) -> str | None:
-        try:
-            cp = self._run(args, capture_output=True, text=True, encoding="utf-8", errors="replace",
-                           timeout=self._timeout, cwd=cwd)
-        except Exception as exc:
-            log.info("sin_integrar: %s falló: %s", " ".join(args[:3]), exc)
-            return None
-        return (cp.stdout or "") if cp.returncode == 0 else None
-
     def _rc(self, args: list[str], cwd: str) -> tuple[int, str]:
         try:
             cp = self._run(args, capture_output=True, text=True, encoding="utf-8", errors="replace",
-                           timeout=self._timeout, cwd=cwd)
+                           timeout=self._timeout, cwd=cwd, stdin=subprocess.DEVNULL,
+                           env={**os.environ, "GIT_TERMINAL_PROMPT": "0"})
         except Exception as exc:
             log.info("sin_integrar: %s falló: %s", " ".join(args[:3]), exc)
             return -1, ""
         return cp.returncode, (cp.stdout or "")
+
+    def _out(self, args: list[str], cwd: str) -> str | None:
+        rc, out = self._rc(args, cwd)
+        return out if rc == 0 else None
+
+    def sha(self, repo: str, ref: str) -> str | None:
+        out = self._out(["git", "-C", repo, "rev-parse", "--verify", "-q", f"{ref}^{{commit}}"], repo)
+        return (out.strip() or None) if out is not None else None
 
     def fetch(self, repo: str, remote: str) -> bool:
         """`git fetch <remote> --prune` (solo refs remotas; no toca ramas locales ni el árbol de trabajo)."""
         rc, _ = self._rc(["git", "-C", repo, "fetch", "-q", remote, "--prune"], repo)
         return rc == 0
 
-    def integrada_por_contenido(self, repo: str, remote: str, base: str, rama: str) -> bool:
-        """True si fusionar la rama en la base no cambiaría nada (rebase/squash ya integrado). Ante la duda, False."""
+    def integrada_por_contenido(self, repo: str, remote: str, base: str, rama: str) -> bool | None:
+        """True si fusionar la rama en la base no cambiaría nada (rebase/squash ya integrado); False si cambiaría algo
+        (incluido un conflicto); None = desconocido (git sin --write-tree, timeout, error)."""
         b, r = f"{remote}/{base}", f"{remote}/{rama}"
         rc, cherry = self._rc(["git", "-C", repo, "cherry", b, r], repo)
         if rc == 0 and cherry.strip() and not any(x.startswith("+") for x in cherry.splitlines()):
             return True
         rc, out = self._rc(["git", "-C", repo, "merge-tree", "--write-tree", "--no-messages", b, r], repo)
+        if rc == 1:
+            return False  # conflicto: no es un árbol limpio, cuenta como no integrada
         if rc != 0 or not out.strip():
-            return False  # conflicto (1) o git sin --write-tree: cuenta como no integrada
+            return None   # 129 (git sin --write-tree), timeout o error: desconocido
         rc2, tree = self._rc(["git", "-C", repo, "rev-parse", f"{b}^{{tree}}"], repo)
-        return rc2 == 0 and out.splitlines()[0].strip() == tree.strip()
+        if rc2 != 0:
+            return None
+        return out.splitlines()[0].strip() == tree.strip()
 
     def ramas_sin_fusionar(self, repo: str, remote: str, base: str) -> set[str] | None:
         """Ramas `lane/*` de `<remote>` que NO son ancestro de `<remote>/<base>` (sin el prefijo del remote)."""
@@ -180,10 +188,13 @@ class SinIntegrar:
         self.fondo = fondo  # True: el cálculo corre en un hilo; False (tests): se calcula en la propia llamada
         self._lock = threading.Lock()  # solo protege estructuras pequeñas; nunca se sostiene durante un cálculo
         self._cache: dict[str, tuple[float, int | None]] = {}   # repo -> (cuándo, recuento o None si falló)
-        self._en_curso: set[str] = set()
+        self._en_curso: dict[str, float] = {}                    # repo -> cuándo empezó el refresco
+        self._avisando: dict[str, int] = {}                      # repo -> nivel que se está enviando ahora
         self._vistas: dict[str, tuple[float, bool]] = {}         # tid -> (cuándo, tiene INTEGRADO)
         self._comentadas_path = self.state_path.with_name(self.state_path.stem + "_comentadas.json")
         self._comentadas: set[str] = self._leer_comentadas()
+        self._juicios_path = self.state_path.with_name(self.state_path.stem + "_juicios.json")
+        self._juicios: dict[str, list] = self._leer_juicios()   # tid -> [sha rama, sha base, integrada por contenido]
 
     def _leer_comentadas(self) -> set[str]:
         try:
@@ -191,6 +202,23 @@ class SinIntegrar:
         except (OSError, ValueError):
             return set()
         return {x for x in data if isinstance(x, str)} if isinstance(data, list) else set()
+
+    def _leer_juicios(self) -> dict[str, list]:
+        try:
+            data = json.loads(self._juicios_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+        if not isinstance(data, dict):
+            return {}
+        return {k: v for k, v in data.items() if isinstance(k, str) and isinstance(v, list) and len(v) == 3
+                and isinstance(v[0], str) and isinstance(v[1], str) and isinstance(v[2], bool)}
+
+    def _guardar_juicios(self) -> None:
+        try:
+            self._juicios_path.parent.mkdir(parents=True, exist_ok=True)
+            self._juicios_path.write_text(json.dumps(self._juicios, ensure_ascii=False), encoding="utf-8")
+        except OSError as exc:
+            log.info("sin_integrar: juicios no guardados: %s", exc)
 
     def ajustes(self) -> Ajustes:
         return load_ajustes(self.settings_path)
@@ -207,6 +235,19 @@ class SinIntegrar:
         val = any(str(c.get("body") or "").lstrip().startswith("INTEGRADO ")
                   for c in show.get("comments") or [] if isinstance(c, dict))
         self._vistas[tid] = (ahora, val)
+        return val
+
+    def _juzgar(self, repo, remote, base, tid, sha_de, base_sha) -> bool | None:
+        """¿Ya integrada por contenido? Memoriza el juicio con clave (sha de la rama, sha de la base)."""
+        rama = f"lane/{tid}"
+        sha_rama = sha_de(repo, f"{remote}/{rama}") if sha_de else None
+        clave = [sha_rama, base_sha] if sha_rama and base_sha else None
+        previo = self._juicios.get(tid)
+        if clave and previo and previo[:2] == clave:
+            return previo[2]
+        val = self.lector.integrada_por_contenido(repo, remote, base, rama)
+        if val is not None and clave:
+            self._juicios[tid] = [clave[0], clave[1], bool(val)]
         return val
 
     def _calcular(self, repo: str, aj: Ajustes) -> int | None:
@@ -226,15 +267,28 @@ class SinIntegrar:
                 return None
             cand = [t for t in done if f"lane/{t}" in sin_fusionar and f"lane/{t}" not in con_pr]
             hermes = self.hermes_for(lane.board)
-            n = 0
-            for tid in cand:
-                if self._clock() > limite:
-                    return None  # tarda demasiado: desconocido (lo leído queda en memoria para la próxima vuelta)
-                if self.lector.integrada_por_contenido(repo, remote, lane.base, f"lane/{tid}"):
-                    continue
-                if not self._integrado(hermes, tid):
-                    n += 1
-            return n
+            sha_de = getattr(self.lector, "sha", None)
+            base_sha = sha_de(repo, f"{remote}/{lane.base}") if sha_de else None
+            n, completo = 0, True
+            try:
+                for tid in cand:
+                    if self._clock() > limite:
+                        completo = False  # plazo agotado: recuento parcial = desconocido; los juicios quedan memorizados
+                        break
+                    ya = self._juzgar(repo, remote, lane.base, tid, sha_de, base_sha)
+                    if ya is None:
+                        completo = False  # git no pudo juzgarla: sin certeza no se cuenta (falla abierto)
+                        continue
+                    if ya:
+                        continue
+                    if not self._integrado(hermes, tid):
+                        n += 1
+            finally:
+                if completo:
+                    vivos = set(cand)
+                    self._juicios = {t: v for t, v in self._juicios.items() if t in vivos}
+                self._guardar_juicios()
+            return n if completo else None
         except Exception as exc:  # falla abierto: nunca frena por un error propio
             log.info("sin_integrar: recuento de %s falló: %s", repo, exc)
             return None
@@ -249,7 +303,7 @@ class SinIntegrar:
             n = None
         with self._lock:
             self._cache[repo] = (self._clock(), n)
-            self._en_curso.discard(repo)
+            self._en_curso.pop(repo, None)
         return n
 
     def recuento(self, repo: str) -> int | None:
@@ -261,9 +315,14 @@ class SinIntegrar:
             ttl = (aj.cache_minutos if hit and hit[1] is not None else aj.fallo_minutos) * 60
             vigente = bool(hit) and self._clock() - hit[0] < ttl
             valor = hit[1] if hit else None
-            lanzar = not vigente and repo not in self._en_curso
+            ahora = self._clock()
+            if hit and ahora - hit[0] > CADUCA_VECES * aj.cache_minutos * 60:
+                valor = None  # no se refresca desde hace demasiado (hilo colgado): desconocido, no frena
+            inicio = self._en_curso.get(repo)
+            colgado = inicio is not None and ahora - inicio > CADUCA_VECES * aj.cache_minutos * 60
+            lanzar = not vigente and (inicio is None or colgado)
             if lanzar:
-                self._en_curso.add(repo)
+                self._en_curso[repo] = ahora
         if lanzar:
             if self.fondo:
                 try:
@@ -272,7 +331,7 @@ class SinIntegrar:
                 except Exception as exc:
                     log.info("sin_integrar: no se pudo lanzar el hilo: %s", exc)
                     with self._lock:
-                        self._en_curso.discard(repo)
+                        self._en_curso.pop(repo, None)
             else:
                 valor = self.refrescar(repo)
         return valor
@@ -312,29 +371,41 @@ class SinIntegrar:
             log.info("sin_integrar: estado no guardado: %s", exc)
 
     def _avisar(self, repo: str, niv: int, n: int, aj: Ajustes) -> None:
-        """Avisa solo cuando el nivel SUBE respecto al último avisado; al bajar se rearma sin avisar."""
-        with self._lock:  # solo estado pequeño en disco; el cálculo largo nunca ocurre aquí
+        """Avisa solo cuando el nivel SUBE respecto al último avisado; al bajar se rearma sin avisar.
+        El nivel solo se guarda si el aviso se envió de verdad, y el envío ocurre FUERA del lock."""
+        with self._lock:  # solo decide y toca estado pequeño en disco
             data = self._estado()
             previo = data.get(repo, OK)
             previo = previo if isinstance(previo, int) else OK
             if niv == previo:
                 return
-            data[repo] = niv
-            self._guardar(data)
-            if niv < previo or not self.send:
+            if niv < previo:
+                data[repo] = niv
+                self._guardar(data)
                 return
+            if not self.send or self._avisando.get(repo) == niv:
+                return  # sin canal no se marca (se avisará cuando lo haya); otro hilo ya lo está enviando
+            self._avisando[repo] = niv
             nombre = Path(repo).name or repo
             detalle = ", ".join(f"{Path(r).name or r}: {c}" for r, c in sorted(self._cache_vista().items()))
-            if niv == TOPE:
-                cab = (f"🛑 Sin integrar: {nombre} llega al tope ({n} de {aj.tope}). Sus carriles dejan de reclamar "
-                       f"tarjetas nuevas hasta que baje; las que están en marcha terminan.")
-            else:
-                cab = f"⚠️ Sin integrar: {nombre} llega a {n} (aviso en {aj.aviso_en}, tope {aj.tope})."
-            texto = f"{cab}\nRecuento por repo: {detalle}\nInforme: {aj.informe}"
-            try:
-                self.send(texto)
-            except Exception as exc:
-                log.info("sin_integrar: aviso no enviado: %s", exc)
+            send = self.send
+        if niv == TOPE:
+            cab = (f"🛑 Sin integrar: {nombre} llega al tope ({n} de {aj.tope}). Sus carriles dejan de reclamar "
+                   f"tarjetas nuevas hasta que baje; las que están en marcha terminan.")
+        else:
+            cab = f"⚠️ Sin integrar: {nombre} llega a {n} (aviso en {aj.aviso_en}, tope {aj.tope})."
+        texto = f"{cab}\nRecuento por repo: {detalle}\nInforme: {aj.informe}"
+        enviado = False
+        try:
+            enviado = send(texto) is not False
+        except Exception as exc:
+            log.info("sin_integrar: aviso no enviado: %s", exc)
+        with self._lock:
+            self._avisando.pop(repo, None)
+            if enviado:
+                data = self._estado()
+                data[repo] = niv
+                self._guardar(data)
 
     def _cache_vista(self) -> dict[str, int]:
         return {r: n for r, (_, n) in self._cache.items() if n is not None}
@@ -355,24 +426,30 @@ class SinIntegrar:
             log.info("sin_integrar: freno no evaluado: %s", exc)
             return False, None
 
-    def comentar_espera(self, hermes, tid: str, repo: str, n: int) -> None:
-        """Un solo comentario por tarjeta que se queda esperando; sobrevive a reinicios mirando los comentarios."""
-        if tid in self._comentadas:
-            return
+    def _marcar_comentada(self, tid: str) -> None:
         self._comentadas.add(tid)
         try:
             self._comentadas_path.parent.mkdir(parents=True, exist_ok=True)
             self._comentadas_path.write_text(json.dumps(sorted(self._comentadas)), encoding="utf-8")
         except OSError as exc:
             log.info("sin_integrar: comentadas no guardadas: %s", exc)
+
+    def comentar_espera(self, hermes, tid: str, repo: str, n: int) -> None:
+        """Un solo comentario por tarjeta que se queda esperando; sobrevive a reinicios mirando los comentarios.
+        Solo se marca como comentada si el comentario se escribió (o ya estaba)."""
+        if tid in self._comentadas:
+            return
         aj = self.ajustes()
         try:
             show = hermes.show(tid) or {}
             if any(str(c.get("body") or "").startswith(MARCA) for c in show.get("comments") or []):
+                self._marcar_comentada(tid)
                 return
-            hermes.comment(tid, f"{MARCA}: el repo {Path(repo).name or repo} tiene {n} tarjetas aprobadas sin integrar "
-                                f"(tope {aj.tope}). Esta tarjeta espera en ready; se reclamará sola cuando baje el "
-                                f"recuento. Informe: {aj.informe}", author=AUTHOR)
+            ok = hermes.comment(tid, f"{MARCA}: el repo {Path(repo).name or repo} tiene {n} tarjetas aprobadas sin integrar "
+                                     f"(tope {aj.tope}). Esta tarjeta espera en ready; se reclamará sola cuando baje el "
+                                     f"recuento. Informe: {aj.informe}", author=AUTHOR)
+            if ok is not False:
+                self._marcar_comentada(tid)
         except Exception as exc:
             log.info("sin_integrar: no se pudo comentar %s: %s", tid, exc)
 
