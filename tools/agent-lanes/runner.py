@@ -57,6 +57,7 @@ from agent_lanes.ops import OpsWorkspace, verify_ops
 from agent_lanes.runner import MESSAGES_DIR, STATE_DIR, LaneRunner
 from agent_lanes.service import Service, acquire_single_instance
 from agent_lanes.telegram import notifier_from_env
+from agent_lanes.ssh_host import ClaudeWorkerRemoto, GitOpsRemoto, verify_remoto
 from agent_lanes.verify import verify
 from agent_lanes.vuelta import Cronometro, HiloAparte
 from agent_lanes.worker import ClaudeWorker
@@ -219,8 +220,15 @@ def main(argv: list[str] | None = None) -> int:
     # Límite de RAM por worker (lanes.yaml runner.worker_ram_mb; 0 = sin límite): corta al que se desboca y avisa al DM.
     ram = {"ram_mb": float(settings.get("worker_ram_mb") or 0), "alert": drain.dm_alert(env),
            "ram_intervalo": float(settings.get("worker_ram_intervalo_segundos") or supervisor.DEFAULT_RAM_INTERVALO)}
-    runners: list = [LaneRunner(l, hermes=hermes_for(l.board), git=git, worker=ClaudeWorker(pid_dir=STATE_DIR, **ram),
-                                verifier=verify, notify=notify, exclude=set(args.exclude), messages=messages, links=links,
+    def pila(l):
+        """(git, worker, verifier) del carril: los de siempre sin `host:`; con él, los remotos por SSH (E1)."""
+        if not l.host:
+            return git, ClaudeWorker(pid_dir=STATE_DIR, **ram), verify
+        return GitOpsRemoto(), ClaudeWorkerRemoto(pid_dir=STATE_DIR, **ram), verify_remoto
+
+    pilas = {l.name: pila(l) for l in impl.values()}
+    runners: list = [LaneRunner(l, hermes=hermes_for(l.board), git=pilas[l.name][0], worker=pilas[l.name][1],
+                                verifier=pilas[l.name][2], notify=notify, exclude=set(args.exclude), messages=messages, links=links,
                                 decisions=decisions, tree=tree, repo_guard=github_slug_problem, lanes=all_lanes,
                                 final_only=tg_settings["final_only"], prevencion=prevencion, sin_integrar=sin_integrar,
                                 cuota_minutos=cuota_minutos)

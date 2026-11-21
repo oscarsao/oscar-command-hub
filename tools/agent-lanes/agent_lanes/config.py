@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -9,6 +10,64 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 CLAIM_TTL_MARGIN_SECONDS = 300
+
+
+HOST_DESTINO_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")  # fullmatch
+HOST_RUTA_RE = re.compile(r"[A-Za-z]:[\\/][A-Za-z0-9 _.\\/-]*")  # lista blanca (fullmatch): sin $ ` ; ( ) ! ' " % & | < > ^
+# Claves de `host:` que son de E2/E3 (spec worker-remoto-ssh §3): se aceptan y se ignoran (nada las lee todavía).
+HOST_CLAVES_FUTURAS = ("hub_sha_minimo", "latido_s", "latido_parado_s", "disco_min_gb")
+
+
+@dataclass(frozen=True)
+class HostCfg:
+    """Destino remoto de un carril (opt-in; spec specs/worker-remoto-ssh.md §3). Sin `host:` el carril es local.
+    `destino` es un alias de ~/.ssh/config del hub (usuario, IP e IdentityFile viven ahí, nunca aquí). `repo_dir` y
+    `worktree_root` son rutas del HOST (Windows). `Lane.repo` sigue siendo el clon del HUB (verify, revisión, candado)."""
+    destino: str
+    repo_dir: str
+    worktree_root: str
+    max_parallel: int = 1
+    conexion_timeout_s: int = 15
+
+    def __post_init__(self):
+        if not isinstance(self.destino, str) or not HOST_DESTINO_RE.fullmatch(self.destino):
+            raise ValueError(f"host.destino {self.destino!r}: solo letras, cifras, . _ - y sin guion inicial")
+        for nombre in ("repo_dir", "worktree_root"):
+            valor = getattr(self, nombre)
+            if (not isinstance(valor, str) or not HOST_RUTA_RE.fullmatch(valor)
+                    or ".." in re.split(r"[\\/]", valor)):
+                raise ValueError(f"host.{nombre} {valor!r}: ruta absoluta de Windows sin comillas, % & | < > ^ ni '..'")
+        if not isinstance(self.max_parallel, int) or self.max_parallel < 1:
+            raise ValueError("host.max_parallel debe ser un entero >= 1")
+        if not isinstance(self.conexion_timeout_s, int) or not 1 <= self.conexion_timeout_s <= 120:
+            raise ValueError("host.conexion_timeout_s debe estar entre 1 y 120")
+
+    @property
+    def agent_lanes_dir(self) -> str:
+        """{AGENT_LANES_DIR} en el host: tools/agent-lanes del clon de oscar-command-hub, con barras normales."""
+        return self.repo_dir.rstrip("\\/").replace("\\", "/") + "/tools/agent-lanes"
+
+
+def host_from_yaml(name: str, cfg) -> HostCfg | None:
+    if cfg is None:
+        return None
+    if not cfg:  # `host: {}` o `host: ""` no degradan en silencio a carril local
+        raise ValueError(f"{name}: `host` vacío (quítalo para un carril local)")
+    if not isinstance(cfg, dict):
+        raise ValueError(f"{name}: `host` debe ser un bloque (destino, repo_dir, worktree_root, ...)")
+    propios = {"destino", "repo_dir", "worktree_root", "max_parallel", "conexion_timeout_s"}
+    for k in cfg:
+        if k in HOST_CLAVES_FUTURAS:
+            logging.getLogger("agent_lanes").info("%s: host.%s es de una entrega posterior (E2/E3); se ignora", name, k)
+        elif k not in propios:
+            raise ValueError(f"{name}: clave desconocida en host: {k!r}")
+    faltan = [k for k in ("destino", "repo_dir", "worktree_root") if not cfg.get(k)]
+    if faltan:
+        raise ValueError(f"{name}: host sin {', '.join(faltan)}")
+    try:
+        return HostCfg(**{k: cfg[k] for k in propios if k in cfg})
+    except ValueError as exc:
+        raise ValueError(f"{name}: {exc}") from None
 
 
 @dataclass(frozen=True)
@@ -60,6 +119,10 @@ class Lane:
     # Nombres antiguos del carril (23-10, carriles por proyecto): se aceptan en entrada (tarjetas abiertas, .env,
     # hilos de Telegram) y resuelven al carril canónico; nunca se emiten.
     aliases: tuple[str, ...] = ()
+    # Segundo ordenador (E1 de specs/worker-remoto-ssh.md): None = carril local, todo como siempre. Con `host:` el
+    # worker, la preparación del worktree y los tests corren en ese equipo por SSH; el kanban y verify (parte git)
+    # siguen en el hub. `max_parallel` del carril queda acotado por el del host (load_lanes).
+    host: HostCfg | None = None
 
     @property
     def claim_ttl_seconds(self) -> int:
@@ -115,9 +178,20 @@ def load_lanes(path: Path | None = None) -> dict[str, Lane]:
     from .ajustes_hub import valor  # max_parallel por defecto editado con /ajustes (rige al arrancar el runner)
     if valor("carriles.max_parallel") is not None:
         defaults["max_parallel"] = valor("carriles.max_parallel")
+    if "host" in defaults:
+        raise ValueError("`host` no puede ir en defaults: es por carril (opt-in)")
     lanes = {}
     for name, cfg in data["lanes"].items():
         merged = {**defaults, **cfg}
+        merged["host"] = host_from_yaml(name, merged.get("host"))
+        if merged.pop("host_gasto_dia_usd", None) is not None:  # tope diario del host: E3, aún sin efecto
+            logging.getLogger("agent_lanes").info("%s: host_gasto_dia_usd es de la entrega E3; se ignora", name)
+        if merged["host"]:
+            if merged.get("kind", "implement") != "implement":
+                raise ValueError(f"{name}: `host` solo se admite en carriles kind: implement")
+            if merged.get("repos"):
+                raise ValueError(f"{name}: `host` no se combina con `repos:` (un solo clon remoto por carril)")
+            merged["max_parallel"] = min(int(merged.get("max_parallel", 1)), merged["host"].max_parallel)
         for f in TUPLE_FIELDS:
             merged[f] = tuple(merged.get(f) or ())
         if merged.get("model_permitidos"):
