@@ -38,8 +38,8 @@
       "additionalProperties": false,
       "required": ["evidence", "checked_sha"],
       "properties": {
-        "evidence": {"type": "string", "maxLength": 1500},
-        "checked_sha": {"type": "string"}
+        "evidence": {"type": "string", "minLength": 40, "maxLength": 1500},
+        "checked_sha": {"type": "string", "pattern": "^[0-9a-fA-F]{7,40}$"}
       }
     },
     "next_steps": {"type": "array", "items": {"type": "string"}},

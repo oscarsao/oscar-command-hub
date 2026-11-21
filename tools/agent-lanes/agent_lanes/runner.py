@@ -548,7 +548,7 @@ class LaneRunner:
                                    f"el worker no terminó ({why}): {outcome.raw_error} (session_id={session_id})", task,
                                    public="el worker no terminó (tiempo o presupuesto agotado)")
             result = outcome.structured
-            if not ops and self._ya_resuelta_valida(result):
+            if not ops and self._ya_resuelta_valida(lane, cwd, result):
                 return self._cerrar_ya_resuelta(tid, task, result, outcome)
             if result["status"] == "needs_input":
                 asked = normalize_questions(result.get("questions")) or normalize_questions([result.get("summary", "")])
@@ -624,17 +624,23 @@ class LaneRunner:
                 money(outcome.cost_usd)), changed_files=result.get("changed_files"), for_oscar=result.get("for_oscar"))
             return "review"
 
-    @staticmethod
-    def _ya_resuelta_valida(result: dict) -> bool:
+    def _ya_resuelta_valida(self, lane: Lane, cwd: str, result: dict) -> bool:
         """«Ya resuelto» con prueba (21-11): el worker comprobó que el hallazgo ya está corregido en la base y no tocó
-        nada. Vale solo con evidencia con cuerpo, el SHA de la base que comprobó y sin ficheros cambiados; en otro caso
-        se ignora y la tarjeta sigue su camino de siempre (pregunta a Oscar o verificación), sin cerrar nada."""
+        nada. Vale solo con (1) evidencia con cuerpo, (2) sin ficheros cambiados y (3) comprobado contra git: el SHA que
+        dice haber mirado Y el HEAD de su worktree existen y son la punta o un ancestro de <remote>/<base> (sin commits
+        propios). Si algo no cuadra se ignora el camino y la tarjeta sigue como siempre (pregunta a Oscar o verificación),
+        sin cerrar nada: «hecha no es integrada»."""
         ya = result.get("already_resolved")
         if not isinstance(ya, dict) or result.get("status") not in ("needs_input", "done"):
             return False
         sha = str(ya.get("checked_sha") or "").strip().lower()
-        return (len(str(ya.get("evidence") or "").strip()) >= 40 and re.fullmatch(r"[0-9a-f]{7,40}", sha) is not None
-                and not result.get("changed_files"))
+        head = str(result.get("head_sha") or "").strip().lower()
+        hexa = re.compile(r"[0-9a-f]{7,40}")
+        if not (len(str(ya.get("evidence") or "").strip()) >= 40 and hexa.fullmatch(sha) and hexa.fullmatch(head)
+                and not result.get("changed_files")):
+            return False
+        comprobar = getattr(self.git, "base_contiene", None)
+        return bool(comprobar and comprobar(lane, cwd, sha, head))
 
     def _cerrar_ya_resuelta(self, tid: str, task: dict, result: dict, outcome) -> str:
         """Cierra la tarjeta sin PR cuando el hallazgo ya estaba resuelto (con la evidencia en un comentario) y libera a las
@@ -653,7 +659,8 @@ class LaneRunner:
                                public="el kanban rechazó cerrar la tarjeta ya resuelta")
         self._clear_retry(tid)
         self.notify("done", tid, task, status_line("cerrada como ya resuelta", money(outcome.cost_usd)),
-                    branch_link=False, bullets=[evidence[:1500]])
+                    branch_link=False, bullets=[evidence[:1500]],
+                    for_oscar="Cerrada sin PR porque el worker probó que ya estaba en la base. Si no te cuadra, reabre la tarjeta.")
         return "ya_resuelta"
 
     def _pausar_por_cuota(self, tid: str, task: dict, raw_error: str | None) -> str:

@@ -248,6 +248,26 @@ class GitOps:
         except ValueError:
             return None
 
+    def base_contiene(self, lane: Lane, cwd: str, *shas: str) -> bool:
+        """¿Cada SHA existe y es la punta o un ancestro de <remote>/<base>? (tras un fetch de la base). Es la prueba real
+        de un «ya resuelto»: el commit que el worker dice haber comprobado está en la base de verdad. Cualquier fallo
+        de git o SHA inexistente -> False (fail-closed: la tarjeta sigue su camino normal)."""
+        if not shas or not all(shas):
+            return False
+
+        def git(*args: str):
+            return _proc.run_retrying(["git", "-C", cwd, *args], runner=self._run, label=f"git {args[0]}",
+                                      capture_output=True, text=True, encoding="utf-8", errors="replace")
+
+        try:
+            if git("fetch", lane.remote, lane.base).returncode != 0:
+                return False
+            return all(git("cat-file", "-e", f"{sha}^{{commit}}").returncode == 0
+                       and git("merge-base", "--is-ancestor", sha, lane.base_ref).returncode == 0 for sha in shas)
+        except Exception as exc:  # git no responde / timeout agotado
+            log.warning("base_contiene %s: %s", cwd, exc)
+            return False
+
     def merged_pr(self, lane: Lane, task_id: str, gh_exe: str = r"C:\Program Files\GitHub CLI\gh.exe") -> str | None:
         """URL del PR fusionado de lane/<id> en el repo del carril, o None (sin PR fusionado, sin `github:` o gh falla)."""
         slug = getattr(lane, "github", "") or ""
