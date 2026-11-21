@@ -43,9 +43,10 @@ from .integrator import (INT_BATCH_CONSOLE, INT_BATCH_DISCARD, INT_BATCH_FIX, IN
                          INT_BATCH_SKIP, INTEGRATED_PREFIX,
                          MERGE_RETRY_WAITS, NEEDS_MIGRATION, PR_URL_RE, TID_RE, GateResult, Policy, alembic_heads,
                          safe_env)
+from .origen_host import origen_host
 from .notices import TEXT_MAX, status_line, truncate
 from .titulos import proyecto_de_carril
-from .verify import render_test_cmd
+from .verify import render_test_cmd, split_paths, vetada
 
 log = logging.getLogger("agent_lanes")
 
@@ -193,7 +194,7 @@ class BatchPlanner:
         now = self.clock()
         for name, policy in i.settings.policies.items():
             lane = i.lanes.get(name)
-            if not policy.batch or not lane:
+            if not policy.batch or not lane or getattr(lane, "host", None):
                 continue
             hh, mm = (int(x) for x in (valor("lotes.hora") or policy.batch_time).split(":"))  # /ajustes manda sobre lanes.yaml
             today = now.strftime("%Y-%m-%d")
@@ -257,7 +258,9 @@ class BatchPlanner:
             except Exception as exc:
                 show = {}
                 log.warning("%s: no se pudo leer la tarjeta: %s", c["tid"], exc)
-            problem = i._pr_problem(lane, c["tid"], pr) or i._approval_problem(c["tid"], c["pr"], pr, show)
+            problem = (("rama de un host remoto: no entra en lotes (" + origen_host(lane, show) + ")")
+                       if origen_host(lane, show) else None) \
+                or i._pr_problem(lane, c["tid"], pr) or i._approval_problem(c["tid"], c["pr"], pr, show)
             if problem:
                 excluded.append({**c, "reason": problem})
             else:
@@ -289,6 +292,8 @@ class BatchPlanner:
 
     def _assemble(self, lane, policy: Policy) -> str:
         i = self.i
+        if getattr(lane, "host", None):
+            return "Los carriles con host remoto no montan lotes: cada PR va por sus gates y requiere aprobación humana."
         slug = i.links.repo_slug(lane) if i.links else None
         if not slug:
             return "No sé a qué repositorio de GitHub corresponde este carril."
@@ -439,7 +444,7 @@ class BatchPlanner:
 
     def _files(self, w: str, a: str, b: str, three: bool = True) -> list[str]:
         rng = f"{a}...{b}" if three else f"{a}..{b}"
-        return (self.i._git(w, "diff", "--no-renames", "--name-only", rng).stdout or "").split()
+        return split_paths(self.i._git(w, "diff", "-z", "--no-renames", "--name-only", rng).stdout)
 
     def _build_in(self, w: str, wt: Path, lane, policy: Policy, cands: list[dict], out: dict) -> None:
         i, base_sha = self.i, out["base_sha"]
@@ -448,7 +453,7 @@ class BatchPlanner:
             prev = self._head(w)
             m = self._merge(w, c["head_sha"])
             if m.returncode != 0:
-                conflicts = (i._git(w, "diff", "--name-only", "--diff-filter=U").stdout or "").split()
+                conflicts = split_paths(i._git(w, "diff", "-z", "--name-only", "--diff-filter=U").stdout)
                 self._abort(w)
                 out["excluded"].append({**c, "reason": f"choca con {lane.base} o con otra rama del lote" +
                                         (f" ({', '.join(conflicts[:3])})" if conflicts else "")})
@@ -457,7 +462,7 @@ class BatchPlanner:
             res.changed_files = self._files(w, base_sha, c["head_sha"])
             i._diff_gates(w, lane, policy, res, f"{base_sha}...{c['head_sha']}")
             reasons = list(res.reasons)
-            if not reasons and policy.alembic_versions and any(f.startswith(policy.alembic_versions)
+            if not reasons and policy.alembic_versions and any(vetada(f, [policy.alembic_versions])
                                                               for f in res.changed_files):
                 heads, problems = alembic_heads(wt / policy.alembic_versions)
                 if len(heads) != 1 or problems:
@@ -478,10 +483,11 @@ class BatchPlanner:
             out["reasons"] += reasons or ["ninguna rama pasa los gates"]
             return
         files = out["files"]
-        out["sensitive"] = [f for f in files if any(f.startswith(p) or Path(f).name == p for p in policy.sensitive_paths)]
-        if policy.alembic_versions and any(f.startswith(policy.alembic_versions) for f in files):
+        out["sensitive"] = [f for f in files if vetada(f, policy.sensitive_paths)
+                            or any(Path(f).name == p for p in policy.sensitive_paths)]
+        if policy.alembic_versions and any(vetada(f, [policy.alembic_versions]) for f in files):
             out["migration"] = "alembic"
-        if any(f.startswith(p) for p in policy.manual_migrations for f in files):
+        if any(vetada(f, policy.manual_migrations) for f in files):
             out["migration"] = out["migration"] or "supabase"
         if out["sensitive"]:
             out["migration"] = out["migration"] or "infra"
@@ -493,8 +499,7 @@ class BatchPlanner:
         out["members"], out["ok"] = members, True
 
     def _frontend(self, policy: Policy, files: list[str]) -> bool:
-        return bool(policy.batch_frontend_cmd and any(f.startswith(p) for p in policy.batch_frontend_paths
-                                                      for f in files))
+        return bool(policy.batch_frontend_cmd and any(vetada(f, policy.batch_frontend_paths) for f in files))
 
     def _verify(self, w: str, lane, policy: Policy, files: list[str], out: dict | None = None) -> list[str]:
         """test_cmd del carril y, si se tocó el frontend, su build/typecheck. Motivos en lenguaje llano ([] = OK).

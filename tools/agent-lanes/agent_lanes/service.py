@@ -37,6 +37,25 @@ def _lane_attr(lane, name: str, default):
     return default if value is None else value
 
 
+def _host_of(lane):
+    """HostCfg del carril (E2) o None: los carriles locales nunca lo tienen."""
+    return getattr(getattr(lane, "lane", None), "host", None)
+
+
+def _host_lleno(lane, counts: dict) -> bool:
+    """Tope `host.max_parallel` COMPARTIDO por todos los carriles del mismo host y de todo tipo de hueco (normal, grande,
+    reservado). Sin host: nunca lleno (paridad con los carriles locales)."""
+    host = _host_of(lane)
+    return bool(host) and counts.get("hosts", {}).get(host.destino, 0) >= host.max_parallel
+
+
+def _contar_host(lane, counts: dict) -> None:
+    host = _host_of(lane)
+    if host:
+        counts.setdefault("hosts", {})
+        counts["hosts"][host.destino] = counts["hosts"].get(host.destino, 0) + 1
+
+
 def _candidates(lane) -> list:
     """Candidatos del carril como (tid, job, big, serial). Un carril sin `candidates()` (review, ops, pruebas) ofrece lo
     que diga `jobs()` y nunca es grande."""
@@ -233,12 +252,16 @@ class Service:
 
     def _can_big(self, lane, counts: dict) -> bool:
         limit = int(_lane_attr(lane, "max_big", 1))
+        if _host_lleno(lane, counts):
+            return False
         return (self.max_big_total > 0 and limit > 0 and self._row(counts, lane)["big"] < limit
                 and counts["big"] < self.max_big_total and self.max_workers - counts["normal"] - counts["big"] > 0)
 
     def _can_normal(self, lane, counts: dict) -> str | None:
         """'reserved' | 'normal' | None según el hueco normal que le quede al carril."""
         row, slots = self._row(counts, lane), int(_lane_attr(lane, "reserved_slots", 0))
+        if _host_lleno(lane, counts):
+            return None
         if row["normal"] + row["reserved"] >= max(int(_lane_attr(lane, "max_parallel", 1)), slots):
             return None
         if row["reserved"] < slots:
@@ -267,6 +290,7 @@ class Service:
             counts: dict = {"normal": 0, "big": 0, "reserved": 0, "lanes": {}}
             for fl in self._flights.values():
                 counts[fl.kind] += 1
+                _contar_host(fl.lane, counts)
                 row = self._row(counts, fl.lane)
                 row[fl.kind] += 1
                 row["serial"] += 1 if fl.serial else 0
@@ -297,6 +321,7 @@ class Service:
                         fut.add_done_callback(lambda _f: self.wake.set())
                         self._flights[tid] = Flight(tid, lane, kind, fut, serial, time.time())
                         counts[kind] += 1
+                        _contar_host(lane, counts)
                         row = self._row(counts, lane)
                         row[kind] += 1
                         row["serial"] += 1 if serial else 0

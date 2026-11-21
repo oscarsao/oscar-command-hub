@@ -20,6 +20,7 @@ from typing import Callable
 from . import telegram_lane
 from .config import ROOT, Lane
 from .hermes import OSCAR_AUTHOR, REVIEW_AUTHOR
+from .origen_host import origen_host
 from .integration import CHANNEL, link_line, render_ficha, repo_name, risk_of, risks_from_files
 from .notices import (MessageStore, TaskNotices, files_label, fit_reason, money, questions_block, render, status_line,
                       test_label, truncate)
@@ -139,8 +140,12 @@ class ReviewRunner:
                  reviewer, verifier, notify, clock: Callable[[], float] = time.monotonic,
                  messages: MessageStore | None = None, links: Callable | None = None, decisions=None,
                  integration=None, tree: Callable | None = None, state_dir: Path | str | None = None,
-                 sleep: Callable[[float], None] = time.sleep, pr_borrador: Callable | None = None):
+                 sleep: Callable[[float], None] = time.sleep, pr_borrador: Callable | None = None,
+                 host_pila: Callable[[Lane], tuple | None] | None = None):
         self.lane = review_lane
+        # E2: (git, reviewer, verifier) que corren EN el host para un carril con `host_review: true`. None = no hay pila
+        # remota (por defecto): las ramas de origen host siguen bloqueadas en «aprobación humana».
+        self._host_pila = host_pila
         self._pr_borrador = pr_borrador or pr_borrador_mod.abrir_pr_borrador  # inyectable en tests
         self._sleep = sleep
         # Tareas en review que NO se pudieron bloquear (h.block solo mueve running/ready): se recuerda la cabeza ya
@@ -434,26 +439,34 @@ class ReviewRunner:
             if not meta:
                 return self._block(h, task, "transient", "review sin metadata de implementación (branch/head_sha)",
                                    public="falta la metadata de implementación")
-            if getattr(lane, "host", None):
-                # Carril con host: la rama la escribió OTRO equipo. Ni test_cmd ni un Claude con Bash sobre ella en el hub
-                # sin una persona delante (falla cerrado). Ejecutarla en el host o en un sandbox es E2.
-                motivo = (f"carril con host ({lane.host.destino}): el código de la rama lo escribió otro equipo y review no lo "
-                          "ejecuta en el hub (ni test_cmd ni revisor con Bash); requiere aprobación humana previa")
-                return self._block(h, task, "needs_input", motivo, public="rama de un carril remoto: revisión humana",
-                                   questions=["La rama viene de un carril con host remoto: ¿la revisas tú y la apruebas? "
-                                              "(review automático desactivado para estas ramas)"])
-            cwd = self.git.prepare_review_worktree(lane, tid)
-            check = self.verifier(lane, tid, cwd, {"branch": meta["branch"], "head_sha": meta["head_sha"]})
+            git, reviewer, verifier, en_host = self.git, self.reviewer, self.verifier, False
+            origen = origen_host(lane, show)  # config de hoy O metadata verificado_en=host (sobrevive a quitar `host:`)
+            if origen:
+                # La rama la escribió OTRO equipo. Ni test_cmd ni un Claude con Bash sobre ella en el hub sin una persona
+                # delante (falla cerrado). Con `host_review: true` y pila remota, el revisor y sus pruebas corren EN el host
+                # y al hub solo vuelve el informe; sin ello, aprobación humana.
+                pila = self._host_pila(lane) if (self._host_pila and getattr(lane, "host", None)
+                                                 and getattr(lane, "host_review", False)) else None
+                if not pila:
+                    motivo = (f"{origen}: el código de la rama lo escribió otro equipo y review no lo "
+                              "ejecuta en el hub (ni test_cmd ni revisor con Bash); requiere aprobación humana previa")
+                    return self._block(h, task, "needs_input", motivo, public="rama de un carril remoto: revisión humana",
+                                       questions=["La rama viene de un carril con host remoto: ¿la revisas tú y la apruebas? "
+                                                  "(review automático desactivado para estas ramas)"])
+                git, reviewer, verifier = pila
+                en_host = True
+            cwd = git.prepare_review_worktree(lane, tid)
+            check = verifier(lane, tid, cwd, {"branch": meta["branch"], "head_sha": meta["head_sha"]})
             if not check.ok:
                 return self._block(h, task, "transient", "re-verificación mecánica fallida: " + "; ".join(check.reasons),
                                    public="re-verificación mecánica fallida")
             deadline = self.clock() + self.lane.max_runtime_seconds
             session_id = str(uuid.uuid4())
-            outcome = self.reviewer.run(self.lane, lane, task, meta, cwd, session_id, max(60.0, deadline - self.clock()))
+            outcome = reviewer.run(self.lane, lane, task, meta, cwd, session_id, max(60.0, deadline - self.clock()))
             resumes = 0
             while not outcome.ok and resumes < self.lane.max_resumes and deadline - self.clock() > 60:
                 resumes += 1
-                outcome = self.reviewer.resume(self.lane, lane, task, cwd, session_id, max(60.0, deadline - self.clock()))
+                outcome = reviewer.resume(self.lane, lane, task, cwd, session_id, max(60.0, deadline - self.clock()))
         except Exception as exc:
             return self._block(h, task, "transient", f"error del carril review: {exc}",
                                public="error del carril review")
@@ -465,13 +478,14 @@ class ReviewRunner:
         if verdict["status"] == "approve":
             metadata = {**meta, "review": {"status": "approve", "summary": verdict.get("summary"),
                                            "findings": verdict.get("findings"), "session_id": session_id,
-                                           "cost_usd": outcome.cost_usd}}
+                                           "cost_usd": outcome.cost_usd,
+                                           **({"verificado_en": "host"} if en_host else {})}}
             ok, err = self._complete_con_reintentos(h, tid, f"Aprobada por revisión: {verdict.get('summary', '')}"[:1500],
                                                     metadata)
             if not ok:
                 return self._block(h, task, "transient", f"complete rechazado: {err}",
                                    public="el kanban rechazó el cierre")
-            cleaned, msg = self.git.cleanup(lane, tid)
+            cleaned, msg = git.cleanup(lane, tid)
             if not cleaned:  # detalle técnico solo al log y a la tarjeta
                 log_limpieza_pendiente(tid, msg)
                 h.comment(tid, f"Limpieza local pendiente: {msg}"[:1500])

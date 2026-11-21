@@ -15,9 +15,11 @@ from typing import Callable, NamedTuple
 from . import avisos_revision, bloqueos, canal_avisos, clasificador, cuota, grandes, holds, lecciones, telegram_lane
 from . import consulta as _consulta
 from . import deps
+from . import host_ops
 from . import proc as _proc
 from .config import ROOT, Lane
 from .hermes import GUARD_LIMIT_MARK, looks_like_guard_limit
+from .hermes import resume as resume_ready
 from .notices import (MessageStore, TaskNotices, files_label, fit_reason, money, next_step, normalize_questions,
                       question_text, questions_block, render, status_line, test_label)
 from .preflight import pide_lo_imposible, preflight_warnings
@@ -27,6 +29,8 @@ from .worker import choose_model, model_override
 log = logging.getLogger("agent_lanes")
 
 STATE_DIR = ROOT / ".state" / "tasks"
+HOST_KEYS_ESTADO = ("task_id", "lane", "host", "host_worker_pid", "host_worker_created", "host_worker_started",
+                    "host_reencolados")  # claves del estado que sobreviven a un reinicio (worker remoto)
 MESSAGES_DIR = ROOT / ".state" / "messages"  # message_id de Telegram por tarea (persiste entre carriles y reinicios)
 
 
@@ -126,8 +130,11 @@ class LaneRunner:
                  lanes: dict | None = None, consultor: Callable | None = None, final_only=(), prevencion=None,
                  sin_integrar=None,
                  cuota_path: Path | None = None, cuota_minutos: float = cuota.DEFAULT_MINUTOS,
-                 wall_clock: Callable[[], float] = time.time):
+                 wall_clock: Callable[[], float] = time.time, host_store=None):
         self.lane = lane
+        # E2: estado por host (pausa de cuota, gasto del día, sondeo). Solo se usa con carriles que tienen `host:`.
+        self._host_store = host_store or host_ops.default_store(state_dir)
+        self._host_aviso: dict[str, str] = {}
         # Pausa por cuota de Claude: .state/cuota.json junto al estado de las tareas; minutos si el error no trae la hora.
         self._cuota_path = Path(cuota_path) if cuota_path else Path(state_dir).parent / "cuota.json"
         self._cuota_minutos = cuota_minutos
@@ -261,10 +268,15 @@ class LaneRunner:
                 log.warning("%s: mato el worker huérfano (pid %s) del runner anterior", tid, worker)
                 self._kill(worker)
             session = state.get("session_id")
+            remoto = state.get("host_worker_pid") is not None
             self._block(tid, "transient", "runner reiniciado: la tarea quedó en running sin proceso vivo"
-                        + (f" (session_id={session}; se puede retomar con --resume)" if session else ""),
+                        + (f" (session_id={session}; se puede retomar con --resume)" if session else "")
+                        + ("; el worker remoto pudo seguir vivo en el host y se cortará antes de relanzar" if remoto else ""),
                         task, public="runner reiniciado con la tarea en curso")
-            path.unlink(missing_ok=True)
+            if remoto:  # lo apuntado del worker REMOTO se conserva: process() lo corta antes de relanzar
+                path.write_text(json.dumps({k: v for k, v in state.items() if k in HOST_KEYS_ESTADO}), encoding="utf-8")
+            else:
+                path.unlink(missing_ok=True)
             orphans.append(tid)
         return orphans
 
@@ -280,6 +292,16 @@ class LaneRunner:
                     log.error("candado de repos: %s; el carril no reclama tareas", problem)
                     self._repo_warned = True
                 return []
+        if getattr(self.lane, "host", None) and self.lane.kind == "implement":
+            # E2: puerta del host (pausa de cuota del host, tope de gasto, sin señal, disco, SHA/contrato). Solo lee estado:
+            # nada de SSH bajo el candado del planificador. Con la puerta cerrada las tarjetas siguen en ready.
+            cerrada = host_ops.gate(self.lane, self._lanes, self._host_store, self._wall())
+            if cerrada:
+                if self._host_aviso.get(self.lane.name) != cerrada:
+                    self._host_aviso[self.lane.name] = cerrada
+                    host_ops.avisar_una_vez(self.lane.host.destino, cerrada, self._wall())
+                return []
+            self._host_aviso.pop(self.lane.name, None)
         ready = [t for t in self.hermes.list_ready(self.lane.name) if t["id"] not in self.exclude]
         ready = [t for t in ready if not holds.held(t["id"]) and not self._dependency_hold(t["id"])]
         sin_integrar = getattr(self, "_sin_integrar", None)
@@ -347,7 +369,7 @@ class LaneRunner:
             if self._bloquear(tid, kind, reason):
                 del self._block_pendiente()[tid]
                 log.info("%s: bloqueo (%s) conciliado", tid, kind)
-                if reason.startswith(cuota.MOTIVO_PREFIX) and not self.hermes.unblock(tid):
+                if reason.startswith((cuota.MOTIVO_PREFIX, host_ops.MOTIVO_REENCOLADO)) and not self.hermes.unblock(tid):
                     self._unblock_pendiente().add(tid)
 
     def _dependency_hold(self, tid: str) -> bool:
@@ -446,6 +468,17 @@ class LaneRunner:
         if alive and alive != os.getpid():
             log.warning("%s: ya hay un worker vivo (pid %s) sobre la tarea; no se lanza otro", tid, alive)
             return "worker_vivo"
+        if getattr(lane, "host", None):
+            # E2: un `claude` remoto de un intento anterior se corta (solo si es el mismo proceso) ANTES de reclamar; si no se
+            # puede comprobar, la tarjeta sigue en ready y NO se lanza otro worker sobre el mismo worktree remoto.
+            cortar = getattr(self.worker, "cortar_huerfano", None)
+            if cortar:
+                try:
+                    if cortar(lane, tid, self._wall()) != "limpio":
+                        return "huerfano_pendiente"
+                except Exception as exc:  # noqa: BLE001 - transporte caído: no se sabe si sigue vivo
+                    log.warning("%s: no se pudo comprobar el worker remoto anterior (%s); no se lanza", tid, exc)
+                    return "huerfano_pendiente"
         if not self.hermes.claim(tid, lane.claim_ttl_seconds):
             log.info("%s: claim perdido (otro runner o ya no está ready)", tid)
             return "claim_lost"
@@ -456,7 +489,7 @@ class LaneRunner:
         # status` veía la tarea en running sin PID y la daba por huérfana (incidente 27-09, tarjeta t_bdee05fe).
         self.state_dir.mkdir(parents=True, exist_ok=True)
         # Carril con host: lo apuntado del worker REMOTO de un intento anterior se conserva (E2 lo usará para cortar huérfanos).
-        previo = {k: v for k, v in self._read_state(tid).items() if k in ("host", "host_worker_pid", "host_worker_created")}
+        previo = {k: v for k, v in self._read_state(tid).items() if k in HOST_KEYS_ESTADO and k not in ("task_id", "lane")}
         state_path.write_text(json.dumps({**previo, "task_id": tid, "lane": lane.name, "pid": os.getpid(),
                                           "session_id": session_id, "started": time.time()}), encoding="utf-8")
         self._active[tid] = task
@@ -479,9 +512,8 @@ class LaneRunner:
             self._active.pop(tid, None)
             # Carril con host: se CONSERVA lo apuntado del worker remoto (sin `pid` ni `worker_pid`, que son locales) para
             # que E2 pueda cortar un huérfano aunque la tarjeta ya esté bloqueada. Sin PID remoto, se borra como siempre.
-            restos = {k: v for k, v in self._read_state(tid).items()
-                      if k in ("task_id", "lane", "host", "host_worker_pid", "host_worker_created")}
-            if "host_worker_pid" in restos:
+            restos = {k: v for k, v in self._read_state(tid).items() if k in HOST_KEYS_ESTADO}
+            if "host_worker_pid" in restos or restos.get("host_reencolados"):
                 state_path.write_text(json.dumps(restos), encoding="utf-8")
             else:
                 state_path.unlink(missing_ok=True)
@@ -556,15 +588,17 @@ class LaneRunner:
                 for _ in range(2):
                     outcome, repeated = self._reask_if_answered(lane, tid, cwd, session_id, deadline, outcome)
             except Exception as exc:
+                if getattr(lane, "host", None) and self._es_transporte(exc):
+                    return self._reencolar_transporte(tid, task, exc)
                 return self._block(tid, "transient", f"error del runner: {exc}", task, public="error del runner")
 
             if not outcome.ok and cuota.es_cuota(outcome.raw_error):
                 if getattr(lane, "host", None):
-                    # El texto viene del host: no puede disparar la pausa GLOBAL (cuota.json) de todos los carriles.
-                    # La pausa por host es de E2; mientras, la tarjeta se bloquea con el motivo.
-                    return self._block(tid, "transient", f"cuota de Claude agotada en el host {lane.host.destino} "
-                                       f"(pausa por host: E2): {outcome.raw_error}", task,
-                                       public="cuota de Claude agotada en el host remoto")
+                    # El texto viene del host: no dispara la pausa GLOBAL (cuota.json) de todos los carriles, sino la de ESE
+                    # host (`.state/hosts/<destino>.cuota.json`, acotada a 6 h): la cuenta de un host no frena a la otra.
+                    return self._pausar_por_cuota(tid, task, outcome.raw_error,
+                                                  path=self._host_store.cuota_path(lane.host.destino),
+                                                  quien=f"del host {lane.host.destino}")
                 return self._pausar_por_cuota(tid, task, outcome.raw_error)
             if not outcome.ok:
                 why = "max_runtime alcanzado" if deadline - self.clock() <= 60 else f"tras {resumes} resume(s)"
@@ -642,6 +676,7 @@ class LaneRunner:
                 return self._block(tid, "transient", f"request-review rechazado: {err}", task,
                                    public="el kanban rechazó el paso a review")
             self._clear_retry(tid)
+            self._olvidar_reencolados(tid)
             # El resumen completo queda en la tarjeta (request-review); aquí solo la línea de estado.
             self.notify("review", tid, task, status_line(
                 "en review", files_label(len(result.get("changed_files") or [])), test_label(check.test_exit),
@@ -687,13 +722,43 @@ class LaneRunner:
                     for_oscar="Cerrada sin PR porque el worker probó que ya estaba en la base. Si no te cuadra, reabre la tarjeta.")
         return "ya_resuelta"
 
-    def _pausar_por_cuota(self, tid: str, task: dict, raw_error: str | None) -> str:
+    @staticmethod
+    def _es_transporte(exc: Exception) -> bool:
+        from .ssh_host import SshTransportError  # import tardío: los carriles locales nunca lo cargan
+        return isinstance(exc, SshTransportError)
+
+    def _reencolar_transporte(self, tid: str, task: dict, exc: Exception) -> str:
+        """Fallo de TRANSPORTE con un carril de host (red, ssh, lanzador): no es culpa de la tarjeta. Vuelve a ready SIN
+        contar como bloqueo repetido (hasta MAX_REENCOLADOS; el siguiente va como bloqueo normal a Oscar). No se lanza otro
+        worker mientras el anterior pudiera seguir vivo: process() lo corta (o no puede) antes de relanzar."""
+        state = self._read_state(tid)
+        n = int(state.get("host_reencolados") or 0)
+        if n >= host_ops.MAX_REENCOLADOS:
+            return self._block(tid, "transient", f"error del runner: {exc} (ya reencolada {n} veces por fallos del host)",
+                               task, public="error del runner (el host falla repetidamente)")
+        try:
+            self._state_path(tid).write_text(json.dumps({**state, "host_reencolados": n + 1}), encoding="utf-8")
+        except OSError as werr:
+            log.warning("%s: contador de reencolados no guardado: %s", tid, werr)
+        reason = f"{host_ops.MOTIVO_REENCOLADO} {n + 1}/{host_ops.MAX_REENCOLADOS}: {exc}"
+        log.warning("%s: %s", tid, reason)
+        self.hermes.comment(tid, f"LANE: host no alcanzable o fallo de transporte; {reason[:600]}")
+        if self._bloquear(tid, "transient", fit_reason(reason)):
+            if not resume_ready(self.hermes, tid):
+                log.error("%s: no se pudo devolver a ready tras el fallo del host; se reintenta en la pasada siguiente", tid)
+                self._unblock_pendiente().add(tid)
+        else:
+            self._block_pendiente()[tid] = ("transient", fit_reason(reason))
+        return "reencolada"
+
+    def _pausar_por_cuota(self, tid: str, task: dict, raw_error: str | None, *, path: Path | None = None,
+                          quien: str = "") -> str:
         """Cuota de Claude agotada: la tarea vuelve a ready (no es un bloqueo repetido ni gasta resumes), se anota la
         pausa en cuota.json y el planificador no lanza más workers hasta la hora de reset. UN aviso por pausa."""
         now = self._wall()
         until = cuota.pausa_hasta(raw_error, now, self._cuota_minutos)
-        nueva = cuota.escribir(self._cuota_path, until, str(raw_error or ""), now)
-        reason = f"{cuota.MOTIVO_PREFIX} hasta {cuota.hora(until)}; la tarjeta vuelve a ready sola"
+        nueva = cuota.escribir(path or self._cuota_path, until, str(raw_error or ""), now)
+        reason = f"{cuota.MOTIVO_PREFIX}{(' ' + quien) if quien else ''} hasta {cuota.hora(until)}; la tarjeta vuelve a ready sola"
         log.warning("%s: %s", tid, reason)
         # Hermes no tiene «soltar»: block + unblock la deja en ready. El prefijo del motivo la distingue de un fallo real
         # (ver _model_fallback) y la pausa impide que el runner la reclame de nuevo antes de la hora de reset.
@@ -706,7 +771,7 @@ class LaneRunner:
             log.error("%s: no se pudo bloquear para la pausa por cuota; se concilia en la pasada siguiente", tid)
             self._block_pendiente()[tid] = ("transient", reason)
         if nueva:
-            self.notify("running", tid, task, status_line("en pausa", "se agotó la cuota de uso de Claude",
+            self.notify("running", tid, task, status_line("en pausa", f"se agotó la cuota de uso de Claude{(' ' + quien) if quien else ''}",
                                                           f"se reanuda a las {cuota.hora(until)}"), alert=True)
         return "cuota"
 
@@ -724,8 +789,18 @@ class LaneRunner:
             return task
         fallos = [ev for ev in events if ev.get("kind") == "blocked"
                   and (ev.get("payload") or {}).get("kind") == "transient"
-                  and not str((ev.get("payload") or {}).get("reason") or "").startswith(cuota.MOTIVO_PREFIX)]
+                  and not str((ev.get("payload") or {}).get("reason") or "").startswith((cuota.MOTIVO_PREFIX,
+                                                                                         host_ops.MOTIVO_REENCOLADO))]
         return {**task, "model_fallback": True} if fallos else task
+
+    def _olvidar_reencolados(self, tid: str) -> None:
+        """Llegó a review: el contador de reencolados por fallos del host empieza de cero si vuelve a ejecutarse."""
+        state = self._read_state(tid)
+        if state.pop("host_reencolados", None) is not None:
+            try:
+                self._state_path(tid).write_text(json.dumps(state), encoding="utf-8")
+            except OSError:
+                pass
 
     def _clear_retry(self, tid: str) -> None:
         """La tarea llegó a review tras un Reintentar: el ciclo terminó y un bloqueo posterior ya no es "del reintento"."""
