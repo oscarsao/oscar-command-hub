@@ -413,4 +413,3 @@ def verify_remoto(lane: Lane, task_id: str, cwd: str, result: dict, runner=_proc
     except SshTransportError as exc:  # transporte, no «tests rojos»
         reasons.append(f"no se pudo ejecutar test_cmd en el host: {exc}")
     return VerifyResult(ok=not reasons, reasons=reasons, test_exit=test_exit, remote_sha=remote_sha)
-
