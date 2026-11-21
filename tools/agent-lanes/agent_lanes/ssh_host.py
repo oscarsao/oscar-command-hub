@@ -407,23 +407,23 @@ class ClaudeReviewerRemoto(ClaudeReviewer):
         super().__init__(runner=None)
         self._transport, self._store = transport, store
 
-    def _ejecutar(self, lane: Lane, args, prompt: str, cwd: str, timeout: float, env: dict) -> WorkerOutcome:
+    def _ejecutar(self, lane: Lane, presupuesto: float, args, prompt: str, cwd: str, timeout: float, env: dict) -> WorkerOutcome:
         out = run_claude(SshRunner(lane.host, self._transport), args, prompt, cwd, timeout, env)
-        out.cost_usd = sanear_coste(out.cost_usd, lane.max_budget_usd)
+        out.cost_usd = sanear_coste(out.cost_usd, presupuesto)  # el tope es el del CARRIL REVISOR
         if self._store is not None:
             try:
                 self._store.add_gasto(lane.host.destino, out.cost_usd if out.cost_usd is not None
-                                      else (_presupuesto_de(args) or lane.max_budget_usd))
+                                      else (_presupuesto_de(args) or presupuesto))
             except (OSError, ValueError) as exc:
                 log.warning("gasto del host %s no apuntado: %s", lane.host.destino, exc)
         return out
 
     def run(self, review_lane, lane, task, meta, cwd, session_id, timeout) -> WorkerOutcome:
         args = review_args(review_lane, ["--session-id", session_id, "--name", f"review-{task['id']}"])
-        return self._ejecutar(lane, args, review_prompt(lane, task, meta), cwd, timeout, self._env(review_lane, task))
+        return self._ejecutar(lane, review_lane.max_budget_usd, args, review_prompt(lane, task, meta), cwd, timeout, self._env(review_lane, task))
 
     def resume(self, review_lane, lane, task, cwd, session_id, timeout) -> WorkerOutcome:
-        return self._ejecutar(lane, review_args(review_lane, ["--resume", session_id]),
+        return self._ejecutar(lane, review_lane.max_budget_usd, review_args(review_lane, ["--resume", session_id]),
                               "Termina la revisión y devuelve el JSON del schema.", cwd, timeout,
                               self._env(review_lane, task))
 

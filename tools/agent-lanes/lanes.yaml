@@ -330,7 +330,8 @@ lanes:
   #     hub_dir: 'C:\agent-lanes\repos\oscar-command-hub'      # clon del hub en el host (lanzador y contract/), mismo SHA
   #     worktree_root: 'C:\agent-lanes\_lanes'
   #     conexion_timeout_s: 15
-  #     # E2/E3 (se aceptan y se ignoran hoy): hub_sha_minimo, latido_s, disco_min_gb; y host_gasto_dia_usd en el carril.
+  #     # E2 (todas APAGADAS por defecto; ver docs/segundo-ordenador-ssh.md §12): latido_s, latido_parado_s, disco_min_gb,
+  #     # hub_sha_minimo (pin | SHA), contrato_hash; y en el carril: host_gasto_dia_usd, host_review, host_integracion.
   claude-hub:
     telegram: {chat: -1003731090094, thread: 38}  # Desarrollo Píldora (Oscar 23-10: lo de Píldora, Signal y Hub va al grupo de Ángel)
     board: default

@@ -1,6 +1,6 @@
 # Segundo ordenador por SSH: pasos manuales (Oscar)
 
-Spec: `specs/worker-remoto-ssh.md` (decisiones de Oscar, 20-11-2026). Esto es la **entrega E1**: el código ya sabe despachar un
+Spec: `specs/worker-remoto-ssh.md` (decisiones de Oscar, 20-11-2026). Esto cubre las **entregas E1 y E2** (E2 apilada sobre E1, ver §12): el código ya sabe despachar un
 carril con `host:` por SSH, pero ningún carril lo usa hasta que tú hagas estos pasos y pongas el bloque `host:` en `lanes.yaml`.
 
 **Estado de la verificación.** Los tests de E1 usan un ejecutor simulado y el lanzador remoto se probó en local; **nunca se ha
@@ -253,8 +253,7 @@ no sensible). `repo_dir` es el clon del repo **del carril** y `hub_dir` el clon 
 
 y comprueba que carga: `py -3.12 -c "from agent_lanes.config import load_lanes; print(load_lanes()['<carril>'].host)"`.
 El runner lee `lanes.yaml` al arrancar: reiniciarlo lo decides tú (`lanes.py restart --drain`, sin workers en vuelo).
-Esta entrega **no** reencola sola una tarjeta si el HOST cae (E2): con `HostUnreachable` la tarjeta se bloquea como
-«error del runner» y la sueltas a mano.
+Con E2, una tarjeta cuyo HOST cae vuelve sola a `ready` (hasta 3 veces); ver §12.
 
 ## 11. Parar y volver atrás
 
@@ -275,26 +274,96 @@ Del más suave al más completo (todo reversible):
 Rotación (90 días, sin recordatorio automático por ahora): clave SSH (reemplazar la línea de `authorized_keys`), token de GitHub
 (generar otro y repetir `gh auth login`), sesión de Claude (`/login`), y revisión mensual de que `agentlanes` no es administrador.
 
-## 12. Lo que E1 no hace (para que no te sorprenda)
+## 12. Qué hace E2 (y cómo se enciende)
 
-- **E2**: reencolar sin contar bloqueo si el HOST cae, cortar `claude` huérfanos en el HOST (el estado ya guarda `host`,
-  `host_worker_pid` y `host_worker_created` para eso; el runner **no** los trata como PID local), comprobar disco, pausa de cuota
-  por host, tope por host compartido entre carriles, limpieza del worktree remoto (`cleanup`), poner la rama al día en el HOST
-  (`poner_al_dia`), comprobar que el SHA y el hash de `contract/` del HOST son los del HUB antes de despachar, instalar
-  dependencias (pnpm) en el worktree remoto.
-- **E3**: latido del HOST, panel, aviso a los 5 minutos, resumen diario, ajustes en `/ajustes`, `host_gasto_dia_usd`, piloto de 3 tarjetas.
-- **Review e integrador NO ejecutan ramas de un carril con `host:`** (falla cerrado, hecho en código): el carril review pasa la
-  tarjeta a `needs_input` («revisión humana») sin crear worktree, sin `test_cmd` y sin revisor con Bash; el integrador marca la
-  puerta «requiere aprobación humana» y no corre `test_cmd` en el hub. Ejecutarlas en el HOST o en un sandbox es E2. **Los PR de
-  ramas de carriles con `host:` no se fusionan sin Oscar** (la «Excepción del hub» del CLAUDE.md global no cubre este caso: este
-  carril ni siquiera admite el repo del hub).
+Todo lo de E2 **nace apagado**: un carril sin `host:` no cambia en nada, y un carril con `host:` cuyas claves nuevas están en su
+valor por defecto tampoco (el código nuevo existe, pero ninguna puerta se cierra ni ningún sondeo se hace). Se enciende por
+clave, de una en una, en `lanes.yaml`:
 
-## 13. Riesgos abiertos de E1 (conócelos antes de usarlo)
+| Clave | Dónde | Defecto | Qué hace |
+|---|---|---|---|
+| `hub_dir` | `host:` | **obligatoria** | clon de `oscar-command-hub` en el host (ya no se cae en `repo_dir`) |
+| `latido_s` / `latido_parado_s` | `host:` | `0` / `300` | sondeo del host cada `latido_s`; «sin señal» a los 300 s sin un sondeo correcto |
+| `disco_min_gb` | `host:` | `0` | no se lanzan tarjetas si el host informa de menos GB libres |
+| `hub_sha_minimo` | `host:` | `""` | `pin` (el HEAD del hub) o un SHA: el clon del host debe contenerlo; se comprueba en el clon del HUB |
+| `contrato_hash` | `host:` | `false` | el hash de `contract/` del host debe ser el del hub |
+| `host_gasto_dia_usd` | carril | sin tope | tope diario del host (declarado/estimado); el menor de los carriles que comparten host |
+| `host_review` | carril | `false` | la revisión se hace EN el host (ver 12.1) |
+| `host_integracion` | carril | `false` | integración en dos niveles (ver 12.2) |
 
-- **Corte de red con el worker vivo**: si ssh cae a mitad de una tarjeta, `claude` puede seguir en el HOST hasta el plazo del
-  carril (`max_runtime_seconds`, donde el lanzador lo corta). El error lo dice («pudo seguir vivo»). La tarjeta se bloquea como
-  «error del runner»: **no la sueltes antes de que pase ese plazo**, o dos workers escribirían en el mismo worktree. E2 lo
-  comprobará solo con `host_worker_pid`/`host_worker_created`.
+`max_parallel` del host es ahora un tope **compartido** por todos los carriles del mismo host y por todo tipo de hueco
+(normal y grande); `reserved_slots` no se admite en un carril con host. `host_sensitive_repos` **se une** a la lista de fábrica
+(`oscar-command-hub`, `oscar-hq`), no la sustituye; también cuentan `host.repo_dir`, un `repo:` con `.`/`..`, una junction
+al hub o un worktree del hub.
+
+**Sondeo y puerta.** El monitor del runner (un hilo, solo si hay hosts con claves de sondeo) ejecuta por SSH la op `status`
+del lanzador (lista cerrada en `remote_exec.OPS`: `status` y `kill`; un lanzador antiguo falla sin línea RC y el sondeo falla
+cerrado). Guarda en `.state/hosts/<destino>.json`: `ultimaSenal` (hora de **recepción** en el hub), disco, HEAD del clon del
+hub en el host y hash de `contract/`. `LaneRunner.candidates()` solo **lee** ese fichero (nunca abre SSH bajo el candado del
+planificador) y, con la puerta cerrada, deja las tarjetas en `ready` sin contarles nada. Los avisos son líneas de log, una por
+motivo y hora; nada va a Telegram (panel, aviso de 5 min y resumen diario son E3). `hub_sha_minimo` y `contrato_hash` detectan
+**deriva** entre clones; no son una frontera de seguridad (quien controla el host responde lo que quiera).
+
+**Cuota por host.** Un «usage limit» del host pausa solo ese host (`.state/hosts/<destino>.cuota.json`, tope 6 h) y la tarjeta
+vuelve a `ready`; `.state/cuota.json` (la global) no se toca. La pausa global del hub sigue frenando también a los carriles
+con host (no se separó el planificador: es conservador).
+
+**Fallos de transporte y huérfanos.** `HostUnreachable`/`HostError` (ssh 255, lanzador, salida de 8 MiB, plazo del ssh local)
+ya no bloquean la tarjeta: vuelve a `ready` con el motivo «reencolada sin contar bloqueo n/3» (`block` + `unblock`, o
+`requeue_triage` si Hermes la había aparcado). Al 4.º va como bloqueo normal a Oscar. Antes de **reclamar** una tarjeta con un
+`host_worker_pid` apuntado, el runner pide al lanzador del host cortar ese árbol **solo si la hora de creación coincide**
+(PID reciclado = no se toca). Si no se puede comprobar (host caído, sin hora, sigue vivo) la tarjeta se queda en `ready`, sin
+claim y sin lanzar otro worker sobre el mismo worktree. Al terminar el proceso remoto (llegó la línea RC) se borra lo apuntado;
+`reconcile` conserva `host_*` y los motivos de transporte están en `excluir_motivos` de `relanzar.yaml` (`(ssh rc=255)`,
+`pudo seguir vivo`).
+
+**Git remoto.** `cleanup` retira SOLO el worktree remoto `lane-<id>` de la tarjeta (`--force` únicamente si el HEAD del worktree
+es exactamente la rama de GitHub, comprobado desde el hub); no borra ramas ni carpetas. El barrido de tarjetas en `done` es
+acotado (3 por pasada, sin repetir). `base_contiene` se decide en el clon del hub. `poner_al_dia` fusiona, prueba y empuja en
+el host y confirma el SHA resultante con `ls-remote` desde el hub.
+
+### 12.1 Revisión en el host (`host_review: true`)
+
+Sin la clave, o sin pila remota, se mantiene el bloqueo «revisión humana» de E1. Con ella, el carril review: (a) prepara el
+worktree remoto desde la rama de GitHub, (b) repite la verificación (parte git en el hub contra GitHub; `test_cmd` en el host),
+(c) lanza el revisor de solo lectura por SSH (mismos args, mismo guard y mismas variables `AGENT_LANES_*` de la lista blanca) y
+(d) solo vuelve el informe JSON. Nada de lo que escribió el host se ejecuta en el hub. El resultado lleva
+`review.verificado_en: host`. El coste del revisor se sanea con el tope del carril revisor y cuenta en el gasto del host.
+
+### 12.2 Integración en dos niveles (`host_integracion: true`)
+
+Lo que certifica el host (`verificado_en: host`, revisión en el host) **solo decide pasar a revisión**. Para fusionar:
+1. Oscar pulsa ✅ Aprobar sobre el PR (registro local con la **cabeza exacta**; un comentario no basta).
+2. El integrador repite UNA vez la batería combinada (`test_cmd`) **en el hub**, sobre el PR fusionado con la base y con
+   `safe_env()` (sin tokens). El resultado se guarda por cabeza (`host_bateria` en el estado) y no se repite.
+3. Con la batería en verde la ficha queda ofrecida como cualquier otra y la fusión sigue siendo de Oscar (confirmación y
+   `--match-head-commit`). Sin la clave, o sin aprobación de esa cabeza, el integrador falla cerrado como en E1.
+
+La señal de «origen host» es la config de hoy **o** `verificado_en == "host"` en la metadata de cualquier run de la tarjeta:
+quitar `host:` del carril o reasignar la tarjeta no la convierte en local (review, integrador y lote la rechazan; una tarjeta
+reasignada a un carril sin host queda en manos de Oscar). Los carriles con host **no admiten `batch: daily`**: no montan
+lotes y una rama de origen host se excluye del lote.
+
+### Pendiente de E2 y de E3 (no hecho)
+
+- **Probar con un host real**: nada de esto se ha ejecutado por SSH; los tests usan `FakeSsh` y `remote_exec.py` local. Las
+  ops `status`/`kill` y el cálculo de `created_at` en Windows (`GetProcessTimes`) son lo primero que verificar en el piloto.
+- Fijar el clon del host al SHA del hub (`fetch` + `checkout --detach`) **no** está hecho: hoy solo se **bloquea** si no
+  cumple `hub_sha_minimo`/`contrato_hash` y se actualiza a mano.
+- Instalar dependencias (pnpm) en el worktree remoto; wrapper del host con `timeout` propio distinto del del lanzador.
+- Clasificar «sin espacio»/`infra-host` y `transitorio-infra` en `bloqueos.yaml`; avisar qué carpeta ocupa más disco.
+- Hay que **reiniciar el runner** (`lanes.py restart --drain`) para que cargue el código nuevo; no se ha hecho.
+- **E3**: panel con ✅/⚠️/⛔ por host, aviso por Telegram a los 5 min («sin señal» solo va al estado y al log), resumen diario,
+  ajustes en `/ajustes`, piloto de 3 tarjetas. El tope de gasto avisa solo al log (y bloquea).
+- La pausa global por cuota del hub sigue parando también a los carriles con host.
+- Un reencolado por transporte con `unblock` repetido depende de que Hermes devuelva la tarjeta (se usa `requeue_triage` si la
+  aparcó en `triage`); no se ha probado contra un Hermes real.
+
+## 13. Riesgos abiertos (conócelos antes de usarlo)
+
+- **Corte de red con el worker vivo**: `claude` puede seguir en el HOST hasta el plazo del carril. E2 lo corta antes de
+  relanzar si la hora de creación coincide; si el host no responde, **no se relanza** (la tarjeta espera en `ready`). Mientras
+  tanto el proceso huérfano sigue gastando cuota de la cuenta del host.
 - **`MODO WORKER` en el HOST**: las reglas del worker viajan por `--settings` (guard de `contract/`) y el prompt, pero el
   `~/.claude/CLAUDE.md` global y el hook de permisos de Oscar **no existen** en el perfil `agentlanes`. Es lo que se quiere
   (cero credenciales y cero acceso a producción); no lo «arregles» copiándolos.
@@ -302,19 +371,18 @@ Rotación (90 días, sin recordatorio automático por ahora): clave SSH (reempla
   `verificado_en: host` en la metadata de la tarjeta (el `test_cmd` corrió en el segundo ordenador, no en el hub).
 - **Credenciales bajo SSH en Windows** (sin verificar): una sesión por SSH con clave no abre DPAPI ni el Administrador de
   credenciales de la sesión interactiva, así que `gh`, el Git Credential Manager o Claude Code **podrían no leer** el token ni
-  el login guardados. El paso 5 y el 6 de la prueba de humo lo comprueban; si falla, no se «arregla» guardando secretos en
-  ficheros ni en variables de entorno del HUB.
+  el login guardados. Los pasos 5 y 6 de la prueba de humo lo comprueban; no se «arregla» guardando secretos en ficheros ni en
+  variables de entorno del HUB.
 - **Quien administre el HOST puede leer el token de GitHub y la sesión de Claude** del perfil `agentlanes`. Asume ambos como
-  comprometibles: token con caducidad corta y mínimo permiso, y valora una **cuenta de Claude dedicada con tope de gasto** en
-  vez de la de Hola@ compartida.
-- **Qué ve el HOST**: el texto completo de la tarjeta (título, cuerpo, notas del coordinador, respuestas de Oscar, feedback de
-  review), el nombre de las ramas y, por las rutas del hub que aparecen en los argumentos, el usuario de Windows del HUB. Y puede
-  devolver preguntas (`needs_input`) que llegan a Oscar con botones: son texto de otro equipo, léelas como tal.
-- **Coste declarado por el HOST**: se acota (negativo o no numérico = 0; máximo 2x el presupuesto de la tarjeta), pero no es una
-  medición independiente: el gasto real está en la cuenta de Claude.
-- **Salida remota**: stdout+stderr acumulados se cortan a 8 MiB (el ssh se corta y el error lo dice).
-- **Cuota de Claude agotada en el HOST**: bloquea la tarjeta con el motivo; **no** pausa a los demás carriles (la pausa por host es E2).
-- **Tras un bloqueo por host no alcanzable o «pudo seguir vivo»** el relanzado automático no la toca (marcas de `relanzar.yaml`);
-  el estado conserva `host`, `host_worker_pid` y `host_worker_created` para E2.
-- **Claves `host:` de E2/E3** (`hub_sha_minimo`, `latido_s`, `disco_min_gb`, `host_gasto_dia_usd`): se ignoran y el runner lo
-  avisa con un WARNING al cargar. Mientras tanto no hay tope de gasto diario del host.
+  comprometibles: token con caducidad corta y mínimo permiso, y valora una **cuenta de Claude dedicada con tope de gasto**.
+- **Qué ve el HOST**: el texto completo de la tarjeta, el nombre de las ramas y, por las rutas del hub en los argumentos, el
+  usuario de Windows del HUB. Puede devolver preguntas (`needs_input`) que llegan a Oscar con botones: léelas como texto de otro equipo.
+- **Todo lo que informa el host es declarado, no medido**: coste (acotado a 2x el presupuesto), disco, HEAD y hash de
+  `contract/`. Sirven para detectar deriva y fallos, no para defenderse de un host comprometido: la defensa son los controles del
+  hub (verify contra GitHub, sin ejecutar ramas del host en el hub salvo la repetición aprobada de la batería).
+- **La repetición de la batería en el hub (12.2) ejecuta en el hub código escrito por otro equipo**, con `safe_env()` pero sin
+  sandbox: solo tras ✅ Aprobar de Oscar sobre esa cabeza y revisando el diff. Si no te fías del diff, no apruebes.
+- **Salida remota**: stdout+stderr acumulados se cortan a 8 MiB y el stderr se lee por trozos de 64 KiB.
+- **Cuota de Claude agotada en el HOST**: pausa solo a ese host (no a los demás carriles).
+- **Sin protección de ramas** en el repo del carril (decisión de Oscar, §6.4): el token con `Contents: write` puede empujar a
+  `main`; por eso solo repos no sensibles y PR que no se fusionan sin Oscar.
