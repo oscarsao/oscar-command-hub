@@ -471,10 +471,12 @@ def _yaml(tmp_path, lane_body, defaults=""):
     return p
 
 
-def test_lane_without_host_is_local_and_real_lanes_yaml_has_none():
+def test_lane_without_host_is_local_and_real_lanes_yaml_only_remote_mcp():
     assert LANE.host is None and config.Lane(name="x").host is None
     lanes = load_lanes()
-    assert lanes and all(l.host is None for l in lanes.values())  # el lanes.yaml real no activa ningún host
+    # el lanes.yaml real solo activa host en el carril remoto del MCP (21-11, pildora-mcp: repo NO sensible)
+    assert lanes and {n for n, l in lanes.items() if l.host is not None} == {"claude-mcp-remoto"}
+    assert lanes["claude-mcp-remoto"].host.destino == "worker-b"
 
 
 def test_host_parsed_clamps_max_parallel_and_ignores_future_keys(tmp_path):

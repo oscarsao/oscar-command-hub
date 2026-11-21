@@ -298,6 +298,32 @@ lanes:
     # Sin suite de tests versionada: gate = diff --check + compilación de los .py cambiados.
     test_cmd: py -3.12 "{AGENT_LANES_DIR}/agent_lanes/checks.py" {BASE}
 
+  # --- Carril REMOTO del MCP (21-11, decisión de Oscar: delegar tareas de pildora-mcp al segundo ordenador). ---
+  # Primer carril con `host:`. pildora-mcp NO es repo sensible (no despliega nada: MCP local/remoto sin deploy automático).
+  # El worker corre en el host (192.168.1.205, usuario agentlanes, alias SSH worker-b); review e integración NO se ejecutan
+  # solos (aprobación humana de Oscar; fusionar en pildora-mcp es siempre de Oscar). host_review y host_integracion
+  # APAGADOS. Sin tarjetas asignadas a este carril no hace nada: se alimenta con `--assignee claude-mcp-remoto`.
+  claude-mcp-remoto:
+    board: oscarhq
+    repo: C:/Users/oscar/dev/pildora-mcp          # clon del HUB-equipo (este PC) para la parte git de verify
+    github: oscarsao/pildora-mcp
+    base: main
+    role: roles/implementador.md
+    model: sonnet
+    max_budget_usd: 3.0
+    max_parallel: 1
+    host_gasto_dia_usd: 9.0
+    test_cmd: npm ci --ignore-scripts && npm run test:remote
+    host:
+      destino: worker-b
+      max_parallel: 1
+      repo_dir: 'C:\agent-lanes\repos\pildora-mcp'
+      hub_dir: 'C:\agent-lanes\hub'
+      worktree_root: 'C:\agent-lanes\_lanes'
+      conexion_timeout_s: 15
+      latido_s: 300
+      disco_min_gb: 10
+
   # Carril del PROPIO sistema (28-09, plan D): arreglos de agent-lanes/monitor/telegram pedidos desde Telegram, sin
   # sesión de Claude Code. Es el código que ejecuta a los workers: rol propio (cambios mínimos, tests obligatorios,
   # hooks de seguridad solo avisando en for_oscar). El hook que se aplica al worker es el del checkout VIVO
