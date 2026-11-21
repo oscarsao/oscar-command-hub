@@ -134,7 +134,8 @@ def es_consulta(task: dict | None) -> bool:
 
 def _otros_repos(lane: Lane | None, lanes: dict | None, cfg: dict) -> list[str]:
     own = (getattr(lane, "github", "") or "").lower()
-    out = [str(r) for r in cfg.get("otros_repos") or ()]
+    own_name = own.rsplit("/", 1)[-1]  # un carril sí puede tocar SU repo aunque la lista estática lo nombre (claude-mcp-remoto)
+    out = [str(r) for r in cfg.get("otros_repos") or () if not own_name or str(r).lower() != own_name]
     for other in (lanes or {}).values():
         slug = (getattr(other, "github", "") or "").lower()
         if slug and slug != own:
