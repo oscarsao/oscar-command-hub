@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import subprocess
+from pathlib import Path
 
 from agent_lanes import pr_borrador as pb
 from agent_lanes.config import Lane
@@ -9,6 +10,7 @@ from agent_lanes.review import ReviewRunner
 from tests.test_phase2 import (FakeNotifier, FakeReviewer, FakeReviewGit, FakeVerifier, REVIEW, LANE, ReviewHermes,
                                verdict)
 
+REAL_YAML = Path(pb.ROOT) / "pr_borrador.yaml"
 SLUG = "oscarsao/oscar-hq"
 URL = "https://github.com/oscarsao/oscar-hq/pull/99"
 ON = pb.Ajustes(activo=True, repos=(SLUG,))
@@ -23,7 +25,7 @@ class Sim:
     """Runner que responde a git/gh según lo configurado y apunta cada comando."""
 
     def __init__(self, *, remota=True, ahead="2", abiertos="[]", fusionados="[]", create=None, gh_rc=0, commits="[]",
-                 tip=""):
+                 tip="b" * 40):
         self.cmds = []
         self.remota, self.ahead, self.gh_rc = remota, ahead, gh_rc
         self.commits, self.tip = commits, tip
@@ -73,7 +75,7 @@ def test_yaml_ausente_invalido_o_correcto(tmp_path):
     assert pb.load_ajustes(tmp_path / "mal.yaml") == pb.Ajustes()
     (tmp_path / "ok.yaml").write_text(f"activo: true\nrepos: [{SLUG}, 5]\n", encoding="utf-8")
     assert pb.load_ajustes(tmp_path / "ok.yaml") == pb.Ajustes(activo=True, repos=(SLUG,))
-    assert pb.load_ajustes(pb.SETTINGS_PATH) == pb.Ajustes()  # el fichero del repo viene apagado
+    assert pb.load_ajustes(REAL_YAML) == pb.Ajustes()  # el fichero del repo viene apagado
 
 
 def test_encendido_con_lista_blanca_abre_el_pr_en_borrador():
@@ -196,3 +198,145 @@ def test_fallo_al_listar_prs_abiertos_no_abre_nada():
     sim = Sim(tip="b" * 40, commits="no es json")
     res = abrir(sim)
     assert res.estado == pb.FALLO and sim.creates() == []
+
+
+# --- acotación en el tiempo (hallazgo 1) -------------------------------------------------------------------------
+
+def test_lectura_con_timeout_corto_y_sin_reintento():
+    llamadas = []
+
+    def lento(cmd, **kw):
+        llamadas.append(kw.get("timeout"))
+        raise subprocess.TimeoutExpired(cmd, kw.get("timeout"))
+
+    res = pb.abrir_pr_borrador(LANE_GH, "t_1", "T", "x", ajustes=ON, runner=lento, gh_exe="gh", sleep=lambda s: None)
+    assert res.estado == pb.FALLO and "timeout" in res.motivo
+    assert llamadas == [pb.TIMEOUT_LECTURA]  # una sola llamada: sin reintento tras timeout
+
+
+def test_presupuesto_total_agotado_devuelve_fallo():
+    t = [0.0]
+
+    def clock():
+        return t[0]
+
+    sim = Sim()
+
+    def runner(cmd, **kw):
+        assert kw["timeout"] <= pb.TIMEOUT_LECTURA or "create" in cmd
+        t[0] += 50  # cada llamada "tarda" 50 s
+        return sim(cmd, **kw)
+
+    res = pb.abrir_pr_borrador(LANE_GH, "t_1", "T", "x", ajustes=ON, runner=runner, gh_exe="gh", sleep=lambda s: None,
+                               clock=clock)
+    assert res.estado == pb.FALLO and "presupuesto" in res.motivo and sim.creates() == []
+    assert len(sim.cmds) == 2  # ls-remote y fetch; la tercera lectura ya no cabe
+
+
+def test_timeout_de_lectura_devuelve_timeout_rc_como_fallo():
+    def runner(cmd, **kw):
+        return cp(pb._proc.TIMEOUT_RC, "", "timeout (transitorio): x")
+
+    res = pb.abrir_pr_borrador(LANE_GH, "t_1", "T", "x", ajustes=ON, runner=runner, gh_exe="gh", sleep=lambda s: None)
+    assert res.estado == pb.FALLO and "ls-remote" in res.motivo
+
+
+def test_rev_list_no_numerico_es_fallo():
+    sim = Sim(ahead="fatal: raro")
+    res = abrir(sim)
+    assert res.estado == pb.FALLO and "rev-list" in res.motivo and sim.creates() == []
+
+
+# --- redacción (hallazgo 2) ----------------------------------------------------------------------------------------
+
+def test_cuerpo_y_titulo_se_redactan():
+    sim = Sim()
+    clave = "sk-ant-abcdefghijklmnopqrstuvwxyz123456"
+    pb.abrir_pr_borrador(LANE_GH, "t_1", f"Arreglo con {clave}", f"Falla con API_KEY=hunter2xyz y {clave}", ajustes=ON,
+                         runner=sim, gh_exe="gh", sleep=lambda s: None)
+    cmd = sim.creates()[0]
+    for campo in ("--title", "--body"):
+        texto = cmd[cmd.index(campo) + 1]
+        assert clave not in texto and "hunter2xyz" not in texto
+    assert "[REDACTADO]" in cmd[cmd.index("--body") + 1]
+
+
+# --- rev-parse sin SHA (hallazgo 3) -------------------------------------------------------------------------------
+
+def test_rev_parse_vacio_o_fallido_no_abre_a_ciegas():
+    sim = Sim(tip="")
+    res = abrir(sim)
+    assert res.estado == pb.FALLO and "rev-parse" in res.motivo and sim.creates() == []
+
+    class RevParseRoto(Sim):
+        def __call__(self, cmd, **kw):
+            if cmd[0] == "git" and "rev-parse" in cmd:
+                self.cmds.append(cmd)
+                return cp(128, "", "fatal: bad revision")
+            return super().__call__(cmd, **kw)
+
+    sim = RevParseRoto()
+    res = abrir(sim)
+    assert res.estado == pb.FALLO and "bad revision" in res.motivo and sim.creates() == []
+
+
+# --- timeout de gh pr create (hallazgo 4) ------------------------------------------------------------------------
+
+class SimCreateTimeout(Sim):
+    def __init__(self, existe, **kw):
+        super().__init__(**kw)
+        self.existe, self.listas_head = existe, 0
+
+    def __call__(self, cmd, **kw):
+        if cmd[0] != "git" and "create" in cmd:
+            self.cmds.append(cmd)
+            raise subprocess.TimeoutExpired(cmd, 60)
+        if cmd[0] != "git" and "--head" in cmd and "list" in cmd and "--state" in cmd                 and cmd[cmd.index("--state") + 1] == "open" and any(c[0] != "git" and "create" in c for c in self.cmds):
+            self.cmds.append(cmd)
+            return cp(0, '[{"number": 9, "url": "%s"}]' % URL if self.existe else "[]")
+        return super().__call__(cmd, **kw)
+
+
+def test_timeout_en_create_con_el_pr_ya_creado_devuelve_abierto():
+    res = abrir(SimCreateTimeout(existe=True))
+    assert (res.estado, res.url) == (pb.ABIERTO, URL)
+
+
+def test_timeout_en_create_sin_pr_visible_dice_que_puede_existir():
+    res = abrir(SimCreateTimeout(existe=False))
+    assert res.estado == pb.FALLO and "no se ve ningún PR" in res.motivo
+
+    class TodoCae(SimCreateTimeout):
+        def __call__(self, cmd, **kw):
+            if cmd[0] != "git" and "list" in cmd and any(c[0] != "git" and "create" in c for c in self.cmds):
+                raise subprocess.TimeoutExpired(cmd, 30)
+            return super().__call__(cmd, **kw)
+
+    res = abrir(TodoCae(existe=True))
+    assert res.estado == pb.FALLO and "puede existir" in res.motivo
+
+
+# --- review.py: el PR va DESPUÉS de limpiar y de avisar (hallazgo 1) ------------------------------------------------
+
+def test_review_abre_el_pr_despues_de_limpiar_y_avisar():
+    git, notif, vistos = FakeReviewGit(), FakeNotifier(), []
+    h = ReviewHermes([{"id": "t_1", "title": "T", "body": "B", "assignee": "claude-oscarhq", "status": "review"}])
+
+    def hook(lane, tid, title, summary):
+        vistos.append((list(git.cleaned), len(notif.msgs)))
+        return pb.Resultado(pb.OMITIDO)
+
+    r = ReviewRunner(REVIEW, {"claude-oscarhq": LANE}, hermes_for=lambda b: h, git=git,
+                     reviewer=FakeReviewer([verdict("approve")]), verifier=FakeVerifier(True), notify=notif,
+                     sleep=lambda s: None, pr_borrador=hook)
+    assert r.run_once() == {"t_1": "done"}
+    assert vistos and vistos[0][0] == ["t_1"] and vistos[0][1] >= 1
+
+
+def test_gh_por_defecto_reutiliza_la_ruta_de_decisions():
+    from agent_lanes import decisions
+    assert pb.gh_ejecutable() in (decisions.GH_EXE, "gh")
+
+
+def test_conftest_aisla_el_yaml_real():
+    assert pb.SETTINGS_PATH != REAL_YAML and pb.load_ajustes() == pb.Ajustes()

@@ -463,7 +463,6 @@ class ReviewRunner:
             if not ok:
                 return self._block(h, task, "transient", f"complete rechazado: {err}",
                                    public="el kanban rechazó el cierre")
-            self._abrir_pr_borrador(h, task, lane, verdict.get("summary"))
             cleaned, msg = self.git.cleanup(lane, tid)
             if not cleaned:  # detalle técnico solo al log y a la tarjeta
                 log_limpieza_pendiente(tid, msg)
@@ -476,6 +475,8 @@ class ReviewRunner:
                 changed_files=meta.get("changed_files"), buttons=True,
                 summary=verdict.get("summary") or meta.get("summary"), for_oscar=meta.get("for_oscar"),
                 test_exit=check.test_exit, deps=self._deps(h, tid, show), findings=verdict.get("findings") or [])
+            # Al final: sus llamadas a git/gh pueden tardar y no deben retrasar la limpieza ni el aviso de «done».
+            self._abrir_pr_borrador(h, task, lane, verdict.get("summary"))
             return "done"
 
         changes = verdict.get("required_changes") or [verdict.get("summary", "")]
