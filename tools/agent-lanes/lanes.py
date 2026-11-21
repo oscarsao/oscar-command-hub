@@ -154,6 +154,9 @@ def main(argv: list[str]) -> int:
     if argv[:2] == ["tarjeta", "nueva"]:  # vía única para crear tarjetas de carril
         from agent_lanes import nueva_tarjeta
         return nueva_tarjeta.main(argv[2:])
+    if argv[:2] == ["tarjeta", "comprobar"]:  # solo lectura: ¿bloquearía el clasificador este cuerpo?
+        from agent_lanes import comprobar_tarjeta
+        return comprobar_tarjeta.main(argv[2:])
     if argv[:2] == ["tarjeta", "reparar-origen"]:  # en seco: lista y propone, no aplica
         from agent_lanes import nueva_tarjeta
         return nueva_tarjeta.reparar_main(argv[2:])
