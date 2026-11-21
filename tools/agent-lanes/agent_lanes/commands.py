@@ -2494,14 +2494,15 @@ class CommandCenter:
         from . import ciego, drain, health
         from .paradas import Paradas
         from .runner import STATE_DIR, pid_alive
+        from .procid import es_el_runner
         from .status import lane_rows, runner_alive, runner_line
         lock = drain.LOCK_FILE
         mig = self.lanes.get(health.MIGRATEAM_LANE)
         now = self._now()
         return health.build(
-            runner=lambda: runner_line(lock, pid_alive, drain.active(), drain.BUSY_FILE),
+            runner=lambda: runner_line(lock, pid_alive, drain.active(), drain.BUSY_FILE, identidad=es_el_runner),
             rows=lambda: lane_rows(self.lanes, hermes_for=self.hermes_for, state_dir=STATE_DIR, pid_alive=pid_alive,
-                                   runner_is_alive=runner_alive(lock, pid_alive)),
+                                   runner_is_alive=runner_alive(lock, pid_alive, es_el_runner)),
             gateway=lambda: health.gateway_line(health.HERMES_GATEWAY_STATE, pid_alive, now),
             monitor=lambda: health.monitor_lines(health.MONITOR_STATE_DIR, now),
             drift=lambda: health.migrateam_drift(mig.repo if mig else ""),

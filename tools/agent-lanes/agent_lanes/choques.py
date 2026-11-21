@@ -160,6 +160,25 @@ def _solapes_aj(a: Ajustes) -> solapes.Ajustes:
     return solapes.Ajustes(nivel=a.nivel, modulo_min_profundidad=a.modulo_min_profundidad)
 
 
+# Zona declarada de una tarjeta (t_ee0b27a3): se recalculaba en cada vuelta para todas las tarjetas. Se cachea por
+# (id, repo, extensiones, huella del título+cuerpo): la lista de Hermes no trae fecha de modificación, y la huella del
+# texto cambia justo cuando se edita la tarjeta, que es lo que una fecha detectaría. Acotada: al llenarse se vacía.
+_ZONAS: dict[tuple, frozenset] = {}
+_ZONAS_MAX = 4000
+
+
+def rutas_tarjeta(tid: str, texto: str, aj: solapes.Ajustes, repo: str = "") -> set[str]:
+    """`solapes.extraer_rutas(texto, aj, repo)` con caché por tarjeta; devuelve siempre un set nuevo (modificable)."""
+    huella = hashlib.sha1((texto or "").encode("utf-8", "replace")).hexdigest()
+    clave = (str(tid), solapes._norm_repo(repo), tuple(aj.extensiones), huella)
+    hit = _ZONAS.get(clave)
+    if hit is None:
+        if len(_ZONAS) >= _ZONAS_MAX:
+            _ZONAS.clear()
+        hit = _ZONAS[clave] = frozenset(solapes.extraer_rutas(texto, aj, repo))
+    return set(hit)
+
+
 @dataclass
 class Unidad:
     uid: str                       # clave estable: id de tarjeta si la hay, si no la rama
@@ -359,7 +378,7 @@ def unidades_repo(repo: str, remote: str, base: str, tarjetas: list[dict], git: 
             if not tid:
                 continue
             texto = f"{t.get('title') or ''}\n{t.get('body') or ''}"
-            u = Unidad(tid, _etiq(tid, t.get("title") or ""), rutas=solapes.extraer_rutas(texto, sol, repo), texto=texto,
+            u = Unidad(tid, _etiq(tid, t.get("title") or ""), rutas=rutas_tarjeta(tid, texto, sol, repo), texto=texto,
                        dueno=str(t.get("assignee") or ""), origen="tarjeta",
                        board=str(t.get("_board") or ""), lane=str(t.get("assignee") or ""))
             if f"lane/{tid}" in ramas:

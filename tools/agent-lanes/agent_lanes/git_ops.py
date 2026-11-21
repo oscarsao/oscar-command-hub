@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .config import Lane
+from .vuelta import medir
 
 log = logging.getLogger("agent_lanes")
 
@@ -115,8 +116,9 @@ class GitOps:
         """`_git` que reintenta con espera progresiva si el fallo es el bloqueo de .git/config de otro git. Agotados
         los reintentos registra un único aviso y lanza GitError."""
         for intento in range(len(_REINTENTOS_BLOQUEO) + 1):
-            cp = self._run(["git", "-C", repo, *args], capture_output=True, text=True, encoding="utf-8",
-                           errors="replace", timeout=timeout)
+            with medir("git " + " ".join(args[:2]) + f" {Path(args[2]).name if len(args) > 2 else ''}".rstrip()):
+                cp = self._run(["git", "-C", repo, *args], capture_output=True, text=True, encoding="utf-8",
+                               errors="replace", timeout=timeout)
             if cp.returncode == 0:
                 return cp
             if not any(marca in cp.stderr for marca in _MARCAS_BLOQUEO):
@@ -322,6 +324,26 @@ class GitOps:
         except ValueError:
             return None
 
+    def base_contiene(self, lane: Lane, cwd: str, *shas: str) -> bool:
+        """¿Cada SHA existe y es la punta o un ancestro de <remote>/<base>? (tras un fetch de la base). Es la prueba real
+        de un «ya resuelto»: el commit que el worker dice haber comprobado está en la base de verdad. Cualquier fallo
+        de git o SHA inexistente -> False (fail-closed: la tarjeta sigue su camino normal)."""
+        if not shas or not all(shas):
+            return False
+
+        def git(*args: str):
+            return _proc.run_retrying(["git", "-C", cwd, *args], runner=self._run, label=f"git {args[0]}",
+                                      capture_output=True, text=True, encoding="utf-8", errors="replace")
+
+        try:
+            if git("fetch", lane.remote, lane.base).returncode != 0:
+                return False
+            return all(git("cat-file", "-e", f"{sha}^{{commit}}").returncode == 0
+                       and git("merge-base", "--is-ancestor", sha, lane.base_ref).returncode == 0 for sha in shas)
+        except Exception as exc:  # git no responde / timeout agotado
+            log.warning("base_contiene %s: %s", cwd, exc)
+            return False
+
     def merged_pr(self, lane: Lane, task_id: str, gh_exe: str = r"C:\Program Files\GitHub CLI\gh.exe") -> str | None:
         """URL del PR fusionado de lane/<id> en el repo del carril, o None (sin PR fusionado, sin `github:` o gh falla)."""
         slug = getattr(lane, "github", "") or ""
@@ -379,8 +401,9 @@ class GitOps:
                 return False, msg
             log.info("%s: carpeta huérfana %s borrada (git ya no la conoce como worktree)", task_id, path)
         if path.exists():
-            cp = self._run(["git", "-C", lane.repo, "worktree", "remove", str(path)], capture_output=True, text=True,
-                           encoding="utf-8", errors="replace", timeout=300)
+            with medir(f"git worktree remove {task_id}"):
+                cp = self._run(["git", "-C", lane.repo, "worktree", "remove", str(path)], capture_output=True,
+                               text=True, encoding="utf-8", errors="replace", timeout=300)
             if cp.returncode != 0:
                 head = (self._out("git", "-C", str(path), "rev-parse", "HEAD") or "").strip()
                 remote = self._remote_sha(lane, branch)
@@ -392,8 +415,9 @@ class GitOps:
                          or "").splitlines()
                 log.warning("%s: HEAD %s ya está en %s/%s; se descartan %d archivo(s) locales al limpiar: %s",
                             task_id, head[:10], lane.remote, branch, len(dirty), dirty[:200])
-                cp = self._run(["git", "-C", lane.repo, "worktree", "remove", "--force", str(path)],
-                               capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300)
+                with medir(f"git worktree remove --force {task_id}"):
+                    cp = self._run(["git", "-C", lane.repo, "worktree", "remove", "--force", str(path)],
+                                   capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300)
                 if cp.returncode != 0:
                     return False, f"worktree no eliminado ni con --force: {cp.stderr.strip()[:200]}"
         if not self._branch_exists(lane.repo, branch):

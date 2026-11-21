@@ -329,7 +329,9 @@ def test_git_fetch_real_con_runner_falso():
 
 def test_choques_yaml_trae_los_ajustes_tempranos():
     aj = load_ajustes()
-    assert aj.temprano and aj.fetch
+    # 20-11 (Oscar, D2): choques.yaml apaga el aviso temprano a propósito (temprano: false); el test fija lo que Oscar
+    # decidió, no que esté encendido. La lógica del aviso temprano se prueba con Ajustes(temprano=True) más abajo.
+    assert aj.temprano is False and aj.fetch
 
 
 # --- aviso temprano con las fuentes del 25-10 (solo tarjetas): el PR se lee aunque `pr` no sea fuente -------------------

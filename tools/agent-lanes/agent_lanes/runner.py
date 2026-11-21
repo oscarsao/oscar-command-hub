@@ -23,6 +23,7 @@ from .notices import (MessageStore, TaskNotices, files_label, fit_reason, money,
                       question_text, questions_block, render, status_line, test_label)
 from .preflight import pide_lo_imposible, preflight_warnings
 from .telegram import in_scope, telegram_target
+from .worker import choose_model, model_override
 
 log = logging.getLogger("agent_lanes")
 
@@ -478,7 +479,10 @@ class LaneRunner:
         ops = lane.kind == "ops"
         where = "workspace ops (sin git)" if ops else \
             "consulta (sin rama)" if clasificador.es_consulta(task) else f"rama lane/{tid}"
-        self.hermes.comment(tid, f"LANE claim por {lane.name} · session_id={session_id} · {where}")
+        task = self._model_fallback(tid, task)  # antes del claim: el comentario lleva el modelo realmente usado
+        modelo = choose_model(lane, task)
+        log.info("%s: modelo=%s", tid, modelo)
+        self.hermes.comment(tid, f"LANE claim por {lane.name} · session_id={session_id} · {where} · modelo={modelo}")
 
         repeated = ""  # nota con las respuestas previas si el worker insiste en una pregunta ya respondida
         with Heartbeat(lambda: self.hermes.heartbeat(tid), lane.heartbeat_seconds):
@@ -528,7 +532,6 @@ class LaneRunner:
                     conflict = self.git.sync_base(lane, cwd)
                     if conflict:
                         task = {**task, "merge_conflict": conflict}
-                task = self._model_fallback(tid, task)
                 outcome = self.worker.run(lane, task, cwd, session_id, timeout=max(60.0, deadline - self.clock()))
                 resumes = 0
                 while (not outcome.ok and not cuota.es_cuota(outcome.raw_error) and resumes < lane.max_resumes
@@ -559,6 +562,8 @@ class LaneRunner:
                                    f"el worker no terminó ({why}): {outcome.raw_error} (session_id={session_id})", task,
                                    public="el worker no terminó (tiempo o presupuesto agotado)")
             result = outcome.structured
+            if not ops and self._ya_resuelta_valida(lane, cwd, result):
+                return self._cerrar_ya_resuelta(tid, task, result, outcome)
             if result["status"] == "needs_input":
                 asked = normalize_questions(result.get("questions")) or normalize_questions([result.get("summary", "")])
                 detail = "\n".join(f"- {question_text(q)}" for q in asked) or result.get("summary", "")
@@ -665,6 +670,45 @@ class LaneRunner:
             self._lento: dict[str, float] = {}
         return self._lento
 
+    def _ya_resuelta_valida(self, lane: Lane, cwd: str, result: dict) -> bool:
+        """«Ya resuelto» con prueba (21-11): el worker comprobó que el hallazgo ya está corregido en la base y no tocó
+        nada. Vale solo con (1) evidencia con cuerpo, (2) sin ficheros cambiados y (3) comprobado contra git: el SHA que
+        dice haber mirado Y el HEAD de su worktree existen y son la punta o un ancestro de <remote>/<base> (sin commits
+        propios). Si algo no cuadra se ignora el camino y la tarjeta sigue como siempre (pregunta a Oscar o verificación),
+        sin cerrar nada: «hecha no es integrada»."""
+        ya = result.get("already_resolved")
+        if not isinstance(ya, dict) or result.get("status") not in ("needs_input", "done"):
+            return False
+        sha = str(ya.get("checked_sha") or "").strip().lower()
+        head = str(result.get("head_sha") or "").strip().lower()
+        hexa = re.compile(r"[0-9a-f]{7,40}")
+        if not (len(str(ya.get("evidence") or "").strip()) >= 40 and hexa.fullmatch(sha) and hexa.fullmatch(head)
+                and not result.get("changed_files")):
+            return False
+        comprobar = getattr(self.git, "base_contiene", None)
+        return bool(comprobar and comprobar(lane, cwd, sha, head))
+
+    def _cerrar_ya_resuelta(self, tid: str, task: dict, result: dict, outcome) -> str:
+        """Cierra la tarjeta sin PR cuando el hallazgo ya estaba resuelto (con la evidencia en un comentario) y libera a las
+        tarjetas que cuelgan de ella. Antes el worker se paraba con una pregunta a Oscar y detrás se congelaba toda la
+        cadena (t_bece096f y t_128385ca, 20-11: más de 24 h sin respuesta). Reversible: la tarjeta se reabre."""
+        ya = result["already_resolved"]
+        evidence = str(ya["evidence"]).strip()
+        sha = str(ya["checked_sha"]).strip().lower()
+        self.hermes.comment(tid, f"CERRADA COMO YA RESUELTA (sin PR) · base comprobada {sha[:12]}\n\n{evidence}\n\n"
+                                 "Si no es cierto, reabre la tarjeta y dilo aquí.")
+        ok, err = self.hermes.complete(tid, f"Ya resuelto en la base {sha[:12]}: {evidence}"[:1500],
+                                       {"lane": self.lane.name, "kind": "ya_resuelta", "checked_sha": sha,
+                                        "cost_usd": outcome.cost_usd, "verified": False})
+        if not ok:
+            return self._block(tid, "transient", f"complete rechazado: {err}", task,
+                               public="el kanban rechazó cerrar la tarjeta ya resuelta")
+        self._clear_retry(tid)
+        self.notify("done", tid, task, status_line("cerrada como ya resuelta", money(outcome.cost_usd)),
+                    branch_link=False, bullets=[evidence[:1500]],
+                    for_oscar="Cerrada sin PR porque el worker probó que ya estaba en la base. Si no te cuadra, reabre la tarjeta.")
+        return "ya_resuelta"
+
     def _pausar_por_cuota(self, tid: str, task: dict, raw_error: str | None) -> str:
         """Cuota de Claude agotada: la tarea vuelve a ready (no es un bloqueo repetido ni gasta resumes), se anota la
         pausa en cuota.json y el planificador no lanza más workers hasta la hora de reset. UN aviso por pausa."""
@@ -689,10 +733,11 @@ class LaneRunner:
         return "cuota"
 
     def _model_fallback(self, tid: str, task: dict) -> dict:
-        """Tarjeta `Tamaño: S` con model_small: si la tarjeta ya se bloqueó (transient) o falló antes con ese modelo, el
-        intento siguiente va con lane.model (`model_fallback` en la tarea; lo lee worker.choose_model). Las devoluciones
-        por cuota no cuentan. Sin poder leer el historial, se queda con el modelo barato."""
-        if not (getattr(self.lane, "model_small", "") and grandes.es_pequena(task)):
+        """Tarjeta con `model_override` válido o `Tamaño: S` con model_small: si la tarjeta ya se bloqueó (transient) o
+        falló antes con ese modelo, el intento siguiente va con lane.model (`model_fallback` en la tarea; lo lee
+        worker.choose_model). Las devoluciones por cuota no cuentan. Sin poder leer el historial, se queda con el
+        modelo elegido."""
+        if not (model_override(self.lane, task) or (getattr(self.lane, "model_small", "") and grandes.es_pequena(task))):
             return task
         try:
             events = (self.hermes.show(tid) or {}).get("events") or []

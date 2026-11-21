@@ -14,11 +14,22 @@ PR), la línea de `TELEGRAM_ALLOWED_CHATS` y la lista de Hermes. Nunca toca `.en
 de Oscar: `python -m agent_lanes.sync_usuarios resolver <id>...` marca las filas como resueltas. `suspendido: true` en
 una entrada de people.yaml la deja sin acceso.
 
+Runner vivo de verdad (14-11-2026): Windows reutiliza los PID, así que un PID vivo no basta. `agent_lanes/procid.py`
+comprueba que el proceso del candado (`.state/runner.lock`, campo `started`) o del latido (`runner-latido.json`, campo
+`desde`) tenga `runner.py` en su línea de comandos y no haya nacido después de escribirse. Un candado cuyo PID es de otro
+proceso se retoma con un aviso en el log («PID reutilizado»); `lanes.py status` lo muestra como PARADO. El latido externo
+a Oscar HQ (`detalle`) lleva `planificador_edad_s`, `principal_edad_s`, `estado` y `colgado` (planificador sin latir más
+de `runner.latido_parado_segundos`, 300 s), y `runner` solo es `true` si el proceso es el runner y no está colgado. Los
+avisos `runner-dead` y `runner-hung` (ALTA, también de noche) no pasan por el tope de 1 aviso al día: se repiten cada 30 min.
+Reinicio automático del runner colgado: `runner.reinicio_auto_colgado` en `lanes.yaml` (por defecto `false`: solo avisa).
+Con `true`, si el latido se para y no hay workers en vuelo, el monitor lanza `lanes.py restart --drain --colgado` (máx. 1
+por hora); con workers en vuelo nunca reinicia.
+
 ## Qué va a cada carril
 
 | Assignee | Para qué | Resultado |
 |---|---|---|
-| `claude-<repo>` (`claude-oscarhq`, `claude-migrateam`, `claude-scraper`, `claude-nextjobs`) | Código de ESE repo: bugfix, feature, spec, docs versionados | Rama `lane/<id>` empujada, `test_cmd` del carril, carril `review` y PR con [✅ Aprobar] |
+| `claude-<repo>` (`claude-oscarhq`, `claude-migrateam`, `claude-migrateam-web`, `claude-scraper`, `claude-nextjobs`) | Código de ESE repo: bugfix, feature, spec, docs versionados | Rama `lane/<id>` empujada, `test_cmd` del carril, carril `review` y PR con [✅ Aprobar] |
 | `claude-hub` (alias `claude-telegram`) | El propio sistema (`oscar-command-hub`: agent-lanes, monitor, bots de Telegram de carriles `@pildora_carriles_bot` y Avisos `@PildoraD_BOT`): arreglos pedidos desde Telegram sin abrir Claude Code. Desde el 23-10 «Hub y Telegram» es un solo carril; `claude-telegram` es solo un alias (no se emite). **Plaza reservada** (`reserved_slots`, fuera de `max_workers`) y dos repos: la tarjeta elige con `Repo: hub\|oscar-hq` (lista blanca `repos:`). Un título `[Telegram]` o citar los bots la enruta aquí (`clasificador.yaml`) | Rama `lane/<id>` sobre `main` (u `master` de oscar-hq), suite de agent-lanes, `review`, ficha ⚙️ SISTEMA e integrador; tras fusionar, [🔁 Aplicar] |
 | `claude-ops` | Trabajo operativo sin repo: inventariar o copiar carpetas (vault/buzón del disco E:), leer calendario, Drive o ClickUp y proponer cambios, preparar accesos, planes e informes | Carpeta `C:/Users/oscar/dev/_lanes/ops/<id>` con evidencias; siempre a `review` con [✅ Validar / 🔁 Pedir cambios] |
 | `oscar` | Lo que exige a Oscar: firmar, pagar, decisiones de negocio, credenciales, ejecutar una acción externa ya aprobada (v1), cualquier cosa en producción | Lo hace Oscar (también es donde acaba el botón 🗄 Aparcar) |
@@ -150,8 +161,9 @@ sesión con Oscar. El monitor y el bot de Telegram (Python) sí entran.
 
 - Rol `roles/hub.md`: cambios mínimos, test obligatorio por cambio de comportamiento, suite completa en verde, sin
   tocar `contract/*guard*` ni `*worker-settings.json` salvo petición expresa y avisándolo en `for_oscar`.
-- `test_cmd`: `checks.py` (diff --check + compilación) y `py -3.12 -m pytest tools/agent-lanes/tests -q` del
-  worktree del worker. Es código del worker ejecutado como Oscar (el runner no le pone entorno mínimo; el integrador
+- `test_cmd`: `checks.py` (diff --check + compilación) y `agent_lanes/tests_delta.py` (pytest solo de los tests del delta de la
+  rama; suite completa si toca conftest/config/lanes/kanban_api/hermes, `lanes.yaml` con claves nuevas o >25 ficheros)
+  en el worktree del worker. Es código del worker ejecutado como Oscar (el runner no le pone entorno mínimo; el integrador
   sí): lo mismo que ya puede hacer el worker con su propio pytest, pero conviene saberlo.
 - El hook que se aplica a un worker es el del checkout VIVO (`render_settings` usa el ROOT del runner), no el de su
   worktree: un cambio en `contract/` no rige hasta fusionar y aplicar.
@@ -276,7 +288,8 @@ cambia; cualquier cola, orden o escalada que se escriba aquí debe respetarla.
   mande solo el yaml: reinstalar el servicio SIN `-MaxWorkers` (`instalar_servicio.sh` ya no lo pasa; lo hace Oscar, los
   `.ps1` quedan fuera del alcance de los workers) y reiniciar el runner. El log de arranque
   (`runner: carriles=… max_workers=N`) dice el valor real. `max_parallel` por carril: 1 por defecto (`defaults`); 4 en
-  `claude-oscarhq` (27-10); 2 en `claude-hub` y en `review` (5-11); 1 en `claude-ops`.
+  `claude-oscarhq` (27-10); 2 en `claude-hub` y en `review` (5-11); 2 en `claude-migrateam` y `claude-scraper` (20-11); 1 en `claude-migrateam-web` (20-11);
+  1 en `claude-ops`.
 
 ## Guarda de tablero (ADR-036)
 `hermes kanban create` sin `--board` cae en `default`, y cada carril solo lee el tablero de su `board:` en `lanes.yaml`.

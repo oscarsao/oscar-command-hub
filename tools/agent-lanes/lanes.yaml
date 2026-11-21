@@ -34,6 +34,9 @@ runner:
   # llamada devuelve un fallo (no tumba la pasada) y una decisión de Oscar afectada va a la cola de reintentos.
   cli_timeout_seconds: 120
   cli_timeout_backoff: [5, 20]
+  # `show` de una tarjeta leído del kanban.db en solo lectura en vez de un `hermes kanban show` por tarjeta (t_ee0b27a3).
+  # false = camino antiguo (CLI). La variable de entorno AGENT_LANES_HERMES_LECTOR (0/1) gana sobre este valor.
+  hermes_lector_ro: true
 
 # Avisos a Telegram. Destino de cada aviso de una tarea, por prioridad:
 #   1. La línea `Origen-Telegram: chat=<id> thread=<id>` del cuerpo, si el chat está en TELEGRAM_ALLOWED_CHATS (.env)
@@ -149,6 +152,8 @@ defaults:
   model: sonnet
   # Modelo para tarjetas «Tamaño: S»; si una S falla o se bloquea con él, el siguiente intento usa `model`.
   model_small: haiku
+  # Alias que una tarjeta puede fijar con `model_override` (gana sobre model_small y model). Otro valor se ignora.
+  model_permitidos: [sonnet, haiku]
   effort: medium
   max_budget_usd: 3.0
   # Por carril, no global. Se queda en 1: cada carril trabaja un repo y dos workers en el mismo repo/checkout podrían
@@ -247,6 +252,7 @@ lanes:
     # 28-09 (Oscar): en MigraTeam todo entra por develop (staging) y solo llega a master por promoción
     # release/<fecha> (CLAUDE.md del repo, tabla de ramas). Un carril NUNCA parte ni apunta a master.
     base: develop
+    max_parallel: 2  # 20-11 (Oscar, botón en la sesión de la Integradora): de 1 a 2; volver a 1 si hay OOM o lentitud
     # AGENTS.md de MigraTeam: ownership por claims (.coordination/claims/, check_claims.py --diff falla si tocas
     # ficheros de otro dueño) y alembic/versions/ tiene un único propietario (integradora) => vetado aquí.
     # check_claims.py se ejecuta en su versión de {BASE}, nunca la copia del worker (sería ejecutar su código).
@@ -263,6 +269,24 @@ lanes:
     # 8-nov-2026 (Oscar, botón, ronda 11): base main. Los PR #75-#89 se fusionan en main; la antigua rama
     # cambio/multiverse-benchmark-harness iba 149 commits por detrás (0 por delante).
     base: main
+    max_parallel: 2  # 20-11 (Oscar, botón en la sesión de la Integradora): de 1 a 2; volver a 1 si hay OOM o lentitud
+    test_cmd: py -3.12 "{AGENT_LANES_DIR}/agent_lanes/checks.py" {BASE}
+
+  # 20-11 (Oscar, botón en la sesión de la Integradora): sitio web de MigraTeam (www.migrateam.com, Next.js en Vercel).
+  # La fábrica de tarjetas descartaba candidatas del sitio por no tener carril. Todo entra por develop (vista previa de
+  # Vercel, NO www); a main solo por promoción con botón de Oscar, fuera del carril. Sin deploy: lo hace la Integradora.
+  claude-migrateam-web:
+    telegram: {chat: -1003530490339, thread: 230}
+    board: migrateam
+    repo: C:/Users/oscar/dev/migrateam-web
+    github: PildoraDigital/migrateam-web
+    base: develop
+    max_parallel: 1
+    # Dependencias y CI: revisión de seguridad aparte (una dependencia nueva pide auditoría antes de entrar).
+    forbidden_paths:
+      - .github/workflows/
+      - package.json
+      - package-lock.json
     test_cmd: py -3.12 "{AGENT_LANES_DIR}/agent_lanes/checks.py" {BASE}
 
   claude-nextjobs:
@@ -290,7 +314,7 @@ lanes:
     role: roles/hub.md
     model: sonnet
     max_budget_usd: 3.0
-    test_cmd: py -3.12 "{AGENT_LANES_DIR}/agent_lanes/checks.py" {BASE} && py -3.12 -m pytest tools/agent-lanes/tests -q
+    test_cmd: py -3.12 "{AGENT_LANES_DIR}/agent_lanes/checks.py" {BASE} && py -3.12 "{AGENT_LANES_DIR}/agent_lanes/tests_delta.py" {BASE}
     # La lista sustituye a la de defaults (no se fusiona): .github/workflows/ se repite a propósito.
     max_parallel: 2  # 21-10: Oscar quiere las entregas A/B/C del pitch de seguimiento a la vez
     forbidden_paths:
@@ -395,7 +419,7 @@ lanes:
 
   review:
     kind: review
-    reviews: [claude-oscarhq, claude-migrateam, claude-scraper, claude-nextjobs, claude-hub]
+    reviews: [claude-oscarhq, claude-migrateam, claude-migrateam-web, claude-scraper, claude-nextjobs, claude-hub]
     role: roles/revisor.md
     model: sonnet
     effort: medium

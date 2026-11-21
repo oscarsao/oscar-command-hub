@@ -67,6 +67,7 @@ from .titulos import rebase_title  # noqa: E402
 from .notices import MessageStore, TaskNotices, card_url, markup_token, render, status_line, truncate  # noqa: E402
 from .telegram import telegram_target  # noqa: E402
 from .verify import render_test_cmd  # noqa: E402
+from .vuelta import medir  # noqa: E402
 
 log = logging.getLogger("agent_lanes")
 
@@ -1114,8 +1115,9 @@ class Integrator:
         res.base_sha = (self._git(repo, "rev-parse", f"{remote}/{base}").stdout or "").strip()
         wt = Path(self.settings.worktree_root) / f"int-{tid}"
         self._remove_worktree(repo, wt)
-        cp = self._git(repo, "-c", f"core.hooksPath={self._nohooks()}", "worktree", "add", "--detach", str(wt),
-                       res.base_sha)
+        with medir(f"integrador git worktree add int-{tid}"):
+            cp = self._git(repo, "-c", f"core.hooksPath={self._nohooks()}", "worktree", "add", "--detach", str(wt),
+                           res.base_sha)
         if cp.returncode != 0:
             res.reasons.append("no se pudo preparar la copia de prueba")
             res.detail.append(f"git worktree add: {(cp.stderr or '').strip()[:300]}")
@@ -1199,7 +1201,8 @@ class Integrator:
         if res.reasons or not lane.test_cmd:
             return  # nunca se ejecuta test_cmd sobre un diff que ya falló
         try:
-            t = self._exec(render_test_cmd(lane), cwd=w, timeout=1800, shell=True, env=safe_env())
+            with medir(f"integrador test_cmd {lane.name} {wt.name}"):
+                t = self._exec(render_test_cmd(lane), cwd=w, timeout=1800, shell=True, env=safe_env())
             res.test_exit = t.returncode
             if t.returncode != 0:
                 res.reasons.append("los tests del carril fallan con el PR fusionado")
@@ -1216,7 +1219,8 @@ class Integrator:
         if not wt.name.startswith(("int-", "intdep-")) or Path(self.settings.worktree_root) not in wt.parents:
             raise PermissionError(f"worktree ajeno: {wt}")
         if wt.exists():
-            self._git(repo, "worktree", "remove", "--force", str(wt))
+            with medir(f"integrador git worktree remove {wt.name}"):
+                self._git(repo, "worktree", "remove", "--force", str(wt))
         self._git(repo, "worktree", "prune")
 
     # --- avisos ---------------------------------------------------------------------------------------
