@@ -19,6 +19,7 @@ from agent_lanes import canal_avisos, ciego, consola, cuota, doctor_config, drai
 from agent_lanes.bandeja import load as load_bandeja
 from agent_lanes.board_guard import BoardGuardTicker
 from agent_lanes.choques import ChoquesTicker
+from agent_lanes.relanzar import RelanzarTicker
 from agent_lanes.fusion import Fusion
 from agent_lanes import sin_integrar as sin_integrar_mod
 from agent_lanes.prevencion import Prevencion
@@ -356,6 +357,8 @@ def main(argv: list[str] | None = None) -> int:
                                 issue=decisions.store.issue if decisions else None)
         if decisions:
             decisions.choques = choques  # 🙈 Ignorar este par / 🔇 Silenciar rama (los de tarjetas siguen en fusion.py)
+    # Relanzado automático de bloqueadas transitorias (relanzar.yaml, apagado por defecto): una pasada por ciclo.
+    relanzar = None if args.once else RelanzarTicker(all_lanes, hermes_for)
     if not args.once:
         # El planificador va en su PROPIO hilo (fix/runner-tick, 23-10): el mantenimiento del bucle principal (sweep_done,
         # integrador, tickers) puede tardar minutos (un `git worktree remove` colgado bloqueó 5 min el tick y el runner
@@ -421,7 +424,7 @@ def main(argv: list[str] | None = None) -> int:
                     hilo_integrador.lanzar()
         for nombre, ticker in (("guard", guard), ("solapes", solapes), ("choques", choques), ("reconcile", reconcile),
                                ("limpieza-ticker", limpieza), ("recolector", recolector), ("paradas", paradas),
-                               ("avisos", avisos_ticker)):
+                               ("avisos", avisos_ticker), ("relanzar", relanzar)):
             if ticker:
                 with crono.paso(nombre):
                     ticker.tick()
