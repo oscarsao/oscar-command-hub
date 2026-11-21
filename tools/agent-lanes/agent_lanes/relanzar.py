@@ -17,14 +17,15 @@ Una pasada (`pasada`) relanza como máximo `max_por_pasada` tarjetas (por defect
   f) no se ha relanzado ya `max_auto_por_tarjeta` veces (contador en `.state/relanzar.json`).
 
 Entre las candidatas se elige la bloqueada MÁS ANTIGUA. Al relanzar: `unblock`, comentario «RELANZADA
-AUTOMÁTICAMENTE (n/max): <motivo recortado>» y una línea de log. Ante cualquier fallo del kanban (listar, leer, unblock)
-la pasada se detiene y el `RelanzarTicker` lo captura y espera `PAUSA_ERROR_SEGUNDOS` antes de volver a intentarlo:
+AUTOMÁTICAMENTE (n/max): <motivo recortado>» y una línea de log. Ante un fallo del kanban (listar, leer) la pasada se
+detiene; un `unblock` que devuelve False se registra y se sigue con la siguiente y el `RelanzarTicker` lo captura y espera `PAUSA_ERROR_SEGUNDOS` antes de volver a intentarlo:
 nunca hay reintentos en bucle apretado. Cuando `activo` es false no se lee el kanban en absoluto.
 """
 from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 import unicodedata
 from dataclasses import dataclass
@@ -44,6 +45,12 @@ AUTHOR = "relanzar"
 EXCLUIR_DEFECTO = ("CONFIGURACIÓN", "LIMITACION-GUARD", "producción", "migración")
 MOTIVO_MAX = 160
 MAX_LECTURAS = 40          # tarjetas bloqueadas leídas (show) por pasada como máximo
+MAX_RAMAS = 5              # comprobaciones de rama (git) por pasada como máximo
+CACHE_SEGUNDOS = 600       # caducidad de la decisión cacheada por tarjeta (descartada / con rama)
+CACHE_DESCONOCIDA_SEGUNDOS = 120
+SIN_RAMA = "sin_rama"      # la rama lane/<id> NO existe en el remoto (seguro)
+DESCONOCIDA = "desconocida"  # git no pudo decirlo (red, timeout...): NO se relanza
+_RELANZADA_RE = re.compile(r"^RELANZADA AUTOM[ÁA]TICAMENTE \(\d+/\d+\)")
 PAUSA_ERROR_SEGUNDOS = 300
 
 
@@ -98,12 +105,21 @@ def ultimo_bloqueo(show: dict | None) -> tuple[str, str, float] | None:
     return str(payload.get("kind") or ""), str(payload.get("reason") or ""), when
 
 
+class EstadoCorrupto(Exception):
+    """`.state/relanzar.json` existe pero no se puede leer o no es un dict: no se resetea, se desactiva la pasada."""
+
+
 def _cargar(path: Path) -> dict:
-    try:
-        data = json.loads(Path(path).read_text(encoding="utf-8"))
-        return data if isinstance(data, dict) else {}
-    except (OSError, ValueError):
+    path = Path(path)
+    if not path.exists():
         return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise EstadoCorrupto(str(exc)) from exc
+    if not isinstance(data, dict):
+        raise EstadoCorrupto("el estado no es un objeto JSON")
+    return data
 
 
 def _guardar(path: Path, data: dict) -> None:
@@ -114,12 +130,14 @@ def _guardar(path: Path, data: dict) -> None:
     tmp.replace(path)
 
 
-def rama_con_trabajo(lane, tid: str) -> int | None:
-    """Commits de origin/lane/<id> sobre la base del carril, o None si la rama NO existe en el remoto (o git falla).
-    Sirve para no relanzar una tarjeta que ya tiene trabajo hecho: se integra, no se rehace (Integradora, 21-11)."""
+def rama_con_trabajo(lane, tid: str):
+    """Estado de origin/lane/<id>: nº de commits sobre la base del carril (int, 0 = ya integrada), `SIN_RAMA` si NO existe
+    en el remoto o `DESCONOCIDA` si git no pudo decirlo (sin repo, red, timeout, rev-list fallido). «No existe» solo si
+    `git ls-remote --exit-code` devuelve 2 (o 128 con «couldn't find remote ref»). Cualquier otro fallo es DESCONOCIDA y el
+    llamador NO relanza: se integra, no se rehace (Integradora, 21-11)."""
     repo = getattr(lane, "repo", None)
     if not repo:
-        return None
+        return DESCONOCIDA
     rama = "lane/" + tid
     remote = getattr(lane, "remote", "origin")
     base = getattr(lane, "base", "main")
@@ -129,13 +147,18 @@ def rama_con_trabajo(lane, tid: str) -> int | None:
                                   text=True, encoding="utf-8", errors="replace")
 
     try:
+        ls = git("ls-remote", "--exit-code", remote, f"refs/heads/{rama}")
+        if ls.returncode == 2 or (ls.returncode == 128 and "couldn't find remote ref" in (ls.stderr or "").lower()):
+            return SIN_RAMA
+        if ls.returncode != 0:
+            return DESCONOCIDA
         if git("fetch", "-q", remote, rama).returncode != 0:
-            return None  # la rama no existe en el remoto (o no hay red): no se puede decir que tenga trabajo
+            return DESCONOCIDA
         cp = git("rev-list", "--count", f"{remote}/{base}..{remote}/{rama}")
-        return int(cp.stdout.strip()) if cp.returncode == 0 else None
-    except Exception as exc:  # git no responde: falla del lado de NO relanzar solo si la rama se sabe existente
+        return int(cp.stdout.strip()) if cp.returncode == 0 else DESCONOCIDA
+    except Exception as exc:  # git no responde: desconocido, nunca «no existe»
         log.warning("relanzar: no se pudo mirar la rama de %s: %s", tid, exc)
-        return None
+        return DESCONOCIDA
 
 
 def _recortar(text: str) -> str:
@@ -143,83 +166,147 @@ def _recortar(text: str) -> str:
     return one if len(one) <= MOTIVO_MAX else one[: MOTIVO_MAX - 1] + "…"
 
 
+def _relanzos_escritos(show: dict | None) -> int:
+    """Comentarios «RELANZADA AUTOMÁTICAMENTE (n/max)» ya escritos en la tarjeta (no cuenta «NO RELANZADA…»)."""
+    return sum(1 for c in (show or {}).get("comments") or ()
+               if isinstance(c, dict) and _RELANZADA_RE.match(str(c.get("body") or "").strip()))
+
+
+def _cacheada(decisiones: dict, tid: str, ahora: float) -> bool:
+    d = decisiones.get(tid)
+    try:
+        return isinstance(d, dict) and ahora - float(d["t"]) < float(d["ttl"])
+    except (KeyError, TypeError, ValueError):
+        return False
+
+
+def _cachear(decisiones: dict, tid: str, motivo: str, ahora: float, ttl: float = CACHE_SEGUNDOS) -> None:
+    decisiones[tid] = {"d": motivo, "t": ahora, "ttl": ttl}
+
+
 def pasada(cfg: Ajustes, lanes: dict, hermes_for: Callable, state_path: Path | str | None = None,
-           rama_de: Callable | None = None) -> list[str]:
+           rama_de: Callable | None = None, ahora: Callable[[], float] = time.time) -> list[str]:
     """Una pasada de relanzado; devuelve los ids relanzados. Lanza solo ante un fallo del kanban (lo captura el ticker)."""
     if not cfg.activo:
         return []
     state_path = Path(state_path or STATE_PATH)
+    try:
+        estado = _cargar(state_path)
+    except EstadoCorrupto as exc:
+        log.warning("relanzar: %s ilegible (%s): pasada desactivada, NO se resetea el estado; revísalo a mano",
+                    state_path, exc)
+        return []
     codigo = {n for n, l in lanes.items() if getattr(l, "kind", "implement") == "implement"}
     boards = sorted({l.board for l in lanes.values() if l.board})
-    running: set[str] = set()
+    ocupadas: set[str] = set()
     bloqueadas: list[tuple[str, dict]] = []
     for board in boards:
         h = hermes_for(board)
-        running |= {t["id"] for t in h.list_status_all("running")}
-        bloqueadas += [(board, t) for t in h.list_status_all("blocked")]
-    hueco = cfg.tope_running - len(running)
+        ocupadas |= {t["id"] for t in h.list_status_all("running")}
+        # una tarjeta recién desbloqueada sigue en ready hasta que el planificador la reclama: también ocupa hueco
+        ocupadas |= {t["id"] for t in h.list_status_all("ready") if t.get("assignee") in codigo}
+        for t in h.list_status_all("blocked"):
+            if t.get("id") not in {b[1].get("id") for b in bloqueadas}:  # una tarjeta se lee y cuenta una sola vez
+                bloqueadas.append((board, t))
+    hueco = cfg.tope_running - len(ocupadas)
     if hueco <= 0:
         return []
-    estado = _cargar(state_path)
+    now = ahora()
     contador = estado.get("relanzadas") if isinstance(estado.get("relanzadas"), dict) else {}
+    decisiones = estado.get("decisiones") if isinstance(estado.get("decisiones"), dict) else {}
+    con_rama = estado.get("con_rama") if isinstance(estado.get("con_rama"), dict) else {}
     marcas = [_norm(m) for m in cfg.excluir_motivos]
-    candidatas = []
+    candidatas: list[tuple[str, dict]] = []
     for board, t in bloqueadas:
         tid = t.get("id")
         if not tid or t.get("status", "blocked") != "blocked" or t.get("assignee") not in codigo:
             continue
-        if _int(contador.get(tid), 0, 0) >= cfg.max_auto_por_tarjeta:
+        if _int(contador.get(tid), 0, 0) >= cfg.max_auto_por_tarjeta or _cacheada(decisiones, tid, now):
             continue
         candidatas.append((board, t))
+    candidatas.sort(key=lambda bt: float(bt[1].get("created_at") or 0))
+    asignada = {t["id"]: t.get("assignee") for _b, t in candidatas}
     leidas: list[tuple[float, str, str, str]] = []
     for board, t in candidatas[:MAX_LECTURAS]:
-        show = hermes_for(board).show(t["id"]) or {}
+        tid = t["id"]
+        show = hermes_for(board).show(tid) or {}
         if (show.get("task") or {}).get("status", "blocked") != "blocked":
-            continue  # triage u otro estado: no se toca
+            _cachear(decisiones, tid, "no_blocked", now)  # triage u otro estado: no se toca
+            continue
+        escritos = _relanzos_escritos(show)
+        if escritos > _int(contador.get(tid), 0, 0):
+            contador[tid] = escritos  # el estado se perdió o se quedó corto: manda lo escrito en la tarjeta
+            estado["relanzadas"] = contador
+        if escritos >= cfg.max_auto_por_tarjeta:
+            _cachear(decisiones, tid, "limite_relanzos", now)
+            continue
         found = ultimo_bloqueo(show)
         if not found or found[0] != "transient":
+            _cachear(decisiones, tid, "no_transient", now)
             continue
         _kind, motivo, when = found
         if any(m in _norm(motivo) for m in marcas):
+            _cachear(decisiones, tid, "motivo_excluido", now)
             continue
-        leidas.append((when or float(t.get("created_at") or 0), t["id"], board, motivo))
+        leidas.append((when or float(t.get("created_at") or 0), tid, board, motivo))
     relanzadas: list[str] = []
     rama_de = rama_de or rama_con_trabajo
-    con_rama = estado.get("con_rama") if isinstance(estado.get("con_rama"), dict) else {}
+    ramas_vistas = 0
     for _when, tid, board, motivo in sorted(leidas):
-        if len(relanzadas) >= min(cfg.max_por_pasada, hueco):
+        if len(relanzadas) >= min(cfg.max_por_pasada, hueco) or ramas_vistas >= MAX_RAMAS:
             break
-        asignada = next((t.get("assignee") for b, t in candidatas if t.get("id") == tid), None)
-        commits = rama_de(lanes.get(asignada), tid) if lanes.get(asignada) is not None else None
-        if commits is not None:
+        lane_ = lanes.get(asignada.get(tid))
+        ramas_vistas += 1
+        res = rama_de(lane_, tid) if lane_ is not None else DESCONOCIDA
+        if res != SIN_RAMA and not (isinstance(res, int) and not isinstance(res, bool)):
+            # DESCONOCIDA (o algo que no se entiende): no se sabe si hay rama; NO se relanza ni se comenta
+            _cachear(decisiones, tid, "rama_desconocida", now, CACHE_DESCONOCIDA_SEGUNDOS)
+            log.warning("relanzar: %s omitida: no se pudo comprobar la rama lane/%s", tid, tid)
+            continue
+        if res != SIN_RAMA:
             # Ya tiene rama lane/<id>: o tiene trabajo sin integrar o ya esta integrada. NUNCA se relanza: se integra.
+            _cachear(decisiones, tid, "con_rama", now)
             if tid not in con_rama:
-                con_rama[tid] = commits
+                con_rama[tid] = res
                 estado["con_rama"] = con_rama
                 _guardar(state_path, estado)
                 try:
                     hermes_for(board).comment(
-                        tid, f"NO RELANZADA AUTOMÁTICAMENTE: ya tiene la rama lane/{tid} ({commits} commits fuera de la base; "
+                        tid, f"NO RELANZADA AUTOMÁTICAMENTE: ya tiene la rama lane/{tid} ({res} commits fuera de la base; "
                              "0 = ya integrada). Se integra o se cierra, no se rehace. Aviso para la Integradora.", author=AUTHOR)
                 except Exception as exc:
                     log.warning("relanzar: comentario de %s no escrito: %s", tid, exc)
-            log.info("relanzar: %s omitida: ya tiene rama lane/%s (%s commits)", tid, tid, commits)
+            log.info("relanzar: %s omitida: ya tiene rama lane/%s (%s commits)", tid, tid, res)
             continue
-        n = _int(contador.get(tid), 0, 0) + 1
+        h = hermes_for(board)
+        fresca = h.show(tid) or {}  # releer justo antes: otro agente puede haberla movido ya
+        if (fresca.get("task") or {}).get("status", "blocked") != "blocked":
+            _cachear(decisiones, tid, "no_blocked", now)
+            log.info("relanzar: %s ya no está blocked: no se toca", tid)
+            continue
+        if _relanzos_escritos(fresca) >= cfg.max_auto_por_tarjeta:
+            _cachear(decisiones, tid, "limite_relanzos", now)
+            continue
+        previo = _int(contador.get(tid), 0, 0)
+        n = previo + 1
         contador[tid] = n  # antes del unblock: si algo falla a medias, no hay bucle
         estado["relanzadas"] = contador
         _guardar(state_path, estado)
-        h = hermes_for(board)
         if not h.unblock(tid):
-            contador[tid] = n - 1
+            contador[tid] = previo
+            _cachear(decisiones, tid, "unblock_fallido", now, CACHE_DESCONOCIDA_SEGUNDOS)
             _guardar(state_path, estado)
-            raise RuntimeError(f"unblock de {tid} falló")
+            log.warning("relanzar: unblock de %s falló: se sigue con la siguiente", tid)
+            continue
+        decisiones.pop(tid, None)
         relanzadas.append(tid)
         log.info("relanzar: %s relanzada automáticamente (%d/%d): %s", tid, n, cfg.max_auto_por_tarjeta, _recortar(motivo))
         try:
             h.comment(tid, f"RELANZADA AUTOMÁTICAMENTE ({n}/{cfg.max_auto_por_tarjeta}): {_recortar(motivo)}", author=AUTHOR)
         except Exception as exc:
             log.warning("relanzar: comentario de %s no escrito: %s", tid, exc)
+    estado["decisiones"] = {k: v for k, v in decisiones.items() if _cacheada(decisiones, k, now)}
+    _guardar(state_path, estado)
     return relanzadas
 
 
@@ -228,9 +315,10 @@ class RelanzarTicker:
     pausa el ticker `PAUSA_ERROR_SEGUNDOS` (sin reintentos en bucle apretado)."""
 
     def __init__(self, lanes: dict, hermes_for: Callable, settings_path: Path | str | None = None,
-                 state_path: Path | str | None = None, clock: Callable[[], float] = time.monotonic):
+                 state_path: Path | str | None = None, clock: Callable[[], float] = time.monotonic,
+                 rama_de: Callable | None = None):
         self.lanes, self.hermes_for = lanes, hermes_for
-        self.settings_path, self.state_path, self.clock = settings_path, state_path, clock
+        self.settings_path, self.state_path, self.clock, self.rama_de = settings_path, state_path, clock, rama_de
         self._pausa_hasta = 0.0
 
     def tick(self) -> list[str]:
@@ -238,7 +326,7 @@ class RelanzarTicker:
         if not cfg.activo or self.clock() < self._pausa_hasta:
             return []
         try:
-            return pasada(cfg, self.lanes, self.hermes_for, self.state_path)
+            return pasada(cfg, self.lanes, self.hermes_for, self.state_path, self.rama_de)
         except Exception as exc:
             self._pausa_hasta = self.clock() + PAUSA_ERROR_SEGUNDOS
             log.warning("relanzar falló (se reintenta en %d s): %s", PAUSA_ERROR_SEGUNDOS, exc)
