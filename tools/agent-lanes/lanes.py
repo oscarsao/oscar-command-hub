@@ -5,6 +5,9 @@
     py -3.12 lanes.py close <task_id> "<resumen>"  # verificación mecánica + request-review (nunca merge)
     py -3.12 lanes.py renotify [--lane X] [--task t_id] [--dry-run] [--force]
                                                    # reenvía con botones los avisos pendientes de decisión
+    py -3.12 lanes.py limpiar-avisos [--aplicar [--max N]] [--revertir LOTE]
+                                                   # limpieza única de choques/solapes antiguos del tema Decisiones:
+                                                   # dry-run por defecto; --aplicar con OK de Oscar (solo edita)
     py -3.12 lanes.py tarjeta <comentar|archivar|reasignar|resuelta> <task_id> --autor <quien>
                                        --solicitante <clave|id> [--a perfil] [texto]   # veto de marca (F1-07, P06)
                                                    # el integrador registra en la tarjeta lo decidido en otro canal
@@ -145,6 +148,9 @@ def main(argv: list[str]) -> int:
     if argv[:1] == ["renotify"]:
         from agent_lanes import renotify
         return renotify.main(argv[1:])
+    if argv[:1] == ["limpiar-avisos"]:  # limpieza única de choques/solapes antiguos (dry-run por defecto)
+        from agent_lanes import canal_avisos
+        return canal_avisos.limpiar_main(argv[1:])
     if argv[:2] == ["tarjeta", "nueva"]:  # vía única para crear tarjetas de carril
         from agent_lanes import nueva_tarjeta
         return nueva_tarjeta.main(argv[2:])

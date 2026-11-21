@@ -226,8 +226,10 @@ class Grupo:
     comparten: list
 
 
-def tarjetas_activas(lanes: dict, hermes_for, ajustes: Ajustes) -> dict[str, list[Card]]:
-    """repo -> tarjetas vigiladas con sus rutas. Un tablero ilegible no corta el resto."""
+def tarjetas_activas(lanes: dict, hermes_for, ajustes: Ajustes,
+                     fallos: list | None = None) -> dict[str, list[Card]]:
+    """repo -> tarjetas vigiladas con sus rutas. Un tablero ilegible no corta el resto; si se pasa `fallos`, se anota
+    en ella cada (tablero, estado) que no se pudo leer (quien necesite una lectura completa la comprueba)."""
     by_repo: dict[str, list[Card]] = {}
     vistos: set[tuple[str, str]] = set()
     boards = list(dict.fromkeys(l.board for l in lanes.values()
@@ -238,6 +240,8 @@ def tarjetas_activas(lanes: dict, hermes_for, ajustes: Ajustes) -> dict[str, lis
                 tasks = hermes_for(board).list_status_all(status)
             except Exception as exc:
                 log.warning("solapes: %s/%s no leído: %s", board, status, exc)
+                if fallos is not None:
+                    fallos.append((board, status))
                 continue
             for t in tasks:
                 lane = lanes.get(t.get("assignee"))
@@ -267,14 +271,16 @@ def _enlazadas(a: Card, b: Card, hermes_for, cache: dict) -> bool:
     return b.tid in rel(a) or a.tid in rel(b)
 
 
-def detectar(lanes: dict, hermes_for, ajustes: Ajustes | None = None, descartes: set[str] | None = None) -> list[Grupo]:
+def detectar(lanes: dict, hermes_for, ajustes: Ajustes | None = None, descartes: set[str] | None = None,
+             activas: dict[str, list[Card]] | None = None) -> list[Grupo]:
     """Conjuntos de 2+ tarjetas del mismo repo con solape (componentes conexos de los pares que solapan).
-    `descartes`: parejas (`par`) que Oscar ya dijo que no son duplicadas; no se juntan."""
+    `descartes`: parejas (`par`) que Oscar ya dijo que no son duplicadas; no se juntan. `activas`: lectura ya hecha
+    de `tarjetas_activas` (para no leer dos veces); sin ella se lee aquí."""
     ajustes = ajustes or Ajustes()
     descartes = descartes or set()
     grupos: list[Grupo] = []
     cache: dict = {}
-    for repo, cards in sorted(tarjetas_activas(lanes, hermes_for, ajustes).items()):
+    for repo, cards in sorted((activas if activas is not None else tarjetas_activas(lanes, hermes_for, ajustes)).items()):
         parent = {c.tid: c.tid for c in cards}
 
         def raiz(x):
