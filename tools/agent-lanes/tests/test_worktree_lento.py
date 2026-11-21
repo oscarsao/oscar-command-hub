@@ -80,6 +80,53 @@ def test_fallo_total_lanza_worktreelento_con_datos(tmp_path):
     assert "Worktrees registrados: 3" in c and "intento 3" in c and str(tmp_path / "repo") in c
 
 
+class GitRamaATrozos(GitLento):
+    """El primer `worktree add -b` agota el tiempo pero deja la rama creada: `rev-parse refs/heads/...` pasa a 0."""
+
+    def __init__(self):
+        super().__init__(1)
+        self.rama_creada = False
+
+    def __call__(self, cmd, **kw):
+        if "worktree" in cmd and "add" in cmd and self.lentos > 0:
+            self.rama_creada = True
+        if "rev-parse" in cmd:
+            self.cmds.append(list(cmd))
+            return subprocess.CompletedProcess(cmd, 0 if self.rama_creada else 1, "", "")
+        return super().__call__(cmd, **kw)
+
+
+def test_reintento_tras_timeout_con_rama_ya_creada_sale_sin_b_y_la_tarjeta_continua(tmp_path):
+    git = GitRamaATrozos()
+    h = HermesRegla([{"id": "t_1", "title": "T", "body": "B"}])
+    r = LaneRunner(LANE, hermes=h, git=GitOpsSoloWorktree(GitOps(runner=git, sleep=lambda s: None), tmp_path),
+                   worker=FakeWorker([ok_outcome()]), verifier=FakeVerifier(), notify=FakeNotifier())
+    assert r.run_once() == {"t_1": "review"}
+    adds = git.de("worktree", "add")
+    assert len(adds) == 2
+    assert "-b" in adds[0] and "-b" not in adds[1] and adds[1][-1] == "lane/t_1"
+    assert not git.de("remove") and not [c for c in h.calls if c[0] == "block"]
+
+
+def test_reintento_reutiliza_la_carpeta_si_ya_es_worktree_de_la_rama(tmp_path):
+    lane = _lane(tmp_path)
+    destino = tmp_path / "_lanes" / "lane-t_1"
+
+    class Git(GitLento):
+        def __call__(self, cmd, **kw):
+            if "worktree" in cmd and "add" in cmd:
+                destino.mkdir(parents=True, exist_ok=True)  # el intento lento sí creó la carpeta
+            if "branch" in cmd and "--show-current" in cmd:
+                self.cmds.append(list(cmd))
+                return subprocess.CompletedProcess(cmd, 0, "lane/t_1\n", "")
+            return super().__call__(cmd, **kw)
+
+    git = Git(1)
+    # la carpeta aún no existe en el prepare inicial; la crea el primer `add` (que agota el tiempo)
+    ruta = GitOps(runner=git, sleep=lambda s: None).prepare_worktree(lane, "t_1")
+    assert ruta.endswith("lane-t_1") and len(git.de("worktree", "add")) == 1
+
+
 def test_un_fallo_normal_de_git_no_se_reintenta_por_tiempo(tmp_path):
     def run(cmd, **kw):
         if "add" in cmd and "worktree" in cmd:

@@ -153,6 +153,39 @@ class GitOps:
         except (OSError, subprocess.SubprocessError) as exc:
             log.warning("git worktree prune en %s: %s", repo, exc)
 
+    def _args_reintento(self, repo: str, args: tuple[str, ...]) -> tuple[tuple[str, ...], bool]:
+        """Tras agotar el tiempo, `git worktree add` pudo dejar a medias la rama o la carpeta. Reconstruye los argumentos
+        según el estado actual (solo lectura, no borra nada): si la carpeta ya es un worktree de la rama devuelve
+        (args, True) para reutilizarla; si la rama ya existe, quita `-b` y el punto de partida."""
+        if not args:
+            return args, False
+        path = args[0]
+        if "-b" in args:
+            i = args.index("-b")
+            branch = args[i + 1] if len(args) > i + 1 else ""
+        else:
+            branch = args[1] if len(args) > 1 else ""
+        if not branch:
+            return args, False
+        if Path(path).exists():
+            try:
+                cp = self._run(["git", "-C", path, "branch", "--show-current"], capture_output=True, text=True,
+                               encoding="utf-8", errors="replace", timeout=60)
+                if cp.returncode == 0 and (cp.stdout or "").strip() == branch:
+                    return args, True
+            except (OSError, subprocess.SubprocessError):
+                pass
+            return args, False
+        if "-b" in args:
+            try:
+                cp = self._run(["git", "-C", repo, "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}"],
+                               capture_output=True, text=True, timeout=60)
+                if cp.returncode == 0:
+                    return (path, branch), False
+            except (OSError, subprocess.SubprocessError):
+                pass
+        return args, False
+
     def _worktree_add(self, repo: str, *args: str) -> subprocess.CompletedProcess:
         """`git worktree add` con tiempo máximo configurable. Si se agota, prune y reintento (espera creciente) hasta
         len(esperas) veces; si sigue sin responder, WorktreeLento con los datos para la tarjeta. Registra en el log lo
@@ -170,6 +203,10 @@ class GitOps:
                     break
                 self._prune(repo)
                 self._sleep(self._esperas_worktree[intento])
+                args, hecho = self._args_reintento(repo, args)
+                if hecho:  # el intento que agotó el tiempo sí llegó a crear el worktree: se reutiliza
+                    log.info("git worktree add en %s: %s ya existe tras el tiempo agotado; se reutiliza", repo, args[0])
+                    return subprocess.CompletedProcess(["git", "worktree", "add", *args], 0, "", "")
                 continue
             except GitError:
                 log.info("git worktree add en %s: falló en %.1f s (intento %d)", repo, time.monotonic() - t0,
